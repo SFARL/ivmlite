@@ -183,6 +183,22 @@ v0 实现前四个，`Join` 占位但不实现。
 
 MIN/MAX 不属于上述任何一类：删除当前最小值时需要知道次小值，必须另配数据结构。因此排在 M4。
 
+#### 聚合的 NULL 语义契约
+
+**`SUM` 在非 NULL 输入为零行时返回 `NULL`，不是 `0`。** 已实测确认：
+
+```sql
+CREATE TABLE u(g TEXT, v INTEGER) STRICT;
+INSERT INTO u VALUES ('a', NULL), ('a', NULL);
+SELECT g, typeof(SUM(v)), COUNT(*) FROM u GROUP BY g;   -- a|null|2
+```
+
+注意这与"组为空"是两种不同情形：组为空时该组根本不出现在输出里；组非空但**该列全为 NULL** 时，组出现，`COUNT(*)` 为正，而 `SUM` 为 `NULL`。
+
+因此 `SUM` 的算子状态必须同时维护 **累加值** 与 **非 NULL 输入的计数**，输出时按后者是否为零决定发 `Int` 还是 `Null`。只维护累加值的实现会在该情形下输出 `0`，与 SQLite 静默不一致。
+
+`COUNT(*)` 不受影响——它计的是行数，与列值是否为 NULL 无关。
+
 ### 6.2 聚合的 retraction 语义
 
 **这是 IVM 最大的 bug 来源，必须严格遵守。**
@@ -234,11 +250,29 @@ __ivm_progress(view TEXT, tbl TEXT, applied_seq INTEGER)  -- 水位
 
 **陷阱一：SQLite 中 `1 = 1.0` 为真，但 INTEGER 与 REAL 是不同的存储类。** 若编码为不同 BLOB，同一个 SQL 意义上的 group key 会分裂成两组。
 
-> **对策：要求 STRICT table（列类型被钉死）；且 v0 只允许裸列作为 group-by key，不允许表达式**（表达式仍可能产出混合类型）。
+> **对策：要求 STRICT table，并且额外显式拒绝 `ANY` 列；且 v0 只允许裸列作为 group-by key，不允许表达式**（表达式仍可能产出混合类型）。
+>
+> **STRICT 本身不足以钉死列类型**——STRICT 表允许 `ANY` 列，该列按原样存储、逐行类型可不同。已实测确认：
+>
+> ```sql
+> CREATE TABLE t(a ANY) STRICT;
+> INSERT INTO t VALUES (1), ('1');
+> SELECT count(*) FROM (SELECT a FROM t GROUP BY a);  -- 2
+> ```
+>
+> 因此 `ivm_create_view` 必须遍历 `PRAGMA table_info` 的 `type` 字段，遇到 `ANY` 直接拒绝。v0 接受的列类型白名单为 `INTEGER` 与 `TEXT`（`REAL` 因浮点结合律排除，`BLOB` 排在 M4）。
 
 **陷阱二：Collation。** `GROUP BY name` 若列上有 `COLLATE NOCASE`，编码不遵守就会与 SQLite 的分组结果不一致。
 
 > **对策：v0 只支持 BINARY collation，其余一律在 `ivm_create_view` 时拒绝。**
+>
+> **`PRAGMA table_info` 读不到 collation**——它只返回 `cid, name, type, notnull, dflt_value, pk`，没有 collation 字段（已实测确认）。列的声明 collation 只能从 DDL 本身获得。因此检测办法是：
+>
+> ```sql
+> SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?;
+> ```
+>
+> 取回建表语句，若其中出现 `COLLATE`（大小写不敏感匹配）则拒绝该表。这是保守的过度拒绝——`COLLATE` 可能出现在与 group-by 列无关的位置——但 v0 宁可误拒也不能误纳：漏掉一个 NOCASE 列会让物化结果与 SQLite 静默不一致，而差分测试未必覆盖得到用户的真实 collation 配置。精确到列的判断排在 M3。
 
 编码必须是**规范的**：同一逻辑行必须始终编码为完全相同的字节序列。
 
@@ -303,10 +337,12 @@ v0 无浮点，因此是**严格相等**（浮点 SUM 不满足结合律，增�
 |---|---|---|
 | **不变量** | 最终状态无负权重；无 `w=0` 僵尸行；`applied_seq` 单调且不超过 delta 表水位；每个 group key 在输出表中恰好一行 | 否 |
 | **批次无关性** | 同一串 delta，一次性应用 / 逐条应用 / 随机分批 → 最终状态必须完全一致 | 否 |
-| **主 oracle** | 同连接内全量重算，严格比对 | 权威 |
+| **主 oracle** | 同连接内全量重算，**在每一个可观察的 refresh 点**严格比对，而非只比对最终状态 | 权威 |
 | **交叉验证** | Turso MV 跑同样的 query 与更新序列 | M2+，不一致说明至少一方有 bug |
 
 批次无关性是抓状态污染类 bug 最有效的断言之一，而自动维护模式下无法测试它。
+
+**为什么 oracle 必须逐批比对而非只比最终状态**：只在末尾比对时，一个"中途算错、形式上仍合法、后续又自行恢复"的实现可以完全通过——而这正是状态漂移类 bug 的典型形态（某个算子的累加器偏了，直到下一次该组被整体重写才被抹平）。不变量层拦不住它，因为错误的值同样满足"权重为 1、group key 唯一"。代价是测试复杂度从 O(n) 变成 O(n × 基表规模)，因此**差分测试的用例规模必须保持很小**（默认 25 行初始数据、150 步操作），大规模场景交给 benchmark 而非正确性测试。
 
 ### 9.2 生成器的三个关键设计
 
@@ -365,6 +401,9 @@ N 个视图 (N = 1, 10, 50, 200)
 
 1. **跨宿主的绝对耗时不可比**（DuckDB vs SQLite 量的是宿主而非 IVM）。跨宿主只比**同宿主内的加速比** `朴素重跑 / 增量`。
 2. **CI 中只保留 same-host 对照组**；跨宿主对比做成一次性 writeup，不进 CI（否则必然腐烂）。
+3. **所有对照组必须维护完全相同的视图集合。** 若"手写 trigger"只能表达单一形状而"朴素重跑"跑的是另一批查询，测出的倍数无法用于 §10.4 的结论。视图集合的上限由**表达能力最弱的那个对照组**决定——v0 即 `GROUP BY <单列> → SUM, COUNT`，所有对照组一律用这一形状的 N 份副本。
+4. **所有对照组必须在计时开始前完成初始状态构建。** 在基表已有数据之后才创建空的汇总表，得到的是一个从不完整的视图，其维护成本也不具代表性。每条基线都要先完成一次全量 bootstrap，再开始测量增量成本。
+5. **测试数据必须有稳定主键，删改按主键定位。** 按全部列的值去找行会退化成全表扫描（`EXPLAIN QUERY PLAN` 显示 `SCAN`），使耗时随基表规模线性增长——而基表规模项正是这条 benchmark 唯一要证明的东西，被扫描淹没后结论归零。
 
 ### 10.4 要得出的结论
 
@@ -493,8 +532,8 @@ TanStack DB 是浏览器端 JS 库，与 v0 的扩展形态运行时不同、受
 
 ## 13. 已知限制（v0）
 
-1. 仅 STRICT table
-2. 仅 BINARY collation
+1. 仅 STRICT table，且**拒绝 `ANY` 列**（STRICT 本身不排除 `ANY`，见 §7.1）；列类型白名单为 `INTEGER` / `TEXT`
+2. 仅 BINARY collation；检测手段是从 `sqlite_master` 取建表语句匹配 `COLLATE`，属保守的过度拒绝（见 §7.1）
 3. group-by key 仅支持裸列，不支持表达式
 4. 无浮点聚合
 5. 无 join
