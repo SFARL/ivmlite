@@ -86,8 +86,8 @@ repository = "https://github.com/SFARL/ivmlite"
 
 [workspace.dependencies]
 ivmlite-core = { path = "crates/ivmlite-core" }
-rusqlite = { version = "0.32", features = ["bundled"] }
-rand = "0.8"
+rusqlite = { version = "0.40", features = ["bundled"] }
+rand = "0.10"
 ```
 
 `.gitignore`：
@@ -975,10 +975,10 @@ pub fn gen_row(rng: &mut StdRng, schema: &Schema, domain: &Domain) -> Row {
         .columns
         .iter()
         .map(|col| {
-            if col.nullable && rng.gen_bool(domain.null_rate) {
+            if col.nullable && rng.random_bool(domain.null_rate) {
                 return Value::Null;
             }
-            let n = rng.gen_range(0..domain.distinct) as i64;
+            let n = rng.random_range(0..domain.distinct) as i64;
             match col.ty {
                 ColumnType::Integer => Value::Int(n),
                 ColumnType::Text => Value::Text(format!("v{n}")),
@@ -1163,7 +1163,7 @@ pub fn gen_ops(
 
     for _ in 0..count {
         // live 为空时只能插入。
-        let choice = if live.is_empty() { 0 } else { rng.gen_range(0..10) };
+        let choice = if live.is_empty() { 0 } else { rng.random_range(0..10) };
         match choice {
             0..=3 => {
                 let r = gen_row(rng, schema, domain);
@@ -1171,12 +1171,12 @@ pub fn gen_ops(
                 ops.push(Op::Insert(r));
             }
             4..=6 => {
-                let idx = rng.gen_range(0..live.len());
+                let idx = rng.random_range(0..live.len());
                 let r = live.swap_remove(idx);
                 ops.push(Op::Delete(r));
             }
             _ => {
-                let idx = rng.gen_range(0..live.len());
+                let idx = rng.random_range(0..live.len());
                 let old = live.swap_remove(idx);
                 let new = gen_row(rng, schema, domain);
                 live.push(new.clone());
