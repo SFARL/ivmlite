@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/ivmlite-core"]
+members = ["crates/ivmlite-core", "crates/ivmlite-test"]
 
 [workspace.package]
 edition = "2021"

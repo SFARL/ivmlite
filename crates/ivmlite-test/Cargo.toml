@@ -1,0 +1,12 @@
+[package]
+name = "ivmlite-test"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ivmlite-core.workspace = true
+rusqlite.workspace = true
+rand.workspace = true
