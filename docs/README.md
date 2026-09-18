@@ -4,7 +4,11 @@
 
 - **`superpowers/specs/`** — 设计文档（spec）。实施前的权威依据。
   - [`2026-09-18-ivmlite-design.md`](superpowers/specs/2026-09-18-ivmlite-design.md) — 总体设计
+- **`superpowers/plans/`** — 实施计划。
+  - [`2026-09-18-m0-test-and-bench-harness.md`](superpowers/plans/2026-09-18-m0-test-and-bench-harness.md) — M0：测试与基准骨架
 - **`adr/`** — 架构决策记录（Architecture Decision Record）。
+- **`spikes/`** — 可行性探针及其结论。产出是结论，不是要保留的代码。
+  - [`2026-09-18-m-1-sqlite-extension-mechanics.md`](spikes/2026-09-18-m-1-sqlite-extension-mechanics.md) — M-1：控制面到底能不能按设想工作（阻塞 M1）
 
 ## ADR 的使用约定
 

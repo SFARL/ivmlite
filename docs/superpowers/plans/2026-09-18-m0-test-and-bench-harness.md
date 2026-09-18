@@ -15,6 +15,9 @@
 - **`ivmlite-core` 不得依赖 `rusqlite` 或 `libsqlite3-sys`**（spec §4.2）。`ivmlite-test` 可以。
 - **所有 `unsafe` 与 FFI 只允许出现在 `ivmlite-sqlite`**（spec §4.2）。M0 不创建该 crate，因此 M0 全程零 `unsafe`。
 - **v0 的 `Value` 只有 `Null` / `Int` / `Text` 三个变体**。无浮点（spec §9 浮点 SUM 不满足结合律）、无 BLOB。`Real` 与 `Blob` 留到 M4。
+- **视图的根算子必须是带非空 GROUP BY 的 `Aggregate`**（spec §5.2）。不生成无聚合的视图，也不生成全局聚合——后者在空集上返回 1 行 NULL，而分组聚合返回 0 行，两者不能共用「计数归零即删行」的规则。
+- **整数值域必须保证不溢出**（spec §6.1）：SQLite 的 `SUM` 在整数溢出时报错，且报不报错取决于扫描顺序，因此增量与全量重算会在溢出区分叉——与浮点结合律同类。默认 `Domain` 下 group 内和远小于 2^62，生成器不得放宽到可能溢出的值域。
+- **比较运算符白名单**（spec §6.1）：`>` `>=` `<` `<=` `=` `!=` `IS NULL` `IS NOT NULL`。不生成 `NOT` / `OR` / `LIKE` / `IN` / `BETWEEN` 与任何子查询。
 - **权重不变量**（spec §5.1）：最终物化状态不得有负权重；权重归零的行必须删除，不得留 `w = 0` 的僵尸行。
 - **生成器值域必须窄**（spec §9.2）：每列不同值数量默认 8，NULL 出现概率默认 0.2。
 - **所有随机走显式 seed**，失败时打印可重放的 seed（spec §9.4）。
@@ -692,8 +695,15 @@ mod tests {
     fn enumerate_covers_the_v0_space_and_is_nonempty() {
         let qs = enumerate(&orders());
         assert!(!qs.is_empty());
-        assert!(qs.iter().all(|q| !q.group_by.is_empty()), "v0 要求至少一个 group-by 键");
-        assert!(qs.iter().all(|q| !q.aggs.is_empty()), "无聚合的视图不在 v0 范围");
+        assert!(
+            qs.iter().all(|q| !q.group_by.is_empty()),
+            "v0 禁止全局聚合：空表上 `SELECT SUM(v) FROM t` 返回 1 行 NULL，\
+             而 `... GROUP BY g` 返回 0 行，两者不能共用同一套删行规则（spec §5.2）"
+        );
+        assert!(
+            qs.iter().all(|q| !q.aggs.is_empty()),
+            "v0 的根算子必须是 Aggregate——否则 __w 权重会让物化表与普通 SQL 视图行数不一致（spec §5.2）"
+        );
         assert!(qs.iter().any(|q| matches!(q.predicate, Predicate::None)));
         assert!(qs.iter().any(|q| matches!(q.predicate, Predicate::IntGt { .. })));
     }
@@ -910,6 +920,18 @@ mod tests {
     fn domain_is_narrow_by_default() {
         let d = Domain::default();
         assert_eq!(d.distinct, 8, "窄值域是抓 retraction bug 的前提（spec §9.2）");
+    }
+
+    /// spec §6.1：SQLite 的整数 SUM 溢出时报错，且是否报错取决于扫描顺序，
+    /// 因此增量与全量重算会在溢出区分叉。生成器必须让溢出不可达。
+    #[test]
+    fn domain_cannot_overflow_integer_sum() {
+        let d = Domain::default();
+        let worst_case_sum = (d.distinct as i128) * 1_000_000;
+        assert!(
+            worst_case_sum < (1i128 << 62),
+            "即使百万行全落在同一个 group，和也必须远小于 2^62"
+        );
     }
 
     #[test]
@@ -3556,16 +3578,24 @@ Expected: CSV 落盘；`docs/bench/m0-baseline-card10.svg`、`-card1000.svg`、
 在 `docs/bench/README.md` 写下结论，**每个 group 基数各一行交叉点**：
 
 ```markdown
-| group 基数 | 交叉点（朴素重跑开始变得比增量贵的基表规模） | 手写 trigger 的写放大 |
-|---|---|---|
-| 10     | ... | ... |
-| 1k     | ... | ... |
-| 100k   | ... | ... |
+| group 基数 | Δ 大小 | 全量重算 / 手写 trigger 比值 | 手写 trigger 的写放大 |
+|---|---|---|---|
+| 10     | 1 / 1000 | ... | ... |
+| 1k     | 1 / 1000 | ... | ... |
+| 100k   | 1 / 1000 | ... | ... |
 ```
 
-若某一行的交叉点落在 100 万行以上，就照实写下来并注明该配置下本项目无意义
-——spec §10.4 要求 benchmark 必须能证伪本项目。**M0 阶段填的是三条基线之间
-的关系**（增量那一列要等 M1 才有数），但表格结构现在定下来，M1 直接填。
+**不要报告"一个交叉点"。** spec §10.4 已删除"交叉点 > 100 万行即无意义"那条
+拍脑袋的阈值——同一套实现在「10 个 group + 大批量 Δ」和「10 万个 group +
+单行 Δ」下是两个完全不同的结论，不存在单一交叉点。要报告的是一张面。
+
+证伪判据换成了形状：**若这张面上不存在任何区域使增量相对全量重算有实质优势
+（比值 > 2），则项目前提不成立。** 若优势区域存在，照实写它落在哪里，包括
+"只在极窄的一角成立"。
+
+**M0 阶段填的是三条基线之间的关系**（增量那两列要等 M1 才有数），但表格结构
+现在定下来，M1 直接填。注意其中最值得盯的一格是**大批量 Δ + 低 group 基数**
+——那是 spec §10.2 三级判据里"额外惊喜"唯一可能出现的地方。
 
 - [ ] **Step 7: 提交**
 

@@ -15,7 +15,7 @@ ivmlite 是一个 SQLite 扩展，为 SQLite 提供**增量物化视图**（Incr
 ### 1.1 目标
 
 1. **学习 Rust 与数据库内部机制**——自己实现算子与状态管理，而不是生成 SQL 交给宿主执行。
-2. **建立一套可信的 IVM 正确性验证体系**——这是本项目唯一确定无人做过的部分。
+2. **建立一套可信的 IVM 正确性验证体系**——截至目前**未找到可复用的、跨 IVM 实现的 property-based differential testing harness**。（不宣称"无人做过"：那是无法证明的命题。）
 3. **得出一个诚实的性能结论**，包括"不值得做"这个结论。
 
 ### 1.2 非目标
@@ -161,6 +161,35 @@ enum Plan {
 
 v0 实现前四个，`Join` 占位但不实现。
 
+#### v0 的根算子必须是带非空 GROUP BY 的 Aggregate
+
+这条约束堵住一个隐蔽的语义漏洞。物化输出表带 `__w` 权重列，但**权重是内部表示，SQL 表没有权重概念**：
+
+```sql
+-- 若允许 Scan → Filter → Project 直接成为视图
+原始数据: apple, apple, banana
+Z-set 表示: (apple, w=2), (banana, w=1)     -- 2 行
+用户 SELECT: 应当看到 3 行
+```
+
+物化表会显示 2 行而普通 SQL 视图显示 3 行——两者语义不一致，而"物化视图就是一张普通 SQL 表"正是本项目的卖点。
+
+**规定：视图的根算子必须是 `Aggregate`，且 `group_by` 非空。** 于是 group key → 恰好一个输出行，`__w` 在最终输出中恒为 1，Z-set 权重只出现在内部 delta 与算子状态中。
+
+合法：`Scan → Filter → Project → Aggregate`
+非法：`Scan → Filter → Project` 直接作为视图
+
+**同时禁止无 GROUP BY 的全局聚合**，因为它与分组聚合的空集行为不同（已实测）：
+
+```sql
+SELECT SUM(v) FROM t;            -- 空表 → 1 行（值为 NULL）
+SELECT g, SUM(v) FROM t GROUP BY g;  -- 空表 → 0 行
+```
+
+"组内计数归零就删掉该行"这条简单规则对前者是错的。与其为一个特例引入第二套规则，不如在 v0 直接拒绝全局聚合。
+
+这两条合起来使 v0 的定位变得精确：**自动维护的聚合**（automatically maintained aggregates），而不是泛化的物化视图。
+
 ### 5.3 视图定义的持久化
 
 **存 SQL 原文，不存序列化的 IR。** 重连时重新 parse。
@@ -199,6 +228,33 @@ SELECT g, typeof(SUM(v)), COUNT(*) FROM u GROUP BY g;   -- a|null|2
 
 `COUNT(*)` 不受影响——它计的是行数，与列值是否为 NULL 无关。
 
+#### 整数溢出：与浮点结合律同类的问题
+
+**SQLite 的 `SUM` 在整数溢出时报错，而且报不报错取决于扫描顺序。** 已实测：
+
+```sql
+INSERT INTO o VALUES (9223372036854775807), (9223372036854775807), (-9223372036854775807);
+SELECT SUM(v) FROM o;   -- Error: integer overflow
+```
+
+真实和等于 `i64::MAX`，装得下；但 SQLite 按顺序累加，第二步就溢出了。
+
+增量维护的累加顺序**必然**与全量重算的扫描顺序不同，因此"增量成功、重算报错"或反之是可达状态——这与浮点加法不满足结合律是**同一类问题**，只是发生在整数上。
+
+> **v0 的对策：把值域夹到不可能溢出，并把溢出明确列为不支持。**
+>
+> 具体约束：`|group 内所有值之和| < 2^62`。差分测试的生成器必须保证这一点（窄值域下自然满足）；`ivm_create_view` 不做静态检查（做不到），溢出时的行为**未定义**，文档如实声明。
+
+这条与浮点的处理并列写在此处，是为了避免"只防了浮点"这个我已经犯过一次的错误。
+
+#### 谓词的三值逻辑
+
+`WHERE` 对 `NULL` 求值为 UNKNOWN，该行**不进入结果**；而 `WHERE NOT (...)` 同样不进入。已实测：`v` 取 `{1, NULL, 5}` 时，`WHERE v > 3` 命中 1 行，`WHERE NOT (v > 3)` 也只命中 1 行——两者加起来是 2 而不是 3。
+
+因此谓词求值必须返回**三值**而非布尔，且"不通过"与"未知"在筛选语义上合并为同一种处理（都不进入结果）。v0 的实现把二者合并是正确的，但**不得据此认为 `NOT p` 等价于 `!p`**。
+
+v0 允许的比较运算符白名单：`>`、`>=`、`<`、`<=`、`=`、`!=`、`IS NULL`、`IS NOT NULL`。不允许 `NOT`、`OR`、`LIKE`、`IN`、`BETWEEN` 与任何子查询——每多一个都要重新论证一次三值逻辑，而 v0 的目的不是覆盖 SQL。
+
 ### 6.2 聚合的 retraction 语义
 
 **这是 IVM 最大的 bug 来源，必须严格遵守。**
@@ -236,12 +292,14 @@ trait 定义在 `ivmlite-core`，实现由 `ivmlite-sqlite` 提供（v0 = shadow
 
 ```sql
 __ivm_view(name TEXT PRIMARY KEY, sql TEXT)              -- 视图定义，存 SQL 原文
+__ivm_dep(view TEXT, tbl TEXT, PRIMARY KEY(view, tbl))   -- 视图依赖哪些基表
 __ivm_delta_<table>(seq INTEGER PRIMARY KEY AUTOINCREMENT,
                     w INTEGER, <表的所有列...>)            -- CDC，w 即 Z-set 权重
 __ivm_state_<view>_<op>(key BLOB, val BLOB, w INTEGER,
                         PRIMARY KEY(key, val))            -- arrangement
 __ivm_out_<view>(<输出列...>, __w INTEGER)                -- 物化输出，普通表
-__ivm_progress(view TEXT, tbl TEXT, applied_seq INTEGER)  -- 水位
+__ivm_progress(view TEXT, tbl TEXT, applied_seq INTEGER,
+               PRIMARY KEY(view, tbl))                    -- 水位
 ```
 
 `__ivm_out_<view>` 是**普通表**，不加载扩展也能 `SELECT`。
@@ -275,6 +333,40 @@ __ivm_progress(view TEXT, tbl TEXT, applied_seq INTEGER)  -- 水位
 > 取回建表语句，若其中出现 `COLLATE`（大小写不敏感匹配）则拒绝该表。这是保守的过度拒绝——`COLLATE` 可能出现在与 group-by 列无关的位置——但 v0 宁可误拒也不能误纳：漏掉一个 NOCASE 列会让物化结果与 SQLite 静默不一致，而差分测试未必覆盖得到用户的真实 collation 配置。精确到列的判断排在 M3。
 
 编码必须是**规范的**：同一逻辑行必须始终编码为完全相同的字节序列。
+
+### 7.2 delta 表的 GC
+
+纯 SQL trigger 的设计让未加载扩展的连接也能被捕获（§8.1），代价是 **delta 表会无限增长**。没有 GC 的设计在 benchmark 里看不出问题，一上真实 workload 立刻爆——delta 表涨到千万、上亿行。
+
+GC 水位由**依赖该基表的所有视图中最落后的那个**决定：
+
+```sql
+-- 对每张基表
+gc_watermark(tbl) = (SELECT MIN(p.applied_seq)
+                     FROM __ivm_progress p
+                     JOIN __ivm_dep d ON d.view = p.view AND d.tbl = p.tbl
+                     WHERE p.tbl = tbl);
+
+DELETE FROM __ivm_delta_<tbl> WHERE seq <= gc_watermark(tbl);
+```
+
+`__ivm_dep` 存在的唯一理由就是这个查询：没有它就不知道"还有谁没消费完"。
+
+**没有任何视图依赖某张被跟踪的表时**（最后一个视图被 DROP），该表的 trigger 与 delta 表一并删除，而不是让 delta 永久累积。
+
+### 7.3 bootstrap 必须与 delta 水位原子
+
+在已有数据的表上创建视图时，顺序错了会丢更新或重复应用：
+
+```
+1. 读 delta 表的高水位 H
+2. 全量扫描基表，算出初始状态
+3. 置 progress = H
+```
+
+**第 1、2 步必须在同一个读事务内**，否则两步之间发生的并发写会：progress 记为 H 但基表快照里没有它（丢更新），或者基表快照里有了却又会被 seq > H 的 delta 再应用一次（重复）。
+
+SQLite 的读事务提供一致快照，因此把 `BEGIN` 包住这两步即可。这条必须写进实现而不只是写进文档——它属于"benchmark 看不见、真实 workload 立刻爆"的那一类。
 
 ---
 
@@ -314,9 +406,68 @@ SELECT ivm_refresh('revenue');
 - **vtab 读时自动 drain**：SQLite 的读事务不能写，做不到。
 - **trigger 内调 UDF 立即维护**：技术上可行（已在写事务内，不构成重入），但 **SQLite 只有行级 trigger，没有语句级**——插入 1 万行会触发 1 万次维护，彻底破坏批量 delta 优化，bulk load 不可用。
 
-**显式 refresh 不只是妥协，它是测试矩阵成立的前提**，见 §9.1 的批次无关性。
+**显式 refresh 不是妥协，它是本项目的永久 API，而且很可能是正确的抽象。**
 
-自动 drain 的 vtab 排在 M3。
+三条理由：
+
+1. **两条自动化路径都被 SQLite 的机制堵死**（上文），不存在"以后想办法自动化"的余地。
+2. **它是测试矩阵成立的前提**——批次无关性（§9.1）只有在能精确控制维护时刻时才可测。
+3. **批处理本身就是相对手写 trigger 的性能优势所在**，见下。
+
+推荐的使用形态是把 refresh 放进应用自己的写事务：
+
+```sql
+BEGIN;
+INSERT INTO orders ...;   -- ×10000
+SELECT ivm_refresh('revenue');
+COMMIT;
+```
+
+#### 为什么批处理是优势而不是缺陷
+
+手写的行级 trigger 对一万行插入必然执行一万次聚合 UPDATE。而拿到整批 delta 的增量引擎可以先做 **consolidation**：
+
+```
+10000 条 raw Δ
+      ↓  Z-set consolidate（相同行权重相加）
+若只涉及 20 个 region
+      ↓
+20 次 group 状态更新
+```
+
+**这是显式 refresh 换来的、行级 trigger 结构上拿不到的东西**，也是本项目最可能成立的性能故事。因此 consolidation 被明确列为 M1 的内容，而非优化项。
+
+### 8.3 控制面：待 M-1 验证，主候选是 FTS5 的惯用法
+
+早期草案把控制面定成标量 UDF：
+
+```sql
+SELECT ivm_create_view('revenue', 'SELECT ...');   -- 内部要建表、建 trigger
+SELECT ivm_refresh('revenue');                     -- 内部要写影子表
+```
+
+即：在一条正在 `sqlite3_step()` 的 `SELECT` 语句内部，用同一个连接做 DDL 和写入。这**不能靠"理论上应该可以"来赌**——SQLite 对 hook 的重入限制很严（commit/update hook 明确禁止在回调里再操作触发它的连接），application-defined function 的限制虽宽一些，但仍是在一条运行中的语句里递归使用同一连接。
+
+**主候选改为 FTS5 已经验证了十几年的惯用法**（已实测确认其行为）：
+
+```sql
+-- xCreate 建立影子表与 trigger，DDL 上下文天然正确
+CREATE VIRTUAL TABLE revenue USING ivm(
+    'SELECT region, SUM(amount), COUNT(*) FROM orders GROUP BY region'
+);
+
+-- 命令通道：向与表同名的列写入
+INSERT INTO revenue(revenue) VALUES ('refresh');
+
+-- xFilter 读物化状态
+SELECT * FROM revenue;
+```
+
+参照：`CREATE VIRTUAL TABLE docs USING fts5(body)` 会经 xCreate 建出 `docs_data`、`docs_idx`、`docs_content`、`docs_docsize`、`docs_config` 五张影子表，`INSERT INTO docs(docs) VALUES('rebuild')` 是其命令入口。
+
+这套方案在三处优于标量 UDF：DDL 发生在 SQLite 为之设计的上下文里；视图成为 `sqlite_master` 认识的真实对象；`DROP TABLE revenue` 经 xDestroy 自然清理影子表与 trigger，不需要额外的销毁 API。
+
+**M-1 的任务就是在真实 cdylib 扩展上把两套方案都跑一遍**，覆盖 rollback、嵌套事务、WAL、双连接。控制面在 M-1 结论出来之前不定稿；本文档其余部分凡出现 `ivm_create_view` / `ivm_refresh` 之处，均指"控制面上的建视图 / 刷新操作"，与最终语法无关。
 
 ---
 
@@ -401,13 +552,29 @@ N 个视图 (N = 1, 10, 50, 200)
 | 角色 | 对照物 | 说明 |
 |---|---|---|
 | **下界** | 只写基表不维护 | 纯写入成本 |
-| **怀疑者** | 手写 trigger 维护的汇总表 | **v0 必须打赢，否则没有故事** |
+| **怀疑者** | 手写 trigger 维护的汇总表 | 见下方的三级判据——**不是"必须打赢"** |
 | **基线** | 朴素重跑 | 交叉点在此测量 |
 | **同行** | Turso MV | 同宿主、同 DBSP，最公平 |
 | **天花板** | `dbsp` crate 裸跑（手搓 circuit，不过 SQL，不落盘） | 与本项目的差距即为 SQLite / 存储税，诊断价值极高 |
 | **参考** | duckDBSP / OpenIVM / pg_ivm | 跨宿主，只作背景不作裁决 |
 
-"怀疑者"这一栏对应的是对 v0 最直接的质疑：单表 GROUP BY + SUM/COUNT 就是人们手写了三十年的 trigger 汇总表。必须正面回答。
+"怀疑者"这一栏对应的是对 v0 最直接的质疑：单表 GROUP BY + SUM/COUNT 就是人们手写了三十年的 trigger 汇总表。必须正面回答——但**判据不是"必须打赢"**。
+
+#### 对手写 trigger 的三级判据
+
+早期草案写的是"v0 必须打赢手写 trigger，否则没有故事"。**这个判据是错的。** 针对 `GROUP BY region → SUM(amount)` 手写的专用 trigger，本身就是这条查询手工编译后的最优实现之一；而通用引擎必须为通用性付费：泛化的 delta 表示、序列化、arrangement 查找、算子分派、progress 跟踪、CDC 日志。**打不赢它不等于没有价值。**
+
+正确的判据分三级：
+
+| 级别 | 判据 | 含义 |
+|---|---|---|
+| **必须** | `ivmlite ≪ 全量重算` | 达不到则项目前提不成立 |
+| **期望** | `ivmlite` 接近手写 trigger | 通用性的代价在可接受范围内 |
+| **额外惊喜** | 大批量 Δ 下 `ivmlite` **优于**手写行级 trigger | consolidation 带来的结构性优势 |
+
+第三级是有机会达成的，而且机会正来自 §8.2 论证的批处理语义：一万次插入若只涉及 20 个 region，手写行级 trigger 要执行一万次聚合 UPDATE，而拿到整批 delta 的引擎 consolidate 后只需 20 次。
+
+**因此 benchmark 必须包含"大批量 Δ + 低 group 基数"这个格子**——它是第三级判据唯一可能出现的地方，也是把手写 trigger 正确定位为"专用上界"而非"必须翻越的门槛"之后，真正值得测的东西。
 
 ### 10.3 方法论约束
 
@@ -421,9 +588,23 @@ N 个视图 (N = 1, 10, 50, 200)
 
 ### 10.4 要得出的结论
 
-IVM 耗时应随 **Δ 大小**增长、几乎不随**基表规模**增长；朴素重跑随基表规模线性增长。**真正的结论是交叉点在哪里。**
+IVM 耗时应随 **Δ 大小**增长、几乎不随**基表规模**增长；朴素重跑随基表规模线性增长。
 
-> **benchmark 的设计必须能够证伪本项目。** 若交叉点落在 100 万行以上，则对典型 SQLite 用户没有意义。这个数字必须敢测、敢认。一个只会得出好结论的 benchmark 没有价值。
+**输出不是一个数字，而是一张面（surface）：**
+
+```
+基表规模 × Δ 大小 × group 基数 × 视图数 × refresh 频率
+                      ↓
+              全量重算耗时 / 增量耗时
+```
+
+早期草案预先规定"交叉点落在 100 万行以上则对 SQLite 没意义"。**该阈值已删除**——它是拍脑袋定的，而且把一个五维问题压成了一个数。同一套实现在"10 个 group、大批量 Δ"和"90 万个 group、单行 Δ"下是两个完全不同的结论，不存在单一交叉点。
+
+> **benchmark 的设计仍必须能够证伪本项目，只是判据换成了形状而非数字：**
+>
+> **若这张面上不存在任何一个区域，使增量相对全量重算有实质优势（比值 > 2），则项目前提不成立。** 反过来，若优势区域存在，就照实报告它落在哪里——包括"只在极窄的一角成立"这种结论。
+>
+> 一个只会得出好结论的 benchmark 没有价值；一个预先规定了好结论长什么样的 benchmark 同样没有价值。
 
 ### 10.5 次要指标
 
@@ -453,7 +634,22 @@ join 落地后接 **Nexmark**——流式/增量系统的事实标准。Feldera 
 
 ## 11. Roadmap
 
-> **顺序约束：测试框架与 benchmark 骨架必须在 core 之前建立。**
+> **顺序约束：测试框架与 benchmark 骨架必须在 core 之前建立；而 SQLite 扩展机制的探针（M-1）必须在 M1 之前。**
+
+### M-1 — SQLite 扩展机制 spike（最先做）
+
+**这是一个 spike，产出是结论不是代码。** 目的是在写任何引擎之前搞清楚控制面到底能不能按设想工作——如果不能，现在换比 core 写完再换便宜几个数量级。
+
+在**真实的 cdylib 扩展**（不是宿主语言的 sqlite3 绑定）上，把两套控制面各跑一遍：
+
+- **方案 A**：标量 UDF 内做 DDL 与写入
+- **方案 B**：`CREATE VIRTUAL TABLE ... USING ivm(...)`，xCreate 建影子表与 trigger，`INSERT INTO v(v) VALUES('refresh')` 作命令通道（FTS5 惯用法，主候选）
+
+每套都必须覆盖：`CREATE TABLE` / `CREATE TRIGGER` / 写影子表 / rollback / 嵌套事务 / WAL 模式 / 两个连接并发 / `DROP` 清理。
+
+> **完成判定：控制面定稿，§8.3 从"待验证"改为结论；若两套都不干净，在此停下重新设计控制面，不进入 M1。**
+
+M-1 与 M0 相互独立（M0 是纯 Rust 的测试与 benchmark 骨架，不碰扩展 API），但 M-1 先做，因为它的结论可能改写 §7 与 §8。
 
 ### M0 — 测试与基准骨架（core 之前）
 
@@ -472,12 +668,15 @@ join 落地后接 **Nexmark**——流式/增量系统的事实标准。Feldera 
 ### M1 — v0 引擎
 
 - `ivmlite-core`：Value / Row / ZSet、plan IR、Arrangement trait、Filter / Project / Aggregate(SUM, COUNT)
+- **delta consolidation**（§8.2）：raw Δ 先按 Z-set 合并同一行的权重，再进算子。这是本项目最可能成立的性能故事，属于 M1 的内容而非后续优化
 - `ivmlite-sql`：`sqlparser-rs` → IR，Catalog trait，子集外硬报错
-- `ivmlite-sqlite`：cdylib、`ivm_create_view` / `ivm_refresh`、trigger DDL、shadow table、bootstrap
+- `ivmlite-sqlite`：cdylib、M-1 定稿的控制面、trigger DDL、shadow table
+- **bootstrap 的水位原子性**（§7.3）：高水位与基表快照必须在同一读事务内
+- **delta 表 GC**（§7.2）：`__ivm_dep` + 最落后视图水位 + 视图全部 DROP 后清理 trigger 与 delta 表
 
-**v0 限制**：STRICT table only；BINARY collation only；group-by key 只能是裸列；无浮点聚合；显式 refresh；单表（无 join）；INSERT / DELETE / UPDATE 全部支持。
+**v0 限制**：根算子必须是带非空 GROUP BY 的 Aggregate（§5.2）；无全局聚合；STRICT table only 且拒绝 `ANY` 列；BINARY collation only；group-by key 只能是裸列；无浮点聚合；整数溢出未定义；比较运算符限于白名单；显式 refresh；单表（无 join）；INSERT / DELETE / UPDATE 全部支持。
 
-> **完成判定：M0 的全部测试绿；交叉点有明确数字；写放大有明确数字。数字难看也算完成。**
+> **完成判定：M0 的全部测试绿；§10.4 那张面跑出来；写放大有明确数字。数字难看也算完成。**
 
 ### M2 — Join（第一个可辩护的里程碑）
 
@@ -488,10 +687,17 @@ join 落地后接 **Nexmark**——流式/增量系统的事实标准。Feldera 
 - 数据分布扩展为 Zipf，更新扩展出局部性（消除 §10.6 的前两条简化）
 - 观察并记录 join 状态爆炸（两侧都需保存全量）
 
-### M3 — 自动维护
+### M3 — 多连接语义与维护策略
 
-- vtab 自动 drain
-- 多连接语义
+**原先此处写的"vtab 自动 drain"已删除——它与 §8.2 的论证直接矛盾。** §8.2 证明了读事务不能写，所以 `SELECT * FROM view` 无法顺手把 pending delta 应用进去；而 trigger 内立即维护又因为 SQLite 只有行级 trigger 会把一次万行插入变成一万次维护。两条路都堵死，M3 不该承诺一个 §8 已经排除的东西。
+
+本里程碑改为：
+
+- 多连接下的 staleness 语义与 `applied_seq` 水位协调
+- delta 表 GC 的并发安全（见 §7.2）
+- 维护触发策略的**人体工学改进**，而非自动化幻觉：例如提供 `ivm_refresh_all()`、把 refresh 挂进应用自己的 commit 流程的推荐写法
+
+**显式 refresh 是永久 API，不是 v0 的临时妥协**（见 §8.2）。
 
 ### M4+ — 按价值排序
 
@@ -562,13 +768,16 @@ TanStack DB 是浏览器端 JS 库，与 v0 的扩展形态运行时不同、受
 
 ## 13. 已知限制（v0）
 
-1. 仅 STRICT table，且**拒绝 `ANY` 列**（STRICT 本身不排除 `ANY`，见 §7.1）；列类型白名单为 `INTEGER` / `TEXT`
-2. 仅 BINARY collation；检测手段是从 `sqlite_master` 取建表语句匹配 `COLLATE`，属保守的过度拒绝（见 §7.1）
-3. group-by key 仅支持裸列，不支持表达式
-4. 无浮点聚合
-5. 无 join
-6. 无 MIN / MAX / DISTINCT
-7. 需显式调用 `ivm_refresh`
-8. delta 表捕获全部列，宽表上有空间浪费
-9. 所有写入承担 trigger 写放大，即使从不读视图
-10. 无法在浏览器或 iOS 系统 SQLite 上加载
+1. **根算子必须是带非空 GROUP BY 的 Aggregate**；不支持无聚合的视图，也不支持全局聚合（§5.2）
+2. 仅 STRICT table，且**拒绝 `ANY` 列**（STRICT 本身不排除 `ANY`，见 §7.1）；列类型白名单为 `INTEGER` / `TEXT`
+3. 仅 BINARY collation；检测手段是从 `sqlite_master` 取建表语句匹配 `COLLATE`，属保守的过度拒绝（见 §7.1）
+4. group-by key 仅支持裸列，不支持表达式
+5. 无浮点聚合
+6. **整数溢出行为未定义**；要求 group 内和的绝对值 < 2^62（§6.1）
+7. 比较运算符限于 `>` `>=` `<` `<=` `=` `!=` `IS NULL` `IS NOT NULL`；无 `NOT` / `OR` / `LIKE` / `IN` / `BETWEEN` / 子查询（§6.1）
+8. 无 join
+9. 无 MIN / MAX / DISTINCT
+10. 需显式 refresh——这是永久 API 而非临时妥协（§8.2）
+11. delta 表捕获全部列，宽表上有空间浪费
+12. 所有写入承担 trigger 写放大，即使从不读视图
+13. 无法在浏览器或 iOS 系统 SQLite 上加载
