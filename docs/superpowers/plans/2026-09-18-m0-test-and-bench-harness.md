@@ -990,7 +990,7 @@ Expected: 编译失败，`cannot find type Domain`
 ```rust
 use ivmlite_core::{Row, Value};
 use rand::rngs::StdRng;
-use rand::Rng;
+use rand::RngExt;
 
 use crate::{ColumnType, Schema};
 
@@ -1165,7 +1165,7 @@ Expected: 编译失败，`cannot find type Op`
 ```rust
 use ivmlite_core::Row;
 use rand::rngs::StdRng;
-use rand::Rng;
+use rand::RngExt;
 
 use crate::{gen_row, Domain, Schema};
 
@@ -2919,7 +2919,7 @@ use std::fs;
 use std::path::Path;
 
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use serde::{Deserialize, Serialize};
 
 /// M0 只有 Uniform。这个枚举现在就存在，是为了 M2 加 Zipf 时
