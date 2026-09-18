@@ -253,4 +253,19 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn enumerate_always_count_has_none() {
+        let schema = orders();
+        for q in enumerate(&schema) {
+            for agg in &q.aggs {
+                if agg.func == AggFn::Count {
+                    assert!(
+                        agg.column.is_none(),
+                        "COUNT(*) 必须有 column: None（spec §5.2）"
+                    );
+                }
+            }
+        }
+    }
 }
