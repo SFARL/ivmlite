@@ -78,6 +78,13 @@ mod tests {
             d.distinct, 8,
             "窄值域是抓 retraction bug 的前提（spec §9.2）"
         );
+        #[allow(clippy::float_cmp)]
+        {
+            assert_eq!(
+                d.null_rate, 0.2,
+                "NULL 率必须是 0.2，这是在测试中实现高 NULL 频率的关键"
+            );
+        }
     }
 
     /// spec §6.1：SQLite 的整数 SUM 溢出时报错，且是否报错取决于扫描顺序，
