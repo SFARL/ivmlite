@@ -94,7 +94,7 @@ docs/bench/
 ```toml
 [workspace]
 resolver = "2"
-members = ["crates/ivmlite-core", "crates/ivmlite-test", "crates/ivmlite-bench"]
+members = ["crates/ivmlite-core"]
 
 [workspace.package]
 edition = "2021"
@@ -273,7 +273,11 @@ jobs:
 - [ ] **Step 7: 确认本地与 CI 同样的三条命令都过**
 
 Run: `cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace`
-Expected: 全部通过。（此时 `ivmlite-test` / `ivmlite-bench` 尚未创建，需先把 workspace `members` 暂时裁到只剩 `ivmlite-core`，在 Task 3 与 Task 12/13 创建时再加回。）
+Expected: 全部通过。
+
+> `members` 此刻只有 `ivmlite-core` 是正确的——`ivmlite-test`（Task 3）、
+> `ivmlite-workload`（Task 12）、`ivmlite-bench`（Task 13）各自在创建时把自己加进去。
+> 不要在这里预先列出尚不存在的 crate，那会让 `cargo` 直接拒绝加载 workspace。
 
 - [ ] **Step 8: 提交**
 
@@ -1991,7 +1995,7 @@ git commit -m "feat(test): 不变量断言层"
 
 **Interfaces:**
 - Consumes: 前面全部
-- Produces: `Batching`（`All` / `One` / `Chunks(usize)`）、`TestCase { seed: u64, schema: Schema, query: ViewQuery, initial: Vec<Row>, ops: Vec<Op>, batching: Batching }`、`Failure { case_seed: u64, stage: String, detail: String }`、`run<E: Engine>(&mut E, &TestCase) -> Result<(), Failure>`、`gen_case(u64, &Schema, &Domain, usize, usize, Batching) -> TestCase`、`check_batch_invariance<E, F>(&TestCase, F) -> Result<(), Failure> where F: Fn() -> E`。
+- Produces: `Batching`（`All` / `One` / `Chunks(usize)`）、`TestCase { seed: u64, schema: Schema, query: ViewQuery, initial: Vec<Row>, ops: Vec<Op>, batching: Batching }`、`Failure { case_seed: u64, stage: String, detail: String }`、`run<E: Engine>(&mut E, &TestCase) -> Result<(), Failure>`、`gen_case(u64, &Schema, &Domain, usize, usize, Batching) -> TestCase`、`check_batch_invariance<E, F>(&TestCase, F) -> Result<(), Failure> where F: Fn() -> E`、`seed_range() -> Vec<u64>`（读 `IVMLITE_SEED` 环境变量，未设置时返回 `0..50`）。
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -2285,13 +2289,16 @@ git commit -m "feat(test): 差分测试驱动与批次无关性检查"
 ## Task 11: 植入 bug 的引擎 + shrinker + M0 完成判定
 
 **Files:**
-- Create: `crates/ivmlite-test/src/buggy.rs`, `crates/ivmlite-test/src/shrink.rs`
+- Create: `crates/ivmlite-test/src/buggy.rs`, `crates/ivmlite-test/src/shrink.rs`, `crates/ivmlite-test/src/regression.rs`
 - Create: `crates/ivmlite-test/tests/harness_catches_bugs.rs`
 - Modify: `crates/ivmlite-test/src/lib.rs`
+- Modify: `crates/ivmlite-test/Cargo.toml`（加 serde / serde_json，并为 `ivmlite-core` 打开 serde feature）
+- Modify: `crates/ivmlite-core/Cargo.toml`（新增**可选**的 serde feature）
+- Modify: `crates/ivmlite-core/src/value.rs`, `crates/ivmlite-core/src/row.rs`（加 `cfg_attr` derive）
 
 **Interfaces:**
 - Consumes: 前面全部
-- Produces: `NoRetractionEngine::new() -> NoRetractionEngine`（实现 `Engine`）、`shrink<E, F>(&TestCase, F) -> TestCase where E: Engine, F: Fn() -> E`
+- Produces: `NoRetractionEngine::new() -> NoRetractionEngine`（实现 `Engine`）、`shrink<E, F>(&TestCase, F) -> TestCase where E: Engine, F: Fn() -> E`、`save_regression(&Path, &TestCase) -> std::io::Result<PathBuf>`、`load_regressions(&Path) -> std::io::Result<Vec<TestCase>>`；并使 `ivmlite-core` 获得可选的 `serde` feature
 
 > **这是 M0 的完成判定。** 不验证"测试框架真的会红"，后续拿到的绿全是假绿。
 
