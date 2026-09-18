@@ -281,4 +281,44 @@ mod tests {
             "SUM 无非 NULL 输入时应为 NULL，COUNT(*) 仍为 2"
         );
     }
+
+    /// 与上一个测试互补：这里非 NULL 输入存在（非零），只是它们求和后恰好为 0。
+    /// 若把发射分支的判据从 `non_null == 0` 误改成 `total == 0`，这个测试会失败,
+    /// 而其余测试都不会。
+    #[test]
+    fn sum_that_totals_zero_is_int_zero_not_null() {
+        let mut e = NaiveRecompute::new();
+        let base = ZSet::from_rows([(row("a", 10), 1), (row("a", -10), 1)]);
+        e.create_view(&schema(), &sum_by_region(), &base).unwrap();
+
+        let got = e.materialize().unwrap();
+        assert_eq!(
+            got.weight_of(&out(Value::Text("a".into()), 0, 2)),
+            1,
+            "非 NULL 输入求和恰为 0 时应输出 Int(0)，而非 Null"
+        );
+    }
+
+    /// 对从未插入过的行做纯撤回（apply 一个权重 -1 的 delta），
+    /// 会把它留在 self.base 中权重为负。若 materialize 中的
+    /// `weight <= 0` 守卫被删除，这条负权重行会被当成一条真实输入行聚合进去,
+    /// 但现有测试都不会发现——两个"删除"测试都是先插入、后撤回到权重恰好为 0,
+    /// 而 ZSet 会在权重归零时直接移除该行，materialize 根本不会遍历到它。
+    #[test]
+    fn retracting_a_row_that_was_never_inserted_is_a_noop() {
+        let mut e = NaiveRecompute::new();
+        let base = ZSet::from_rows([(row("a", 10), 1)]);
+        e.create_view(&schema(), &sum_by_region(), &base).unwrap();
+
+        // "b" 从未出现在 base 中；这条撤回让它在 self.base 里权重为 -1。
+        e.apply(&ZSet::from_rows([(row("b", 999), -1)])).unwrap();
+
+        let got = e.materialize().unwrap();
+        assert_eq!(
+            got.weight_of(&out(Value::Text("a".into()), 10, 1)),
+            1,
+            "未受影响的组必须保持不变"
+        );
+        assert_eq!(got.len(), 1, "负权重的幽灵行不得产生输出，也不得影响其他组");
+    }
 }
