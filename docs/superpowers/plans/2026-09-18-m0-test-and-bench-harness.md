@@ -19,6 +19,9 @@
 - **生成器值域必须窄**（spec §9.2）：每列不同值数量默认 8，NULL 出现概率默认 0.2。
 - **所有随机走显式 seed**，失败时打印可重放的 seed（spec §9.4）。
 - **`ZSet` 内部用 `BTreeMap` 而非 `HashMap`**，保证迭代顺序确定、测试可复现。
+- **workload 必须是可移植产物**（spec §10.3 第 7 条）：schema DDL、视图 SQL、数据与更新 trace 定义在 `workloads/*.toml`，由 `ivmlite-workload` 解析并可导出为 CSV/SQL。runner 每引擎一份，workload 只有一份。
+- **绝不把其他项目公开发布的数字放进对比表**（spec §10.3 第 6 条）。要与 Turso 等系统对比，必须在同一台机器上、用同一份 workload 亲自跑。
+- **group 基数是显式 benchmark 维度，不是常量**（spec §10.1）。它比基表规模更能决定 IVM 赢不赢，只报单一基数下的数字不构成结论。
 - M0 **不创建** `ivmlite-sql` 与 `ivmlite-sqlite`——它们在 M1 才有内容可放。这是对 spec §11「crate 骨架」的一处收窄，理由是 YAGNI。
 
 ---
@@ -52,15 +55,20 @@ crates/
     src/regression.rs                   失败用例的固化与读回
     tests/harness_catches_bugs.rs       M0 完成判定
     tests/regressions/*.json            固化下来的历史失败用例（提交进仓库）
+  ivmlite-workload/
+    Cargo.toml
+    src/lib.rs                          Workload 定义、数据与 trace 生成、导出
   ivmlite-bench/
     Cargo.toml
     src/main.rs                         矩阵驱动 + CSV 输出
     src/baseline.rs                     不维护 / 手写 trigger / 朴素重跑
     src/plot.rs                         基线曲线 SVG
+workloads/
+  m0-baseline.toml                      可移植的 workload 定义（跨 runner 共享）
 docs/bench/
   m0-baseline.csv                       完整矩阵结果
-  m0-baseline.svg                       头条图（交叉点）
-  README.md                             交叉点落在哪，照实写
+  m0-baseline-card{10,1000,100000}.svg  每个 group 基数一张头条图
+  README.md                             各 group 基数下交叉点落在哪，照实写
 ```
 
 ---
@@ -262,7 +270,7 @@ jobs:
 - [ ] **Step 7: 确认本地与 CI 同样的三条命令都过**
 
 Run: `cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace`
-Expected: 全部通过。（此时 `ivmlite-test` / `ivmlite-bench` 尚未创建，需先把 workspace `members` 暂时裁到只剩 `ivmlite-core`，在 Task 3 与 Task 12 创建时再加回。）
+Expected: 全部通过。（此时 `ivmlite-test` / `ivmlite-bench` 尚未创建，需先把 workspace `members` 暂时裁到只剩 `ivmlite-core`，在 Task 3 与 Task 12/13 创建时再加回。）
 
 - [ ] **Step 8: 提交**
 
@@ -2695,15 +2703,420 @@ git commit -m "feat(test): 植入 bug 的引擎、shrinker、回归固化与 M0 
 
 ---
 
-## Task 12: Benchmark harness 与三条 same-host 基线
+## Task 12: 可移植 workload 定义
 
 **Files:**
-- Create: `crates/ivmlite-bench/Cargo.toml`, `crates/ivmlite-bench/src/main.rs`, `crates/ivmlite-bench/src/baseline.rs`
+- Create: `crates/ivmlite-workload/Cargo.toml`, `crates/ivmlite-workload/src/lib.rs`
+- Create: `workloads/m0-baseline.toml`
+- Modify: `Cargo.toml`（members 加 `crates/ivmlite-workload`）
+
+**Interfaces:**
+- Consumes: 无（独立 crate，不依赖本项目其他 crate）
+- Produces: `Workload { name: String, seed: u64, schema: WorkloadSchema, data: DataSpec, updates: UpdateSpec, views: Vec<ViewSpec> }`、`Workload::load(&Path) -> Result<Workload, WorkloadError>`、`Workload::rows(&self) -> impl Iterator<Item = (i64, String, i64)>`、`Workload::update_trace(&self) -> Vec<TraceOp>`、`Workload::export(&self, &Path) -> std::io::Result<()>`、`ViewSpec::sql(&self, table: &str) -> String`、`ViewSpec::table(&self) -> String`、`TraceOp`（`Insert { id: i64, region: String, amount: i64 }` / `Delete { id: i64 }`）。`Workload` 与其全部字段类型 derive `Clone`。
+
+> **为什么单独一个 crate**：spec §10.3 第 7 条要求 workload 是可移植产物。
+> runner 每引擎一份（M0 是 SQLite，M2 会加 Turso），**workload 只有一份**。
+> 写死在 bench 里的话，每接一个对比系统都要重新设计一次 benchmark，而重新
+> 设计过的 benchmark 之间不可比。该 crate 刻意不依赖 `ivmlite-core`——未来的
+> 外部 runner 不该为了读 workload 而拖进整个引擎。
+
+- [ ] **Step 1: 建 crate 与 workload 文件**
+
+`crates/ivmlite-workload/Cargo.toml`：
+
+```toml
+[package]
+name = "ivmlite-workload"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+rand.workspace = true
+```
+
+根 `Cargo.toml` 的 `members` 加入 `"crates/ivmlite-workload"`。
+
+`workloads/m0-baseline.toml`：
+
+```toml
+name = "m0-baseline"
+seed = 47034
+
+[schema]
+table = "orders"
+ddl = """
+CREATE TABLE orders(
+    id     INTEGER PRIMARY KEY,
+    region TEXT    NOT NULL,
+    amount INTEGER NOT NULL
+) STRICT"""
+
+[data]
+base_rows = 100000
+# group 基数：决定 IVM 赢不赢的首要参数（spec §10.1）
+group_cardinality = 1000
+amount_max = 200
+# M0 固定均匀分布；Zipf 排在 M2（spec §10.6）
+distribution = "uniform"
+
+[updates]
+batch_size = 100
+delete_ratio = 0.33
+# M0 固定无局部性；热点更新排在 M2（spec §10.6）
+locality = "uniform"
+
+# 视图形状受限于表达能力最弱的对照组——手写 trigger（spec §10.3 第 3 条）。
+# 阈值是让各视图彼此不同的手段，trigger 侧用 WHEN 子句表达同一谓词。
+[[views]]
+id = 0
+threshold = 0
+
+[[views]]
+id = 1
+threshold = 7
+```
+
+- [ ] **Step 2: 写失败的测试**
+
+`crates/ivmlite-workload/src/lib.rs`：
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    fn spec() -> Workload {
+        Workload {
+            name: "t".into(),
+            seed: 1,
+            schema: WorkloadSchema {
+                table: "orders".into(),
+                ddl: "CREATE TABLE orders(id INTEGER PRIMARY KEY, region TEXT NOT NULL, amount INTEGER NOT NULL) STRICT".into(),
+            },
+            data: DataSpec {
+                base_rows: 500,
+                group_cardinality: 7,
+                amount_max: 50,
+                distribution: Distribution::Uniform,
+            },
+            updates: UpdateSpec {
+                batch_size: 30,
+                delete_ratio: 0.5,
+                locality: Locality::Uniform,
+            },
+            views: vec![
+                ViewSpec { id: 0, threshold: 0 },
+                ViewSpec { id: 1, threshold: 10 },
+            ],
+        }
+    }
+
+    #[test]
+    fn rows_respect_group_cardinality() {
+        let regions: BTreeSet<String> = spec().rows().map(|(_, r, _)| r).collect();
+        assert_eq!(
+            regions.len(),
+            7,
+            "不同分组键的数量必须精确等于 group_cardinality——这是 benchmark 的核心维度"
+        );
+    }
+
+    #[test]
+    fn row_ids_are_dense_and_unique() {
+        let ids: Vec<i64> = spec().rows().map(|(id, _, _)| id).collect();
+        assert_eq!(ids.len(), 500);
+        assert_eq!(ids.iter().collect::<BTreeSet<_>>().len(), 500);
+        assert_eq!(*ids.iter().min().unwrap(), 0);
+        assert_eq!(*ids.iter().max().unwrap(), 499);
+    }
+
+    #[test]
+    fn trace_is_always_legal() {
+        let w = spec();
+        let mut live: BTreeSet<i64> = w.rows().map(|(id, _, _)| id).collect();
+        for op in w.update_trace() {
+            match op {
+                TraceOp::Insert { id, .. } => {
+                    assert!(live.insert(id), "trace 不得重复插入同一个 id");
+                }
+                TraceOp::Delete { id } => {
+                    assert!(live.remove(&id), "trace 里的 DELETE 必须命中存在的 id");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn view_sql_matches_threshold() {
+        let sql = spec().views[1].sql("orders");
+        assert!(sql.contains("amount > 10"), "{sql}");
+        assert!(sql.contains("GROUP BY region"), "{sql}");
+    }
+
+    #[test]
+    fn same_seed_yields_same_trace() {
+        assert_eq!(spec().update_trace(), spec().update_trace());
+    }
+
+    #[test]
+    fn shipped_workload_file_parses() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../workloads/m0-baseline.toml");
+        let w = Workload::load(&path).expect("发布的 workload 文件必须可解析");
+        assert_eq!(w.name, "m0-baseline");
+        assert!(!w.views.is_empty());
+        assert!(w.schema.ddl.contains("INTEGER PRIMARY KEY"), "spec §10.3 第 5 条要求稳定主键");
+    }
+}
+```
+
+- [ ] **Step 3: 运行测试确认失败**
+
+Run: `cargo test -p ivmlite-workload`
+Expected: 编译失败，`cannot find type Workload`
+
+- [ ] **Step 4: 写实现**
+
+`crates/ivmlite-workload/src/lib.rs` 顶部：
+
+```rust
+use std::fs;
+use std::path::Path;
+
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
+use serde::{Deserialize, Serialize};
+
+/// M0 只有 Uniform。这个枚举现在就存在，是为了 M2 加 Zipf 时
+/// 不必改动 workload 文件格式（spec §10.6）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Distribution {
+    Uniform,
+}
+
+/// 同上：M2 会加 Hot（更新集中打热 group）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Locality {
+    Uniform,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkloadSchema {
+    pub table: String,
+    pub ddl: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataSpec {
+    pub base_rows: usize,
+    pub group_cardinality: usize,
+    pub amount_max: i64,
+    pub distribution: Distribution,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateSpec {
+    pub batch_size: usize,
+    pub delete_ratio: f64,
+    pub locality: Locality,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ViewSpec {
+    pub id: usize,
+    pub threshold: i64,
+}
+
+impl ViewSpec {
+    pub fn sql(&self, table: &str) -> String {
+        format!(
+            "SELECT region, SUM(amount), COUNT(*) FROM \"{}\" \
+             WHERE amount > {} GROUP BY region",
+            table, self.threshold
+        )
+    }
+
+    pub fn table(&self) -> String {
+        format!("mv_{}", self.id)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Workload {
+    pub name: String,
+    pub seed: u64,
+    pub schema: WorkloadSchema,
+    pub data: DataSpec,
+    pub updates: UpdateSpec,
+    pub views: Vec<ViewSpec>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TraceOp {
+    Insert { id: i64, region: String, amount: i64 },
+    Delete { id: i64 },
+}
+
+#[derive(Debug)]
+pub enum WorkloadError {
+    Io(std::io::Error),
+    Parse(String),
+}
+
+impl std::fmt::Display for WorkloadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WorkloadError::Io(e) => write!(f, "{e}"),
+            WorkloadError::Parse(e) => write!(f, "解析 workload 失败: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for WorkloadError {}
+
+impl Workload {
+    pub fn load(path: &Path) -> Result<Workload, WorkloadError> {
+        let text = fs::read_to_string(path).map_err(WorkloadError::Io)?;
+        toml::from_str(&text).map_err(|e| WorkloadError::Parse(e.to_string()))
+    }
+
+    /// 基表行。id 稠密且唯一；分组键的不同值数量**精确**等于 group_cardinality
+    /// ——前 card 行逐一覆盖每个键，其余行随机落入已有的键。随机落点无法保证
+    /// 覆盖全部键，而 benchmark 依赖这个数字是准的。
+    pub fn rows(&self) -> impl Iterator<Item = (i64, String, i64)> + '_ {
+        let mut rng = StdRng::seed_from_u64(self.seed);
+        let card = self.data.group_cardinality.max(1);
+        let amount_max = self.data.amount_max.max(1);
+        (0..self.data.base_rows).map(move |i| {
+            let g = if i < card { i } else { rng.random_range(0..card) };
+            (i as i64, format!("r{g}"), rng.random_range(0..amount_max))
+        })
+    }
+
+    /// 一批更新。DELETE 一律命中已存在且未被删过的 id，INSERT 一律用新 id，
+    /// 因此 trace 本身永远合法，任何 runner 直接重放即可，不需要各自维护
+    /// 一份"当前还活着哪些行"的模型。
+    pub fn update_trace(&self) -> Vec<TraceOp> {
+        let mut rng = StdRng::seed_from_u64(self.seed ^ 0x5EED);
+        let card = self.data.group_cardinality.max(1);
+        let amount_max = self.data.amount_max.max(1);
+        let base = self.data.base_rows as i64;
+        let mut next_id = base;
+        let mut deleted: std::collections::BTreeSet<i64> = Default::default();
+
+        (0..self.updates.batch_size)
+            .map(|_| {
+                let want_delete = rng.random_bool(self.updates.delete_ratio.clamp(0.0, 1.0));
+                if want_delete && (deleted.len() as i64) < base {
+                    let mut id = rng.random_range(0..base);
+                    while deleted.contains(&id) {
+                        id = rng.random_range(0..base);
+                    }
+                    deleted.insert(id);
+                    TraceOp::Delete { id }
+                } else {
+                    let id = next_id;
+                    next_id += 1;
+                    TraceOp::Insert {
+                        id,
+                        region: format!("r{}", rng.random_range(0..card)),
+                        amount: rng.random_range(0..amount_max),
+                    }
+                }
+            })
+            .collect()
+    }
+
+    /// 导出成任何引擎都能加载的形式：schema.sql / views.sql / data.csv /
+    /// updates.csv。这是"workload 可移植"这条约束的实际兑现（spec §10.3 第 7 条）。
+    pub fn export(&self, dir: &Path) -> std::io::Result<()> {
+        fs::create_dir_all(dir)?;
+        fs::write(dir.join("schema.sql"), format!("{};\n", self.schema.ddl))?;
+
+        let views: String = self
+            .views
+            .iter()
+            .map(|v| format!("-- {}\n{};\n", v.table(), v.sql(&self.schema.table)))
+            .collect();
+        fs::write(dir.join("views.sql"), views)?;
+
+        let mut data = String::from("id,region,amount\n");
+        for (id, region, amount) in self.rows() {
+            data.push_str(&format!("{id},{region},{amount}\n"));
+        }
+        fs::write(dir.join("data.csv"), data)?;
+
+        let mut ups = String::from("op,id,region,amount\n");
+        for op in self.update_trace() {
+            match op {
+                TraceOp::Insert { id, region, amount } => {
+                    ups.push_str(&format!("insert,{id},{region},{amount}\n"))
+                }
+                TraceOp::Delete { id } => ups.push_str(&format!("delete,{id},,\n")),
+            }
+        }
+        fs::write(dir.join("updates.csv"), ups)
+    }
+}
+```
+
+- [ ] **Step 5: 运行测试确认通过**
+
+Run: `cargo test -p ivmlite-workload`
+Expected: 全部通过（本任务新增 6 个）
+
+- [ ] **Step 6: 确认导出真的可被外部消费**
+
+Run: `cargo run -q -p ivmlite-workload --example export 2>/dev/null || true`
+
+不写 example，直接用一个临时测试验证导出产物可被 `sqlite3` 吃下：
+
+```rust
+#[test]
+fn exported_artifacts_load_into_sqlite() {
+    let dir = std::env::temp_dir().join("ivmlite-workload-export");
+    let mut w = spec();
+    w.data.base_rows = 50;
+    w.updates.batch_size = 10;
+    w.export(&dir).unwrap();
+
+    for f in ["schema.sql", "views.sql", "data.csv", "updates.csv"] {
+        assert!(dir.join(f).exists(), "缺少导出产物 {f}");
+    }
+    let data = std::fs::read_to_string(dir.join("data.csv")).unwrap();
+    assert_eq!(data.lines().count(), 51, "表头 + 50 行");
+}
+```
+
+Run: `cargo test -p ivmlite-workload`
+Expected: 全部通过（含新增的这一个）
+
+- [ ] **Step 7: 提交**
+
+```bash
+git add Cargo.toml crates/ivmlite-workload workloads
+git commit -m "feat(workload): 可移植的 workload 定义、trace 生成与导出"
+```
+
+---
+
+## Task 13: Benchmark harness、三条 same-host 基线与基线曲线
+
+**Files:**
+- Create: `crates/ivmlite-bench/Cargo.toml`, `crates/ivmlite-bench/src/main.rs`, `crates/ivmlite-bench/src/baseline.rs`, `crates/ivmlite-bench/src/plot.rs`
 - Modify: `Cargo.toml`（把 `ivmlite-bench` 加回 members）
 
 **Interfaces:**
-- Consumes: `ivmlite-test` 的 `Schema` / `ViewQuery` / `Domain` / `gen_rows` / `gen_ops` / `Engine` / `NaiveRecompute`
-- Produces: 可执行文件 `ivmlite-bench`，向 stdout 输出 CSV：`baseline,views,base_rows,batch_size,apply_ms,write_amp_ms`
+- Consumes: `ivmlite-workload` 的 `Workload` / `ViewSpec` / `TraceOp`（Task 12）
+- Produces: 可执行文件 `ivmlite-bench`，向 stdout 输出 CSV：`baseline,views,base_rows,batch_size,group_cardinality,apply_ms,maintain_ms`；向 `docs/bench/` 写出每个 group 基数一张的 SVG
 
 - [ ] **Step 1: 建 crate 清单**
 
@@ -2719,17 +3132,21 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+ivmlite-workload = { path = "../ivmlite-workload" }
 rusqlite.workspace = true
-rand.workspace = true
 ```
 
 并把 `ivmlite-bench` 加回根 `Cargo.toml` 的 `members`。
 
-> **bench 不依赖 `ivmlite-test` 或 `ivmlite-core`。** 它有自己的表结构（带
-> `id INTEGER PRIMARY KEY`）和自己的 `BenchOp`。正确性测试的类型刻意不带主键
-> ——那里要的是"按值定位行"的语义；benchmark 要的是"按主键定位行"的性能。
-> 硬把两者统一起来，只会让其中一边将就。M1 接入真实引擎时，bench 会新增一条
-> 依赖 `ivmlite-sqlite` 的基线，届时 `ivmlite-core` 才进来。
+> **bench 不依赖 `ivmlite-test` 或 `ivmlite-core`。** 表结构、视图定义、数据与
+> 更新 trace 全部来自 `ivmlite-workload`（带 `id INTEGER PRIMARY KEY`）。正确性
+> 测试的类型刻意不带主键——那里要的是"按值定位行"的语义；benchmark 要的是
+> "按主键定位行"的性能。硬把两者统一起来，只会让其中一边将就。M1 接入真实引擎
+> 时，bench 会新增一条依赖 `ivmlite-sqlite` 的基线，届时 `ivmlite-core` 才进来。
+>
+> bench 自己也不再持有 `rand`——随机性全部由 workload 的 seed 决定，这样
+> **同一份 workload 在任何 runner 上产出完全相同的数据与 trace**，跨引擎对比
+> 才成立（spec §10.3 第 7 条）。
 
 - [ ] **Step 2: 写三条基线**
 
@@ -2738,6 +3155,7 @@ rand.workspace = true
 ```rust
 use std::time::Instant;
 
+use ivmlite_workload::{TraceOp, ViewSpec, Workload};
 use rusqlite::Connection;
 
 /// spec §10.2 的三条 same-host 对照组。
@@ -2761,46 +3179,25 @@ impl Baseline {
     }
 }
 
-/// benchmark 自己的表结构，**带稳定主键**。
+/// 建基表并灌入初始数据。不计时。
 ///
-/// spec §10.3 第 5 条：按全部列的值去定位行没有可用索引，`EXPLAIN QUERY PLAN`
-/// 会显示 `SCAN orders`，使删改耗时随基表规模线性增长——而"增量成本不随基表
-/// 规模增长"正是这条 benchmark 唯一要证明的东西，被扫描淹没后结论归零。
-pub const CREATE_TABLE: &str = "CREATE TABLE orders(
-    id     INTEGER PRIMARY KEY,
-    region TEXT    NOT NULL,
-    amount INTEGER NOT NULL
-) STRICT";
-
-/// 一个视图：按 region 分组，只统计 amount 超过阈值的行。
-///
-/// 阈值是让 N 个视图**彼此不同**的手段，同时仍在手写 trigger 的表达能力之内
-/// （trigger 用 `WHEN` 子句表达同一个谓词）。spec §10.3 第 3 条要求所有对照组
-/// 维护完全相同的视图集合，而集合的上限由表达能力最弱的那个对照组决定。
-#[derive(Debug, Clone, Copy)]
-pub struct BenchView {
-    pub id: usize,
-    pub threshold: i64,
-}
-
-impl BenchView {
-    pub fn sql(&self) -> String {
-        format!(
-            "SELECT region, SUM(amount), COUNT(*) FROM orders \
-             WHERE amount > {} GROUP BY region",
-            self.threshold
-        )
+/// 表结构来自 workload，其中 `id INTEGER PRIMARY KEY` 是硬性要求：
+/// spec §10.3 第 5 条——按全部列的值定位行没有可用索引，`EXPLAIN QUERY PLAN`
+/// 会显示 `SCAN orders`，使删改耗时随基表规模线性增长，而"增量成本不随基表
+/// 规模增长"正是这条 benchmark 唯一要证明的东西。
+pub fn seed_base(conn: &Connection, w: &Workload) -> rusqlite::Result<()> {
+    conn.execute_batch(&w.schema.ddl)?;
+    let tx = conn.unchecked_transaction()?;
+    {
+        let mut ins = tx.prepare_cached(&format!(
+            "INSERT INTO \"{}\"(id, region, amount) VALUES (?1, ?2, ?3)",
+            w.schema.table
+        ))?;
+        for (id, region, amount) in w.rows() {
+            ins.execute((id, &region, amount))?;
+        }
     }
-
-    pub fn table(&self) -> String {
-        format!("mv_{}", self.id)
-    }
-}
-
-pub fn views(n: usize) -> Vec<BenchView> {
-    (0..n)
-        .map(|i| BenchView { id: i, threshold: (i as i64 * 7) % 150 })
-        .collect()
+    tx.commit()
 }
 
 /// 建汇总表 →**先全量 bootstrap**→ 再建 trigger。顺序不可颠倒。
@@ -2811,7 +3208,7 @@ pub fn views(n: usize) -> Vec<BenchView> {
 ///
 /// 注意汇总表的 `k` 列声明为 `TEXT` 而非 `ANY`：STRICT 表允许 `ANY` 列逐行
 /// 混存类型，`1` 与 `'1'` 会分裂成两个 group（spec §7.1）。
-pub fn install_trigger_view(conn: &Connection, v: &BenchView) -> rusqlite::Result<()> {
+pub fn install_trigger_view(conn: &Connection, table: &str, v: &ViewSpec) -> rusqlite::Result<()> {
     let t = v.table();
     let k = v.threshold;
     conn.execute_batch(&format!(
@@ -2824,15 +3221,15 @@ pub fn install_trigger_view(conn: &Connection, v: &BenchView) -> rusqlite::Resul
 
         INSERT INTO "{t}"(k, s, c)
             SELECT region, SUM(amount), COUNT(*)
-            FROM orders WHERE amount > {k} GROUP BY region;
+            FROM "{table}" WHERE amount > {k} GROUP BY region;
 
-        CREATE TRIGGER "{t}_ins" AFTER INSERT ON orders
+        CREATE TRIGGER "{t}_ins" AFTER INSERT ON "{table}"
         WHEN NEW.amount > {k} BEGIN
             INSERT INTO "{t}"(k, s, c) VALUES (NEW.region, NEW.amount, 1)
             ON CONFLICT(k) DO UPDATE SET s = s + NEW.amount, c = c + 1;
         END;
 
-        CREATE TRIGGER "{t}_del" AFTER DELETE ON orders
+        CREATE TRIGGER "{t}_del" AFTER DELETE ON "{table}"
         WHEN OLD.amount > {k} BEGIN
             UPDATE "{t}" SET s = s - OLD.amount, c = c - 1 WHERE k = OLD.region;
             DELETE FROM "{t}" WHERE k = OLD.region AND c = 0;
@@ -2841,29 +3238,24 @@ pub fn install_trigger_view(conn: &Connection, v: &BenchView) -> rusqlite::Resul
     ))
 }
 
-#[derive(Debug, Clone)]
-pub enum BenchOp {
-    Insert { id: i64, region: String, amount: i64 },
-    Delete { id: i64 },
-}
-
 /// 应用一批变更并返回毫秒数。计时包含 commit——提交成本是真实成本。
 ///
 /// 对 HandWrittenTrigger 基线，trigger 的开销天然计入这里，因此
 /// `apply_ms(trigger) − apply_ms(no_maintenance)` 就是 spec §10.5 要求的写放大。
-pub fn apply(conn: &Connection, ops: &[BenchOp]) -> rusqlite::Result<f64> {
+pub fn apply(conn: &Connection, table: &str, ops: &[TraceOp]) -> rusqlite::Result<f64> {
     let start = Instant::now();
     let tx = conn.unchecked_transaction()?;
     {
-        let mut ins =
-            tx.prepare_cached("INSERT INTO orders(id, region, amount) VALUES (?1, ?2, ?3)")?;
-        let mut del = tx.prepare_cached("DELETE FROM orders WHERE id = ?1")?;
+        let mut ins = tx.prepare_cached(&format!(
+            "INSERT INTO \"{table}\"(id, region, amount) VALUES (?1, ?2, ?3)"
+        ))?;
+        let mut del = tx.prepare_cached(&format!("DELETE FROM \"{table}\" WHERE id = ?1"))?;
         for op in ops {
             match op {
-                BenchOp::Insert { id, region, amount } => {
+                TraceOp::Insert { id, region, amount } => {
                     ins.execute((id, region, amount))?;
                 }
-                BenchOp::Delete { id } => {
+                TraceOp::Delete { id } => {
                     del.execute((id,))?;
                 }
             }
@@ -2877,10 +3269,10 @@ pub fn apply(conn: &Connection, ops: &[BenchOp]) -> rusqlite::Result<f64> {
 ///
 /// 这里**不把结果写回表**，是刻意偏向朴素重跑的保守选择——若增量方案连
 /// "只读不写"的朴素重跑都赢不了，结论就无可辩驳。
-pub fn recompute_all(conn: &Connection, views: &[BenchView]) -> rusqlite::Result<f64> {
+pub fn recompute_all(conn: &Connection, w: &Workload) -> rusqlite::Result<f64> {
     let start = Instant::now();
-    for v in views {
-        let mut stmt = conn.prepare_cached(&v.sql())?;
+    for v in &w.views {
+        let mut stmt = conn.prepare_cached(&v.sql(&w.schema.table))?;
         let mut rows = stmt.query([])?;
         while rows.next()?.is_some() {}
     }
@@ -2904,17 +3296,21 @@ const H: f64 = 420.0;
 const PAD: f64 = 64.0;
 const COLORS: [&str; 3] = ["#888888", "#1f77b4", "#d62728"];
 
-/// 画头条图：固定 views / batch，横轴基表规模（对数），纵轴总耗时，
-/// 每条基线一条折线。交叉点就是两条线相交的地方（spec §10.4）。
+/// 画头条图：固定 views / batch / group 基数，横轴基表规模（对数），纵轴
+/// 总耗时，每条基线一条折线。交叉点就是两条线相交的地方（spec §10.4）。
+///
+/// group 基数必须固定并标在图上——交叉点随它剧烈移动，把不同基数的点混进
+/// 同一张图会画出一条毫无意义的折线（spec §10.1）。
 pub fn write_svg(
     path: &Path,
     records: &[Record],
     fixed_views: usize,
     fixed_batch: usize,
+    fixed_card: usize,
 ) -> std::io::Result<()> {
     let mut series: BTreeMap<&str, Vec<(f64, f64)>> = BTreeMap::new();
     for r in records {
-        if r.views == fixed_views && r.batch == fixed_batch {
+        if r.views == fixed_views && r.batch == fixed_batch && r.cardinality == fixed_card {
             series
                 .entry(r.baseline)
                 .or_default()
@@ -2930,7 +3326,7 @@ pub fn write_svg(
     if xs.is_empty() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            format!("没有 views={fixed_views} batch={fixed_batch} 的数据点"),
+            format!("没有 views={fixed_views} batch={fixed_batch} card={fixed_card} 的数据点"),
         ));
     }
     let (x0, x1) = (xs.iter().cloned().fold(f64::MAX, f64::min), xs.iter().cloned().fold(f64::MIN, f64::max));
@@ -2942,7 +3338,7 @@ pub fn write_svg(
     let mut svg = format!(
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" font-family="sans-serif" font-size="12">
 <rect width="{W}" height="{H}" fill="white"/>
-<text x="{tx}" y="24" text-anchor="middle" font-size="15">apply + maintain, views={fixed_views}, batch={fixed_batch}</text>
+<text x="{tx}" y="24" text-anchor="middle" font-size="15">apply + maintain &#183; views={fixed_views} &#183; batch={fixed_batch} &#183; groups={fixed_card}</text>
 <line x1="{PAD}" y1="{by}" x2="{rx}" y2="{by}" stroke="#333"/>
 <line x1="{PAD}" y1="{PAD}" x2="{PAD}" y2="{by}" stroke="#333"/>
 <text x="{tx}" y="{lx}" text-anchor="middle">base_rows (log10)</text>
@@ -2989,20 +3385,22 @@ mod plot;
 
 use std::path::Path;
 
-use baseline::{
-    apply, install_trigger_view, recompute_all, views, Baseline, BenchOp, CREATE_TABLE,
-};
-use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use baseline::{apply, install_trigger_view, recompute_all, seed_base, Baseline};
+use ivmlite_workload::{ViewSpec, Workload};
 use rusqlite::Connection;
 
-const VIEW_COUNTS: [usize; 4] = [1, 10, 50, 200];
 const BASE_ROWS: [usize; 3] = [10_000, 100_000, 1_000_000];
 const BATCH_SIZES: [usize; 4] = [1, 10, 100, 1000];
+const VIEW_COUNTS: [usize; 4] = [1, 10, 50, 200];
+const GROUP_CARDINALITIES: [usize; 3] = [10, 1_000, 100_000];
 
-/// 基表用宽值域：benchmark 关心的是规模效应，不是 group 复用
-/// （窄值域是**正确性测试**的要求，两者目标不同）。
-const REGIONS: i64 = 1000;
+/// 扫 group 基数时固定的视图数，扫视图数时固定的 group 基数。
+///
+/// 四维全交叉是 144 个配置，过大。spec §10.1 约定这两个固定值，于是两次扫描
+/// 各 36 个配置，且都穿过同一个共同点 (views=10, cardinality=1k)，两组图可以
+/// 对齐着读。
+const FIXED_VIEWS: usize = 10;
+const FIXED_CARDINALITY: usize = 1_000;
 
 #[derive(Debug, Clone)]
 pub struct Record {
@@ -3010,96 +3408,116 @@ pub struct Record {
     pub views: usize,
     pub base_rows: usize,
     pub batch: usize,
+    pub cardinality: usize,
     pub apply_ms: f64,
     pub maintain_ms: f64,
 }
 
-fn gen_insert(rng: &mut StdRng, id: i64) -> BenchOp {
-    BenchOp::Insert {
-        id,
-        region: format!("r{}", rng.random_range(0..REGIONS)),
-        amount: rng.random_range(0..200),
-    }
+/// 从基准 workload 派生出一个具体配置。
+///
+/// 视图形状受限于表达能力最弱的对照组——手写 trigger（spec §10.3 第 3 条），
+/// 因此这里只改视图**数量**与阈值，不改形状；三条基线拿到的是同一批视图。
+fn variant(base: &Workload, base_rows: usize, cardinality: usize, views: usize) -> Workload {
+    let mut w = base.clone();
+    w.data.base_rows = base_rows;
+    w.data.group_cardinality = cardinality;
+    w.views = (0..views)
+        .map(|i| ViewSpec { id: i, threshold: (i as i64 * 7) % 150 })
+        .collect();
+    w
 }
 
-fn main() -> rusqlite::Result<()> {
+fn run_one(
+    base: &Workload,
+    b: Baseline,
+    rows: usize,
+    card: usize,
+    views: usize,
+    batch: usize,
+) -> rusqlite::Result<Record> {
+    let mut w = variant(base, rows, card, views);
+    w.updates.batch_size = batch;
+
+    let conn = Connection::open_in_memory()?;
+
+    // ---- 以下全部不计时：建立初始状态 ----
+    seed_base(&conn, &w)?;
+    if b == Baseline::HandWrittenTrigger {
+        for v in &w.views {
+            install_trigger_view(&conn, &w.schema.table, v)?;
+        }
+    }
+    let ops = w.update_trace();
+
+    // ---- 计时区间 ----
+    let apply_ms = apply(&conn, &w.schema.table, &ops)?;
+    let maintain_ms = match b {
+        // trigger 的成本已计入 apply_ms——那正是写放大
+        Baseline::NoMaintenance | Baseline::HandWrittenTrigger => 0.0,
+        Baseline::NaiveRecompute => recompute_all(&conn, &w)?,
+    };
+
+    Ok(Record {
+        baseline: b.label(),
+        views,
+        base_rows: rows,
+        batch,
+        cardinality: card,
+        apply_ms,
+        maintain_ms,
+    })
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let base = Workload::load(Path::new("workloads/m0-baseline.toml"))?;
     let mut records: Vec<Record> = Vec::new();
 
-    for baseline in [
+    let baselines = [
         Baseline::NoMaintenance,
         Baseline::HandWrittenTrigger,
         Baseline::NaiveRecompute,
-    ] {
-        for view_count in VIEW_COUNTS {
-            // 三条基线用完全相同的视图集合（spec §10.3 第 3 条）
-            let vs = views(view_count);
+    ];
 
-            for base_rows in BASE_ROWS {
+    // 扫描一：group 基数 × 基表规模 × 批大小，视图数固定
+    for b in baselines {
+        for card in GROUP_CARDINALITIES {
+            for rows in BASE_ROWS {
                 for batch in BATCH_SIZES {
-                    let mut rng = StdRng::seed_from_u64(0xB0BA);
-                    let conn = Connection::open_in_memory()?;
-                    conn.execute_batch(CREATE_TABLE)?;
-
-                    // ---- 以下全部不计时：建立初始状态 ----
-                    let seed_ops: Vec<BenchOp> = (0..base_rows)
-                        .map(|i| gen_insert(&mut rng, i as i64))
-                        .collect();
-                    apply(&conn, &seed_ops)?;
-
-                    if baseline == Baseline::HandWrittenTrigger {
-                        // 建表 + 全量 bootstrap + 建 trigger，顺序见 install_trigger_view
-                        for v in &vs {
-                            install_trigger_view(&conn, v)?;
-                        }
-                    }
-
-                    // 删除目标从已存在的 id 里取，避免空删
-                    let mut next_id = base_rows as i64;
-                    let ops: Vec<BenchOp> = (0..batch)
-                        .map(|i| {
-                            if i % 3 == 2 {
-                                BenchOp::Delete { id: rng.random_range(0..base_rows as i64) }
-                            } else {
-                                let op = gen_insert(&mut rng, next_id);
-                                next_id += 1;
-                                op
-                            }
-                        })
-                        .collect();
-
-                    // ---- 计时区间 ----
-                    let apply_ms = apply(&conn, &ops)?;
-                    let maintain_ms = match baseline {
-                        // trigger 的成本已计入 apply_ms——那正是写放大
-                        Baseline::NoMaintenance | Baseline::HandWrittenTrigger => 0.0,
-                        Baseline::NaiveRecompute => recompute_all(&conn, &vs)?,
-                    };
-
-                    records.push(Record {
-                        baseline: baseline.label(),
-                        views: view_count,
-                        base_rows,
-                        batch,
-                        apply_ms,
-                        maintain_ms,
-                    });
+                    records.push(run_one(&base, b, rows, card, FIXED_VIEWS, batch)?);
                 }
             }
         }
     }
 
-    println!("baseline,views,base_rows,batch_size,apply_ms,maintain_ms");
+    // 扫描二：视图数 × 基表规模 × 批大小，group 基数固定
+    for b in baselines {
+        for views in VIEW_COUNTS {
+            if views == FIXED_VIEWS {
+                continue; // 与扫描一的共同点重复
+            }
+            for rows in BASE_ROWS {
+                for batch in BATCH_SIZES {
+                    records.push(run_one(&base, b, rows, FIXED_CARDINALITY, views, batch)?);
+                }
+            }
+        }
+    }
+
+    println!("baseline,views,base_rows,batch_size,group_cardinality,apply_ms,maintain_ms");
     for r in &records {
         println!(
-            "{},{},{},{},{:.3},{:.3}",
-            r.baseline, r.views, r.base_rows, r.batch, r.apply_ms, r.maintain_ms
+            "{},{},{},{},{},{:.3},{:.3}",
+            r.baseline, r.views, r.base_rows, r.batch, r.cardinality, r.apply_ms, r.maintain_ms
         );
     }
 
-    let svg = Path::new("docs/bench/m0-baseline.svg");
-    plot::write_svg(svg, &records, 10, 100)
-        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-    eprintln!("图已写入 {}", svg.display());
+    // 每个 group 基数各出一张图——交叉点随该参数剧烈移动，只出一张等于
+    // 自己挑了个好看的点（spec §10.1）。
+    for card in GROUP_CARDINALITIES {
+        let path = format!("docs/bench/m0-baseline-card{card}.svg");
+        plot::write_svg(Path::new(&path), &records, FIXED_VIEWS, 100, card)?;
+        eprintln!("图已写入 {path}");
+    }
 
     Ok(())
 }
@@ -3107,15 +3525,22 @@ fn main() -> rusqlite::Result<()> {
 
 - [ ] **Step 5: 先跑缩小规模的 smoke run**
 
-把 `BASE_ROWS` 临时改成 `[1_000, 10_000]`、`VIEW_COUNTS` 改成 `[1, 10]` 跑通：
+把 `BASE_ROWS` 临时改成 `[1_000, 10_000]`、`VIEW_COUNTS` 改成 `[1, 10]`、
+`GROUP_CARDINALITIES` 改成 `[10, 1_000]` 跑通：
 
 Run: `cargo run -p ivmlite-bench --release 2>/dev/null | head -20`
 
-Expected：CSV 表头 + 若干行；`no_maintenance` 的 `maintain_ms` 恒为 0；
-`naive_recompute` 的 `maintain_ms` 随 `base_rows` 明显增长；
+Expected：CSV 表头含 `group_cardinality` 列；`no_maintenance` 的 `maintain_ms`
+恒为 0；`naive_recompute` 的 `maintain_ms` 随 `base_rows` 明显增长；
 `hand_written_trigger` 的 `apply_ms` 明显高于 `no_maintenance`（差值即写放大）。
 
-同时验证主键确实生效，不该出现 `SCAN orders`：
+**最关键的一条 sanity check**：同一 `base_rows` 下，`naive_recompute` 的
+`maintain_ms` 应当**几乎不随 `group_cardinality` 变化**（它总要扫全表），而
+`hand_written_trigger` 的 `apply_ms` 应当**随 `group_cardinality` 上升**
+（分组键越分散，汇总表越大、`ON CONFLICT` 走的 B-tree 越深）。若观察不到这个
+差异，说明 cardinality 维度没有真正生效——先去查 `Workload::rows`，不要继续跑。
+
+同时验证主键确实生效，不该出现 `SCAN`：
 
 Run: `sqlite3 :memory: "CREATE TABLE orders(id INTEGER PRIMARY KEY, region TEXT NOT NULL, amount INTEGER NOT NULL) STRICT; EXPLAIN QUERY PLAN DELETE FROM orders WHERE id = 1;"`
 Expected: 输出包含 `SEARCH orders USING INTEGER PRIMARY KEY`，不含 `SCAN`。
@@ -3125,10 +3550,22 @@ Expected: 输出包含 `SEARCH orders USING INTEGER PRIMARY KEY`，不含 `SCAN`
 改回完整常量后：
 
 Run: `cargo run -p ivmlite-bench --release > docs/bench/m0-baseline.csv`
-Expected: CSV 落盘，且 `docs/bench/m0-baseline.svg` 生成。
+Expected: CSV 落盘；`docs/bench/m0-baseline-card10.svg`、`-card1000.svg`、
+`-card100000.svg` 三张图生成。
 
-打开 SVG 确认三条折线可读，并在 `docs/bench/README.md` 用一段话写下**交叉点落在哪**——
-若交叉点在 100 万行以上，就照实写下来（spec §10.4 要求 benchmark 必须能证伪本项目）。
+在 `docs/bench/README.md` 写下结论，**每个 group 基数各一行交叉点**：
+
+```markdown
+| group 基数 | 交叉点（朴素重跑开始变得比增量贵的基表规模） | 手写 trigger 的写放大 |
+|---|---|---|
+| 10     | ... | ... |
+| 1k     | ... | ... |
+| 100k   | ... | ... |
+```
+
+若某一行的交叉点落在 100 万行以上，就照实写下来并注明该配置下本项目无意义
+——spec §10.4 要求 benchmark 必须能证伪本项目。**M0 阶段填的是三条基线之间
+的关系**（增量那一列要等 M1 才有数），但表格结构现在定下来，M1 直接填。
 
 - [ ] **Step 7: 提交**
 
@@ -3158,16 +3595,21 @@ git commit -m "feat(bench): benchmark 矩阵、三条 same-host 基线与基线�
 | §9.3 保持合法性的 shrinking，顺序为 ops → query → data | Task 11（`is_legal` 门禁 + 三个阶段） |
 | §9.4 seed 可复现 | Task 5、6、10 各有一条 reproducibility 测试；`IVMLITE_SEED` + `seed_range()` 提供一条命令重放 |
 | §9.4 失败用例固化 | Task 11 Step 3（`save_regression` / `load_regressions`）+ Step 4 的 `saved_regressions_still_pass` |
-| §10.2 三条 same-host 对照组 | Task 12 |
-| §10.3 第 3 条 同一视图集合 | Task 12（`views(n)` 对三条基线一致，形状受限于 trigger 的表达能力） |
-| §10.3 第 4 条 计时前完成 bootstrap | Task 12（`install_trigger_view`：建表 → `INSERT ... SELECT` → 建 trigger） |
-| §10.3 第 5 条 稳定主键 | Task 12（`id INTEGER PRIMARY KEY`，Step 5 用 `EXPLAIN QUERY PLAN` 验证无 `SCAN`） |
-| §10.5 写放大 | Task 12（trigger 成本计入 `apply_ms`，与 `no_maintenance` 相减即得） |
+| §10.2 三条 same-host 对照组 | Task 13 |
+| §10.3 第 3 条 同一视图集合 | Task 13（`views(n)` 对三条基线一致，形状受限于 trigger 的表达能力） |
+| §10.3 第 4 条 计时前完成 bootstrap | Task 13（`install_trigger_view`：建表 → `INSERT ... SELECT` → 建 trigger） |
+| §10.3 第 5 条 稳定主键 | Task 13（`id INTEGER PRIMARY KEY`，Step 5 用 `EXPLAIN QUERY PLAN` 验证无 `SCAN`） |
+| §10.1 group 基数作为显式维度 | Task 13（`GROUP_CARDINALITIES`；扫描时视图数固定为 10；每个基数各出一张图） |
+| §10.3 第 6 条 不引用他人发布的数字 | Global Constraints；M0 无跨系统对比 |
+| §10.3 第 7 条 workload 可移植 | Task 12（`ivmlite-workload` + `workloads/m0-baseline.toml` + `Workload::export`） |
+| §10.5 写放大 | Task 13（trigger 成本计入 `apply_ms`，与 `no_maintenance` 相减即得） |
 | §11 M0 完成判定（抓到植入 bug + 缩到 10 步） | Task 11 Step 4 的两个测试 |
-| §11 M0 三条基线"出图" | Task 12 Step 3（`plot::write_svg`）+ Step 6 |
+| §11 M0 三条基线"出图" | Task 13 Step 3（`plot::write_svg`）+ Step 6 |
 
 **已知缺口（有意为之，非遗漏）：**
 - **§7.1 拒绝 `ANY` 列与 collation 检查**属于 `ivm_create_view` 的职责，而该函数在 M1 才存在。M0 的 `ColumnType` 只有 `Integer` / `Text`，生成器永远不产 `ANY`，因此 M0 无从触发该问题。**M1 必须实现这两条拒绝**。
+- **§10.6 的三条已知简化**（均匀分布、无更新局部性、跑不了标准基准查询）在 M0 全部保留。`Distribution` 与 `Locality` 枚举各只有 `Uniform` 一个变体，是刻意的占位——M2 加 `Zipf` / `Hot` 时不需要改 workload 文件格式。
+- **§10.7 Nexmark** 属于 M2：v0 没有 join，跑不了 Nexmark 的任何查询。
 - **空间放大与 bootstrap 耗时**（spec §10.5）未在 M0 度量——两者都需要真实引擎才有意义，M1 补。
 - **`criterion` 微基准**（spec §10）未引入——M0 的主 benchmark 是端到端矩阵，微基准等 core 有算子可测时再加。
 - **`ivmlite-sql` / `ivmlite-sqlite` crate** 未创建，见 Global Constraints 末条。
@@ -3183,4 +3625,4 @@ git commit -m "feat(bench): benchmark 矩阵、三条 same-host 基线与基线�
 
 ## 执行顺序说明
 
-Task 1 → 12 有严格依赖，不可并行乱序。Task 11 是 M0 的验收关口——它红着，M0 就没完成，**不允许放宽该测试的断言来让它变绿**（spec §11 明确了这一点的理由）。
+Task 1 → 13 有严格依赖，不可并行乱序。Task 11 是 M0 的验收关口——它红着，M0 就没完成，**不允许放宽该测试的断言来让它变绿**（spec §11 明确了这一点的理由）。
