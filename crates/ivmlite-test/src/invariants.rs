@@ -83,4 +83,12 @@ mod tests {
         let err = check_invariants(&z, &q()).unwrap_err();
         assert!(err.contains("权重"), "实得: {err}");
     }
+
+    #[test]
+    fn rejects_wrong_row_width() {
+        // Missing the count column; row has only 1 column instead of expected 2
+        let z = ZSet::from_rows([(Row::new(vec![Value::Text("a".into())]), 1)]);
+        let err = check_invariants(&z, &q()).unwrap_err();
+        assert!(err.contains("宽度"), "实得: {err}");
+    }
 }
