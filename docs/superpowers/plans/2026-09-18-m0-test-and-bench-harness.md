@@ -3631,6 +3631,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for b in baselines {
         for card in GROUP_CARDINALITIES {
             for rows in BASE_ROWS {
+                // group 基数大于行数在语义上无意义——N 行的表不可能有多于 N 个
+                // 不同的分组键。ivmlite-workload 在加载时就会拒绝这种配置，
+                // 所以这里跳过而不是让它报错。被跳过的格子在 stderr 记一行，
+                // 免得读 CSV 的人以为是漏跑了。
+                if card > rows {
+                    eprintln!("跳过无意义格子: card={card} > base_rows={rows}");
+                    continue;
+                }
                 for batch in BATCH_SIZES {
                     records.push(run_one(&base, b, rows, card, FIXED_VIEWS, batch)?);
                 }
@@ -3664,8 +3672,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 自己挑了个好看的点（spec §10.1）。
     for card in GROUP_CARDINALITIES {
         let path = format!("docs/bench/m0-baseline-card{card}.svg");
-        plot::write_svg(Path::new(&path), &records, FIXED_VIEWS, 100, card)?;
-        eprintln!("图已写入 {path}");
+        match plot::write_svg(Path::new(&path), &records, FIXED_VIEWS, 100, card) {
+            Ok(()) => eprintln!("图已写入 {path}"),
+            // 某个 group 基数在所有基表规模下都被跳过时没有数据点，
+            // 这不是错误——照实说明并继续。
+            Err(e) => eprintln!("跳过 card={card} 的出图: {e}"),
+        }
     }
 
     Ok(())
@@ -3711,6 +3723,10 @@ Expected: CSV 落盘；`docs/bench/m0-baseline-card10.svg`、`-card1000.svg`、
 | 1k     | 1 / 1000 | ... | ... |
 | 100k   | 1 / 1000 | ... | ... |
 ```
+
+表里 `card > base_rows` 的格子是空的——那不是漏跑，是语义上不存在的配置
+（N 行的表不可能有多于 N 个分组键），`ivmlite-workload` 在加载时就会拒绝。
+在 README 里写明这一点，不要让读者以为是数据缺失。
 
 **不要报告"一个交叉点"。** spec §10.4 已删除"交叉点 > 100 万行即无意义"那条
 拍脑袋的阈值——同一套实现在「10 个 group + 大批量 Δ」和「10 万个 group +
