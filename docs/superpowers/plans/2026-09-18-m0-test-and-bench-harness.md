@@ -2833,7 +2833,7 @@ fn failing_case_shrinks_to_under_ten_ops() {
 - [ ] **Step 5: 运行测试**
 
 Run: `cargo test -p ivmlite-test --test harness_catches_bugs -- --nocapture`
-Expected: 5 passed（本任务的集成测试文件共 5 个）
+Expected: 6 passed（本任务的集成测试文件共 6 个）
 
 若 `harness_catches_the_missing_retraction_bug` 的检出率不足，**不要放宽断言**——调 `Domain::distinct`（更小）或 `gen_ops` 的删改比例（更高）。检出率低说明生成器没有制造出足够的 group 复用，这正是 spec §9.2 警告的失败模式。
 
