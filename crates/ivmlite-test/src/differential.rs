@@ -7,7 +7,7 @@ use crate::{
     Schema, ViewQuery,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Batching {
     /// 全部 delta 一次性应用
     All,
@@ -17,7 +17,7 @@ pub enum Batching {
     Chunks(usize),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TestCase {
     pub seed: u64,
     pub schema: Schema,

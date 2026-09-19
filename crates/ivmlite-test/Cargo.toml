@@ -7,6 +7,8 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-ivmlite-core.workspace = true
+ivmlite-core = { workspace = true, features = ["serde"] }
 rusqlite.workspace = true
 rand.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

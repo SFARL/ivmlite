@@ -1,6 +1,7 @@
 /// v0 的值域。刻意不含 Real 与 Blob：
 /// Real 会让增量 SUM 与全量重算无法 bit-for-bit 相等（浮点加法不满足结合律），
 /// Blob 在 v0 的 STRICT table 限制下用不到。两者均排在 M4。
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Value {
     Null,

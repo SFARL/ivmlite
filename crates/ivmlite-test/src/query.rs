@@ -1,26 +1,26 @@
 use crate::{ColumnType, Schema};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum AggFn {
     Count,
     Sum,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Agg {
     pub func: AggFn,
     /// COUNT(*) 为 None；SUM 必须为 Some，且指向 INTEGER 列。
     pub column: Option<usize>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Predicate {
     None,
     IntGt { column: usize, value: i64 },
     IsNotNull { column: usize },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ViewQuery {
     /// v0 只允许裸列作为 group-by 键，不允许表达式（spec §7.1）。
     pub group_by: Vec<usize>,
