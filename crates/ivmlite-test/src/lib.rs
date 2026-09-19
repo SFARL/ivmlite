@@ -1,4 +1,5 @@
 mod data;
+mod differential;
 mod engine;
 mod invariants;
 mod naive;
@@ -8,6 +9,9 @@ mod query;
 mod schema;
 
 pub use data::{gen_row, gen_rows, Domain};
+pub use differential::{
+    check_batch_invariance, gen_case, run, seed_range, Batching, Failure, TestCase,
+};
 pub use engine::{Engine, EngineError};
 pub use invariants::check_invariants;
 pub use naive::NaiveRecompute;
