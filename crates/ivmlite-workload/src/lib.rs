@@ -87,6 +87,7 @@ pub enum TraceOp {
 pub enum WorkloadError {
     Io(std::io::Error),
     Parse(String),
+    Invalid(String),
 }
 
 impl std::fmt::Display for WorkloadError {
@@ -94,6 +95,7 @@ impl std::fmt::Display for WorkloadError {
         match self {
             WorkloadError::Io(e) => write!(f, "{e}"),
             WorkloadError::Parse(e) => write!(f, "解析 workload 失败: {e}"),
+            WorkloadError::Invalid(e) => write!(f, "workload 配置不合法: {e}"),
         }
     }
 }
@@ -103,12 +105,32 @@ impl std::error::Error for WorkloadError {}
 impl Workload {
     pub fn load(path: &Path) -> Result<Workload, WorkloadError> {
         let text = fs::read_to_string(path).map_err(WorkloadError::Io)?;
-        toml::from_str(&text).map_err(|e| WorkloadError::Parse(e.to_string()))
+        let w: Workload = toml::from_str(&text).map_err(|e| WorkloadError::Parse(e.to_string()))?;
+        w.validate()?;
+        Ok(w)
+    }
+
+    /// `group_cardinality > base_rows` 没有意义：N 行的表不可能容纳超过 N 个
+    /// 不同的分组键。宁可在加载时就拒绝，也不要悄悄少生成——否则 benchmark
+    /// 会在一个它其实没用过的基数下报告结果。
+    fn validate(&self) -> Result<(), WorkloadError> {
+        if self.data.group_cardinality > self.data.base_rows {
+            return Err(WorkloadError::Invalid(format!(
+                "group_cardinality ({}) 不能大于 base_rows ({})",
+                self.data.group_cardinality, self.data.base_rows
+            )));
+        }
+        Ok(())
     }
 
     /// 基表行。id 稠密且唯一；分组键的不同值数量**精确**等于 group_cardinality
     /// ——前 card 行逐一覆盖每个键，其余行随机落入已有的键。随机落点无法保证
     /// 覆盖全部键，而 benchmark 依赖这个数字是准的。
+    ///
+    /// 前提：`base_rows >= group_cardinality`。这由 `validate`（`load` 会调用）
+    /// 强制保证——反过来（分组键比行还多）没有意义，一张 N 行的表容不下超过
+    /// N 个不同的键。调用方直接构造 `Workload`（不经过 `load`）时需自行保证
+    /// 这一前提，否则分组键数量会悄悄退化为 `base_rows`。
     pub fn rows(&self) -> impl Iterator<Item = (i64, String, i64)> + '_ {
         let mut rng = StdRng::seed_from_u64(self.seed);
         let card = self.data.group_cardinality.max(1);
@@ -311,5 +333,44 @@ mod tests {
         assert_eq!(original.name, "t");
         assert_eq!(original.data.base_rows, 500);
         assert_eq!(original.views.len(), 2);
+    }
+
+    /// group_cardinality > base_rows 没有意义（N 行的表容不下超过 N 个分组键）；
+    /// load 必须在加载时就拒绝，而不是悄悄生成更少的分组键。
+    #[test]
+    fn load_rejects_group_cardinality_exceeding_base_rows() {
+        let mut w = spec();
+        w.data.base_rows = 10;
+        w.data.group_cardinality = 100;
+        let toml_text = toml::to_string(&w).unwrap();
+
+        let dir = std::env::temp_dir().join("ivmlite-workload-invalid");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("bad.toml");
+        std::fs::write(&path, toml_text).unwrap();
+
+        let err = Workload::load(&path).expect_err("group_cardinality > base_rows 必须被拒绝");
+        let msg = err.to_string();
+        assert!(msg.contains("100"), "{msg}");
+        assert!(msg.contains("10"), "{msg}");
+    }
+
+    /// base_rows == group_cardinality 是合法边界（每行自成一组）；比较里的
+    /// 差一错误会把这个边界也拒掉，所以要单独断言它被接受且分组键数量精确。
+    #[test]
+    fn base_rows_equal_to_group_cardinality_is_accepted() {
+        let mut w = spec();
+        w.data.base_rows = 7;
+        w.data.group_cardinality = 7;
+        let toml_text = toml::to_string(&w).unwrap();
+
+        let dir = std::env::temp_dir().join("ivmlite-workload-boundary");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("boundary.toml");
+        std::fs::write(&path, toml_text).unwrap();
+
+        let loaded = Workload::load(&path).expect("base_rows == group_cardinality 必须被接受");
+        let regions: BTreeSet<String> = loaded.rows().map(|(_, r, _)| r).collect();
+        assert_eq!(regions.len(), 7);
     }
 }
