@@ -47,16 +47,20 @@ impl std::fmt::Display for Failure {
     }
 }
 
-/// 集成测试遍历的 seed 范围。设置 `IVMLITE_SEED` 时只跑那一个 seed——
-/// 这就是 Failure 里那行重放命令生效的机制（spec §9.4）。
-pub fn seed_range() -> Vec<u64> {
-    match std::env::var("IVMLITE_SEED") {
-        Ok(s) => match s.parse::<u64>() {
+fn parse_seed_arg(raw: Option<String>) -> Vec<u64> {
+    match raw {
+        Some(s) => match s.parse::<u64>() {
             Ok(seed) => vec![seed],
             Err(_) => panic!("IVMLITE_SEED 必须是 u64，实得 {s:?}"),
         },
-        Err(_) => (0..50).collect(),
+        None => (0..50).collect(),
     }
+}
+
+/// 集成测试遍历的 seed 范围。设置 `IVMLITE_SEED` 时只跑那一个 seed——
+/// 这就是 Failure 里那行重放命令生效的机制（spec §9.4）。
+pub fn seed_range() -> Vec<u64> {
+    parse_seed_arg(std::env::var("IVMLITE_SEED").ok())
 }
 
 pub fn gen_case(
@@ -260,5 +264,21 @@ mod tests {
         let b = gen_case(5, &schema, &domain, 10, 40, Batching::One);
         assert_eq!(a.initial, b.initial);
         assert_eq!(a.ops, b.ops);
+    }
+
+    #[test]
+    fn parse_seed_arg_defaults_to_fifty_seeds_when_unset() {
+        assert_eq!(parse_seed_arg(None), (0..50).collect::<Vec<u64>>());
+    }
+
+    #[test]
+    fn parse_seed_arg_returns_just_the_one_seed_when_set() {
+        assert_eq!(parse_seed_arg(Some("7".to_string())), vec![7]);
+    }
+
+    #[test]
+    #[should_panic(expected = "IVMLITE_SEED")]
+    fn parse_seed_arg_panics_on_non_numeric_value() {
+        parse_seed_arg(Some("abc".to_string()));
     }
 }
