@@ -1,0 +1,315 @@
+use std::fs;
+use std::path::Path;
+
+use rand::rngs::StdRng;
+use rand::{RngExt, SeedableRng};
+use serde::{Deserialize, Serialize};
+
+/// M0 只有 Uniform。这个枚举现在就存在，是为了 M2 加 Zipf 时
+/// 不必改动 workload 文件格式（spec §10.6）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Distribution {
+    Uniform,
+}
+
+/// 同上：M2 会加 Hot（更新集中打热 group）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Locality {
+    Uniform,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkloadSchema {
+    pub table: String,
+    pub ddl: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataSpec {
+    pub base_rows: usize,
+    pub group_cardinality: usize,
+    pub amount_max: i64,
+    pub distribution: Distribution,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateSpec {
+    pub batch_size: usize,
+    pub delete_ratio: f64,
+    pub locality: Locality,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ViewSpec {
+    pub id: usize,
+    pub threshold: i64,
+}
+
+impl ViewSpec {
+    pub fn sql(&self, table: &str) -> String {
+        format!(
+            "SELECT region, SUM(amount), COUNT(*) FROM \"{}\" \
+             WHERE amount > {} GROUP BY region",
+            table, self.threshold
+        )
+    }
+
+    pub fn table(&self) -> String {
+        format!("mv_{}", self.id)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Workload {
+    pub name: String,
+    pub seed: u64,
+    pub schema: WorkloadSchema,
+    pub data: DataSpec,
+    pub updates: UpdateSpec,
+    pub views: Vec<ViewSpec>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TraceOp {
+    Insert {
+        id: i64,
+        region: String,
+        amount: i64,
+    },
+    Delete {
+        id: i64,
+    },
+}
+
+#[derive(Debug)]
+pub enum WorkloadError {
+    Io(std::io::Error),
+    Parse(String),
+}
+
+impl std::fmt::Display for WorkloadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WorkloadError::Io(e) => write!(f, "{e}"),
+            WorkloadError::Parse(e) => write!(f, "解析 workload 失败: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for WorkloadError {}
+
+impl Workload {
+    pub fn load(path: &Path) -> Result<Workload, WorkloadError> {
+        let text = fs::read_to_string(path).map_err(WorkloadError::Io)?;
+        toml::from_str(&text).map_err(|e| WorkloadError::Parse(e.to_string()))
+    }
+
+    /// 基表行。id 稠密且唯一；分组键的不同值数量**精确**等于 group_cardinality
+    /// ——前 card 行逐一覆盖每个键，其余行随机落入已有的键。随机落点无法保证
+    /// 覆盖全部键，而 benchmark 依赖这个数字是准的。
+    pub fn rows(&self) -> impl Iterator<Item = (i64, String, i64)> + '_ {
+        let mut rng = StdRng::seed_from_u64(self.seed);
+        let card = self.data.group_cardinality.max(1);
+        let amount_max = self.data.amount_max.max(1);
+        (0..self.data.base_rows).map(move |i| {
+            let g = if i < card {
+                i
+            } else {
+                rng.random_range(0..card)
+            };
+            (i as i64, format!("r{g}"), rng.random_range(0..amount_max))
+        })
+    }
+
+    /// 一批更新。DELETE 一律命中已存在且未被删过的 id，INSERT 一律用新 id，
+    /// 因此 trace 本身永远合法，任何 runner 直接重放即可，不需要各自维护
+    /// 一份"当前还活着哪些行"的模型。
+    pub fn update_trace(&self) -> Vec<TraceOp> {
+        let mut rng = StdRng::seed_from_u64(self.seed ^ 0x5EED);
+        let card = self.data.group_cardinality.max(1);
+        let amount_max = self.data.amount_max.max(1);
+        let base = self.data.base_rows as i64;
+        let mut next_id = base;
+        let mut deleted: std::collections::BTreeSet<i64> = Default::default();
+
+        (0..self.updates.batch_size)
+            .map(|_| {
+                let want_delete = rng.random_bool(self.updates.delete_ratio.clamp(0.0, 1.0));
+                if want_delete && (deleted.len() as i64) < base {
+                    let mut id = rng.random_range(0..base);
+                    while deleted.contains(&id) {
+                        id = rng.random_range(0..base);
+                    }
+                    deleted.insert(id);
+                    TraceOp::Delete { id }
+                } else {
+                    let id = next_id;
+                    next_id += 1;
+                    TraceOp::Insert {
+                        id,
+                        region: format!("r{}", rng.random_range(0..card)),
+                        amount: rng.random_range(0..amount_max),
+                    }
+                }
+            })
+            .collect()
+    }
+
+    /// 导出成任何引擎都能加载的形式：schema.sql / views.sql / data.csv /
+    /// updates.csv。这是"workload 可移植"这条约束的实际兑现（spec §10.3 第 7 条）。
+    pub fn export(&self, dir: &Path) -> std::io::Result<()> {
+        fs::create_dir_all(dir)?;
+        fs::write(dir.join("schema.sql"), format!("{};\n", self.schema.ddl))?;
+
+        let views: String = self
+            .views
+            .iter()
+            .map(|v| format!("-- {}\n{};\n", v.table(), v.sql(&self.schema.table)))
+            .collect();
+        fs::write(dir.join("views.sql"), views)?;
+
+        let mut data = String::from("id,region,amount\n");
+        for (id, region, amount) in self.rows() {
+            data.push_str(&format!("{id},{region},{amount}\n"));
+        }
+        fs::write(dir.join("data.csv"), data)?;
+
+        let mut ups = String::from("op,id,region,amount\n");
+        for op in self.update_trace() {
+            match op {
+                TraceOp::Insert { id, region, amount } => {
+                    ups.push_str(&format!("insert,{id},{region},{amount}\n"))
+                }
+                TraceOp::Delete { id } => ups.push_str(&format!("delete,{id},,\n")),
+            }
+        }
+        fs::write(dir.join("updates.csv"), ups)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    fn spec() -> Workload {
+        Workload {
+            name: "t".into(),
+            seed: 1,
+            schema: WorkloadSchema {
+                table: "orders".into(),
+                ddl: "CREATE TABLE orders(id INTEGER PRIMARY KEY, region TEXT NOT NULL, amount INTEGER NOT NULL) STRICT".into(),
+            },
+            data: DataSpec {
+                base_rows: 500,
+                group_cardinality: 7,
+                amount_max: 50,
+                distribution: Distribution::Uniform,
+            },
+            updates: UpdateSpec {
+                batch_size: 30,
+                delete_ratio: 0.5,
+                locality: Locality::Uniform,
+            },
+            views: vec![
+                ViewSpec { id: 0, threshold: 0 },
+                ViewSpec { id: 1, threshold: 10 },
+            ],
+        }
+    }
+
+    #[test]
+    fn rows_respect_group_cardinality() {
+        let regions: BTreeSet<String> = spec().rows().map(|(_, r, _)| r).collect();
+        assert_eq!(
+            regions.len(),
+            7,
+            "不同分组键的数量必须精确等于 group_cardinality——这是 benchmark 的核心维度"
+        );
+    }
+
+    #[test]
+    fn row_ids_are_dense_and_unique() {
+        let ids: Vec<i64> = spec().rows().map(|(id, _, _)| id).collect();
+        assert_eq!(ids.len(), 500);
+        assert_eq!(ids.iter().collect::<BTreeSet<_>>().len(), 500);
+        assert_eq!(*ids.iter().min().unwrap(), 0);
+        assert_eq!(*ids.iter().max().unwrap(), 499);
+    }
+
+    #[test]
+    fn trace_is_always_legal() {
+        let w = spec();
+        let mut live: BTreeSet<i64> = w.rows().map(|(id, _, _)| id).collect();
+        for op in w.update_trace() {
+            match op {
+                TraceOp::Insert { id, .. } => {
+                    assert!(live.insert(id), "trace 不得重复插入同一个 id");
+                }
+                TraceOp::Delete { id } => {
+                    assert!(live.remove(&id), "trace 里的 DELETE 必须命中存在的 id");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn view_sql_matches_threshold() {
+        let sql = spec().views[1].sql("orders");
+        assert!(sql.contains("amount > 10"), "{sql}");
+        assert!(sql.contains("GROUP BY region"), "{sql}");
+    }
+
+    #[test]
+    fn same_seed_yields_same_trace() {
+        assert_eq!(spec().update_trace(), spec().update_trace());
+    }
+
+    #[test]
+    fn shipped_workload_file_parses() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../workloads/m0-baseline.toml");
+        let w = Workload::load(&path).expect("发布的 workload 文件必须可解析");
+        assert_eq!(w.name, "m0-baseline");
+        assert!(!w.views.is_empty());
+        assert!(
+            w.schema.ddl.contains("INTEGER PRIMARY KEY"),
+            "spec §10.3 第 5 条要求稳定主键"
+        );
+    }
+
+    #[test]
+    fn exported_artifacts_load_into_sqlite() {
+        let dir = std::env::temp_dir().join("ivmlite-workload-export");
+        let mut w = spec();
+        w.data.base_rows = 50;
+        w.updates.batch_size = 10;
+        w.export(&dir).unwrap();
+
+        for f in ["schema.sql", "views.sql", "data.csv", "updates.csv"] {
+            assert!(dir.join(f).exists(), "缺少导出产物 {f}");
+        }
+        let data = std::fs::read_to_string(dir.join("data.csv")).unwrap();
+        assert_eq!(data.lines().count(), 51, "表头 + 50 行");
+    }
+
+    /// benchmark runner 通过 clone + mutate 一份 base workload 派生每个配置变体
+    /// （见任务约束）；克隆出来的副本必须与原件独立，改一个不能动到另一个。
+    #[test]
+    fn workload_clones_independently_of_the_original() {
+        let original = spec();
+        let mut variant = original.clone();
+        variant.name = "variant".into();
+        variant.data.base_rows = 999;
+        variant.views.push(ViewSpec {
+            id: 2,
+            threshold: 99,
+        });
+
+        assert_eq!(original.name, "t");
+        assert_eq!(original.data.base_rows, 500);
+        assert_eq!(original.views.len(), 2);
+    }
+}
