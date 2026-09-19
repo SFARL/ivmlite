@@ -35,6 +35,14 @@ pub struct Record {
 ///
 /// 视图形状受限于表达能力最弱的对照组——手写 trigger（spec §10.3 第 3 条），
 /// 因此这里只改视图**数量**与阈值，不改形状；三条基线拿到的是同一批视图。
+///
+/// 额外一条（ruling-review #2）：这是 clone + 改字段的构造路径，绕过了
+/// `Workload::load` 里的 `validate()`。调用方（`main` 里的两个扫描循环）
+/// 已经在调用前用同一条 `card > rows` 规则跳过无意义格子，但那是"这个格子
+/// 不测"的矩阵层面判断，语义上不等于"这个配置合法"——`card > rows` 这条
+/// 规则本身只应该有一个家。这里返回前显式调用 `validate()`，让它成为该
+/// 规则唯一的执行点；`main` 里的 `if card > rows { continue }` 仍然保留,
+/// 因为它决定的是矩阵要不要测这一格，不是配置合不合法。
 fn variant(base: &Workload, base_rows: usize, cardinality: usize, views: usize) -> Workload {
     let mut w = base.clone();
     w.data.base_rows = base_rows;
@@ -45,6 +53,8 @@ fn variant(base: &Workload, base_rows: usize, cardinality: usize, views: usize) 
             threshold: (i as i64 * 7) % 150,
         })
         .collect();
+    w.validate()
+        .unwrap_or_else(|e| panic!("variant() 构造出了非法 workload: {e}"));
     w
 }
 
@@ -153,4 +163,56 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ivmlite_workload::{DataSpec, Distribution, Locality, UpdateSpec, WorkloadSchema};
+
+    fn base_workload() -> Workload {
+        Workload {
+            name: "t".into(),
+            seed: 1,
+            schema: WorkloadSchema {
+                table: "orders".into(),
+                ddl: "CREATE TABLE orders(id INTEGER PRIMARY KEY, region TEXT NOT NULL, \
+                       amount INTEGER NOT NULL) STRICT"
+                    .into(),
+            },
+            data: DataSpec {
+                base_rows: 100,
+                group_cardinality: 10,
+                amount_max: 50,
+                distribution: Distribution::Uniform,
+            },
+            updates: UpdateSpec {
+                batch_size: 10,
+                delete_ratio: 0.5,
+                locality: Locality::Uniform,
+            },
+            views: vec![],
+        }
+    }
+
+    /// 额外一条（来自 ruling-review #2）的直接守卫：`variant()` 是 clone +
+    /// 改字段构造 workload 的路径，此前绕过了 `Workload::load` 里的
+    /// `validate()`。用一个 `cardinality > base_rows` 的非法组合触发它，
+    /// 必须 panic——如果有人把 `variant()` 里那行 `w.validate()` 删掉，
+    /// 这条测试会从"panic"变成"返回一个非法 Workload"，测试失败。
+    #[test]
+    #[should_panic(expected = "非法 workload")]
+    fn variant_rejects_cardinality_exceeding_base_rows() {
+        let base = base_workload();
+        variant(&base, 10, 100, 1); // base_rows=10 < cardinality=100
+    }
+
+    #[test]
+    fn variant_accepts_a_legal_combination() {
+        let base = base_workload();
+        let w = variant(&base, 100, 10, 3);
+        assert_eq!(w.data.base_rows, 100);
+        assert_eq!(w.data.group_cardinality, 10);
+        assert_eq!(w.views.len(), 3);
+    }
 }

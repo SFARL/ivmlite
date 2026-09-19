@@ -3,12 +3,39 @@
 <text x="360" y="24" text-anchor="middle" font-size="15">apply + maintain &#183; views=10 &#183; batch=100 &#183; groups=100000</text>
 <line x1="64" y1="356" x2="656" y2="356" stroke="#333"/>
 <line x1="64" y1="64" x2="64" y2="356" stroke="#333"/>
-<text x="360" y="400" text-anchor="middle">base_rows (log10)</text>
-<text x="16" y="64" fill="#333">2699.4 ms</text>
-<polyline fill="none" stroke="#888888" stroke-width="2" points="64.0,355.7 656.0,355.7"/>
+<text x="360" y="400" text-anchor="middle">base_rows</text>
+<text x="18" y="18" fill="#333">ms (log10)</text>
+<line x1="64.0" y1="356.0" x2="64.0" y2="362.0" stroke="#333"/>
+<text x="64.0" y="374.0" text-anchor="middle">100k</text>
+<line x1="656.0" y1="356.0" x2="656.0" y2="362.0" stroke="#333"/>
+<text x="656.0" y="374.0" text-anchor="middle">1M</text>
+<line x1="58.0" y1="346.9" x2="64.0" y2="346.9" stroke="#333"/>
+<text x="54.0" y="346.9" dy="4" text-anchor="end">0.010ms</text>
+<line x1="58.0" y1="301.2" x2="64.0" y2="301.2" stroke="#333"/>
+<text x="54.0" y="301.2" dy="4" text-anchor="end">0.100ms</text>
+<line x1="58.0" y1="255.6" x2="64.0" y2="255.6" stroke="#333"/>
+<text x="54.0" y="255.6" dy="4" text-anchor="end">1.0ms</text>
+<line x1="58.0" y1="210.0" x2="64.0" y2="210.0" stroke="#333"/>
+<text x="54.0" y="210.0" dy="4" text-anchor="end">10.0ms</text>
+<line x1="58.0" y1="164.4" x2="64.0" y2="164.4" stroke="#333"/>
+<text x="54.0" y="164.4" dy="4" text-anchor="end">100ms</text>
+<line x1="58.0" y1="118.8" x2="64.0" y2="118.8" stroke="#333"/>
+<text x="54.0" y="118.8" dy="4" text-anchor="end">1000ms</text>
+<line x1="58.0" y1="73.1" x2="64.0" y2="73.1" stroke="#333"/>
+<text x="54.0" y="73.1" dy="4" text-anchor="end">10000ms</text>
+<polyline fill="none" stroke="#888888" stroke-width="2" points="64.0,235.9 656.0,235.1"/>
+<circle cx="64.0" cy="235.9" r="3" fill="#888888"/>
+<circle cx="656.0" cy="235.1" r="3" fill="#888888"/>
 <text x="506" y="82" fill="#888888">hand_written_trigger</text>
-<polyline fill="none" stroke="#1f77b4" stroke-width="2" points="64.0,330.1 656.0,64.0"/>
+<polyline fill="none" stroke="#1f77b4" stroke-width="2" points="64.0,147.1 656.0,99.1"/>
+<circle cx="64.0" cy="147.1" r="3" fill="#1f77b4"/>
+<circle cx="656.0" cy="99.1" r="3" fill="#1f77b4"/>
 <text x="506" y="100" fill="#1f77b4">naive_recompute</text>
-<polyline fill="none" stroke="#d62728" stroke-width="2" points="64.0,356.0 656.0,356.0"/>
+<polyline fill="none" stroke="#d62728" stroke-width="2" points="64.0,318.4 656.0,304.2"/>
+<circle cx="64.0" cy="318.4" r="3" fill="#d62728"/>
+<circle cx="656.0" cy="304.2" r="3" fill="#d62728"/>
 <text x="506" y="118" fill="#d62728">no_maintenance</text>
+<text x="64.0" y="388.0" font-size="10" fill="#a00">hand_written_trigger 只有 2 个数据点（其余格因 card=100000 超过某个 base_rows 被 Workload::load 拒绝而跳过)</text>
+<text x="64.0" y="400.0" font-size="10" fill="#a00">naive_recompute 只有 2 个数据点（其余格因 card=100000 超过某个 base_rows 被 Workload::load 拒绝而跳过)</text>
+<text x="64.0" y="412.0" font-size="10" fill="#a00">no_maintenance 只有 2 个数据点（其余格因 card=100000 超过某个 base_rows 被 Workload::load 拒绝而跳过)</text>
 </svg>

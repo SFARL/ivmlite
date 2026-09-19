@@ -24,4 +24,4 @@ pub use oracle::recompute_via_sqlite;
 pub use query::{enumerate, Agg, AggFn, Predicate, ViewQuery};
 pub use regression::{load_regressions, save_regression};
 pub use schema::{Column, ColumnType, Schema};
-pub use shrink::shrink;
+pub use shrink::{is_legal, shrink};

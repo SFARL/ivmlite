@@ -32,7 +32,11 @@ pub fn gen_row(rng: &mut StdRng, schema: &Schema, domain: &Domain) -> Row {
             if col.nullable && rng.random_bool(domain.null_rate) {
                 return Value::Null;
             }
-            let n = rng.random_range(0..domain.distinct) as i64;
+            // item 10（deferred minor）：`distinct == 0` 会让 `0..domain.distinct`
+            // 变成空区间，`random_range` panic。`.max(1)` 与
+            // `ivmlite-workload/src/lib.rs:136,153` 的写法保持同一种拼法，
+            // 让"同一条规则在仓库里只有一种写法"这件事成立。
+            let n = rng.random_range(0..domain.distinct.max(1)) as i64;
             match col.ty {
                 ColumnType::Integer => Value::Int(n),
                 ColumnType::Text => Value::Text(format!("v{n}")),
@@ -130,6 +134,19 @@ mod tests {
         let mut rng = rand::rngs::StdRng::seed_from_u64(3);
         let rows = gen_rows(&mut rng, &orders(), &Domain::default(), 500);
         assert!(rows.iter().all(|r| r.get(1) != &Value::Null));
+    }
+
+    /// item 10（deferred minor）：`distinct == 0` 必须不 panic，而不是让
+    /// `0..0` 这个空区间炸给 `random_range`。
+    #[test]
+    fn zero_distinct_domain_does_not_panic() {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(1);
+        let domain = Domain {
+            distinct: 0,
+            null_rate: 0.0,
+        };
+        let rows = gen_rows(&mut rng, &orders(), &domain, 10);
+        assert_eq!(rows.len(), 10);
     }
 
     #[test]

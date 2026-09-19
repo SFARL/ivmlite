@@ -15,8 +15,10 @@ where
 ///
 /// 这是自研 shrinker 而非直接用 proptest 的原因——朴素的缩小会删掉某个
 /// INSERT，让后续针对该行的 DELETE 悬空，产出一个引擎本就不该处理的非法
-/// 序列，于是"失败"变得毫无意义（spec §9.3）。
-fn is_legal(initial: &[Row], ops: &[Op]) -> bool {
+/// 序列，于是"失败"变得毫无意义（spec §9.3）。这是自研 shrinker 唯一的
+/// load-bearing 性质，因此是 `pub`：调用方（包括集成测试）可以直接对
+/// `shrink` 的产出重新断言合法性，而不是只信任 shrink 内部没有用错它。
+pub fn is_legal(initial: &[Row], ops: &[Op]) -> bool {
     let mut live: Vec<Row> = initial.to_vec();
     for op in ops {
         match op {
@@ -158,4 +160,60 @@ where
     }
 
     best
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ivmlite_core::Value;
+
+    fn row(n: i64) -> Row {
+        Row::new(vec![Value::Int(n)])
+    }
+
+    /// I2：这是自研 shrinker 而非直接用 proptest 的唯一理由（spec §9.3）。
+    /// 直接单元测试 `is_legal` 本身，而不是只通过间接的集成测试断言。
+    #[test]
+    fn dangling_delete_is_illegal() {
+        // 行 1 从未存在过（initial 为空），删它必须判非法。
+        assert!(!is_legal(&[], &[Op::Delete(row(1))]));
+    }
+
+    #[test]
+    fn dangling_update_is_illegal() {
+        // old=row(1) 不在 live 集合里，UPDATE 必须判非法。
+        assert!(!is_legal(
+            &[],
+            &[Op::Update {
+                old: row(1),
+                new: row(2)
+            }]
+        ));
+    }
+
+    #[test]
+    fn legal_sequence_is_legal() {
+        // insert 1 → delete 1 → insert 2 → update 2->3：每一步都命中当时存在的行。
+        let ops = vec![
+            Op::Insert(row(1)),
+            Op::Delete(row(1)),
+            Op::Insert(row(2)),
+            Op::Update {
+                old: row(2),
+                new: row(3),
+            },
+        ];
+        assert!(is_legal(&[], &ops));
+    }
+
+    #[test]
+    fn delete_of_a_row_present_in_initial_is_legal() {
+        assert!(is_legal(&[row(1)], &[Op::Delete(row(1))]));
+    }
+
+    #[test]
+    fn delete_after_insert_of_a_different_row_is_illegal() {
+        // insert 1，然后删 2——2 从未存在过。
+        assert!(!is_legal(&[], &[Op::Insert(row(1)), Op::Delete(row(2))]));
+    }
 }

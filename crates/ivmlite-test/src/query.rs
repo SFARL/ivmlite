@@ -41,7 +41,11 @@ impl ViewQuery {
             select.push(match (agg.func, agg.column) {
                 (AggFn::Count, _) => "COUNT(*)".to_string(),
                 (AggFn::Sum, Some(i)) => format!("SUM({})", name(i)),
-                (AggFn::Sum, None) => unreachable!("SUM 必须指定列"),
+                // item 8（deferred minor）：`column` 是 pub 字段，调用方可以直接
+                // 构造出 `Agg { func: Sum, column: None }`——这条路径经由公开
+                // API 可达，`unreachable!` 宣称了一个这个类型系统根本不保证的
+                // 前提。用 `panic!` 如实标注"这是一个被拒绝的非法状态"。
+                (AggFn::Sum, None) => panic!("SUM 必须指定列"),
             });
         }
 
@@ -199,6 +203,26 @@ mod tests {
         assert!(q.to_sql(&orders()).contains("WHERE \"amount\" > 3"));
     }
 
+    /// item 13（deferred minor，与 I4 同源）：`IsNotNull` 此前完全没有单元
+    /// 测试覆盖——`enumerate` 里生成它的整段循环删掉之后 67 个测试照样全绿,
+    /// 正是因为连 `to_sql` 这一层都没人断言过它的输出。
+    #[test]
+    fn to_sql_renders_is_not_null_predicate() {
+        let q = ViewQuery {
+            group_by: vec![0],
+            aggs: vec![Agg {
+                func: AggFn::Count,
+                column: None,
+            }],
+            predicate: Predicate::IsNotNull { column: 0 },
+        };
+        assert!(
+            q.to_sql(&orders()).contains("WHERE \"region\" IS NOT NULL"),
+            "{}",
+            q.to_sql(&orders())
+        );
+    }
+
     #[test]
     fn output_arity_is_group_by_plus_aggs() {
         let q = ViewQuery {
@@ -231,10 +255,22 @@ mod tests {
             qs.iter().all(|q| !q.aggs.is_empty()),
             "v0 的根算子必须是 Aggregate——否则 __w 权重会让物化表与普通 SQL 视图行数不一致（spec §5.2）"
         );
-        assert!(qs.iter().any(|q| matches!(q.predicate, Predicate::None)));
-        assert!(qs
-            .iter()
-            .any(|q| matches!(q.predicate, Predicate::IntGt { .. })));
+        // I4：exhaustive match 而非三个 any() 调用——将来给 Predicate 加新
+        // 变体时，这里会编译失败，逼着补上对应的覆盖断言，而不是像
+        // IsNotNull 那样悄悄漏掉一整个分支还能全绿。
+        let mut saw_none = false;
+        let mut saw_int_gt = false;
+        let mut saw_is_not_null = false;
+        for q in &qs {
+            match &q.predicate {
+                Predicate::None => saw_none = true,
+                Predicate::IntGt { .. } => saw_int_gt = true,
+                Predicate::IsNotNull { .. } => saw_is_not_null = true,
+            }
+        }
+        assert!(saw_none, "enumerate 必须产出 Predicate::None");
+        assert!(saw_int_gt, "enumerate 必须产出 Predicate::IntGt");
+        assert!(saw_is_not_null, "enumerate 必须产出 Predicate::IsNotNull");
     }
 
     #[test]

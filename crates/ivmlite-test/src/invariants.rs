@@ -28,7 +28,10 @@ pub fn check_invariants(state: &ZSet, query: &ViewQuery) -> Result<(), String> {
         }
         let key: Vec<Value> = (0..key_arity).map(|i| row.get(i).clone()).collect();
         if !seen.insert(key.clone()) {
-            return Err(format!("group key {key:?} 在输出中出现多次"));
+            // item 20（deferred minor）：补上 row:?，与另外三条错误路径一致。
+            // 重复 group key 是 M1 最可能的失败模式，缺这个信息等于在最需要
+            // 的时刻逼人去翻 ZSet dump。
+            return Err(format!("group key {key:?} 在输出中出现多次，行 {row:?}"));
         }
     }
     Ok(())
@@ -75,6 +78,8 @@ mod tests {
         let z = ZSet::from_rows([(out("a", 1), 1), (out("a", 2), 1)]);
         let err = check_invariants(&z, &q()).unwrap_err();
         assert!(err.contains("group key"), "实得: {err}");
+        // item 20：错误信息必须带上具体是哪一行撞上了重复 key，不能只报 key。
+        assert!(err.contains("行"), "实得: {err}");
     }
 
     #[test]

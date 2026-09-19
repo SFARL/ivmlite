@@ -113,7 +113,13 @@ impl Workload {
     /// `group_cardinality > base_rows` 没有意义：N 行的表不可能容纳超过 N 个
     /// 不同的分组键。宁可在加载时就拒绝，也不要悄悄少生成——否则 benchmark
     /// 会在一个它其实没用过的基数下报告结果。
-    fn validate(&self) -> Result<(), WorkloadError> {
+    ///
+    /// `pub`（而非仅 `load` 内部私用）：这条规则只应该有一个家。此前
+    /// `ivmlite-bench/src/main.rs` 的 `variant()` 通过 clone + 改字段构造
+    /// workload，绕开了 `load`，逼着调用方在 `main.rs` 里手工维护一份同样
+    /// 的 `card > rows` 判断——两份拼法迟早会分叉。`variant()` 现在直接调
+    /// 这个方法。
+    pub fn validate(&self) -> Result<(), WorkloadError> {
         if self.data.group_cardinality > self.data.base_rows {
             return Err(WorkloadError::Invalid(format!(
                 "group_cardinality ({}) 不能大于 base_rows ({})",
@@ -333,6 +339,22 @@ mod tests {
         assert_eq!(original.name, "t");
         assert_eq!(original.data.base_rows, 500);
         assert_eq!(original.views.len(), 2);
+    }
+
+    /// 额外一条（ruling-review #2）：`validate` 必须能在不经过 `load`
+    /// （即不落盘再解析 TOML）的情况下被直接调用——这是 `ivmlite-bench`
+    /// 的 `variant()` 能够复用它,而不必自己再维护一份同样规则的前提。
+    #[test]
+    fn validate_is_directly_callable_without_going_through_load() {
+        let mut w = spec();
+        w.data.base_rows = 5;
+        w.data.group_cardinality = 50;
+        let err = w.validate().expect_err("card > base_rows 必须被拒绝");
+        let msg = err.to_string();
+        assert!(msg.contains("50") && msg.contains('5'));
+
+        w.data.group_cardinality = 5;
+        assert!(w.validate().is_ok(), "card == base_rows 是合法边界");
     }
 
     /// group_cardinality > base_rows 没有意义（N 行的表容不下超过 N 个分组键）；

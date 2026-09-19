@@ -59,6 +59,9 @@ pub struct TransientDriftEngine {
     inner: NaiveRecompute,
     calls: usize,
     drift_at: usize,
+    /// group-by 键的列数：污染只允许发生在聚合列区间（`group_arity..`），
+    /// 绝不能碰 group key，否则会改变污染行落在哪个 group。
+    group_arity: usize,
 }
 
 impl TransientDriftEngine {
@@ -69,6 +72,7 @@ impl TransientDriftEngine {
             inner: NaiveRecompute::new(),
             calls: 0,
             drift_at,
+            group_arity: 0,
         }
     }
 }
@@ -80,6 +84,7 @@ impl Engine for TransientDriftEngine {
         query: &ViewQuery,
         initial: &ZSet,
     ) -> Result<(), EngineError> {
+        self.group_arity = query.group_by.len();
         self.inner.create_view(schema, query, initial)
     }
 
@@ -93,18 +98,108 @@ impl Engine for TransientDriftEngine {
         if self.calls != self.drift_at {
             return Ok(truth);
         }
-        // 只把第一行最后一个聚合列 +1：行宽、group key、权重全部不变。
+        // item 21（deferred minor）：污染第一行的聚合列区间（`group_arity..`,
+        // group key 本身绝不碰）。找到该区间里第一个 Int 并 +1；若聚合列
+        // 全是 Null（SUM 在零个非 NULL 输入下的语义），把最后一个聚合列从
+        // Null 改成 Int(0)。两条路径都保证一定产生污染——不像之前那样只在
+        // "首行末列恰好是 Int" 这个数据形状下才生效：若某个 seed 下首行末
+        // 列恰为 Null 就完全不污染，而这个引擎存在的唯一理由（证明逐批
+        // oracle 比对能抓到中途漂移，spec §9.1）会因此静默失效。
         let mut drifted = ZSet::new();
         for (i, (row, weight)) in truth.iter().enumerate() {
             let mut values = row.0.clone();
             if i == 0 {
-                if let Some(Value::Int(n)) = values.last() {
-                    let bumped = *n + 1;
-                    *values.last_mut().expect("刚判断过非空") = Value::Int(bumped);
+                let agg_start = self.group_arity.min(values.len());
+                let first_int =
+                    (agg_start..values.len()).find(|&j| matches!(values[j], Value::Int(_)));
+                match first_int {
+                    Some(j) => {
+                        if let Value::Int(n) = values[j] {
+                            values[j] = Value::Int(n + 1);
+                        }
+                    }
+                    None => {
+                        if let Some(last) = values.len().checked_sub(1).filter(|&l| l >= agg_start)
+                        {
+                            values[last] = Value::Int(0);
+                        }
+                    }
                 }
             }
             drifted.update(Row::new(values), *weight);
         }
         Ok(drifted)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Agg, AggFn, Column, ColumnType, Predicate};
+
+    fn schema() -> Schema {
+        Schema {
+            table: "orders".into(),
+            columns: vec![
+                Column {
+                    name: "region".into(),
+                    ty: ColumnType::Text,
+                    nullable: false,
+                },
+                Column {
+                    name: "amount".into(),
+                    ty: ColumnType::Integer,
+                    nullable: true,
+                },
+            ],
+        }
+    }
+
+    fn sum_query() -> ViewQuery {
+        ViewQuery {
+            group_by: vec![0],
+            aggs: vec![Agg {
+                func: AggFn::Sum,
+                column: Some(1),
+            }],
+            predicate: Predicate::None,
+        }
+    }
+
+    /// item 21 的直接守卫：SUM 在零个非 NULL 输入下为 Null——旧实现只检查
+    /// "末列是不是 Int"，这种情况下什么也不做，污染悄悄消失。新实现必须
+    /// 把这个 Null 聚合列改成 Int(0)，让污染在这条路径上也一定发生。
+    #[test]
+    fn drift_still_happens_when_the_aggregate_column_is_null() {
+        let base = ZSet::from_rows([(Row::new(vec![Value::Text("a".into()), Value::Null]), 1)]);
+        let mut engine = TransientDriftEngine::new(1);
+        engine.create_view(&schema(), &sum_query(), &base).unwrap();
+        let truth = Row::new(vec![Value::Text("a".into()), Value::Null]);
+
+        let drifted = engine.materialize().unwrap();
+        assert_ne!(
+            drifted.weight_of(&truth),
+            1,
+            "SUM 全 NULL 时污染必须仍然发生，不能因为末列是 Null 就放过"
+        );
+        assert_eq!(
+            drifted.weight_of(&Row::new(vec![Value::Text("a".into()), Value::Int(0)])),
+            1,
+            "全 Null 聚合列的污染约定是把它改成 Int(0)"
+        );
+    }
+
+    /// 非 Null 情况保持原行为：找到聚合列区间里第一个 Int 并 +1。
+    #[test]
+    fn drift_bumps_the_first_int_aggregate_column() {
+        let base = ZSet::from_rows([(Row::new(vec![Value::Text("a".into()), Value::Int(5)]), 1)]);
+        let mut engine = TransientDriftEngine::new(1);
+        engine.create_view(&schema(), &sum_query(), &base).unwrap();
+
+        let drifted = engine.materialize().unwrap();
+        assert_eq!(
+            drifted.weight_of(&Row::new(vec![Value::Text("a".into()), Value::Int(6)])),
+            1
+        );
     }
 }

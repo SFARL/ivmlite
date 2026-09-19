@@ -147,6 +147,26 @@ mod tests {
         );
     }
 
+    /// item 12（deferred minor）：`initial` 为空时 live 集合从空开始，且
+    /// 每次 insert 只会往 live 里加，不会自然变空——真正会命中"live 为空"
+    /// 守卫的只有第一次迭代。删掉那条守卫（`gen_ops` 里的
+    /// `if live.is_empty() { 0 } else { ... }`）本该在这里 panic，但用一个
+    /// 空 `initial` 加大 `count` 只测得到第一步，之后 live 已非空——所以
+    /// 这条测试断言的是"第一步在 live 为空时必须是 Insert 且不 panic"。
+    #[test]
+    fn empty_live_set_only_ever_produces_an_insert_first() {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(123);
+        let schema = orders();
+        let domain = Domain::default();
+        let ops = gen_ops(&mut rng, &schema, &domain, &[], 20);
+        assert_eq!(ops.len(), 20);
+        assert!(
+            matches!(ops[0], Op::Insert(_)),
+            "live 集合为空时第一步必须是 Insert，实得 {:?}",
+            ops[0]
+        );
+    }
+
     #[test]
     fn sequence_is_reproducible_from_seed() {
         let schema = orders();

@@ -228,6 +228,37 @@ mod tests {
         );
     }
 
+    /// item 13（deferred minor，与 I4 同源）：`IsNotNull` 谓词此前没有任何
+    /// 行为覆盖——只有 `to_sql` 渲染，没有断言它真的把 NULL 行过滤掉。
+    #[test]
+    fn is_not_null_predicate_filters_out_null_rows() {
+        let mut e = NaiveRecompute::new();
+        let q = ViewQuery {
+            group_by: vec![0],
+            aggs: vec![Agg {
+                func: AggFn::Count,
+                column: None,
+            }],
+            predicate: Predicate::IsNotNull { column: 0 },
+        };
+        let base = ZSet::from_rows([
+            (row("a", 10), 1),
+            (Row::new(vec![Value::Null, Value::Int(1)]), 1),
+        ]);
+        e.create_view(&schema(), &q, &base).unwrap();
+
+        let got = e.materialize().unwrap();
+        assert_eq!(
+            got.weight_of(&Row::new(vec![Value::Text("a".into()), Value::Int(1)])),
+            1
+        );
+        assert_eq!(
+            got.len(),
+            1,
+            "NULL 分组必须被 IsNotNull 过滤掉，不应出现在输出中"
+        );
+    }
+
     /// spec §6.1 的 NULL 语义契约。注意这与"组为空"不同：
     /// 组非空（COUNT(*) 为正），但被求和的列全是 NULL，此时 SUM 为 NULL。
     #[test]
