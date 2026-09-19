@@ -2298,7 +2298,7 @@ git commit -m "feat(test): 差分测试驱动与批次无关性检查"
 
 **Interfaces:**
 - Consumes: 前面全部
-- Produces: `NoRetractionEngine::new() -> NoRetractionEngine`（实现 `Engine`）、`shrink<E, F>(&TestCase, F) -> TestCase where E: Engine, F: Fn() -> E`、`save_regression(&Path, &TestCase) -> std::io::Result<PathBuf>`、`load_regressions(&Path) -> std::io::Result<Vec<TestCase>>`；并使 `ivmlite-core` 获得可选的 `serde` feature
+- Produces: `NoRetractionEngine::new() -> NoRetractionEngine`、`TransientDriftEngine::new(drift_at: usize) -> TransientDriftEngine`（两者均实现 `Engine`）、`shrink<E, F>(&TestCase, F) -> TestCase where E: Engine, F: Fn() -> E`、`save_regression(&Path, &TestCase) -> std::io::Result<PathBuf>`、`load_regressions(&Path) -> std::io::Result<Vec<TestCase>>`；并使 `ivmlite-core` 获得可选的 `serde` feature
 
 > **这是 M0 的完成判定。** 不验证"测试框架真的会红"，后续拿到的绿全是假绿。
 
@@ -2353,6 +2353,74 @@ impl Engine for NoRetractionEngine {
         Ok(self.accumulated.clone())
     }
 }
+
+/// 在第 `drift_at` 次 `materialize` 返回一个被污染、但**形式合法**的状态，
+/// 之后恢复正确。
+///
+/// 它只为证明一件事：逐批比对 oracle 抓得到「中途算错、形式合法、之后自愈」
+/// 的实现，而只比最终状态抓不到。这是 spec §9.1 为逐批比对付出
+/// O(n × 基表规模) 代价的**唯一证据**——没有这个反例，那笔开销就没有依据。
+///
+/// 污染方式刻意保持全部不变量成立：权重仍为 1、行宽不变、group key（前缀列）
+/// 不变，所以 `check_invariants` 会放行。只有 oracle 比对能抓到它。
+#[derive(Debug)]
+pub struct TransientDriftEngine {
+    inner: NaiveRecompute,
+    calls: usize,
+    drift_at: usize,
+}
+
+impl TransientDriftEngine {
+    /// `drift_at` 按 `materialize` 的调用序数计，从 1 开始。
+    /// 在 `run` 中第 1 次是 bootstrap，第 2 次是第一批之后。
+    pub fn new(drift_at: usize) -> Self {
+        Self { inner: NaiveRecompute::new(), calls: 0, drift_at }
+    }
+}
+
+impl Engine for TransientDriftEngine {
+    fn create_view(
+        &mut self,
+        schema: &Schema,
+        query: &ViewQuery,
+        initial: &ZSet,
+    ) -> Result<(), EngineError> {
+        self.inner.create_view(schema, query, initial)
+    }
+
+    fn apply(&mut self, delta: &ZSet) -> Result<(), EngineError> {
+        self.inner.apply(delta)
+    }
+
+    fn materialize(&mut self) -> Result<ZSet, EngineError> {
+        self.calls += 1;
+        let truth = self.inner.materialize()?;
+        if self.calls != self.drift_at {
+            return Ok(truth);
+        }
+        // 只把第一行最后一个聚合列 +1：行宽、group key、权重全部不变。
+        let mut drifted = ZSet::new();
+        for (i, (row, weight)) in truth.iter().enumerate() {
+            let mut values = row.0.clone();
+            if i == 0 {
+                if let Some(Value::Int(n)) = values.last() {
+                    let bumped = *n + 1;
+                    *values.last_mut().expect("刚判断过非空") = Value::Int(bumped);
+                }
+            }
+            drifted.update(Row::new(values), *weight);
+        }
+        Ok(drifted)
+    }
+}
+```
+
+`buggy.rs` 顶部的 `use` 需要相应扩展：
+
+```rust
+use ivmlite_core::{Row, Value, ZSet};
+
+use crate::{Engine, EngineError, NaiveRecompute, Schema, ViewQuery};
 ```
 
 - [ ] **Step 2: 写 shrinker**
@@ -2530,7 +2598,8 @@ serde = ["dep:serde"]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 ```
 
-`crates/ivmlite-test/Cargo.toml` 改依赖：
+`crates/ivmlite-test/Cargo.toml` 改依赖（`ivmlite-core` 已是普通依赖，
+集成测试 `tests/` 同样可用，无需额外 dev-dependency）：
 
 ```toml
 ivmlite-core = { workspace = true, features = ["serde"] }
@@ -2596,7 +2665,7 @@ pub fn load_regressions(dir: &Path) -> std::io::Result<Vec<TestCase>> {
 mod buggy;
 mod regression;
 mod shrink;
-pub use buggy::NoRetractionEngine;
+pub use buggy::{NoRetractionEngine, TransientDriftEngine};
 pub use regression::{load_regressions, save_regression};
 pub use shrink::shrink;
 ```
@@ -2606,9 +2675,11 @@ pub use shrink::shrink;
 `crates/ivmlite-test/tests/harness_catches_bugs.rs`：
 
 ```rust
+use ivmlite_core::ZSet;
 use ivmlite_test::{
-    check_batch_invariance, gen_case, load_regressions, run, save_regression, seed_range, shrink,
-    Batching, Column, ColumnType, Domain, NaiveRecompute, NoRetractionEngine, Schema,
+    check_batch_invariance, gen_case, load_regressions, recompute_via_sqlite, run, save_regression,
+    seed_range, shrink, Batching, Column, ColumnType, Domain, Engine, NaiveRecompute,
+    NoRetractionEngine, Schema, TransientDriftEngine,
 };
 
 /// `amount` 刻意可空：否则"SUM 的非 NULL 输入为零行"这条路径在随机测试里
@@ -2654,6 +2725,55 @@ fn saved_regressions_still_pass() {
         let mut engine = NaiveRecompute::new();
         run(&mut engine, &case).unwrap_or_else(|f| panic!("回归用例失败: {f}"));
     }
+}
+
+/// 证明逐批比对 oracle 有独立价值：抓到「中途算错、形式合法、之后自愈」的实现。
+///
+/// 这是 spec §9.1 为逐批比对付出 O(n × 基表规模) 代价的唯一证据。
+/// 断言分两半：run 必须在**非 bootstrap 的某个中间点**失败；而同一个引擎
+/// 手工重放到底之后，最终状态与 oracle **一致**——「末尾正确 + run 失败」
+/// 正说明只比最终状态会漏掉它。
+#[test]
+fn per_batch_oracle_comparison_catches_transient_drift() {
+    let schema = schema();
+    let domain = Domain::default();
+    let case = gen_case(3, &schema, &domain, 25, 150, Batching::Chunks(5));
+
+    // drift_at = 2：第 1 次 materialize 是 bootstrap，第 2 次是第一批之后
+    let mut engine = TransientDriftEngine::new(2);
+    let failure = run(&mut engine, &case).expect_err("逐批比对必须抓到中途漂移");
+    assert!(
+        failure.stage.starts_with("diff["),
+        "应当在 oracle 比对处失败，实得 stage={}",
+        failure.stage
+    );
+    assert_ne!(
+        failure.stage, "diff[bootstrap]",
+        "漂移设定在第一批之后，不应在 bootstrap 处报出"
+    );
+
+    // 手工重放到底：证明这个引擎的最终状态是正确的
+    let mut settled = TransientDriftEngine::new(2);
+    let mut base = ZSet::from_rows(case.initial.iter().cloned().map(|r| (r, 1)));
+    settled.create_view(&case.schema, &case.query, &base).unwrap();
+    let _ = settled.materialize().unwrap(); // call 1: bootstrap
+
+    let mut all = ZSet::new();
+    for op in &case.ops {
+        for (row, w) in op.to_delta() {
+            all.update(row.clone(), w);
+            base.update(row, w);
+        }
+    }
+    settled.apply(&all).unwrap();
+    let _ = settled.materialize().unwrap(); // call 2: 被污染的那次
+    let settled_state = settled.materialize().unwrap(); // call 3: 已恢复
+
+    let want = recompute_via_sqlite(&case.schema, &case.query, &base).unwrap();
+    assert_eq!(
+        settled_state, want,
+        "末尾状态必须正确——这正是只比最终状态会漏掉这个 bug 的原因"
+    );
 }
 
 /// M0 完成判定其一：框架必须抓到植入的 bug。
