@@ -3485,14 +3485,14 @@ pub fn write_svg(
     let sy = |y: f64| H - PAD - (y / y1) * (H - 2.0 * PAD);
 
     let mut svg = format!(
-        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" font-family="sans-serif" font-size="12">
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" font-family="sans-serif" font-size="12">
 <rect width="{W}" height="{H}" fill="white"/>
 <text x="{tx}" y="24" text-anchor="middle" font-size="15">apply + maintain &#183; views={fixed_views} &#183; batch={fixed_batch} &#183; groups={fixed_card}</text>
 <line x1="{PAD}" y1="{by}" x2="{rx}" y2="{by}" stroke="#333"/>
 <line x1="{PAD}" y1="{PAD}" x2="{PAD}" y2="{by}" stroke="#333"/>
 <text x="{tx}" y="{lx}" text-anchor="middle">base_rows (log10)</text>
 <text x="16" y="{PAD}" fill="#333">{y1:.1} ms</text>
-"#,
+"##,
         tx = W / 2.0,
         by = H - PAD,
         rx = W - PAD,
