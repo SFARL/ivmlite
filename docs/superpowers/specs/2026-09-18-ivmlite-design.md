@@ -80,8 +80,10 @@ ivmlite/
 │   ├── ivmlite-core/     纯 Rust，不依赖 rusqlite / libsqlite3
 │   ├── ivmlite-sql/      SQL → plan IR（SQLite dialect + SQLite 语义）
 │   ├── ivmlite-sqlite/   cdylib：扩展入口、trigger、shadow table、vtab
-│   └── ivmlite-test/     差分测试框架（lib + bin，进 CI）
-├── benches/
+│   ├── ivmlite-test/     差分测试框架（lib + bin，进 CI）
+│   ├── ivmlite-workload/ 可移植 benchmark workload（不依赖本项目其他 crate）
+│   └── ivmlite-bench/    benchmark runner 与基线
+├── workloads/
 └── docs/
 ```
 
@@ -111,7 +113,7 @@ ivmlite/
 
 **`ivmlite-sqlite`**
 - `sqlite3_ivmlite_init` 扩展入口
-- `ivm_create_view()` / `ivm_refresh()` 标量函数
+- 控制面：`CREATE VIRTUAL TABLE ... USING ivm(...)` 的 vtab 模块与 `INSERT INTO v(v)` 命令通道（§8.3 已由 M-1 定稿；**不是**标量函数——方案 A 已被实测排除）
 - trigger 与 delta 表的 DDL 生成
 - shadow table 读写、`Arrangement` 的 SQLite 实现
 - `Catalog` 的 `PRAGMA table_info` 实现
@@ -155,11 +157,11 @@ enum Plan {
     Filter    { input: Box<Plan>, predicate: Expr },
     Project   { input: Box<Plan>, exprs: Vec<Expr> },
     Aggregate { input: Box<Plan>, group_by: Vec<Expr>, aggs: Vec<AggSpec> },
-    Join      { left: Box<Plan>, right: Box<Plan>, on: Vec<(Expr, Expr)> },  // M2
+    Join      { left: Box<Plan>, right: Box<Plan>, on: Vec<(Expr, Expr)> },  // M1a
 }
 ```
 
-v0 实现前四个，`Join` 占位但不实现。
+M0 未实现任何算子（M0 没有引擎）。M1a 实现全部五个：先 `Scan`/`Filter`/`Project`/`Aggregate`（检查点：单表差分跑绿），再 `Join`。
 
 #### v0 的根算子必须是带非空 GROUP BY 的 Aggregate
 
