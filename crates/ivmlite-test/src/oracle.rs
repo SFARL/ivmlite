@@ -2,7 +2,7 @@ use ivmlite_core::{Row, Value, ZSet};
 use rusqlite::types::{ToSqlOutput, ValueRef};
 use rusqlite::{Connection, ToSql};
 
-use crate::{EngineError, Schema, ViewQuery};
+use crate::{create_table_sql, view_query_to_sql, EngineError, Schema, ViewQuery};
 
 struct Bound<'a>(&'a Value);
 
@@ -38,7 +38,7 @@ pub fn recompute_via_sqlite(
     base: &ZSet,
 ) -> Result<ZSet, EngineError> {
     let conn = Connection::open_in_memory().map_err(|e| EngineError(e.to_string()))?;
-    conn.execute_batch(&schema.create_table_sql())
+    conn.execute_batch(&create_table_sql(schema))
         .map_err(|e| EngineError(e.to_string()))?;
 
     let placeholders = vec!["?"; schema.arity()].join(", ");
@@ -73,7 +73,7 @@ pub fn recompute_via_sqlite(
         }
     }
 
-    let sql = query.to_sql(schema);
+    let sql = view_query_to_sql(query, schema);
     let mut stmt = conn.prepare(&sql).map_err(|e| EngineError(e.to_string()))?;
     let arity = query.output_arity();
 

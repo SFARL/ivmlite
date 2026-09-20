@@ -3,8 +3,8 @@ use rand::rngs::StdRng;
 use rand::SeedableRng;
 
 use crate::{
-    check_invariants, enumerate, gen_ops, gen_rows, recompute_via_sqlite, Domain, Engine, Op,
-    Schema, ViewQuery,
+    check_invariants, enumerate, gen_ops, gen_rows, recompute_via_sqlite, view_query_to_sql,
+    Domain, Engine, Op, Schema, ViewQuery,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -134,7 +134,7 @@ pub fn run<E: Engine>(engine: &mut E, case: &TestCase) -> Result<(), Failure> {
                 &format!("diff[{stage}]"),
                 format!(
                     "引擎与 oracle 不一致\n  query: {}\n  引擎: {:?}\n  oracle: {:?}",
-                    case.query.to_sql(&case.schema),
+                    view_query_to_sql(&case.query, &case.schema),
                     got,
                     want
                 ),
