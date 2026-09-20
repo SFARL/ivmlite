@@ -1,0 +1,55 @@
+{
+  "seed": 0,
+  "schema": {
+    "table": "orders",
+    "columns": [
+      {
+        "name": "region",
+        "ty": "Text",
+        "nullable": true
+      },
+      {
+        "name": "amount",
+        "ty": "Integer",
+        "nullable": true
+      }
+    ]
+  },
+  "query": {
+    "group_by": [
+      0
+    ],
+    "aggs": [
+      {
+        "func": "Count",
+        "column": null
+      }
+    ],
+    "predicate": "None"
+  },
+  "initial": [
+    [
+      {
+        "Text": "v4"
+      },
+      {
+        "Int": 3
+      }
+    ]
+  ],
+  "ops": [
+    {
+      "Insert": [
+        {
+          "Text": "v4"
+        },
+        {
+          "Int": 5
+        }
+      ]
+    }
+  ],
+  "batching": {
+    "Chunks": 5
+  }
+}

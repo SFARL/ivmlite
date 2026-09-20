@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = ["crates/ivmlite-bench", "crates/ivmlite-core", "crates/ivmlite-test", "crates/ivmlite-workload"]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.95"
+license = "MIT"
+repository = "https://github.com/SFARL/ivmlite"
+
+[workspace.dependencies]
+ivmlite-core = { path = "crates/ivmlite-core" }
+rusqlite = { version = "0.40", features = ["bundled"] }
+rand = "0.10"

@@ -1,0 +1,35 @@
+name = "m0-baseline"
+seed = 47034
+
+[schema]
+table = "orders"
+ddl = """
+CREATE TABLE orders(
+    id     INTEGER PRIMARY KEY,
+    region TEXT    NOT NULL,
+    amount INTEGER NOT NULL
+) STRICT"""
+
+[data]
+base_rows = 100000
+# group 基数：决定 IVM 赢不赢的首要参数（spec §10.1）
+group_cardinality = 1000
+amount_max = 200
+# M0 固定均匀分布；Zipf 排在 M2（spec §10.6）
+distribution = "uniform"
+
+[updates]
+batch_size = 100
+delete_ratio = 0.33
+# M0 固定无局部性；热点更新排在 M2（spec §10.6）
+locality = "uniform"
+
+# 视图形状受限于表达能力最弱的对照组——手写 trigger（spec §10.3 第 3 条）。
+# 阈值是让各视图彼此不同的手段，trigger 侧用 WHEN 子句表达同一谓词。
+[[views]]
+id = 0
+threshold = 0
+
+[[views]]
+id = 1
+threshold = 7
