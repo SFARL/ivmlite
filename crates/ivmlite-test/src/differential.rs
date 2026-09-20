@@ -1,4 +1,6 @@
-use ivmlite_core::{Row, ZSet};
+use std::collections::BTreeMap;
+
+use ivmlite_core::{Database, Row, ZSet};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
@@ -127,7 +129,9 @@ pub fn run<E: Engine>(engine: &mut E, case: &TestCase) -> Result<(), Failure> {
             .map_err(|e| fail(&format!("materialize[{stage}]"), e.to_string()))?;
         check_invariants(&got, &case.query)
             .map_err(|e| fail(&format!("invariants[{stage}]"), e))?;
-        let want = recompute_via_sqlite(&case.schema, &case.query, base)
+        let db = Database::single(case.schema.clone());
+        let bases = BTreeMap::from([(case.schema.table.clone(), base.clone())]);
+        let want = recompute_via_sqlite(&db, &case.query, &bases)
             .map_err(|e| fail(&format!("oracle[{stage}]"), e.to_string()))?;
         if got != want {
             return Err(fail(

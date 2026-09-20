@@ -6,7 +6,7 @@ pub enum ColumnType {
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Column {
     pub name: String,
     pub ty: ColumnType,
@@ -14,7 +14,7 @@ pub struct Column {
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Schema {
     pub table: String,
     pub columns: Vec<Column>,

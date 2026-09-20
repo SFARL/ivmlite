@@ -55,6 +55,8 @@ M0 结束时的最终全分支评审用**变异测试**——把实现改坏、�
 | §9.1 基表状态出现负权重须报错而非静默 | 改为跳过负权重行 | `rejects_negative_weights_in_base_state` | **已验证** |
 | §9.1 输出行宽须等于 `output_arity()` | 删掉宽度检查分支 | `rejects_wrong_row_width` | **已验证** |
 | §9.1 group key 不得重复 | 删掉重复检查 | `rejects_duplicate_group_keys` | **已验证** |
+| §9.4 oracle 须建出 `Database` 声明的每一张表，而非只建查询用到的那张 | 把建表循环限制成只处理 `db.tables()[0]` | `builds_every_table_in_the_database` | **已验证** |
+| §9.4 声明了表却没给基表状态必须报错，而非静默当空表 | 缺表时退回 `unwrap_or(&ZSet::new())` 之类的静默兜底 | `missing_base_state_for_a_declared_table_is_an_error` | **已验证** |
 
 ## ivmlite-test：驱动与接缝
 

@@ -1,9 +1,10 @@
-use ivmlite_core::{Row, ZSet};
+use ivmlite_core::{Database, Row, ZSet};
 use ivmlite_test::{
     check_batch_invariance, gen_case, is_legal, load_regressions, recompute_via_sqlite, run,
     save_regression, seed_range, shrink, Batching, Column, ColumnType, Domain, Engine,
     NaiveRecompute, NoRetractionEngine, Schema, TransientDriftEngine,
 };
+use std::collections::BTreeMap;
 
 /// `amount` 刻意可空：否则"SUM 的非 NULL 输入为零行"这条路径在随机测试里
 /// 永远走不到，spec §6.1 的 NULL 语义契约就只有单元测试覆盖，没有差分覆盖。
@@ -102,7 +103,9 @@ fn per_batch_oracle_comparison_catches_transient_drift() {
     let _ = settled.materialize().unwrap(); // call 2: 被污染的那次
     let settled_state = settled.materialize().unwrap(); // call 3: 已恢复
 
-    let want = recompute_via_sqlite(&case.schema, &case.query, &base).unwrap();
+    let db = Database::single(case.schema.clone());
+    let bases = BTreeMap::from([(case.schema.table.clone(), base.clone())]);
+    let want = recompute_via_sqlite(&db, &case.query, &bases).unwrap();
     assert_eq!(
         settled_state, want,
         "末尾状态必须正确——这正是只比最终状态会漏掉这个 bug 的原因"
