@@ -6,6 +6,7 @@
   - [`2026-09-18-ivmlite-design.md`](superpowers/specs/2026-09-18-ivmlite-design.md) — 总体设计
 - **`superpowers/plans/`** — 实施计划。
   - [`2026-09-18-m0-test-and-bench-harness.md`](superpowers/plans/2026-09-18-m0-test-and-bench-harness.md) — M0：测试与基准骨架
+  - [`2026-09-20-m1a-phase1-multi-table-harness.md`](superpowers/plans/2026-09-20-m1a-phase1-multi-table-harness.md) — M1a Phase 1：多表框架重构
 - [`mutation-gates.md`](mutation-gates.md) — **变异门禁表**：spec 要求 → 变异 → 会红的测试。M1 新增的不变量必须在此登记。
 - **`bench/`** — benchmark 的结果、曲线与结论（[README](bench/README.md)）。
 - **`adr/`** — 架构决策记录（Architecture Decision Record）。
