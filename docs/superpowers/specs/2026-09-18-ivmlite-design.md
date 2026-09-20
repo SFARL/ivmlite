@@ -282,7 +282,7 @@ trait Arrangement {
 
 > **实现注记**：此处刻意使用 `Box<dyn Iterator>` 而非 RPITIT（`-> impl Iterator`）。`ivmlite-core` 的算子需要持有由 `ivmlite-sqlite` 提供的 `Arrangement` 实现，若用 RPITIT 则该 trait 不是 object-safe，无法 `dyn Arrangement`，会迫使类型参数在整个算子树上传播。装箱的迭代器在 v0（状态本就走 SQLite 表、每次访问都有 IO）中开销可忽略。若 M4 引入内存 arrangement 后测出装箱成为瓶颈，再改为泛型参数化——届时算子树已稳定，改动可控。
 
-> **约束：v0 不允许做出任何会导致 M2 加入 join 时返工的设计决定。** `Arrangement` 的 key → 多值形状是这条约束的主要落点。
+> **约束：M0 不允许做出任何会导致加入 join 时返工的设计决定。** `Arrangement` 的 key → 多值形状是这条约束的主要落点。（join 原排在 M2，现已提前到 M1a——这条约束当初就是为它写的，提前只是让它更早兑现。）
 
 trait 定义在 `ivmlite-core`，实现由 `ivmlite-sqlite` 提供（v0 = shadow table）。
 
@@ -508,7 +508,7 @@ fn materialize(&mut self) -> Result<ZSet, EngineError>;
 
 **`refresh` 与 `apply` 分离。** §8.2 规定显式 refresh 是永久 API 而非临时妥协，§9.1 的批次无关性也只有在维护时刻可控时才可测。参照实现 `NaiveRecompute` 因此**真的**分两阶段：`apply` 只堆 pending，`refresh` 才并进 base。若 `apply` 急切合并，`refresh` 便成空操作，任何忽略该契约的引擎都不会被抓到。
 
-**`apply` 带表名。** §6.3 禁止 v0 做出会让 M2 的 join 返工的决定，而 join 需要多个基表。`materialize` 刻意**不**带 view 标识：多视图要到 M4 的级联视图才出现且形态未定，现在加属投机；多表是已排期的已知需求，加一个参数是当下最便宜的时刻。
+**`apply` 带表名。** §6.3 禁止做出会让 join 返工的决定，而 join 需要多个基表（join 现排在 M1a）。`materialize` 刻意**不**带 view 标识：多视图要到 M4 的级联视图才出现且形态未定，现在加属投机；多表是已排期的已知需求，加一个参数是当下最便宜的时刻。
 
 ---
 
@@ -683,7 +683,7 @@ IVM 耗时应随 **Δ 大小**增长、几乎不随**基表规模**增长；朴�
 
 - **数据分布是均匀的，不是 Zipf。** 真实数据里少数热 group 吃掉大部分更新。这会显著改变缓存行为，也直接影响 M4 内存 arrangement 的收益评估——均匀分布下内存缓存的价值被低估。
 - **更新是均匀散开的，没有局部性。** 真实负载的更新集中打热 group。
-- **无法运行任何标准基准的查询。** TPC-H 的查询需要 join，Nexmark 的查询大多需要 join 与窗口，而 v0 只有单表 GROUP BY。因此 M0/M1 只能用合成数据，跨系统对比在 M2 之前无法成立。
+- **无法运行任何标准基准的查询。** TPC-H 的查询需要 join，Nexmark 的查询大多需要 join 与窗口，而 M0 的引擎侧是空的。M0 只能用合成数据；join 落地在 M1a，但跨系统对比还需要真实的 SQLite 扩展（M1b），因此在 M2 之前无法成立。
 
 ### 10.7 标准基准：M2 起接入 Nexmark
 
@@ -739,18 +739,32 @@ M-1 与 M0 相互独立（M0 是纯 Rust 的测试与 benchmark 骨架，不碰�
 - **bootstrap 的水位原子性**（§7.3）：高水位与基表快照必须在同一读事务内
 - **delta 表 GC**（§7.2）：`__ivm_dep` + 最落后视图水位 + 视图全部 DROP 后清理 trigger 与 delta 表
 
-**v0 限制**：根算子必须是带非空 GROUP BY 的 Aggregate（§5.2）；无全局聚合；STRICT table only 且拒绝 `ANY` 列；BINARY collation only；group-by key 只能是裸列；无浮点聚合；整数溢出未定义；比较运算符限于白名单；显式 refresh；单表（无 join）；INSERT / DELETE / UPDATE 全部支持。
+**v0 限制**：根算子必须是带非空 GROUP BY 的 Aggregate（§5.2）；无全局聚合；STRICT table only 且拒绝 `ANY` 列；BINARY collation only；group-by key 只能是裸列；无浮点聚合；整数溢出未定义；比较运算符限于白名单；显式 refresh；INSERT / DELETE / UPDATE 全部支持。
 
 > **完成判定：M0 的全部测试绿；§10.4 那张面跑出来；写放大有明确数字。数字难看也算完成。**
 
-### M2 — Join（第一个可辩护的里程碑）
+#### M1 拆成两段：M1a 纯 Rust 引擎，M1b SQLite 扩展
 
-- Join 算子 + 两侧 arrangement
-- query 生成器扩展到两表
+原先 M1 是一整块，且把 join 推到 M2。两处都改了：
+
+**拆的理由**：`Engine` trait（§8.5）**不要求 SQLite**。一个纯 Rust 的引擎实现它就能立刻接进 M0 的差分测试框架跑全套——穷举 query × 有偏更新序列 × 逐批 oracle 比对 × 批次无关性。所以 M1a 结束时会有一个**已被验证正确、且一行 `unsafe` 都没碰**的增量引擎。反过来一次做完，FFI 的问题会和算子的问题纠缠，而 M1b 是全项目唯一有 `unsafe` 的地方。
+
+- **M1a**：plan IR、`Arrangement` trait 与内存实现、Filter / Project / Aggregate、**delta consolidation**、**Join**。纯 Rust，接入 M0 的 harness。
+- **M1b**：`ivmlite-sql`（`sqlparser-rs` → IR、Catalog、子集外硬报错）、`ivmlite-sqlite`（cdylib、§8.3 定稿的控制面、trigger DDL、shadow table）、bootstrap 水位原子性（§7.3）、delta GC（§7.2）。
+
+**join 提前到 M1a 的理由**：M0 已按 §6.3 为它付过账——`Arrangement::get` 返回迭代器而非 `Option`、`Plan::Join` 占位已在、`apply` 已带表名。剩下的成本主要落在**测试框架的多表化**而非引擎，而那个重构越晚做要保全的代码越多。差分机制本身不在乎有几张表：单表就是只有一张表的多表用例。
+
+**M1a 内部设一个检查点**：先完成多表框架重构并让单表引擎跑绿，再上 join。这样 join 出 bug 时能二分定位（是 join 引入的，还是框架重构就错了），而不必同时调两类 bug。
+
+### M2 — 跨系统验证与标准基准（M1b 之后）
+
+join 已移入 M1a，本里程碑只保留需要真实 SQLite 扩展才能做的部分：
+
 - Turso 接入，一次 setup 兼顾两件事：**正确性交叉验证**（§9.1 第四层）与**性能同行对比**（§10.2）
-- 接入 **Nexmark**（§10.7）——join 落地后才具备运行条件
+- 接入 **Nexmark**（§10.7）
 - 数据分布扩展为 Zipf，更新扩展出局部性（消除 §10.6 的前两条简化）
-- 观察并记录 join 状态爆炸（两侧都需保存全量）
+- 观察并记录 join 状态爆炸（两侧都需保存全量）——M1a 会先在纯 Rust 侧看到它
+- 用实测数字回答 §9.2 第 4 条悬置的问题：差分 schema 加宽到每表 3 列是否值 8 倍规模
 
 ### M3 — 多连接语义与维护策略
 
