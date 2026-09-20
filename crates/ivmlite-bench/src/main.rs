@@ -4,21 +4,8 @@ mod plot;
 use std::path::Path;
 
 use baseline::{apply, install_trigger_view, recompute_all, seed_base, Baseline};
-use ivmlite_workload::{ViewSpec, Workload};
+use ivmlite_workload::Workload;
 use rusqlite::Connection;
-
-const BASE_ROWS: [usize; 3] = [10_000, 100_000, 1_000_000];
-const BATCH_SIZES: [usize; 4] = [1, 10, 100, 1000];
-const VIEW_COUNTS: [usize; 4] = [1, 10, 50, 200];
-const GROUP_CARDINALITIES: [usize; 3] = [10, 1_000, 100_000];
-
-/// 扫 group 基数时固定的视图数，扫视图数时固定的 group 基数。
-///
-/// 四维全交叉是 144 个配置，过大。spec §10.1 约定这两个固定值，于是两次扫描
-/// 各 36 个配置，且都穿过同一个共同点 (views=10, cardinality=1k)，两组图可以
-/// 对齐着读。
-const FIXED_VIEWS: usize = 10;
-const FIXED_CARDINALITY: usize = 1_000;
 
 #[derive(Debug, Clone)]
 pub struct Record {
@@ -31,69 +18,36 @@ pub struct Record {
     pub maintain_ms: f64,
 }
 
-/// 从基准 workload 派生出一个具体配置。
-///
-/// 视图形状受限于表达能力最弱的对照组——手写 trigger（spec §10.3 第 3 条），
-/// 因此这里只改视图**数量**与阈值，不改形状；三条基线拿到的是同一批视图。
-///
-/// 额外一条（ruling-review #2）：这是 clone + 改字段的构造路径，绕过了
-/// `Workload::load` 里的 `validate()`。调用方（`main` 里的两个扫描循环）
-/// 已经在调用前用同一条 `card > rows` 规则跳过无意义格子，但那是"这个格子
-/// 不测"的矩阵层面判断，语义上不等于"这个配置合法"——`card > rows` 这条
-/// 规则本身只应该有一个家。这里返回前显式调用 `validate()`，让它成为该
-/// 规则唯一的执行点；`main` 里的 `if card > rows { continue }` 仍然保留,
-/// 因为它决定的是矩阵要不要测这一格，不是配置合不合法。
-fn variant(base: &Workload, base_rows: usize, cardinality: usize, views: usize) -> Workload {
-    let mut w = base.clone();
-    w.data.base_rows = base_rows;
-    w.data.group_cardinality = cardinality;
-    w.views = (0..views)
-        .map(|i| ViewSpec {
-            id: i,
-            threshold: (i as i64 * 7) % 150,
-        })
-        .collect();
-    w.validate()
-        .unwrap_or_else(|e| panic!("variant() 构造出了非法 workload: {e}"));
-    w
-}
-
-fn run_one(
-    base: &Workload,
-    b: Baseline,
-    rows: usize,
-    card: usize,
-    views: usize,
-    batch: usize,
-) -> rusqlite::Result<Record> {
-    let mut w = variant(base, rows, card, views);
-    w.updates.batch_size = batch;
-
+/// 跑一个已经完全具体化的矩阵格子。`cell` 由 `Workload::cells()` 产出，
+/// 此函数不再改动它——`base_rows` / `group_cardinality` / `batch_size` /
+/// `views` 四个维度全部由 `ivmlite-workload` 决定（spec §10.3 第 7 条），
+/// `main.rs` 只负责按基线跑它、计时、记录结果。
+fn run_one(b: Baseline, cell: &Workload) -> rusqlite::Result<Record> {
     let conn = Connection::open_in_memory()?;
 
     // ---- 以下全部不计时：建立初始状态 ----
-    seed_base(&conn, &w)?;
+    seed_base(&conn, cell)?;
     if b == Baseline::HandWrittenTrigger {
-        for v in &w.views {
-            install_trigger_view(&conn, &w.schema.table, v)?;
+        for v in &cell.views {
+            install_trigger_view(&conn, &cell.schema.table, v)?;
         }
     }
-    let ops = w.update_trace();
+    let ops = cell.update_trace();
 
     // ---- 计时区间 ----
-    let apply_ms = apply(&conn, &w.schema.table, &ops)?;
+    let apply_ms = apply(&conn, &cell.schema.table, &ops)?;
     let maintain_ms = match b {
         // trigger 的成本已计入 apply_ms——那正是写放大
         Baseline::NoMaintenance | Baseline::HandWrittenTrigger => 0.0,
-        Baseline::NaiveRecompute => recompute_all(&conn, &w)?,
+        Baseline::NaiveRecompute => recompute_all(&conn, cell)?,
     };
 
     Ok(Record {
         baseline: b.label(),
-        views,
-        base_rows: rows,
-        batch,
-        cardinality: card,
+        views: cell.views.len(),
+        base_rows: cell.data.base_rows,
+        batch: cell.updates.batch_size,
+        cardinality: cell.data.group_cardinality,
         apply_ms,
         maintain_ms,
     })
@@ -101,6 +55,7 @@ fn run_one(
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let base = Workload::load(Path::new("workloads/m0-baseline.toml"))?;
+    let cells = base.cells();
     let mut records: Vec<Record> = Vec::new();
 
     let baselines = [
@@ -109,36 +64,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Baseline::NaiveRecompute,
     ];
 
-    // 扫描一：group 基数 × 基表规模 × 批大小，视图数固定
+    // 矩阵的结构（两次扫描、`card > base_rows` 的跳过规则、视图阈值公式）
+    // 现在完全活在 `Workload::cells()` 里（spec §10.3 第 7 条），这里只是
+    // 按基线遍历它产出的格子。跳过的格子不再在这里单独记一行 stderr——
+    // `cells()` 直接不产出它们，`main.rs` 没有 `card > rows` 这条判断可用
+    // 来识别"本该有但被跳过"的格子，硬凑一份就是把已经搬走的规则在这里
+    // 重新实现一遍；`docs/bench/README.md` 已经记录了这个跳过（`card=100000
+    // > base_rows=10000`），不需要 runner 再重复一次。
     for b in baselines {
-        for card in GROUP_CARDINALITIES {
-            for rows in BASE_ROWS {
-                // group 基数大于行数在语义上无意义——N 行的表不可能有多于 N 个
-                // 不同的分组键。ivmlite-workload 在加载时就会拒绝这种配置，
-                // 所以这里跳过而不是让它报错。被跳过的格子在 stderr 记一行，
-                // 免得读 CSV 的人以为是漏跑了。
-                if card > rows {
-                    eprintln!("跳过无意义格子: card={card} > base_rows={rows}");
-                    continue;
-                }
-                for batch in BATCH_SIZES {
-                    records.push(run_one(&base, b, rows, card, FIXED_VIEWS, batch)?);
-                }
-            }
-        }
-    }
-
-    // 扫描二：视图数 × 基表规模 × 批大小，group 基数固定
-    for b in baselines {
-        for views in VIEW_COUNTS {
-            if views == FIXED_VIEWS {
-                continue; // 与扫描一的共同点重复
-            }
-            for rows in BASE_ROWS {
-                for batch in BATCH_SIZES {
-                    records.push(run_one(&base, b, rows, FIXED_CARDINALITY, views, batch)?);
-                }
-            }
+        for cell in &cells {
+            records.push(run_one(b, cell)?);
         }
     }
 
@@ -151,10 +86,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // 每个 group 基数各出一张图——交叉点随该参数剧烈移动，只出一张等于
-    // 自己挑了个好看的点（spec §10.1）。
-    for card in GROUP_CARDINALITIES {
+    // 自己挑了个好看的点（spec §10.1）。基数取值与固定视图数直接读
+    // `[matrix]`，不再是 main.rs 里的常量。
+    let matrix = base
+        .matrix
+        .as_ref()
+        .expect("workloads/m0-baseline.toml 缺少 [matrix] 段");
+    for card in matrix.group_cardinalities.clone() {
         let path = format!("docs/bench/m0-baseline-card{card}.svg");
-        match plot::write_svg(Path::new(&path), &records, FIXED_VIEWS, 100, card) {
+        match plot::write_svg(Path::new(&path), &records, matrix.fixed_views, 100, card) {
             Ok(()) => eprintln!("图已写入 {path}"),
             // 某个 group 基数在所有基表规模下都被跳过时没有数据点，
             // 这不是错误——照实说明并继续。
@@ -168,51 +108,84 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ivmlite_workload::{DataSpec, Distribution, Locality, UpdateSpec, WorkloadSchema};
 
-    fn base_workload() -> Workload {
-        Workload {
-            name: "t".into(),
-            seed: 1,
-            schema: WorkloadSchema {
-                table: "orders".into(),
-                ddl: "CREATE TABLE orders(id INTEGER PRIMARY KEY, region TEXT NOT NULL, \
-                       amount INTEGER NOT NULL) STRICT"
-                    .into(),
-            },
-            data: DataSpec {
-                base_rows: 100,
-                group_cardinality: 10,
-                amount_max: 50,
-                distribution: Distribution::Uniform,
-            },
-            updates: UpdateSpec {
-                batch_size: 10,
-                delete_ratio: 0.5,
-                locality: Locality::Uniform,
-            },
-            views: vec![],
-        }
+    /// 从 `docs/bench/m0-baseline.csv` 里读出的一行，只取跟矩阵格子相关的
+    /// 四个维度（忽略 baseline 名字与两个耗时列——它们不是 `cells()` 的
+    /// 产出）。
+    type CsvCellKey = (usize, usize, usize, usize); // (views, base_rows, batch_size, group_cardinality)
+
+    /// 手写一个最小 CSV 解析：这份文件里没有引号转义或内嵌逗号，字段全是
+    /// 简单的标识符/数字，不值得为它引入一个 csv 依赖。
+    fn read_csv_cell_keys(path: &Path) -> std::collections::BTreeSet<CsvCellKey> {
+        let text = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("读不到 {}: {e}", path.display()));
+        let mut lines = text.lines();
+        let header = lines.next().expect("CSV 至少要有表头");
+        assert_eq!(
+            header, "baseline,views,base_rows,batch_size,group_cardinality,apply_ms,maintain_ms",
+            "CSV 表头形状变了，下面按位置取字段的假设不再成立"
+        );
+
+        lines
+            .filter(|l| !l.is_empty())
+            .map(|line| {
+                let fields: Vec<&str> = line.split(',').collect();
+                assert_eq!(fields.len(), 7, "CSV 行字段数不对: {line}");
+                let views: usize = fields[1].parse().unwrap_or_else(|_| panic!("{line}"));
+                let base_rows: usize = fields[2].parse().unwrap_or_else(|_| panic!("{line}"));
+                let batch_size: usize = fields[3].parse().unwrap_or_else(|_| panic!("{line}"));
+                let group_cardinality: usize =
+                    fields[4].parse().unwrap_or_else(|_| panic!("{line}"));
+                (views, base_rows, batch_size, group_cardinality)
+            })
+            .collect()
     }
 
-    /// 额外一条（来自 ruling-review #2）的直接守卫：`variant()` 是 clone +
-    /// 改字段构造 workload 的路径，此前绕过了 `Workload::load` 里的
-    /// `validate()`。用一个 `cardinality > base_rows` 的非法组合触发它，
-    /// 必须 panic——如果有人把 `variant()` 里那行 `w.validate()` 删掉，
-    /// 这条测试会从"panic"变成"返回一个非法 Workload"，测试失败。
+    /// M0 review 的 finding I7：另一个引擎的 runner 加载
+    /// `workloads/m0-baseline.toml` 后，必须能重新推导出与已发布的
+    /// `docs/bench/m0-baseline.csv` 完全一致的格子集合——这正是
+    /// `ivmlite-workload` 存在的意义（spec §10.3 第 7 条）。这条测试是那句话
+    /// 唯一的证明：把已发布 CSV 里出现过的 `(views, base_rows, batch_size,
+    /// group_cardinality)` 四元组去重，与 `base.cells()` 产出的同一组四元组
+    /// 做集合相等比较——数量相同、成员相同，没有多的也没有少的。
+    ///
+    /// 不重新跑 benchmark（那要约 9 分钟）：这里只读已经提交的 CSV 文件，
+    /// 不改动它一个字节；它是这条测试要对照的既有事实（fixture）。
     #[test]
-    #[should_panic(expected = "非法 workload")]
-    fn variant_rejects_cardinality_exceeding_base_rows() {
-        let base = base_workload();
-        variant(&base, 10, 100, 1); // base_rows=10 < cardinality=100
-    }
+    fn cells_reproduce_exactly_the_published_csv_matrix() {
+        let workload_path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../workloads/m0-baseline.toml");
+        let csv_path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/bench/m0-baseline.csv");
 
-    #[test]
-    fn variant_accepts_a_legal_combination() {
-        let base = base_workload();
-        let w = variant(&base, 100, 10, 3);
-        assert_eq!(w.data.base_rows, 100);
-        assert_eq!(w.data.group_cardinality, 10);
-        assert_eq!(w.views.len(), 3);
+        let base = Workload::load(&workload_path).expect("发布的 workload 文件必须可解析");
+        let derived: std::collections::BTreeSet<CsvCellKey> = base
+            .cells()
+            .iter()
+            .map(|c| {
+                (
+                    c.views.len(),
+                    c.data.base_rows,
+                    c.updates.batch_size,
+                    c.data.group_cardinality,
+                )
+            })
+            .collect();
+
+        let published = read_csv_cell_keys(&csv_path);
+
+        let missing: Vec<_> = published.difference(&derived).collect();
+        let extra: Vec<_> = derived.difference(&published).collect();
+        assert!(
+            missing.is_empty() && extra.is_empty(),
+            "cells() 与已发布 CSV 的格子集合不一致:\n缺失（CSV 有、cells() 没有）: {missing:?}\n多余（cells() 有、CSV 没有）: {extra:?}"
+        );
+        assert_eq!(
+            derived.len(),
+            published.len(),
+            "cells() 产出 {} 个不同格子, CSV 有 {} 个不同格子",
+            derived.len(),
+            published.len()
+        );
     }
 }

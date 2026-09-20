@@ -26,6 +26,8 @@ locality = "uniform"
 
 # 视图形状受限于表达能力最弱的对照组——手写 trigger（spec §10.3 第 3 条）。
 # 阈值是让各视图彼此不同的手段，trigger 侧用 WHEN 子句表达同一谓词。
+# 这两个是 [matrix] 求值前、`Workload::load` 就要求合法的默认视图集合；
+# `Workload::cells()` 会用 [matrix] 的规则整体替换掉 `views`。
 [[views]]
 id = 0
 threshold = 0
@@ -33,3 +35,25 @@ threshold = 0
 [[views]]
 id = 1
 threshold = 7
+
+# M0 基准矩阵的完整派生规则（spec §10.3 第 7 条）：这是 204 行
+# docs/bench/m0-baseline.csv 的唯一权威来源。`Workload::cells()` 读取这一段，
+# 产出每个测量格子的具体 Workload——任何引擎的 runner 只要加载这份文件、
+# 调用 `cells()`，就能重新推导出与本仓库完全一致的格子集合，不需要各自
+# 重新实现两次扫描的结构、视图阈值公式，或 `group_cardinality > base_rows`
+# 的跳过规则。
+[matrix]
+# 两次扫描共用的基表规模与批大小取值。
+base_rows = [10000, 100000, 1000000]
+batch_sizes = [1, 10, 100, 1000]
+# 扫描二（视图数 × 基表规模 × 批大小）里视图数取的值。
+view_counts = [1, 10, 50, 200]
+# 扫描一（group 基数 × 基表规模 × 批大小）里 group 基数取的值。
+group_cardinalities = [10, 1000, 100000]
+# 扫描一固定的视图数、扫描二固定的 group 基数——两次扫描都穿过
+# (views=10, group_cardinality=1000) 这同一个点，两组图可以对齐着读。
+fixed_views = 10
+fixed_cardinality = 1000
+# 第 i 个视图的阈值 = (i * view_threshold_stride) % view_threshold_modulus。
+view_threshold_stride = 7
+view_threshold_modulus = 150
