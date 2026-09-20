@@ -1,4 +1,4 @@
-use ivmlite_core::ZSet;
+use ivmlite_core::{Row, ZSet};
 use ivmlite_test::{
     check_batch_invariance, gen_case, is_legal, load_regressions, recompute_via_sqlite, run,
     save_regression, seed_range, shrink, Batching, Column, ColumnType, Domain, Engine,
@@ -91,14 +91,14 @@ fn per_batch_oracle_comparison_catches_transient_drift() {
         .unwrap();
     let _ = settled.materialize().unwrap(); // call 1: bootstrap
 
-    let mut all = ZSet::new();
-    for op in &case.ops {
-        for (row, w) in op.to_delta() {
-            all.update(row.clone(), w);
-            base.update(row, w);
-        }
+    // 未合并的原始 raw delta——与新签名一致，engine 自己决定要不要 consolidate。
+    // harness 侧的 `base` 仍然照常合并，用来喂 oracle。
+    let raw: Vec<(Row, i64)> = case.ops.iter().flat_map(|op| op.to_delta()).collect();
+    for (row, w) in &raw {
+        base.update(row.clone(), *w);
     }
-    settled.apply(&all).unwrap();
+    settled.apply(&case.schema.table, &raw).unwrap();
+    settled.refresh().unwrap();
     let _ = settled.materialize().unwrap(); // call 2: 被污染的那次
     let settled_state = settled.materialize().unwrap(); // call 3: 已恢复
 

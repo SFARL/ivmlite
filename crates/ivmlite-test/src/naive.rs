@@ -7,10 +7,16 @@ use crate::{AggFn, Engine, EngineError, Predicate, Schema, ViewQuery};
 /// 平凡正确的参照实现：保存全量基表，每次 materialize 重算一遍。
 ///
 /// 两个用途：验证测试框架不会误报；充当 benchmark 的"朴素重跑"基线（spec §10.2）。
+///
+/// `apply` 与 `refresh` 是真正分离的两个阶段：`apply` 只把原始 `(Row, i64)`
+/// 追加进 `pending`，不做任何合并；`refresh` 才把 `pending` drain 进
+/// `base`。如果 `apply` 提前合并，`refresh` 就成了空操作，任何忽略 refresh
+/// 契约的引擎都不会被测出来（spec §8.2）。
 #[derive(Debug, Default)]
 pub struct NaiveRecompute {
     query: Option<ViewQuery>,
     base: ZSet,
+    pending: Vec<(Row, i64)>,
 }
 
 impl NaiveRecompute {
@@ -42,8 +48,16 @@ impl Engine for NaiveRecompute {
         Ok(())
     }
 
-    fn apply(&mut self, delta: &ZSet) -> Result<(), EngineError> {
-        self.base.merge(delta);
+    fn apply(&mut self, _table: &str, raw: &[(Row, i64)]) -> Result<(), EngineError> {
+        // 刻意不合并：合并是 refresh 的职责，见类型上的文档注释。
+        self.pending.extend_from_slice(raw);
+        Ok(())
+    }
+
+    fn refresh(&mut self) -> Result<(), EngineError> {
+        for (row, weight) in self.pending.drain(..) {
+            self.base.update(row, weight);
+        }
         Ok(())
     }
 
@@ -169,7 +183,8 @@ mod tests {
         let base = ZSet::from_rows([(row("a", 10), 1), (row("a", 5), 1)]);
         e.create_view(&schema(), &sum_by_region(), &base).unwrap();
 
-        e.apply(&ZSet::from_rows([(row("a", 5), -1)])).unwrap();
+        e.apply("orders", &[(row("a", 5), -1)]).unwrap();
+        e.refresh().unwrap();
 
         let got = e.materialize().unwrap();
         assert_eq!(got.weight_of(&out(Value::Text("a".into()), 10, 1)), 1);
@@ -182,7 +197,8 @@ mod tests {
         let base = ZSet::from_rows([(row("a", 10), 1)]);
         e.create_view(&schema(), &sum_by_region(), &base).unwrap();
 
-        e.apply(&ZSet::from_rows([(row("a", 10), -1)])).unwrap();
+        e.apply("orders", &[(row("a", 10), -1)]).unwrap();
+        e.refresh().unwrap();
 
         assert!(
             e.materialize().unwrap().is_empty(),
@@ -342,7 +358,8 @@ mod tests {
         e.create_view(&schema(), &sum_by_region(), &base).unwrap();
 
         // "b" 从未出现在 base 中；这条撤回让它在 self.base 里权重为 -1。
-        e.apply(&ZSet::from_rows([(row("b", 999), -1)])).unwrap();
+        e.apply("orders", &[(row("b", 999), -1)]).unwrap();
+        e.refresh().unwrap();
 
         let got = e.materialize().unwrap();
         assert_eq!(

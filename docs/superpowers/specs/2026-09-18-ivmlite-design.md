@@ -469,6 +469,25 @@ SELECT * FROM revenue;
 
 **M-1 的任务就是在真实 cdylib 扩展上把两套方案都跑一遍**，覆盖 rollback、嵌套事务、WAL、双连接。控制面在 M-1 结论出来之前不定稿；本文档其余部分凡出现 `ivm_create_view` / `ivm_refresh` 之处，均指"控制面上的建视图 / 刷新操作"，与最终语法无关。
 
+### 8.4 引擎接缝契约
+
+M1 的引擎通过 `ivmlite-test` 的 `Engine` trait 接入差分测试框架。该 trait 的形状不是实现细节——它决定了哪些行为**能被测到**：
+
+```rust
+fn create_view(&mut self, &Schema, &ViewQuery, initial: &ZSet) -> Result<(), EngineError>;
+fn apply(&mut self, table: &str, raw: &[(Row, i64)]) -> Result<(), EngineError>;
+fn refresh(&mut self) -> Result<(), EngineError>;
+fn materialize(&mut self) -> Result<ZSet, EngineError>;
+```
+
+三条约束及其理由：
+
+**`apply` 接收未合并的原始 Δ，不是 `ZSet`。** 同一行可以在同一批里出现多次，引擎必须自己决定要不要先 consolidate。若 harness 交出的是已合并的 `ZSet`，§8.2 所说的 consolidation——M1 的内容而非优化项，也是本项目最可能成立的性能故事——就从这个接缝上**结构性不可见**：引擎无论做没做合并，测试结果都一样。框架内有一个记录型引擎守着这条，喂进含重复行的批次并断言收到的是多条而非合并后的一条。
+
+**`refresh` 与 `apply` 分离。** §8.2 规定显式 refresh 是永久 API 而非临时妥协，§9.1 的批次无关性也只有在维护时刻可控时才可测。参照实现 `NaiveRecompute` 因此**真的**分两阶段：`apply` 只堆 pending，`refresh` 才并进 base。若 `apply` 急切合并，`refresh` 便成空操作，任何忽略该契约的引擎都不会被抓到。
+
+**`apply` 带表名。** §6.3 禁止 v0 做出会让 M2 的 join 返工的决定，而 join 需要多个基表。`materialize` 刻意**不**带 view 标识：多视图要到 M4 的级联视图才出现且形态未定，现在加属投机；多表是已排期的已知需求，加一个参数是当下最便宜的时刻。
+
 ---
 
 ## 9. 验证体系
