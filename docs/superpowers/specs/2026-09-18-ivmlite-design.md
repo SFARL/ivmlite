@@ -437,7 +437,7 @@ COMMIT;
 
 **这是显式 refresh 换来的、行级 trigger 结构上拿不到的东西**，也是本项目最可能成立的性能故事。因此 consolidation 被明确列为 M1 的内容，而非优化项。
 
-### 8.3 控制面：待 M-1 验证，主候选是 FTS5 的惯用法
+### 8.3 控制面：已由 M-1 定稿——虚表 + 命令通道（FTS5 惯用法）
 
 早期草案把控制面定成标量 UDF：
 
@@ -448,7 +448,7 @@ SELECT ivm_refresh('revenue');                     -- 内部要写影子表
 
 即：在一条正在 `sqlite3_step()` 的 `SELECT` 语句内部，用同一个连接做 DDL 和写入。这**不能靠"理论上应该可以"来赌**——SQLite 对 hook 的重入限制很严（commit/update hook 明确禁止在回调里再操作触发它的连接），application-defined function 的限制虽宽一些，但仍是在一条运行中的语句里递归使用同一连接。
 
-**主候选改为 FTS5 已经验证了十几年的惯用法**（已实测确认其行为）：
+**M-1 spike 在真实 cdylib loadable extension 上把标量 UDF（方案 A）与虚表命令通道（方案 B）各跑了一遍 10 个场景的矩阵**（rollback、嵌套事务、WAL、双连接、并发、销毁路径、未加载扩展的连接、以及方案 A 独有的"扫描中调用"），结果见 [2026-09-18-m-1-results.md](../../spikes/2026-09-18-m-1-results.md)。结论：**方案 B 在所有适用于它的场景上全绿，采用方案 B；控制面语法定稿。**
 
 ```sql
 -- xCreate 建立影子表与 trigger，DDL 上下文天然正确
@@ -461,13 +461,24 @@ INSERT INTO revenue(revenue) VALUES ('refresh');
 
 -- xFilter 读物化状态
 SELECT * FROM revenue;
+
+-- xDestroy：先删 trigger 再删影子表，顺序由扩展自己控制
+DROP TABLE revenue;
 ```
 
 参照：`CREATE VIRTUAL TABLE docs USING fts5(body)` 会经 xCreate 建出 `docs_data`、`docs_idx`、`docs_content`、`docs_docsize`、`docs_config` 五张影子表，`INSERT INTO docs(docs) VALUES('rebuild')` 是其命令入口。
 
-这套方案在三处优于标量 UDF：DDL 发生在 SQLite 为之设计的上下文里；视图成为 `sqlite_master` 认识的真实对象；`DROP TABLE revenue` 经 xDestroy 自然清理影子表与 trigger，不需要额外的销毁 API。
+方案 B 在三处优于标量 UDF，且三处都在 M-1 里得到了实测支持：
 
-**M-1 的任务就是在真实 cdylib 扩展上把两套方案都跑一遍**，覆盖 rollback、嵌套事务、WAL、双连接。控制面在 M-1 结论出来之前不定稿；本文档其余部分凡出现 `ivm_create_view` / `ivm_refresh` 之处，均指"控制面上的建视图 / 刷新操作"，与最终语法无关。
+1. **DDL 发生在 SQLite 为之设计的上下文里**（`xCreate`）——场景 1–5 证实建表/建 trigger/写入在裸调用、显式事务、嵌套 savepoint、WAL 模式下全部成功，且回滚时（场景 3/4）影子表与 trigger 随事务一并消失，不留孤儿对象。
+2. **视图成为 `sqlite_master` 认识的真实对象**——`CREATE VIRTUAL TABLE` 语句本身就在 `sqlite_master` 里，`SELECT * FROM revenue` 经 `xFilter` 正常可读。
+3. **`DROP TABLE revenue` 经 `xDestroy` 自然清理影子表与 trigger，不需要额外的销毁 API**——场景 9 显示标量 UDF 方案没有这条性质：`DROP TABLE` 直接删掉影子表并不会级联删除指向它的 trigger，悬空的 trigger 会让**用户自己的基表**后续所有写入报错 `no such table`；而虚表方案的 `xDestroy` 由扩展自己控制顺序（先删 trigger 再删影子表），销毁后基表仍可正常写入。
+
+M-1 还发现方案 A 有一个比场景 9 更严重、探针文档没有预判到具体形态的问题（场景 8）：若在扫描某张影子表的语句里调用 `ivm_refresh` 写同一张表（自引用），会导致游标不断看到自己刚插入的新行，陷入不报错、不减速的无界循环，实测到 46 万余行才被人工中断。方案 B 结构上不暴露这条路径——读走 `xFilter`（不写），写走独立的 `xUpdate` 语句（不在扫描回调里）。
+
+并发场景（场景 6/7：另一连接同时在读/在写）两套方案行为完全对称，是 SQLite 标准锁语义（rollback-journal 下 `SQLITE_BUSY`，WAL 下读不挡写、写互斥写），没有为选型提供额外信号。场景 10 确认了 §8.1 的声明：纯 SQL trigger 对未加载扩展的连接同样生效。
+
+**控制面到此定稿，本文档其余部分出现的 `ivm_create_view` / `ivm_refresh` 均指虚表命令通道形态的等价操作**（`CREATE VIRTUAL TABLE ... USING ivm(...)` / `INSERT INTO v(v) VALUES('refresh')`），不再是待定语法。
 
 ### 8.4 引擎接缝契约
 
@@ -661,20 +672,20 @@ join 落地后接 **Nexmark**——流式/增量系统的事实标准。Feldera 
 
 > **顺序约束：测试框架与 benchmark 骨架必须在 core 之前建立；而 SQLite 扩展机制的探针（M-1）必须在 M1 之前。**
 
-### M-1 — SQLite 扩展机制 spike（最先做）
+### M-1 — SQLite 扩展机制 spike（最先做）—— ✅ 已完成
 
 **这是一个 spike，产出是结论不是代码。** 目的是在写任何引擎之前搞清楚控制面到底能不能按设想工作——如果不能，现在换比 core 写完再换便宜几个数量级。
 
-在**真实的 cdylib 扩展**（不是宿主语言的 sqlite3 绑定）上，把两套控制面各跑一遍：
+在**真实的 cdylib 扩展**（不是宿主语言的 sqlite3 绑定）上，把两套控制面各跑了一遍：
 
 - **方案 A**：标量 UDF 内做 DDL 与写入
 - **方案 B**：`CREATE VIRTUAL TABLE ... USING ivm(...)`，xCreate 建影子表与 trigger，`INSERT INTO v(v) VALUES('refresh')` 作命令通道（FTS5 惯用法，主候选）
 
-每套都必须覆盖：`CREATE TABLE` / `CREATE TRIGGER` / 写影子表 / rollback / 嵌套事务 / WAL 模式 / 两个连接并发 / `DROP` 清理。
+每套都覆盖了：`CREATE TABLE` / `CREATE TRIGGER` / 写影子表 / rollback / 嵌套事务 / WAL 模式 / 两个连接并发 / `DROP` 清理，方案 A 还额外覆盖了"扫描中调用"。
 
-> **完成判定：控制面定稿，§8.3 从"待验证"改为结论；若两套都不干净，在此停下重新设计控制面，不进入 M1。**
+> **完成判定：控制面定稿，§8.3 从"待验证"改为结论。** 结果：方案 B 全绿，采用方案 B；方案 A 暴露了两个问题（销毁路径留孤儿 trigger 毒死基表、扫描中自引用写入导致无界循环），记录为不采用 B 时的已知坑，不是"两套都有问题"意义上的阻塞项。完整矩阵与证据见 [2026-09-18-m-1-results.md](../../spikes/2026-09-18-m-1-results.md)。
 
-M-1 与 M0 相互独立（M0 是纯 Rust 的测试与 benchmark 骨架，不碰扩展 API），但 M-1 先做，因为它的结论可能改写 §7 与 §8。
+M-1 与 M0 相互独立（M0 是纯 Rust 的测试与 benchmark 骨架，不碰扩展 API），M-1 先做的原因（结论可能改写 §7 与 §8）已经落地：§8.3 已更新为结论；§7.3 的 bootstrap 原子性论证经场景 3/4 复核后维持不变，无需重写。
 
 ### M0 — 测试与基准骨架（core 之前）
 
