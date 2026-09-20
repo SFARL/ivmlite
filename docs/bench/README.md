@@ -104,10 +104,14 @@ naive 2.453ms vs trigger 1.729ms），**没有任何一格出现 `naive_recomput
 - **batch 越大，比值越收窄**：同样 `views=10, card=10, base_rows=10,000`，
   batch 从 1 到 1000 时比值从 133x 掉到 2.26x——trigger 每行一次的
   `ON CONFLICT` 更新开始逼近全表扫描一次的成本。
-- **views 越少，比值也越收窄**：`base_rows=10,000, batch=1000, card=1,000`
-  这一格，视图数从 200 降到 1 时比值从 1.73 一路跌到 1.42——这是全矩阵里最
-  接近打平的地方（仍是 `hand_written_trigger` 赢，没有 `naive_recompute`
-  反超的格子）。
+- **views 对比值的影响不是单调的**：`base_rows=10,000, batch=1000, card=1,000`
+  这一格，视图数 200 / 50 / 10 / 1 对应的比值是 **1.73 / 2.00 / 1.96 / 1.42**
+  ——从 200 降到 50 时先**升**，之后才降。端点确实是 1.73 → 1.42，但中间并非
+  "一路跌"。`views=1` 处的 1.42 是全矩阵最接近打平的地方（仍是
+  `hand_written_trigger` 赢，没有 `naive_recompute` 反超的格子）。
+  这条扫描只测了四个 views 取值，中间的起伏可能是单次测量的噪声（见上文
+  「测量方式的局限」），也可能是真实的非单调性——这份数据分辨不了，所以这里
+  只陈述观测值，不给方向性结论。
 - **在唯一真正隔离出 cardinality 这个维度的那条扫描上（`views=10` 固定，
   cardinality 在 10/1,000/100,000 间变化），方向随 Δ 大小反转，不存在
   一个不加限定就成立的方向**（逐一核对 `docs/bench/m0-baseline.csv`，
@@ -131,7 +135,7 @@ naive 2.453ms vs trigger 1.729ms），**没有任何一格出现 `naive_recomput
   `batch=1000` 和 `batch=100` 就断言"随 cardinality 上升而收窄"是无限定
   的方向性结论；这与"大批量 Δ + 低 group 基数"这个说法里"低基数更窄"的
   直觉方向，仅在大 Δ 一侧相符，在 Δ=1 一侧相反。
-- 上面"views 越少越窄"与"cardinality 对方向的影响随 Δ 大小反转"是**两条
+- 上面关于 views 的观测与"cardinality 对方向的影响随 Δ 大小反转"是**两条
   独立的观测，不能相加**：本次矩阵是两次独立扫描（一次固定 `views=10` 扫
   cardinality，一次固定 `cardinality=1,000` 扫 views），不是四维全交叉，
   所以"低 views + 低 cardinality"这个组合从未被同一次测量同时覆盖过——
