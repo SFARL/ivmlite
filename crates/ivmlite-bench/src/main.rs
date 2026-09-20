@@ -149,6 +149,13 @@ mod tests {
     /// group_cardinality)` 四元组去重，与 `base.cells()` 产出的同一组四元组
     /// 做集合相等比较——数量相同、成员相同，没有多的也没有少的。
     ///
+    /// 视图阈值本身不在 CSV 的列里（CSV 只记 `views` 的数量），所以这条测试
+    /// 额外独立按 `[matrix]` 里记录的 `view_threshold_stride` /
+    /// `view_threshold_modulus` 重新算一遍每个格子每个视图的阈值，并断言
+    /// 与 `cells()` 实际产出的阈值一致——否则"阈值公式从 main.rs 搬进
+    /// `MatrixSpec::views()` 时悄悄改了一个字符"这种回归，光靠
+    /// 四元组集合比较是测不出来的（CSV 里没有任何一列携带阈值信息）。
+    ///
     /// 不重新跑 benchmark（那要约 9 分钟）：这里只读已经提交的 CSV 文件，
     /// 不改动它一个字节；它是这条测试要对照的既有事实（fixture）。
     #[test]
@@ -159,8 +166,29 @@ mod tests {
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/bench/m0-baseline.csv");
 
         let base = Workload::load(&workload_path).expect("发布的 workload 文件必须可解析");
-        let derived: std::collections::BTreeSet<CsvCellKey> = base
-            .cells()
+        let matrix = base
+            .matrix
+            .as_ref()
+            .expect("workloads/m0-baseline.toml 缺少 [matrix] 段")
+            .clone();
+
+        let cells = base.cells();
+
+        // 阈值公式的独立复核：与四元组集合比较无关，专门守住"阈值公式没有
+        // 在搬家过程中被悄悄改掉"这条不变式。
+        for cell in &cells {
+            for (i, v) in cell.views.iter().enumerate() {
+                let expected =
+                    (i as i64 * matrix.view_threshold_stride) % matrix.view_threshold_modulus;
+                assert_eq!(
+                    v.threshold, expected,
+                    "第 {i} 个视图的阈值应为 {expected}（stride={}, modulus={}），实际是 {}",
+                    matrix.view_threshold_stride, matrix.view_threshold_modulus, v.threshold
+                );
+            }
+        }
+
+        let derived: std::collections::BTreeSet<CsvCellKey> = cells
             .iter()
             .map(|c| {
                 (
