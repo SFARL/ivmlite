@@ -86,22 +86,18 @@ pub fn gen_case(
     }
 }
 
-fn batches(ops: &[Op], batching: Batching) -> Vec<ZSet> {
+/// 把 ops 切成批次，每批是**未合并**的原始 `(Row, i64)` 序列——同一行在同一批
+/// 里可以出现多次，是否 consolidate 交给引擎的 `apply` 决定（spec §8.2）。
+/// harness 自己不做任何折叠：这正是 M1 的 consolidation 必须真正落地才能
+/// 通过测试的原因。
+fn batches(ops: &[Op], batching: Batching) -> Vec<Vec<(Row, i64)>> {
     let size = match batching {
         Batching::All => ops.len().max(1),
         Batching::One => 1,
         Batching::Chunks(n) => n.max(1),
     };
     ops.chunks(size)
-        .map(|chunk| {
-            let mut z = ZSet::new();
-            for op in chunk {
-                for (row, weight) in op.to_delta() {
-                    z.update(row, weight);
-                }
-            }
-            z
-        })
+        .map(|chunk| chunk.iter().flat_map(Op::to_delta).collect())
         .collect()
 }
 
@@ -155,11 +151,18 @@ pub fn run<E: Engine>(engine: &mut E, case: &TestCase) -> Result<(), Failure> {
     // bootstrap 之后立刻比对一次——空 ops 的用例也因此被真正检查到。
     compare(engine, &base, "bootstrap")?;
 
-    for (i, delta) in batches(&case.ops, case.batching).into_iter().enumerate() {
+    for (i, raw) in batches(&case.ops, case.batching).into_iter().enumerate() {
         engine
-            .apply(&delta)
+            .apply(&case.schema.table, &raw)
             .map_err(|e| fail(&format!("apply[{i}]"), e.to_string()))?;
-        base.merge(&delta);
+        engine
+            .refresh()
+            .map_err(|e| fail(&format!("refresh[{i}]"), e.to_string()))?;
+        // harness 自己的 reference bookkeeping 在这里合并——这是 harness 的业务，
+        // 不是引擎的（spec §8.2）。引擎那边看到的仍然是 `raw` 的原始形态。
+        for (row, weight) in &raw {
+            base.update(row.clone(), *weight);
+        }
         compare(engine, &base, &i.to_string())?;
     }
     Ok(())
@@ -214,7 +217,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Column, ColumnType, Domain, NaiveRecompute};
+    use crate::{Agg, AggFn, Column, ColumnType, Domain, EngineError, NaiveRecompute, Predicate};
+    use ivmlite_core::Value;
 
     fn schema() -> Schema {
         Schema {
@@ -232,6 +236,156 @@ mod tests {
                 },
             ],
         }
+    }
+
+    /// 只做记录、不做别的：把真正的计算委托给 `NaiveRecompute`（保证 `run`
+    /// 内部的 oracle 比对不会因为我们自己的引擎错误而失败），同时把每次
+    /// `apply` 收到的 `(table, raw)` 原样存下来，供守卫测试断言。
+    #[derive(Debug, Default)]
+    struct RecordingEngine {
+        inner: NaiveRecompute,
+        received: Vec<(String, Vec<(Row, i64)>)>,
+    }
+
+    impl Engine for RecordingEngine {
+        fn create_view(
+            &mut self,
+            schema: &Schema,
+            query: &ViewQuery,
+            initial: &ZSet,
+        ) -> Result<(), EngineError> {
+            self.inner.create_view(schema, query, initial)
+        }
+
+        fn apply(&mut self, table: &str, raw: &[(Row, i64)]) -> Result<(), EngineError> {
+            self.received.push((table.to_string(), raw.to_vec()));
+            self.inner.apply(table, raw)
+        }
+
+        fn refresh(&mut self) -> Result<(), EngineError> {
+            self.inner.refresh()
+        }
+
+        fn materialize(&mut self) -> Result<ZSet, EngineError> {
+            self.inner.materialize()
+        }
+    }
+
+    /// 守卫 1：同一行在同一批里出现两次，引擎必须原样收到两条 `(row, +1)`，
+    /// 而不是 harness 替它合并成一条 `(row, +2)`。
+    ///
+    /// 破坏方式：让 `batches()`（或 `run` 里递给 `apply` 的那一步）重新把
+    /// chunk 折进一个 `ZSet` 再展开——这个测试必须变红。
+    #[test]
+    fn apply_receives_unconsolidated_raw_deltas() {
+        let schema = schema();
+        let query = ViewQuery {
+            group_by: vec![0],
+            aggs: vec![Agg {
+                func: AggFn::Count,
+                column: None,
+            }],
+            predicate: Predicate::None,
+        };
+        let dup = Row::new(vec![Value::Text("a".into()), Value::Int(1)]);
+        let case = TestCase {
+            seed: 0,
+            schema,
+            query,
+            initial: vec![],
+            ops: vec![Op::Insert(dup.clone()), Op::Insert(dup.clone())],
+            batching: Batching::All,
+        };
+
+        let mut engine = RecordingEngine::default();
+        run(&mut engine, &case).unwrap_or_else(|f| panic!("不应失败: {f}"));
+
+        assert_eq!(
+            engine.received.len(),
+            1,
+            "两条 op 用 Batching::All 应当落在同一批里"
+        );
+        let (_, raw) = &engine.received[0];
+        let dup_entries = raw.iter().filter(|(row, w)| *row == dup && *w == 1).count();
+        assert_eq!(
+            dup_entries, 2,
+            "同一行插入两次必须以两条独立的 (row, +1) 到达引擎，而不是合并成一条"
+        );
+    }
+
+    /// 守卫 2：表名必须原样传到引擎——这是 join（M2）需要多张基表的前提。
+    ///
+    /// 破坏方式：在 `run` 里把 `apply` 的表名参数换成写死的常量或空字符串，
+    /// 这个测试必须变红。
+    #[test]
+    fn apply_receives_the_schema_table_name() {
+        let schema = schema();
+        let query = ViewQuery {
+            group_by: vec![0],
+            aggs: vec![Agg {
+                func: AggFn::Count,
+                column: None,
+            }],
+            predicate: Predicate::None,
+        };
+        let case = TestCase {
+            seed: 0,
+            schema: schema.clone(),
+            query,
+            initial: vec![],
+            ops: vec![Op::Insert(Row::new(vec![
+                Value::Text("a".into()),
+                Value::Int(1),
+            ]))],
+            batching: Batching::All,
+        };
+
+        let mut engine = RecordingEngine::default();
+        run(&mut engine, &case).unwrap_or_else(|f| panic!("不应失败: {f}"));
+
+        assert_eq!(engine.received.len(), 1);
+        assert_eq!(
+            engine.received[0].0, case.schema.table,
+            "apply 收到的表名必须等于 case.schema.table"
+        );
+    }
+
+    /// 守卫 3：`refresh` 是 load-bearing 的——`apply` 之后不调用 `refresh`，
+    /// `materialize` 必须仍然返回 apply 之前的状态；调用 `refresh` 之后才变化。
+    ///
+    /// 破坏方式：让 `NaiveRecompute::apply` 直接合并进 `base`（回到 M0 的行为），
+    /// 这个测试必须变红——因为那样 `refresh` 就成了没有可观察效果的空操作。
+    #[test]
+    fn refresh_is_load_bearing_for_naive_recompute() {
+        let schema = schema();
+        let query = ViewQuery {
+            group_by: vec![0],
+            aggs: vec![Agg {
+                func: AggFn::Count,
+                column: None,
+            }],
+            predicate: Predicate::None,
+        };
+        let base = ZSet::from_rows([(Row::new(vec![Value::Text("a".into()), Value::Int(1)]), 1)]);
+        let mut engine = NaiveRecompute::new();
+        engine.create_view(&schema, &query, &base).unwrap();
+        let before = engine.materialize().unwrap();
+
+        let new_row = Row::new(vec![Value::Text("b".into()), Value::Int(2)]);
+        engine.apply("orders", &[(new_row, 1)]).unwrap();
+
+        let still_before = engine.materialize().unwrap();
+        assert_eq!(
+            still_before, before,
+            "apply 之后、refresh 之前，materialize 必须仍是 apply 前的状态"
+        );
+
+        engine.refresh().unwrap();
+        let after = engine.materialize().unwrap();
+        assert_ne!(
+            after, before,
+            "refresh 之后 materialize 必须反映刚才 apply 进来的变更"
+        );
     }
 
     #[test]

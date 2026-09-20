@@ -1,4 +1,4 @@
-use ivmlite_core::ZSet;
+use ivmlite_core::{Row, ZSet};
 
 use crate::{Schema, ViewQuery};
 
@@ -25,7 +25,19 @@ pub trait Engine {
         initial: &ZSet,
     ) -> Result<(), EngineError>;
 
-    fn apply(&mut self, delta: &ZSet) -> Result<(), EngineError>;
+    /// 摄入一批**未合并**的变更。
+    ///
+    /// `raw` 刻意是 `&[(Row, i64)]` 而非 `ZSet`：同一行可以在同一批里出现多次，
+    /// 引擎必须自己决定要不要先 consolidate。spec §8.2 把 consolidation 列为
+    /// M1 的内容而非优化项——如果 harness 替引擎合并好，M1 的 consolidation
+    /// 就从这个接缝上结构性不可见。
+    fn apply(&mut self, table: &str, raw: &[(Row, i64)]) -> Result<(), EngineError>;
+
+    /// 把已摄入但未应用的变更维护进视图状态。
+    ///
+    /// 与 `apply` 分离是因为 spec §8.2 规定显式 refresh 是永久 API，而非 v0
+    /// 的临时妥协；§9.1 的批次无关性也只有在维护时刻可控时才可测。
+    fn refresh(&mut self) -> Result<(), EngineError>;
 
     /// 取 &mut self：真实引擎读取前可能需要先 drain 待处理的 delta（spec §8.2）。
     fn materialize(&mut self) -> Result<ZSet, EngineError>;

@@ -30,8 +30,12 @@ impl Engine for NoRetractionEngine {
         Ok(())
     }
 
-    fn apply(&mut self, delta: &ZSet) -> Result<(), EngineError> {
-        self.inner.apply(delta)?;
+    fn apply(&mut self, table: &str, raw: &[(Row, i64)]) -> Result<(), EngineError> {
+        self.inner.apply(table, raw)
+    }
+
+    fn refresh(&mut self) -> Result<(), EngineError> {
+        self.inner.refresh()?;
         // BUG（有意为之）：把新的聚合结果并进来，却从不撤回上一次发出的行。
         let fresh = self.inner.materialize()?;
         for (row, weight) in fresh.iter() {
@@ -88,8 +92,12 @@ impl Engine for TransientDriftEngine {
         self.inner.create_view(schema, query, initial)
     }
 
-    fn apply(&mut self, delta: &ZSet) -> Result<(), EngineError> {
-        self.inner.apply(delta)
+    fn apply(&mut self, table: &str, raw: &[(Row, i64)]) -> Result<(), EngineError> {
+        self.inner.apply(table, raw)
+    }
+
+    fn refresh(&mut self) -> Result<(), EngineError> {
+        self.inner.refresh()
     }
 
     fn materialize(&mut self) -> Result<ZSet, EngineError> {
