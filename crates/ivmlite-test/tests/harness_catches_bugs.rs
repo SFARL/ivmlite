@@ -109,6 +109,47 @@ fn per_batch_oracle_comparison_catches_transient_drift() {
     );
 }
 
+/// 缺口测试（M1a Phase 1 Task 1 变异审计新增）：`per_batch_oracle_comparison_catches_transient_drift`
+/// 的断言太松——它只要求失败 stage 匹配 `diff[...]` 且不是 `diff[bootstrap]`，
+/// 而 `TransientDriftEngine::new(2)` 的第 2 次 `materialize` 调用，无论 `run`
+/// 是"每批都比对"还是"只在循环结束后比对一次"，都恰好落在第一次之后的下一次
+/// 调用上——两种实现都会让该测试变绿。用变异验证时（把 `differential::run`
+/// 里循环内的逐批 `compare` 删掉、改成循环结束后只 `compare` 一次），那条
+/// 测试确实没有变红，说明 spec §9.1"每个 refresh 点都比对 oracle"这条要求
+/// 事实上没有被守住。
+///
+/// 这里用一个落在批次序列**中段**的 `drift_at`（而非紧跟 bootstrap 之后的第
+/// 2 次调用）来打破这个巧合：正确实现下，`materialize` 每批调用一次，
+/// `drift_at` 会命中某个中间批次，`run` 必须恰好在那个批次的 `diff[<i>]`
+/// 处失败；而"只在循环结束后比对一次"的实现全程只调用两次 `materialize`
+/// （bootstrap + 结束时一次），永远追不上一个刻意设在中段的 `drift_at`，
+/// 于是引擎全程只会汇报"正确"的状态，`run` 会返回 `Ok`，而不是期望的 `Err`。
+#[test]
+fn oracle_comparison_runs_after_every_batch_not_only_at_the_end() {
+    let schema = schema();
+    let domain = Domain::default();
+    let case = gen_case(3, &schema, &domain, 25, 150, Batching::Chunks(5));
+
+    // Batching::Chunks(5) 对 150 步操作产出 30 批。正确行为下 materialize
+    // 的调用序列是：call 1 = bootstrap，call (k+2) = 第 k 批（k 从 0 开始）
+    // 之后。drift_at = 16 落在批次 i = 14——既不是 bootstrap，也不是"只在
+    // 结束时比对一次"实现下唯二会发生的两次调用（bootstrap 与结束）之一。
+    let drift_at = 16;
+    let expected_batch = drift_at - 2;
+
+    let mut engine = TransientDriftEngine::new(drift_at);
+    let failure = run(&mut engine, &case).expect_err(
+        "逐批比对必须在中段某一批之后就抓到漂移；若只在循环结束后比对一次，\
+         这个刻意设在中段的 drift_at 永远不会被触发，run 会误报成功",
+    );
+    assert_eq!(
+        failure.stage,
+        format!("diff[{expected_batch}]"),
+        "必须恰好在第 {expected_batch} 批之后的比对处失败——这是逐批比对（而非只比对一次）的直接证据，实得 stage={}",
+        failure.stage
+    );
+}
+
 /// I3：兑现 `run` 里 bootstrap 比对那一行自己的注释——"空 ops 的用例也因此
 /// 被真正检查到"。在这条测试之前，代码库里没有任何一处 `gen_case` 传入
 /// `op_count == 0`，所以这句注释从未被验证过。
