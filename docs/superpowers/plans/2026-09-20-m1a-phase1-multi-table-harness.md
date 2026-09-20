@@ -660,7 +660,7 @@ git commit -m "feat(test): 多表生成器——按表维护 live 集合、带�
 
 **Interfaces:**
 - Consumes: 前四个任务的全部产物
-- Produces: `TestCase { seed, database: Database, query: ViewQuery, initial: BTreeMap<String, Vec<Row>>, ops: Vec<(String, Op)>, batching }`；`Engine::create_view(&mut self, &Database, &ViewQuery, &BTreeMap<String, ZSet>) -> Result<(), EngineError>`（`apply` / `refresh` / `materialize` 签名不变）
+- Produces: `TestCase { seed, database: Database, query: ViewQuery, initial: BTreeMap<String, Vec<Row>>, ops: Vec<(String, Op)>, batching }`；`gen_case(seed: u64, &Database, &Domain, rows_per_table: usize, op_count: usize, Batching) -> TestCase`（**原签名的 `&Schema` 改为 `&Database`，不新增变体**）；`Engine::create_view(&mut self, &Database, &ViewQuery, &BTreeMap<String, ZSet>) -> Result<(), EngineError>`（`apply` / `refresh` / `materialize` 签名不变）；`is_legal(&BTreeMap<String, Vec<Row>>, &[(String, Op)]) -> bool`
 
 - [ ] **Step 1: 改 `Engine` trait 与 TestCase**
 
@@ -676,12 +676,66 @@ git commit -m "feat(test): 多表生成器——按表维护 live 集合、带�
 
 **两个假引擎必须保持原有的错误行为不变**——它们是证明框架有效的仪器，不是待修的缺陷。
 
-- [ ] **Step 3: 全绿，且验收阈值不退化**
+- [ ] **Step 3: shrinker 的合法性门禁多表化**
+
+`is_legal` 现在是 `fn is_legal(initial: &[Row], ops: &[Op]) -> bool`，单表假设写死在签名里。改为按表判定：
+
+```rust
+/// 序列的合法性：每个 DELETE / UPDATE 必须命中**它自己那张表**当时存在的行。
+///
+/// 多表化之后这条更容易出错：用 A 表的行去删 B 表是非法序列，而引擎从来
+/// 没有义务处理非法输入——在非法序列上「失败」毫无意义，这正是自研 shrinker
+/// 而不用 proptest 的全部理由（spec §9.3）。
+pub fn is_legal(initial: &BTreeMap<String, Vec<Row>>, ops: &[(String, Op)]) -> bool {
+    let mut live: BTreeMap<String, Vec<Row>> = initial.clone();
+    for (table, op) in ops {
+        let Some(l) = live.get_mut(table) else {
+            return false; // 未知表
+        };
+        match op {
+            Op::Insert(r) => l.push(r.clone()),
+            Op::Delete(r) => match l.iter().position(|x| x == r) {
+                Some(i) => {
+                    l.swap_remove(i);
+                }
+                None => return false,
+            },
+            Op::Update { old, new } => match l.iter().position(|x| x == old) {
+                Some(i) => {
+                    l.swap_remove(i);
+                    l.push(new.clone());
+                }
+                None => return false,
+            },
+        }
+    }
+    true
+}
+```
+
+`shrink` 的三个阶段跟随：阶段一删 op 区间、阶段三删初始行（现在按表删），两者都要经 `is_legal` 门禁；阶段二缩 query 仍不需要门禁（缩 query 不影响序列合法性）。
+
+现有 `is_legal` 单测改为多表形态，并**新增一条多表特有的**：
+
+```rust
+#[test]
+fn deleting_a_row_that_exists_in_another_table_is_illegal() {
+    // 单表时这个形态根本不存在；多表化后它是最容易被写错的一格。
+    let initial = BTreeMap::from([
+        ("t0".to_string(), vec![row(1)]),
+        ("t1".to_string(), vec![]),
+    ]);
+    let ops = vec![("t1".to_string(), Op::Delete(row(1)))];
+    assert!(!is_legal(&initial, &ops), "t1 里没有这一行，即便 t0 里有");
+}
+```
+
+- [ ] **Step 4: 全绿，且验收阈值不退化**
 
 Run: `cargo test --workspace --locked`
 Expected: 全部通过。**`harness_catches_the_missing_retraction_bug` 仍须 ≥90% 检出，`failing_case_shrinks_to_under_ten_ops` 仍须 ≤10 步。** 任一退化说明重构动了不该动的东西——不许放宽断言，去查原因。
 
-- [ ] **Step 4: 新增多表端到端测试**
+- [ ] **Step 5: 新增多表端到端测试**
 
 ```rust
 #[test]
@@ -691,18 +745,18 @@ fn a_two_table_case_runs_green_against_the_reference_engine() {
     // 所以 apply 的表名路由、按表的 live 集合、oracle 的多表建立都被真正走到。
     let mut rng = StdRng::seed_from_u64(7);
     let db = gen_database(&mut rng, 2);
-    let case = gen_case_multi(7, &db, &Domain::default(), 25, 150, Batching::Chunks(5));
+    let case = gen_case(7, &db, &Domain::default(), 25, 150, Batching::Chunks(5));
     let mut engine = NaiveRecompute::new();
     run(&mut engine, &case).unwrap_or_else(|f| panic!("参照实现不应失败: {f}"));
 }
 ```
 
-- [ ] **Step 5: 变异验证路由正确**
+- [ ] **Step 6: 变异验证路由正确**
 
 1. 让 `run` 把所有 delta 都投给 `db.tables()[0]` → 期望 `a_two_table_case_runs_green_against_the_reference_engine` 红（第二张表的变更丢失，oracle 比对不上）
 2. 让 `run` 每张表调一次 `refresh` 而非每批一次 → **期望仍绿**（对 `NaiveRecompute` 语义等价）。这一条记录为"已知不被守护"，留给引擎计划——真正能区分的是一个把 consolidation 做在 `refresh` 里的引擎。
 
-- [ ] **Step 6: 登记门禁并提交**
+- [ ] **Step 7: 登记门禁并提交**
 
 ```bash
 git add crates/ docs/mutation-gates.md
