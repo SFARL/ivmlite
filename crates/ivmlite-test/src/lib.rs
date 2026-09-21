@@ -10,6 +10,8 @@ mod query;
 mod regression;
 mod shrink;
 mod sql;
+#[cfg(test)]
+mod test_support;
 
 pub use buggy::{NoRetractionEngine, TransientDriftEngine};
 pub use data::{gen_database, gen_initial, gen_row, gen_rows, Domain};

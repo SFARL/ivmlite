@@ -33,8 +33,13 @@ impl Op {
 /// 去删另一张表这种非法序列。
 ///
 /// 每一步先均匀选表、再选操作：选表必须是均匀分布，否则 join 算子两侧
-/// `ΔR⋈S` 与 `R⋈ΔS` 的覆盖会失衡。live 集合按 `db.tables()` 的顺序存成
-/// `Vec`（而非 `HashMap`），保持迭代顺序确定（spec §9.4）。
+/// `ΔR⋈S` 与 `R⋈ΔS` 的覆盖会失衡。live 集合按 `db.tables()` 的下标存成
+/// `Vec`（m3 更正：不是为了迭代顺序确定——`live` 在本函数里只按 `t_idx`
+/// 索引，从不整体迭代，把它换成 `HashMap<usize, Vec<Row>>` 一样能保证同一
+/// 个 `t_idx` 每次取到同一张表。真正保证"选表结果与 seed 确定绑定"的是
+/// `db.tables()` 本身：它返回的 `Vec<Schema>` 保留插入顺序，这条由
+/// `ivmlite-core` 的 `table_order_is_preserved`（`database.rs`）守护，
+/// 不是这里的 `Vec` 选择（spec §9.4）。
 pub fn gen_ops(
     rng: &mut StdRng,
     db: &Database,
@@ -87,23 +92,12 @@ pub fn gen_ops(
 #[cfg(test)]
 mod tests {
     use super::{gen_ops, Op};
+    use crate::test_support::{as_initial, single_table_db};
     use crate::{gen_database, gen_initial, Column, ColumnType, Domain, Schema};
-    use ivmlite_core::{Database, Row, Value};
+    use ivmlite_core::{Row, Value};
     use rand::rngs::StdRng;
     use rand::SeedableRng;
     use std::collections::BTreeMap;
-
-    /// 把单表 `Schema` 包成一个只有这一张表的 `Database`，好让改成多表签名
-    /// 之后的 `gen_ops` 仍能跑原先针对单表写的用例。
-    fn single_table_db(schema: &Schema) -> Database {
-        Database::single(schema.clone())
-    }
-
-    fn as_initial(schema: &Schema, rows: Vec<Row>) -> BTreeMap<String, Vec<Row>> {
-        let mut map = BTreeMap::new();
-        map.insert(schema.table.clone(), rows);
-        map
-    }
 
     fn orders() -> Schema {
         Schema {
@@ -218,8 +212,7 @@ mod tests {
 
     #[test]
     fn generated_database_tables_have_exactly_two_columns() {
-        let mut rng = StdRng::seed_from_u64(1);
-        let db = gen_database(&mut rng, 2);
+        let db = gen_database(2);
         assert_eq!(db.len(), 2);
         for t in db.tables() {
             assert_eq!(
@@ -234,7 +227,7 @@ mod tests {
     #[test]
     fn ops_are_tagged_with_a_table_that_exists() {
         let mut rng = StdRng::seed_from_u64(2);
-        let db = gen_database(&mut rng, 2);
+        let db = gen_database(2);
         let domain = Domain::default();
         let initial = gen_initial(&mut rng, &db, &domain, 20);
         for (table, _) in gen_ops(&mut rng, &db, &domain, &initial, 200) {
@@ -250,7 +243,7 @@ mod tests {
         // 均匀选表下任何一张跌破这条线的概率约 2.4e-19，而 90/10 的偏斜下
         // 少数表期望只有 30，会可靠地跌破 75 这条线。
         let mut rng = StdRng::seed_from_u64(3);
-        let db = gen_database(&mut rng, 2);
+        let db = gen_database(2);
         let domain = Domain::default();
         let initial = gen_initial(&mut rng, &db, &domain, 20);
         let count = 300;
@@ -270,7 +263,7 @@ mod tests {
     fn deletes_target_rows_that_exist_in_their_own_table() {
         // 有偏采样必须按表各自维护 live 集合——用一张表的行去删另一张表是非法序列。
         let mut rng = StdRng::seed_from_u64(4);
-        let db = gen_database(&mut rng, 2);
+        let db = gen_database(2);
         let domain = Domain::default();
         let initial = gen_initial(&mut rng, &db, &domain, 30);
         let mut live: BTreeMap<String, Vec<Row>> = initial.clone();
@@ -310,7 +303,7 @@ mod tests {
     fn same_seed_yields_the_same_multi_table_sequence() {
         let make = || {
             let mut rng = StdRng::seed_from_u64(99);
-            let db = gen_database(&mut rng, 2);
+            let db = gen_database(2);
             let domain = Domain::default();
             let initial = gen_initial(&mut rng, &db, &domain, 10);
             gen_ops(&mut rng, &db, &domain, &initial, 50)

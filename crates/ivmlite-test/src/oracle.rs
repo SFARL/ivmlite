@@ -107,6 +107,7 @@ pub fn recompute_via_sqlite(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::single_base;
     use crate::{Agg, AggFn, Column, ColumnType, Predicate, Schema, ViewQuery};
 
     fn orders() -> Schema {
@@ -155,10 +156,6 @@ mod tests {
             }],
             predicate: Predicate::None,
         }
-    }
-
-    fn single_base(table: &str, base: ZSet) -> BTreeMap<String, ZSet> {
-        BTreeMap::from([(table.to_string(), base)])
     }
 
     #[test]

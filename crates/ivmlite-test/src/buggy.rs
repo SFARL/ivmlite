@@ -145,6 +145,7 @@ impl Engine for TransientDriftEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::single_table_bases as single_table_case;
     use crate::{Agg, AggFn, Column, ColumnType, Predicate, Schema};
 
     fn schema() -> Schema {
@@ -176,11 +177,7 @@ mod tests {
         }
     }
 
-    fn single_table_case(s: &Schema, base: ZSet) -> (Database, BTreeMap<String, ZSet>) {
-        let db = Database::single(s.clone());
-        let bases = BTreeMap::from([(s.table.clone(), base)]);
-        (db, bases)
-    }
+    // 与 naive.rs 里字节级相同的辅助函数已合并到 test_support（m4）。
 
     /// item 21 的直接守卫：SUM 在零个非 NULL 输入下为 Null——旧实现只检查
     /// "末列是不是 Int"，这种情况下什么也不做，污染悄悄消失。新实现必须

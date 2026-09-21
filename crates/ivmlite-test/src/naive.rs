@@ -135,6 +135,7 @@ impl Engine for NaiveRecompute {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::single_table_bases as single_table_case;
     use crate::{Agg, AggFn, Column, ColumnType, Predicate, Schema, ViewQuery};
     use ivmlite_core::{Row, Value};
 
@@ -156,13 +157,10 @@ mod tests {
         }
     }
 
-    /// 单表用例包成一张表的 `Database`，配上按表名建的初始状态——所有既有
-    /// 单表测试只关心这一张 anchor 表，多表化之后仍要能这样简写。
-    fn single_table_case(s: &Schema, base: ZSet) -> (Database, BTreeMap<String, ZSet>) {
-        let db = Database::single(s.clone());
-        let bases = BTreeMap::from([(s.table.clone(), base)]);
-        (db, bases)
-    }
+    // 单表用例包成一张表的 `Database`，配上按表名建的初始状态——所有既有
+    // 单表测试只关心这一张 anchor 表，多表化之后仍要能这样简写。这里用的是
+    // `test_support::single_table_bases`（m4：与 buggy.rs 里字节级相同的
+    // 版本已合并到一处）。
 
     fn sum_by_region() -> ViewQuery {
         ViewQuery {

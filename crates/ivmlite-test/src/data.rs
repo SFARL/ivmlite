@@ -59,7 +59,7 @@ pub fn gen_rows(rng: &mut StdRng, schema: &Schema, domain: &Domain, count: usize
 /// 3 列会让穷举规模从约 554 涨到约 4209。两列都可空是为了让 spec §6.1
 /// 的「`SUM` 无非 NULL 输入时返回 NULL」这条路径在随机测试里真的走得
 /// 到——M0 的集成测试正是为此把 `amount` 改成可空的。
-pub fn gen_database(_rng: &mut StdRng, table_count: usize) -> Database {
+pub fn gen_database(table_count: usize) -> Database {
     let tables = (0..table_count)
         .map(|i| Schema {
             table: format!("t{i}"),
