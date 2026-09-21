@@ -498,19 +498,25 @@ M-1 的场景 8 在方案 A（标量 UDF）上实测到一个**静默**的灾难
 M1 的引擎通过 `ivmlite-test` 的 `Engine` trait 接入差分测试框架。该 trait 的形状不是实现细节——它决定了哪些行为**能被测到**：
 
 ```rust
-fn create_view(&mut self, &Schema, &ViewQuery, initial: &ZSet) -> Result<(), EngineError>;
+fn create_view(&mut self, &Database, &ViewQuery, initial: &BTreeMap<String, ZSet>) -> Result<(), EngineError>;
 fn apply(&mut self, table: &str, raw: &[(Row, i64)]) -> Result<(), EngineError>;
 fn refresh(&mut self) -> Result<(), EngineError>;
 fn materialize(&mut self) -> Result<ZSet, EngineError>;
 ```
 
-三条约束及其理由：
+四条约束及其理由：
 
 **`apply` 接收未合并的原始 Δ，不是 `ZSet`。** 同一行可以在同一批里出现多次，引擎必须自己决定要不要先 consolidate。若 harness 交出的是已合并的 `ZSet`，§8.2 所说的 consolidation——M1 的内容而非优化项，也是本项目最可能成立的性能故事——就从这个接缝上**结构性不可见**：引擎无论做没做合并，测试结果都一样。框架内有一个记录型引擎守着这条，喂进含重复行的批次并断言收到的是多条而非合并后的一条。
 
 **`refresh` 与 `apply` 分离。** §8.2 规定显式 refresh 是永久 API 而非临时妥协，§9.1 的批次无关性也只有在维护时刻可控时才可测。参照实现 `NaiveRecompute` 因此**真的**分两阶段：`apply` 只堆 pending，`refresh` 才并进 base。若 `apply` 急切合并，`refresh` 便成空操作，任何忽略该契约的引擎都不会被抓到。
 
 **`apply` 带表名。** §6.3 禁止做出会让 join 返工的决定，而 join 需要多个基表（join 现排在 M1a）。`materialize` 刻意**不**带 view 标识：多视图要到 M4 的级联视图才出现且形态未定，现在加属投机；多表是已排期的已知需求，加一个参数是当下最便宜的时刻。
+
+**`create_view` 收整个 `Database` 与按表的初始状态**（M1a Phase 1 修订，2026-09-21）。原签名是 `(&Schema, &ZSet)`，单表假设写死在类型里。join 必须 bootstrap **两侧**，而一个只能看见一张表初始状态的引擎，"它有没有把第二张表也 bootstrap 起来"这个问题在接缝上**不可问**——与第一条约束的失效形态完全相同：引擎做没做，测试结果都一样。
+
+> 这一条与上面三条的来历不同：前三条是 M0 设计时预先想到的，这一条是 M1a Phase 1 真的把框架多表化时被迫做出的。记在这里是因为 §8.5 开头那句话对第四条同样成立——它决定了哪些行为能被测到，所以它属于权威文档，不属于某份计划的一个条目。
+
+> `apply` 的签名**未变**：它从 M0 起就带表名（上面第三条）。M1a Phase 1 是这个参数第一次真的路由到多张表——在那之前只有一张表时它形同虚设。这正是第三条"加一个参数是当下最便宜的时刻"所预期的结果。
 
 ---
 
