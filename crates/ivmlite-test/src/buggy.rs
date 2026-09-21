@@ -1,6 +1,8 @@
-use ivmlite_core::{Row, Value, ZSet};
+use std::collections::BTreeMap;
 
-use crate::{Engine, EngineError, NaiveRecompute, Schema, ViewQuery};
+use ivmlite_core::{Database, Row, Value, ZSet};
+
+use crate::{Engine, EngineError, NaiveRecompute, ViewQuery};
 
 /// 故意植入 bug 的引擎：聚合结果变化时**只发出新行、不撤回旧行**。
 ///
@@ -21,11 +23,11 @@ impl NoRetractionEngine {
 impl Engine for NoRetractionEngine {
     fn create_view(
         &mut self,
-        schema: &Schema,
+        db: &Database,
         query: &ViewQuery,
-        initial: &ZSet,
+        initial: &BTreeMap<String, ZSet>,
     ) -> Result<(), EngineError> {
-        self.inner.create_view(schema, query, initial)?;
+        self.inner.create_view(db, query, initial)?;
         self.accumulated = self.inner.materialize()?;
         Ok(())
     }
@@ -84,12 +86,12 @@ impl TransientDriftEngine {
 impl Engine for TransientDriftEngine {
     fn create_view(
         &mut self,
-        schema: &Schema,
+        db: &Database,
         query: &ViewQuery,
-        initial: &ZSet,
+        initial: &BTreeMap<String, ZSet>,
     ) -> Result<(), EngineError> {
         self.group_arity = query.group_by.len();
-        self.inner.create_view(schema, query, initial)
+        self.inner.create_view(db, query, initial)
     }
 
     fn apply(&mut self, table: &str, raw: &[(Row, i64)]) -> Result<(), EngineError> {
@@ -143,7 +145,8 @@ impl Engine for TransientDriftEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Agg, AggFn, Column, ColumnType, Predicate};
+    use crate::test_support::single_table_bases as single_table_case;
+    use crate::{Agg, AggFn, Column, ColumnType, Predicate, Schema};
 
     fn schema() -> Schema {
         Schema {
@@ -174,6 +177,8 @@ mod tests {
         }
     }
 
+    // 与 naive.rs 里字节级相同的辅助函数已合并到 test_support（m4）。
+
     /// item 21 的直接守卫：SUM 在零个非 NULL 输入下为 Null——旧实现只检查
     /// "末列是不是 Int"，这种情况下什么也不做，污染悄悄消失。新实现必须
     /// 把这个 Null 聚合列改成 Int(0)，让污染在这条路径上也一定发生。
@@ -181,7 +186,8 @@ mod tests {
     fn drift_still_happens_when_the_aggregate_column_is_null() {
         let base = ZSet::from_rows([(Row::new(vec![Value::Text("a".into()), Value::Null]), 1)]);
         let mut engine = TransientDriftEngine::new(1);
-        engine.create_view(&schema(), &sum_query(), &base).unwrap();
+        let (db, bases) = single_table_case(&schema(), base);
+        engine.create_view(&db, &sum_query(), &bases).unwrap();
         let truth = Row::new(vec![Value::Text("a".into()), Value::Null]);
 
         let drifted = engine.materialize().unwrap();
@@ -202,7 +208,8 @@ mod tests {
     fn drift_bumps_the_first_int_aggregate_column() {
         let base = ZSet::from_rows([(Row::new(vec![Value::Text("a".into()), Value::Int(5)]), 1)]);
         let mut engine = TransientDriftEngine::new(1);
-        engine.create_view(&schema(), &sum_query(), &base).unwrap();
+        let (db, bases) = single_table_case(&schema(), base);
+        engine.create_view(&db, &sum_query(), &bases).unwrap();
 
         let drifted = engine.materialize().unwrap();
         assert_eq!(

@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use ivmlite_core::Row;
 
 use crate::{run, Engine, Op, Predicate, TestCase};
@@ -11,28 +13,35 @@ where
     run(&mut engine, case).is_err()
 }
 
-/// 序列的合法性：每个 DELETE / UPDATE 必须命中当时存在的行。
+/// 序列的合法性：每个 DELETE / UPDATE 必须命中**它自己那张表**当时存在的行。
 ///
 /// 这是自研 shrinker 而非直接用 proptest 的原因——朴素的缩小会删掉某个
 /// INSERT，让后续针对该行的 DELETE 悬空，产出一个引擎本就不该处理的非法
 /// 序列，于是"失败"变得毫无意义（spec §9.3）。这是自研 shrinker 唯一的
 /// load-bearing 性质，因此是 `pub`：调用方（包括集成测试）可以直接对
 /// `shrink` 的产出重新断言合法性，而不是只信任 shrink 内部没有用错它。
-pub fn is_legal(initial: &[Row], ops: &[Op]) -> bool {
-    let mut live: Vec<Row> = initial.to_vec();
-    for op in ops {
+///
+/// 多表化之后这条更容易出错：用 A 表的行去删 B 表是非法序列，而引擎从来
+/// 没有义务处理非法输入——在非法序列上「失败」毫无意义，这正是自研 shrinker
+/// 而不用 proptest 的全部理由（spec §9.3）。
+pub fn is_legal(initial: &BTreeMap<String, Vec<Row>>, ops: &[(String, Op)]) -> bool {
+    let mut live: BTreeMap<String, Vec<Row>> = initial.clone();
+    for (table, op) in ops {
+        let Some(l) = live.get_mut(table) else {
+            return false; // 未知表
+        };
         match op {
-            Op::Insert(r) => live.push(r.clone()),
-            Op::Delete(r) => match live.iter().position(|x| x == r) {
+            Op::Insert(r) => l.push(r.clone()),
+            Op::Delete(r) => match l.iter().position(|x| x == r) {
                 Some(i) => {
-                    live.swap_remove(i);
+                    l.swap_remove(i);
                 }
                 None => return false,
             },
-            Op::Update { old, new } => match live.iter().position(|x| x == old) {
+            Op::Update { old, new } => match l.iter().position(|x| x == old) {
                 Some(i) => {
-                    live.swap_remove(i);
-                    live.push(new.clone());
+                    l.swap_remove(i);
+                    l.push(new.clone());
                 }
                 None => return false,
             },
@@ -141,22 +150,29 @@ where
         }
     }
 
-    // 阶段三：逐条删除初始行。
-    let mut i = 0;
-    while i < best.initial.len() {
-        let mut initial = best.initial.clone();
-        initial.remove(i);
-        if is_legal(&initial, &best.ops) {
-            let candidate = TestCase {
-                initial,
-                ..best.clone()
-            };
-            if still_fails(&candidate, &make) {
-                best = candidate;
-                continue; // 不推进 i
+    // 阶段三：逐张表、逐条删除初始行。
+    let tables: Vec<String> = best.initial.keys().cloned().collect();
+    for table in tables {
+        let mut i = 0;
+        loop {
+            let len = best.initial.get(&table).map_or(0, Vec::len);
+            if i >= len {
+                break;
             }
+            let mut initial = best.initial.clone();
+            initial.get_mut(&table).expect("表必须存在").remove(i);
+            if is_legal(&initial, &best.ops) {
+                let candidate = TestCase {
+                    initial,
+                    ..best.clone()
+                };
+                if still_fails(&candidate, &make) {
+                    best = candidate;
+                    continue; // 不推进 i
+                }
+            }
+            i += 1;
         }
-        i += 1;
     }
 
     best
@@ -171,49 +187,81 @@ mod tests {
         Row::new(vec![Value::Int(n)])
     }
 
+    fn initial(rows: Vec<Row>) -> BTreeMap<String, Vec<Row>> {
+        BTreeMap::from([("t0".to_string(), rows)])
+    }
+
+    fn ops_on(table: &str, ops: Vec<Op>) -> Vec<(String, Op)> {
+        ops.into_iter().map(|op| (table.to_string(), op)).collect()
+    }
+
     /// I2：这是自研 shrinker 而非直接用 proptest 的唯一理由（spec §9.3）。
     /// 直接单元测试 `is_legal` 本身，而不是只通过间接的集成测试断言。
     #[test]
     fn dangling_delete_is_illegal() {
         // 行 1 从未存在过（initial 为空），删它必须判非法。
-        assert!(!is_legal(&[], &[Op::Delete(row(1))]));
+        assert!(!is_legal(
+            &initial(vec![]),
+            &ops_on("t0", vec![Op::Delete(row(1))])
+        ));
     }
 
     #[test]
     fn dangling_update_is_illegal() {
         // old=row(1) 不在 live 集合里，UPDATE 必须判非法。
         assert!(!is_legal(
-            &[],
-            &[Op::Update {
-                old: row(1),
-                new: row(2)
-            }]
+            &initial(vec![]),
+            &ops_on(
+                "t0",
+                vec![Op::Update {
+                    old: row(1),
+                    new: row(2)
+                }]
+            )
         ));
     }
 
     #[test]
     fn legal_sequence_is_legal() {
         // insert 1 → delete 1 → insert 2 → update 2->3：每一步都命中当时存在的行。
-        let ops = vec![
-            Op::Insert(row(1)),
-            Op::Delete(row(1)),
-            Op::Insert(row(2)),
-            Op::Update {
-                old: row(2),
-                new: row(3),
-            },
-        ];
-        assert!(is_legal(&[], &ops));
+        let ops = ops_on(
+            "t0",
+            vec![
+                Op::Insert(row(1)),
+                Op::Delete(row(1)),
+                Op::Insert(row(2)),
+                Op::Update {
+                    old: row(2),
+                    new: row(3),
+                },
+            ],
+        );
+        assert!(is_legal(&initial(vec![]), &ops));
     }
 
     #[test]
     fn delete_of_a_row_present_in_initial_is_legal() {
-        assert!(is_legal(&[row(1)], &[Op::Delete(row(1))]));
+        assert!(is_legal(
+            &initial(vec![row(1)]),
+            &ops_on("t0", vec![Op::Delete(row(1))])
+        ));
     }
 
     #[test]
     fn delete_after_insert_of_a_different_row_is_illegal() {
         // insert 1，然后删 2——2 从未存在过。
-        assert!(!is_legal(&[], &[Op::Insert(row(1)), Op::Delete(row(2))]));
+        assert!(!is_legal(
+            &initial(vec![]),
+            &ops_on("t0", vec![Op::Insert(row(1)), Op::Delete(row(2))])
+        ));
+    }
+
+    #[test]
+    fn deleting_a_row_that_exists_in_another_table_is_illegal() {
+        // 单表时这个形态根本不存在；多表化后它是最容易被写错的一格。
+        let initial =
+            BTreeMap::from([("t0".to_string(), vec![row(1)]), ("t1".to_string(), vec![])]);
+        let ops = vec![("t1".to_string(), Op::Delete(row(1)))];
+        assert!(!is_legal(&initial, &ops), "t1 里没有这一行，即便 t0 里有");
     }
 }

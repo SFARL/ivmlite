@@ -1,22 +1,28 @@
 use std::collections::BTreeMap;
 
-use ivmlite_core::{Row, Value, ZSet};
+use ivmlite_core::{Database, Row, Value, ZSet};
 
-use crate::{AggFn, Engine, EngineError, Predicate, Schema, ViewQuery};
+use crate::{AggFn, Engine, EngineError, Predicate, ViewQuery};
 
 /// 平凡正确的参照实现：保存全量基表，每次 materialize 重算一遍。
 ///
 /// 两个用途：验证测试框架不会误报；充当 benchmark 的"朴素重跑"基线（spec §10.2）。
 ///
-/// `apply` 与 `refresh` 是真正分离的两个阶段：`apply` 只把原始 `(Row, i64)`
-/// 追加进 `pending`，不做任何合并；`refresh` 才把 `pending` drain 进
+/// `apply` 与 `refresh` 是真正分离的两个阶段：`apply` 只把原始 `(table, Row, i64)`
+/// 追加进 `pending`，不做任何合并；`refresh` 才把 `pending` 按表 drain 进
 /// `base`。如果 `apply` 提前合并，`refresh` 就成了空操作，任何忽略 refresh
 /// 契约的引擎都不会被测出来（spec §8.2）。
+///
+/// `base` 按表持有（`BTreeMap<String, ZSet>`）——多表化之后 `create_view` 收到
+/// 的初始状态本就是按表分开的。`materialize` 仍只聚合 `anchor`（`db` 里第一张
+/// 表）的状态：查询目前仍是单表聚合，join 属引擎计划（Phase 3），Task 3 的
+/// oracle 已经把这条限制写死在 `recompute_via_sqlite` 里，这里跟随保持一致。
 #[derive(Debug, Default)]
 pub struct NaiveRecompute {
     query: Option<ViewQuery>,
-    base: ZSet,
-    pending: Vec<(Row, i64)>,
+    anchor: String,
+    base: BTreeMap<String, ZSet>,
+    pending: Vec<(String, Row, i64)>,
 }
 
 impl NaiveRecompute {
@@ -39,24 +45,33 @@ fn passes(predicate: &Predicate, row: &Row) -> bool {
 impl Engine for NaiveRecompute {
     fn create_view(
         &mut self,
-        _schema: &Schema,
+        db: &Database,
         query: &ViewQuery,
-        initial: &ZSet,
+        initial: &BTreeMap<String, ZSet>,
     ) -> Result<(), EngineError> {
         self.query = Some(query.clone());
+        self.anchor = db
+            .tables()
+            .first()
+            .ok_or_else(|| EngineError("database 为空".into()))?
+            .table
+            .clone();
         self.base = initial.clone();
         Ok(())
     }
 
-    fn apply(&mut self, _table: &str, raw: &[(Row, i64)]) -> Result<(), EngineError> {
+    fn apply(&mut self, table: &str, raw: &[(Row, i64)]) -> Result<(), EngineError> {
         // 刻意不合并：合并是 refresh 的职责，见类型上的文档注释。
-        self.pending.extend_from_slice(raw);
+        self.pending.extend(
+            raw.iter()
+                .map(|(row, w)| (table.to_string(), row.clone(), *w)),
+        );
         Ok(())
     }
 
     fn refresh(&mut self) -> Result<(), EngineError> {
-        for (row, weight) in self.pending.drain(..) {
-            self.base.update(row, weight);
+        for (table, row, weight) in self.pending.drain(..) {
+            self.base.entry(table).or_default().update(row, weight);
         }
         Ok(())
     }
@@ -72,7 +87,8 @@ impl Engine for NaiveRecompute {
         // （spec §6.1「聚合的 NULL 语义契约」）。只维护累加值会静默输出 0。
         let mut groups: BTreeMap<Vec<Value>, Vec<(i64, i64)>> = BTreeMap::new();
 
-        for (row, weight) in self.base.iter() {
+        let anchor_base = self.base.get(&self.anchor).cloned().unwrap_or_default();
+        for (row, weight) in anchor_base.iter() {
             if *weight <= 0 {
                 continue;
             }
@@ -119,6 +135,7 @@ impl Engine for NaiveRecompute {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::single_table_bases as single_table_case;
     use crate::{Agg, AggFn, Column, ColumnType, Predicate, Schema, ViewQuery};
     use ivmlite_core::{Row, Value};
 
@@ -139,6 +156,11 @@ mod tests {
             ],
         }
     }
+
+    // 单表用例包成一张表的 `Database`，配上按表名建的初始状态——所有既有
+    // 单表测试只关心这一张 anchor 表，多表化之后仍要能这样简写。这里用的是
+    // `test_support::single_table_bases`（m4：与 buggy.rs 里字节级相同的
+    // 版本已合并到一处）。
 
     fn sum_by_region() -> ViewQuery {
         ViewQuery {
@@ -169,7 +191,8 @@ mod tests {
     fn aggregates_initial_state() {
         let mut e = NaiveRecompute::new();
         let base = ZSet::from_rows([(row("a", 10), 1), (row("a", 5), 1), (row("b", 3), 1)]);
-        e.create_view(&schema(), &sum_by_region(), &base).unwrap();
+        let (db, bases) = single_table_case(&schema(), base.clone());
+        e.create_view(&db, &sum_by_region(), &bases).unwrap();
 
         let got = e.materialize().unwrap();
         assert_eq!(got.weight_of(&out(Value::Text("a".into()), 15, 2)), 1);
@@ -181,7 +204,8 @@ mod tests {
     fn applying_a_delete_updates_the_group() {
         let mut e = NaiveRecompute::new();
         let base = ZSet::from_rows([(row("a", 10), 1), (row("a", 5), 1)]);
-        e.create_view(&schema(), &sum_by_region(), &base).unwrap();
+        let (db, bases) = single_table_case(&schema(), base.clone());
+        e.create_view(&db, &sum_by_region(), &bases).unwrap();
 
         e.apply("orders", &[(row("a", 5), -1)]).unwrap();
         e.refresh().unwrap();
@@ -195,7 +219,8 @@ mod tests {
     fn emptying_a_group_removes_it_entirely() {
         let mut e = NaiveRecompute::new();
         let base = ZSet::from_rows([(row("a", 10), 1)]);
-        e.create_view(&schema(), &sum_by_region(), &base).unwrap();
+        let (db, bases) = single_table_case(&schema(), base.clone());
+        e.create_view(&db, &sum_by_region(), &bases).unwrap();
 
         e.apply("orders", &[(row("a", 10), -1)]).unwrap();
         e.refresh().unwrap();
@@ -213,7 +238,8 @@ mod tests {
             (Row::new(vec![Value::Null, Value::Int(4)]), 1),
             (row("a", 1), 1),
         ]);
-        e.create_view(&schema(), &sum_by_region(), &base).unwrap();
+        let (db, bases) = single_table_case(&schema(), base.clone());
+        e.create_view(&db, &sum_by_region(), &bases).unwrap();
 
         let got = e.materialize().unwrap();
         assert_eq!(got.weight_of(&out(Value::Null, 4, 1)), 1);
@@ -235,7 +261,8 @@ mod tests {
             },
         };
         let base = ZSet::from_rows([(row("a", 10), 1), (row("a", 1), 1)]);
-        e.create_view(&schema(), &q, &base).unwrap();
+        let (db, bases) = single_table_case(&schema(), base.clone());
+        e.create_view(&db, &q, &bases).unwrap();
 
         let got = e.materialize().unwrap();
         assert_eq!(
@@ -261,7 +288,8 @@ mod tests {
             (row("a", 10), 1),
             (Row::new(vec![Value::Null, Value::Int(1)]), 1),
         ]);
-        e.create_view(&schema(), &q, &base).unwrap();
+        let (db, bases) = single_table_case(&schema(), base.clone());
+        e.create_view(&db, &q, &bases).unwrap();
 
         let got = e.materialize().unwrap();
         assert_eq!(
@@ -315,7 +343,8 @@ mod tests {
         ]);
 
         let mut e = NaiveRecompute::new();
-        e.create_view(&nullable_amount, &q, &base).unwrap();
+        let (db, bases) = single_table_case(&nullable_amount, base.clone());
+        e.create_view(&db, &q, &bases).unwrap();
         let got = e.materialize().unwrap();
 
         assert_eq!(
@@ -336,7 +365,8 @@ mod tests {
     fn sum_that_totals_zero_is_int_zero_not_null() {
         let mut e = NaiveRecompute::new();
         let base = ZSet::from_rows([(row("a", 10), 1), (row("a", -10), 1)]);
-        e.create_view(&schema(), &sum_by_region(), &base).unwrap();
+        let (db, bases) = single_table_case(&schema(), base.clone());
+        e.create_view(&db, &sum_by_region(), &bases).unwrap();
 
         let got = e.materialize().unwrap();
         assert_eq!(
@@ -355,7 +385,8 @@ mod tests {
     fn retracting_a_row_that_was_never_inserted_is_a_noop() {
         let mut e = NaiveRecompute::new();
         let base = ZSet::from_rows([(row("a", 10), 1)]);
-        e.create_view(&schema(), &sum_by_region(), &base).unwrap();
+        let (db, bases) = single_table_case(&schema(), base.clone());
+        e.create_view(&db, &sum_by_region(), &bases).unwrap();
 
         // "b" 从未出现在 base 中；这条撤回让它在 self.base 里权重为 -1。
         e.apply("orders", &[(row("b", 999), -1)]).unwrap();

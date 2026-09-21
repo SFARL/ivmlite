@@ -416,6 +416,30 @@ mod tests {
         );
     }
 
+    /// 缺口测试（M1a Phase 1 Task 1 变异审计新增）：`rows_respect_group_cardinality`
+    /// 用 500 行、7 个分组键跑纯随机分配也几乎必然覆盖全部 7 个键（`rows()`
+    /// 若把"前 card 行逐一覆盖每个键"改成"每一行都纯随机落点"，把变异真的
+    /// 跑一遍验证时，那条测试仍然是绿的——不是巧合失败，就是没抓到）。真正
+    /// 抓住这次变异的是 `base_rows_equal_to_group_cardinality_is_accepted`，
+    /// 但那条测试的名字与断言意图都是"边界值被接受"，不是"分组键覆盖精确"，
+    /// 它能抓到纯属该场景样本量小（7 个 draw 覆盖 7 个键的概率很低）的副作用。
+    ///
+    /// 直接把文档注释里声称的机制（"前 card 行逐一覆盖每个键"）钉成断言：
+    /// 不看最终不同值的数量，而看前 `card` 行的分组键是不是精确按
+    /// `0..card` 顺序出现。纯随机分配几乎不可能巧合出这个顺序。
+    #[test]
+    fn first_card_rows_deterministically_cover_each_group_in_order() {
+        let w = spec();
+        let card = w.data.group_cardinality;
+        let regions: Vec<String> = w.rows().take(card).map(|(_, r, _)| r).collect();
+        let want: Vec<String> = (0..card).map(|i| format!("r{i}")).collect();
+        assert_eq!(
+            regions, want,
+            "前 group_cardinality 行必须逐一、按序覆盖每个分组键（spec §10.1）——\
+             这是覆盖率精确的保证机制本身，而不是让后续随机采样'大概率'凑齐"
+        );
+    }
+
     #[test]
     fn row_ids_are_dense_and_unique() {
         let ids: Vec<i64> = spec().rows().map(|(id, _, _)| id).collect();

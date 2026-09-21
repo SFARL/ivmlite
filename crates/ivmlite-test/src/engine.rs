@@ -1,6 +1,8 @@
-use ivmlite_core::{Row, ZSet};
+use std::collections::BTreeMap;
 
-use crate::{Schema, ViewQuery};
+use ivmlite_core::{Database, Row, ZSet};
+
+use crate::ViewQuery;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EngineError(pub String);
@@ -18,14 +20,17 @@ impl std::error::Error for EngineError {}
 /// M0 提供 NaiveRecompute（平凡正确）与 NoRetractionEngine（故意有 bug）；
 /// M1 的真实引擎实现同一个 trait 后即可直接接入全部测试与 benchmark。
 pub trait Engine {
+    /// `db` 声明用例涉及的全部基表（顺序确定，spec §9.4）；`initial` 按表名
+    /// 给出每张基表的初始状态——多表化之后 `create_view` 第一次真的需要
+    /// 不止一张表的初始状态（task 5）。
     fn create_view(
         &mut self,
-        schema: &Schema,
+        db: &Database,
         query: &ViewQuery,
-        initial: &ZSet,
+        initial: &BTreeMap<String, ZSet>,
     ) -> Result<(), EngineError>;
 
-    /// 摄入一批**未合并**的变更。
+    /// 摄入一批**未合并**的变更，指明它们属于哪张表。
     ///
     /// `raw` 刻意是 `&[(Row, i64)]` 而非 `ZSet`：同一行可以在同一批里出现多次，
     /// 引擎必须自己决定要不要先 consolidate。spec §8.2 把 consolidation 列为

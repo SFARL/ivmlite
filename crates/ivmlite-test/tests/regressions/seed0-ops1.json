@@ -1,17 +1,21 @@
 {
   "seed": 0,
-  "schema": {
-    "table": "orders",
-    "columns": [
+  "database": {
+    "tables": [
       {
-        "name": "region",
-        "ty": "Text",
-        "nullable": true
-      },
-      {
-        "name": "amount",
-        "ty": "Integer",
-        "nullable": true
+        "table": "orders",
+        "columns": [
+          {
+            "name": "region",
+            "ty": "Text",
+            "nullable": true
+          },
+          {
+            "name": "amount",
+            "ty": "Integer",
+            "nullable": true
+          }
+        ]
       }
     ]
   },
@@ -27,27 +31,32 @@
     ],
     "predicate": "None"
   },
-  "initial": [
-    [
-      {
-        "Text": "v4"
-      },
-      {
-        "Int": 3
-      }
-    ]
-  ],
-  "ops": [
-    {
-      "Insert": [
+  "initial": {
+    "orders": [
+      [
         {
           "Text": "v4"
         },
         {
-          "Int": 5
+          "Int": 3
         }
       ]
-    }
+    ]
+  },
+  "ops": [
+    [
+      "orders",
+      {
+        "Insert": [
+          {
+            "Text": "v4"
+          },
+          {
+            "Int": 5
+          }
+        ]
+      }
+    ]
   ],
   "batching": {
     "Chunks": 5
