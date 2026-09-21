@@ -313,7 +313,21 @@ fn saved_regressions_still_reproduce_their_original_failure() {
 
 /// 本 Phase 的交付判据：框架能表达多表用例。
 /// 查询仍是单表聚合（join 在引擎计划的 Phase 3），但两张表都在接收变更，
-/// 所以 apply 的表名路由、按表的 live 集合、oracle 的多表建立都被真正走到。
+/// 所以下面三条代码路径都会被真正执行：apply 的表名路由、`NaiveRecompute`
+/// 按表持有的 base/pending 存储、oracle 对 `Database` 里每张表的建表/插入。
+///
+/// "被执行到"不等于"这个测试会抓到它坏了"——三条里只有第一条是：
+/// - apply 的表名路由：**会**。把 `run` 里递给 `apply` 的表名写死成
+///   `db.tables()[0].table`，本测试会在 `diff[0]` 处变红（评审已实测确认，
+///   见 `docs/mutation-gates.md` 里 M1a Phase 1 Task 5 那一行）。
+/// - `NaiveRecompute` 按表持有的 base/pending：**不会**。Phase 1 的查询与
+///   oracle 都只渲染 anchor 表（`db.tables()[0]`）的单表 SQL，非 anchor
+///   表存进去的状态在 `materialize()` 和 oracle 比对里都不可观察——静默
+///   丢弃它也不会让本测试变红。这是一个已登记的已知缺口，见
+///   `docs/mutation-gates.md`「§8.5 `apply` 必须真的保留非 anchor 表的
+///   delta」那一行；join 落地、oracle 开始渲染多表查询之后需要重新验证。
+/// - oracle 对每张表的建表/插入：**不会**（这条由 `oracle::tests::
+///   builds_every_table_in_the_database` 单独守护，不是本测试）。
 #[test]
 fn a_two_table_case_runs_green_against_the_reference_engine() {
     let mut rng = StdRng::seed_from_u64(7);
