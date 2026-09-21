@@ -67,13 +67,23 @@ mod tests {
         assert!(Database::single(s("orders")).get("nope").is_none());
     }
 
+    /// 顺序必须保留——失败用例要凭 seed 精确重放（spec §9.4）。
+    ///
+    /// 这仍然只是一条统计意义上的守卫，不是绝对证明：`Database` 内部若
+    /// 换成按名字路由的 `HashMap`，从这个类型外部没有办法把"顺序确定"
+    /// 这件事钉死成必然——`HashMap` 的 `RandomState` 逐进程重新播种，
+    /// 每次运行都可能凑巧给出插入顺序。两张表时凑巧排对的概率是
+    /// 1/2! = 50%，测试形同虚设；五张互不相同的表把这个概率压到
+    /// 1/5! ≈ 0.83%，多跑几次就能把巧合筛掉。插入顺序特意选了非字典序
+    /// （也非字典序的反序），这样一个"看似保序、实则在内部按名字排序"
+    /// 的实现同样会被测出来。
     #[test]
     fn table_order_is_preserved() {
-        let db = Database::new(vec![s("b"), s("a")]);
+        let db = Database::new(vec![s("c"), s("a"), s("e"), s("b"), s("d")]);
         let names: Vec<&str> = db.tables().iter().map(|t| t.table.as_str()).collect();
         assert_eq!(
             names,
-            vec!["b", "a"],
+            vec!["c", "a", "e", "b", "d"],
             "顺序必须保留——失败用例要凭 seed 精确重放"
         );
     }

@@ -296,15 +296,23 @@ mod tests {
 
     #[test]
     fn builds_every_table_in_the_database() {
-        // 两张表，查询只涉及 orders；customers 必须也被建表并校验其基表
-        // 状态，即使查询从不读它——否则 join 查询（Phase 3）会在 oracle 侧
-        // 静默少一张表。
+        // 两张表，查询只涉及 orders；customers 的基表状态也必须被遍历到，
+        // 即使查询从不读它——否则 join 查询（Phase 3）会在 oracle 侧静默
+        // 少一张表。断言不能只看查询结果——查询目前仍只按 anchor
+        // （db.tables()[0] == orders）渲染，customers 从不出现在 SQL 里，
+        // 所以一个只建 tables()[0] 的实现会算出一模一样的 `got`，那样的
+        // 断言测不出任何区别。
         //
-        // 用负权重当探针：customers 的负权重只有在它真的被遍历（建表 +
-        // 校验基表状态）时才会被拒绝。断言不能只看查询结果——查询目前仍
-        // 只按 anchor（db.tables()[0] == orders）渲染，customers 从不出现
-        // 在 SQL 里，所以一个只建 tables()[0] 的实现会算出一模一样的
-        // `got`，那样的断言测不出任何区别。
+        // 用负权重当探针：customers 的负权重只有在「建表循环走到 customers
+        // 这一条、且真的对它的基表状态做了权重校验」时才会被拒绝。注意这
+        // 只证明循环体对 customers 执行到了「校验权重」这一步，并不单独
+        // 证明 CREATE TABLE 被执行过——如果实现漏掉 CREATE TABLE 但仍对
+        // customers 跑权重校验前的 base 查找与遍历，插入语句会先因
+        // "no such table: customers" 报错，错误信息里同样含有
+        // "customers" 这个子串，会让只查子串 "customers" 的断言误判通过。
+        // 所以这里额外要求错误信息含负权重专属的措辞（"含负权重"），把
+        // "customers 这张表的负权重校验真的跑到了" 和
+        // "customers 这个名字随便出现在某个无关 SQL 错误里" 区分开。
         let db = Database::new(vec![orders(), customers()]);
         let bases = BTreeMap::from([
             (
@@ -319,8 +327,10 @@ mod tests {
         let q = count_by_region();
         let err = recompute_via_sqlite(&db, &q, &bases).unwrap_err();
         assert!(
-            err.0.contains("customers"),
-            "customers 的负权重必须被拒绝——这证明该表确实被建出来并校验过：{}",
+            err.0.contains("customers") && err.0.contains("含负权重"),
+            "必须是 customers 的负权重校验拒绝了它——一个只提到 customers 名字\
+             的无关 SQL 错误（例如 CREATE TABLE 被跳过导致的 \"no such table\"）\
+             不应满足这条断言：{}",
             err.0
         );
     }
