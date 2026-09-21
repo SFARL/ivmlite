@@ -4,8 +4,6 @@ use ivmlite_test::{
     recompute_via_sqlite, run, save_regression, seed_range, shrink, Batching, Column, ColumnType,
     Domain, Engine, NaiveRecompute, NoRetractionEngine, Schema, TransientDriftEngine,
 };
-use rand::rngs::StdRng;
-use rand::SeedableRng;
 use std::collections::BTreeMap;
 
 /// `amount` 刻意可空：否则"SUM 的非 NULL 输入为零行"这条路径在随机测试里
@@ -71,8 +69,16 @@ fn saved_regressions_still_pass() {
 /// 断言分两半：run 必须在**非 bootstrap 的某个中间点**失败；而同一个引擎
 /// 手工重放到底之后，最终状态与 oracle **一致**——「末尾正确 + run 失败」
 /// 正说明只比最终状态会漏掉它。
+///
+/// m5 更名说明：这个名字曾叫 `per_batch_oracle_comparison_catches_transient_drift`，
+/// 但它实际钉死的断言太松，守不住名字里"逐批比对"这个承诺——把
+/// `differential::run` 里循环内的逐批比对整个删掉、改成循环结束后只比对
+/// 一次，这个测试依然通过（细节见 `docs/mutation-gates.md`）。真正堵住那个
+/// 缺口的是下面新增的 `oracle_comparison_runs_after_every_batch_not_only_at_the_end`。
+/// 这个测试真正钉死、且始终成立的是它名字现在说的这件事：手工重放到底之后
+/// 最终状态必须正确。
 #[test]
-fn per_batch_oracle_comparison_catches_transient_drift() {
+fn transient_drift_has_a_correct_final_state() {
     let db = db();
     let domain = Domain::default();
     let case = gen_case(3, &db, &domain, 25, 150, Batching::Chunks(5));
@@ -126,7 +132,8 @@ fn per_batch_oracle_comparison_catches_transient_drift() {
     );
 }
 
-/// 缺口测试（M1a Phase 1 Task 1 变异审计新增）：`per_batch_oracle_comparison_catches_transient_drift`
+/// 缺口测试（M1a Phase 1 Task 1 变异审计新增）：`transient_drift_has_a_correct_final_state`
+/// （m5 更名前叫 `per_batch_oracle_comparison_catches_transient_drift`）
 /// 的断言太松——它只要求失败 stage 匹配 `diff[...]` 且不是 `diff[bootstrap]`，
 /// 而 `TransientDriftEngine::new(2)` 的第 2 次 `materialize` 调用，无论 `run`
 /// 是"每批都比对"还是"只在循环结束后比对一次"，都恰好落在第一次之后的下一次
@@ -330,9 +337,85 @@ fn saved_regressions_still_reproduce_their_original_failure() {
 ///   builds_every_table_in_the_database` 单独守护，不是本测试）。
 #[test]
 fn a_two_table_case_runs_green_against_the_reference_engine() {
-    let mut rng = StdRng::seed_from_u64(7);
-    let db = gen_database(&mut rng, 2);
-    let case = gen_case(7, &db, &Domain::default(), 25, 150, Batching::Chunks(5));
-    let mut engine = NaiveRecompute::new();
-    run(&mut engine, &case).unwrap_or_else(|f| panic!("参照实现不应失败: {f}"));
+    let db = gen_database(2);
+    for seed in seed_range() {
+        let case = gen_case(seed, &db, &Domain::default(), 25, 150, Batching::Chunks(5));
+        let mut engine = NaiveRecompute::new();
+        run(&mut engine, &case).unwrap_or_else(|f| panic!("参照实现不应失败: {f}"));
+    }
+}
+
+/// I4：`shrink` 的 phase 3（逐表、逐行删初始数据）此前从未在真正的多表用例上
+/// 跑过——评审用探针 `assert!(case.database.len() <= 1)` 证实了这一点。这里
+/// 用一个两表 `Database` 找一个能让 `NoRetractionEngine` 失败的用例，喂给
+/// `shrink`，然后断言两张表各自的初始行数都被真的缩小过，而不只是恰好在
+/// 循环第一次迭代碰到的那张表。
+///
+/// 这条用例里查询仍然只读 anchor 表（`t0`）——查询渲染固定用 anchor，是
+/// Phase 1 的既有限制——所以 `t1` 对 oracle 比对完全不可观察，正确的 shrink
+/// 应当把它整个缩到 0 行。这正是本测试用来分辨"phase 3 处理了每一张表"与
+/// "phase 3 只处理了第一张表"的信号：如果循环只处理第一张表（或压根没走到
+/// `t1`），`t1` 会原样留着 25 行初始数据。
+#[test]
+fn shrink_reduces_initial_rows_in_every_table_of_a_multi_table_case() {
+    let db = gen_database(2);
+    let domain = Domain::default();
+
+    let case = seed_range()
+        .into_iter()
+        .map(|seed| gen_case(seed, &db, &domain, 25, 150, Batching::Chunks(5)))
+        .find(|c| {
+            let mut engine = NoRetractionEngine::new();
+            run(&mut engine, c).is_err()
+        })
+        .expect("应当至少有一个两表失败用例");
+
+    // I4 的探针：phase 3 的逐表循环必须真的在一个 initial 里有多张表的用例上
+    // 运行到，不能只是"签名接受多表、实际从未被这样调用过"。
+    assert_eq!(
+        case.database.len(),
+        2,
+        "这条测试必须喂给 shrink 一个真正的两表用例"
+    );
+    assert!(
+        case.initial.keys().count() > 1,
+        "phase 3 循环遍历的 best.initial.keys() 在起点就必须有一张以上的表"
+    );
+
+    let minimal = shrink(&case, NoRetractionEngine::new);
+
+    // shrinker 的合法性门禁（spec §9.3）在多表路径上必须仍然成立。
+    assert!(
+        is_legal(&minimal.initial, &minimal.ops),
+        "shrink 的产出必须始终合法：{minimal:?}"
+    );
+
+    let mut engine = NoRetractionEngine::new();
+    let failure = run(&mut engine, &minimal).expect_err("缩小后必须仍然失败");
+    // 与 failing_case_shrinks_to_under_ten_ops 同一个理由：is_legal 若被打穿，
+    // 这个断言是唯一能把"伪产物"和"原始 bug 的同族失败"区分开的地方——在
+    // 多表路径上这条门禁尤其容易被写错（用 A 表的行给 B 表的删改当合法性
+    // 依据），所以这里也要求它真的挡住。
+    assert!(
+        !failure.stage.starts_with("oracle["),
+        "缩小后的用例在 stage={} 失败——这是合法性门禁损坏时会收敛到的伪产物形态",
+        failure.stage
+    );
+
+    let rows_by_table: BTreeMap<&str, usize> = minimal
+        .initial
+        .iter()
+        .map(|(t, rows)| (t.as_str(), rows.len()))
+        .collect();
+    assert!(
+        rows_by_table.values().all(|&n| n < 25),
+        "phase 3 必须真的对每一张表都做过逐行删减，不能有表原封不动留着全部 25 行初始数据：{rows_by_table:?}"
+    );
+    let total_rows: usize = rows_by_table.values().sum();
+    assert!(
+        total_rows <= 10,
+        "两张表加总的初始行数应当收敛到个位数——查询只读 anchor 表 t0，\
+         非 anchor 的 t1 对 oracle 比对完全不可观察，正确的 shrink 应当把它\
+         整个缩到 0 行；实得 {rows_by_table:?}"
+    );
 }

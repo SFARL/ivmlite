@@ -255,7 +255,8 @@ where
 mod tests {
     use super::*;
     use crate::{
-        Agg, AggFn, Column, ColumnType, Domain, EngineError, NaiveRecompute, Predicate, Schema,
+        gen_database, Agg, AggFn, Column, ColumnType, Domain, EngineError, NaiveRecompute,
+        Predicate, Schema,
     };
     use ivmlite_core::Value;
 
@@ -277,9 +278,12 @@ mod tests {
         }
     }
 
+    // 与 naive.rs / buggy.rs / ops.rs / oracle.rs 里的单表 wrapper 同一个
+    // 概念，但这里要构造的是整个 TestCase（含 query），形状不同，没有直接
+    // 并进 test_support——`single_table_db` 是共用的那一半（m4）。
     fn single_table_case(seed: u64, rows: Vec<Row>, ops: Vec<Op>, batching: Batching) -> TestCase {
         let schema = schema();
-        let db = Database::single(schema.clone());
+        let db = crate::test_support::single_table_db(&schema);
         let query = ViewQuery {
             group_by: vec![0],
             aggs: vec![Agg {
@@ -288,7 +292,7 @@ mod tests {
             }],
             predicate: Predicate::None,
         };
-        let initial = BTreeMap::from([(schema.table.clone(), rows)]);
+        let initial = crate::test_support::as_initial(&schema, rows);
         let ops = ops
             .into_iter()
             .map(|op| (schema.table.clone(), op))
@@ -436,6 +440,99 @@ mod tests {
         );
     }
 
+    /// I3 的记录引擎：不止记下收到了什么，还按 `refresh` 分界把 `apply`
+    /// 调用切成一个个批次——`(table, row_count)` 的序列，按批分组。
+    /// `NaiveRecompute` 仍然是真正的计算委托对象，这里只加了记账。
+    #[derive(Debug, Default)]
+    struct OrderRecordingEngine {
+        inner: NaiveRecompute,
+        batches: Vec<Vec<(String, usize)>>,
+        current_batch: Vec<(String, usize)>,
+    }
+
+    impl Engine for OrderRecordingEngine {
+        fn create_view(
+            &mut self,
+            db: &Database,
+            query: &ViewQuery,
+            initial: &BTreeMap<String, ZSet>,
+        ) -> Result<(), EngineError> {
+            self.inner.create_view(db, query, initial)
+        }
+
+        fn apply(&mut self, table: &str, raw: &[(Row, i64)]) -> Result<(), EngineError> {
+            self.current_batch.push((table.to_string(), raw.len()));
+            self.inner.apply(table, raw)
+        }
+
+        fn refresh(&mut self) -> Result<(), EngineError> {
+            self.inner.refresh()?;
+            self.batches.push(std::mem::take(&mut self.current_batch));
+            Ok(())
+        }
+
+        fn materialize(&mut self) -> Result<ZSet, EngineError> {
+            self.inner.materialize()
+        }
+    }
+
+    /// I3：钉死 `batches()` 用 `BTreeMap` 分组这件事的**唯一**可观察后果——
+    /// 同一批内，`apply` 依次收到的表名必须严格按 `db.tables()` 的顺序递增
+    /// （对 `gen_database` 产出的 `t0..t{n-1}` 命名，插入顺序与字典序恰好
+    /// 重合，所以这条断言等价于「按字典序」，但写成对 `db.tables()`
+    /// 的顺序断言更贴近 I3 的诉求：§7.2/§7.3 落地后，这个顺序要喂 GC 与
+    /// bootstrap 水位，届时真正要保证的是「与 `db.tables()` 一致」，不是
+    /// 「字典序恰好正确」这个巧合。
+    ///
+    /// 这条 guard 是**绝对的、非统计的**：只要 `batches()` 继续用 `BTreeMap`
+    /// 分组，`Vec` 的迭代顺序在 `ivmlite-core` 侧已经被
+    /// `table_order_is_preserved` 钉死，`BTreeMap` 的迭代顺序按 key 排序是
+    /// 标准库文档承诺的行为，不依赖任何随机状态或运行时环境——同一份输入
+    /// 每次跑都会得到同一个顺序，不存在"这次侥幸没抓到"的可能。
+    ///
+    /// 变异验证（见 I3 变异记录）：把 `batches()` 的返回类型与内部分组容器
+    /// 都换成 `HashMap` 后，这条 guard 会变红，但那个方向的红是**统计的**——
+    /// `HashMap` 的迭代顺序由每次构造时随机生成的 `RandomState` 决定，键
+    /// 数量越少、巧合排对的概率越高，理论上不能排除某次运行偶然拿到正确
+    /// 顺序。真正被这条测试钉死为绝对保证的，只有"继续用 `BTreeMap`"这一侧。
+    #[test]
+    fn per_batch_apply_order_follows_db_tables_order() {
+        let db = gen_database(4);
+        let domain = Domain::default();
+        let case = gen_case(21, &db, &domain, 20, 150, Batching::Chunks(5));
+
+        let mut engine = OrderRecordingEngine::default();
+        run(&mut engine, &case).unwrap_or_else(|f| panic!("不应失败: {f}"));
+
+        let table_order: Vec<String> = db.tables().iter().map(|t| t.table.clone()).collect();
+
+        let mut multi_table_batches = 0usize;
+        for batch in &engine.batches {
+            if batch.len() > 1 {
+                multi_table_batches += 1;
+            }
+            let mut last_idx: Option<usize> = None;
+            for (table, _row_count) in batch {
+                let idx = table_order
+                    .iter()
+                    .position(|t| t == table)
+                    .unwrap_or_else(|| panic!("未知表 {table}"));
+                if let Some(last) = last_idx {
+                    assert!(
+                        idx > last,
+                        "批内表名顺序必须严格递增、匹配 db.tables()：{table_order:?} 中 \
+                         上一张表下标 {last}，这次是 {idx}（表 {table}）"
+                    );
+                }
+                last_idx = Some(idx);
+            }
+        }
+        assert!(
+            multi_table_batches > 0,
+            "必须至少有一批真的涉及多张表，否则上面的顺序断言不会被执行到任何有意义的路径"
+        );
+    }
+
     #[test]
     fn naive_engine_passes_every_enumerated_query() {
         let schema = schema();
@@ -456,6 +553,28 @@ mod tests {
         let db = Database::single(schema());
         let domain = Domain::default();
         let case = gen_case(4242, &db, &domain, 30, 200, Batching::All);
+        check_batch_invariance(&case, NaiveRecompute::new).unwrap();
+    }
+
+    /// I4：`check_batch_invariance` 此前从未在真正的多表用例上跑过——评审用
+    /// 探针 `assert!(case.database.len() <= 1)` 证实了这一点。这里换成一个
+    /// 两表 `Database`，让 `run`（`check_batch_invariance` 内部对每种
+    /// `Batching` 都会调一次）真的走一遍多表的 apply 路由与 harness 侧
+    /// `bases` bookkeeping。
+    ///
+    /// 老实说明这条测试目前能守住什么、不能守住什么：Phase 1 的查询与
+    /// oracle 仍然只渲染 anchor 表（`db.tables()[0]`）的单表 SQL，所以
+    /// 非 anchor 表的状态在 `materialize()` 里不可观察——这与 I2/§8.5
+    /// 登记的两条"不适用"缺口是同一个根因。这条测试因此只钉死"多表用例
+    /// 能跑通 `check_batch_invariance` 而不 panic/不报错"这件事本身，还
+    /// 不能钉死"非 anchor 表的 delta 真的影响了批次无关性的结果"——后者要
+    /// 等 join 落地、oracle 开始渲染多表查询之后才可能被任何断言区分开。
+    #[test]
+    fn batch_invariance_holds_for_naive_engine_on_a_two_table_case() {
+        let db = gen_database(2);
+        let domain = Domain::default();
+        let case = gen_case(4343, &db, &domain, 30, 200, Batching::All);
+        assert_eq!(case.database.len(), 2, "这条测试必须是真正的两表用例");
         check_batch_invariance(&case, NaiveRecompute::new).unwrap();
     }
 
