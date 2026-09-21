@@ -75,7 +75,16 @@ pub fn gen_case(
 ) -> TestCase {
     let mut rng = StdRng::seed_from_u64(seed);
     let initial = gen_rows(&mut rng, schema, domain, initial_rows);
-    let ops = gen_ops(&mut rng, schema, domain, &initial, op_count);
+    // `gen_ops` 现在是多表签名（task 4）：单表用例包成一个只有这一张表
+    // 的 `Database`，再把表标签剥掉还原成 `Vec<Op>`——`TestCase` 的序列化
+    // 形状（含已落盘的回归用例 JSON）保持不变。
+    let db = Database::single(schema.clone());
+    let mut initial_map = BTreeMap::new();
+    initial_map.insert(schema.table.clone(), initial.clone());
+    let ops = gen_ops(&mut rng, &db, domain, &initial_map, op_count)
+        .into_iter()
+        .map(|(_, op)| op)
+        .collect();
     let queries = enumerate(schema);
     let query = queries[seed as usize % queries.len()].clone();
     TestCase {

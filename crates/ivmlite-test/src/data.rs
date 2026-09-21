@@ -1,8 +1,10 @@
-use ivmlite_core::{Row, Value};
+use std::collections::BTreeMap;
+
+use ivmlite_core::{Database, Row, Value};
 use rand::rngs::StdRng;
 use rand::RngExt;
 
-use crate::{ColumnType, Schema};
+use crate::{Column, ColumnType, Schema};
 
 /// 生成器的值域配置。
 ///
@@ -48,6 +50,48 @@ pub fn gen_row(rng: &mut StdRng, schema: &Schema, domain: &Domain) -> Row {
 
 pub fn gen_rows(rng: &mut StdRng, schema: &Schema, domain: &Domain, count: usize) -> Vec<Row> {
     (0..count).map(|_| gen_row(rng, schema, domain)).collect()
+}
+
+/// 生成差分用例的表结构。
+///
+/// 每表固定 2 列（两列都可空：一个 TEXT、一个 INTEGER），列数**不是**可调
+/// 参数：spec §9.2 第 4 条把它定为「穷举优于随机」成立的前提，实测加宽到
+/// 3 列会让穷举规模从约 554 涨到约 4209。两列都可空是为了让 spec §6.1
+/// 的「`SUM` 无非 NULL 输入时返回 NULL」这条路径在随机测试里真的走得
+/// 到——M0 的集成测试正是为此把 `amount` 改成可空的。
+pub fn gen_database(_rng: &mut StdRng, table_count: usize) -> Database {
+    let tables = (0..table_count)
+        .map(|i| Schema {
+            table: format!("t{i}"),
+            columns: vec![
+                Column {
+                    name: "k".into(),
+                    ty: ColumnType::Text,
+                    nullable: true,
+                },
+                Column {
+                    name: "v".into(),
+                    ty: ColumnType::Integer,
+                    nullable: true,
+                },
+            ],
+        })
+        .collect();
+    Database::new(tables)
+}
+
+/// 按 `Database` 声明的每张表各生成一批初始行，按表名建立 `BTreeMap`——
+/// 用 `BTreeMap` 而非 `HashMap`：迭代顺序必须确定（spec §9.4）。
+pub fn gen_initial(
+    rng: &mut StdRng,
+    db: &Database,
+    domain: &Domain,
+    rows_per_table: usize,
+) -> BTreeMap<String, Vec<Row>> {
+    db.tables()
+        .iter()
+        .map(|s| (s.table.clone(), gen_rows(rng, s, domain, rows_per_table)))
+        .collect()
 }
 
 #[cfg(test)]

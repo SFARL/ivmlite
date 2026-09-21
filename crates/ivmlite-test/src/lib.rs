@@ -12,7 +12,7 @@ mod shrink;
 mod sql;
 
 pub use buggy::{NoRetractionEngine, TransientDriftEngine};
-pub use data::{gen_row, gen_rows, Domain};
+pub use data::{gen_database, gen_initial, gen_row, gen_rows, Domain};
 pub use differential::{
     check_batch_invariance, gen_case, run, seed_range, Batching, Failure, TestCase,
 };
