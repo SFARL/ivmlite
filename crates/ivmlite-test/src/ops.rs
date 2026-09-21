@@ -244,17 +244,23 @@ mod tests {
 
     #[test]
     fn every_table_receives_some_ops() {
-        // 若生成器只往一张表写，join 的 ΔR⋈S 与 R⋈ΔS 两条路径就只有一条被测到。
+        // 每张表至少拿到均匀选表下期望份额的一半——若生成器把选表概率往某张
+        // 表偏斜，join 的 ΔR⋈S 与 R⋈ΔS 两条路径的覆盖就会失衡。这个下界不
+        // 证明选表就是均匀的，只保证偏得太狠会被抓到：300 次操作、2 张表时
+        // 均匀选表下任何一张跌破这条线的概率约 2.4e-19，而 90/10 的偏斜下
+        // 少数表期望只有 30，会可靠地跌破 75 这条线。
         let mut rng = StdRng::seed_from_u64(3);
         let db = gen_database(&mut rng, 2);
         let domain = Domain::default();
         let initial = gen_initial(&mut rng, &db, &domain, 20);
-        let ops = gen_ops(&mut rng, &db, &domain, &initial, 300);
+        let count = 300;
+        let ops = gen_ops(&mut rng, &db, &domain, &initial, count);
+        let floor = count / db.len() / 2; // 均匀份额的一半
         for t in db.tables() {
             let n = ops.iter().filter(|(tbl, _)| *tbl == t.table).count();
             assert!(
-                n > 20,
-                "表 {} 只收到 {n} 个操作，两侧 delta 路径覆盖不均",
+                n > floor,
+                "表 {} 只收到 {n} 个操作（下界 {floor}），两侧 delta 路径覆盖不均",
                 t.table
             );
         }

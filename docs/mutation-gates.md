@@ -40,6 +40,7 @@ M0 结束时的最终全分支评审用**变异测试**——把实现改坏、�
 | §9.2 live 集合为空时只能插入 | 去掉 `live.is_empty()` 守卫 | `empty_live_set_only_ever_produces_an_insert_first` | **已验证** |
 | §9.2 第 4 条：差分 schema 固定每表 2 列 | `gen_database` 的列数改成 3 | `generated_database_tables_have_exactly_two_columns` | **已验证** |
 | §9.2 多表生成器必须给每张表都分配操作（否则 join 的 ΔR⋈S / R⋈ΔS 只有一条路径被测到） | `gen_ops` 只往 `db.tables()[0]` 写 | `every_table_receives_some_ops` | **已验证** |
+| §9.2 选表必须均匀，不止"没完全排除某表"——偏斜到 90/10 也要被抓到 | 选表改成 90/10 偏向 `db.tables()[0]`（`tables.len() <= 1` 时退化为 0，兼容单表包装用例） | `every_table_receives_some_ops`（阈值须是 `count / db.len() / 2` 这类随均匀期望缩放的下界；原 `n > 20` 对 90/10 偏斜下少数表拿到的 41/300 仍判定通过，是评审发现的缺口） | **已验证** |
 | §9.2 有偏采样必须按表各自维护 live 集合，不得跨表删改 | `gen_ops` 的删改目标改为跨表采样（从任意表的 live 集合里取） | `deletes_target_rows_that_exist_in_their_own_table` | **已验证** |
 | §5.2 根算子必须是聚合、group_by 非空 | `enumerate` 产出无聚合或空 group_by 的 query | `enumerate_covers_the_v0_space_and_is_nonempty` | **已验证** |
 | §6.1 `SUM` 只作用于整数列 | 让 `enumerate` 对 Text 列产出 `Sum` | `enumerate_only_sums_integer_columns` | **已验证** |
@@ -93,7 +94,7 @@ M0 结束时的最终全分支评审用**变异测试**——把实现改坏、�
 
 ## 统计与欠账
 
-表内共 **45** 行：已验证 **44** 条、未验证 **0** 条、不适用 **1** 条
+表内共 **46** 行：已验证 **45** 条、未验证 **0** 条、不适用 **1** 条
 （`Value` 无 Real/Blob 由类型系统而非测试守护，加变体会编译失败）。
 
 这三个数字由 `scripts/count-mutation-gates.py` 从本文件数出来，不是手写的——
