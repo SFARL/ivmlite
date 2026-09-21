@@ -290,7 +290,7 @@ mod tests {
         );
 
         let mut e = NaiveRecompute::new();
-        e.create_view(&nullable_amount, &q, &base).unwrap();
+        e.create_view(&db, &q, &bases).unwrap();
         assert_eq!(e.materialize().unwrap(), want);
     }
 

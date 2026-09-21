@@ -1,9 +1,11 @@
 use ivmlite_core::{Database, Row, ZSet};
 use ivmlite_test::{
-    check_batch_invariance, gen_case, is_legal, load_regressions, recompute_via_sqlite, run,
-    save_regression, seed_range, shrink, Batching, Column, ColumnType, Domain, Engine,
-    NaiveRecompute, NoRetractionEngine, Schema, TransientDriftEngine,
+    check_batch_invariance, gen_case, gen_database, is_legal, load_regressions,
+    recompute_via_sqlite, run, save_regression, seed_range, shrink, Batching, Column, ColumnType,
+    Domain, Engine, NaiveRecompute, NoRetractionEngine, Schema, TransientDriftEngine,
 };
+use rand::rngs::StdRng;
+use rand::SeedableRng;
 use std::collections::BTreeMap;
 
 /// `amount` 刻意可空：否则"SUM 的非 NULL 输入为零行"这条路径在随机测试里
@@ -26,12 +28,16 @@ fn schema() -> Schema {
     }
 }
 
+fn db() -> Database {
+    Database::single(schema())
+}
+
 #[test]
 fn naive_engine_is_green_across_many_seeds() {
-    let schema = schema();
+    let db = db();
     let domain = Domain::default();
     for seed in seed_range() {
-        let case = gen_case(seed, &schema, &domain, 25, 150, Batching::Chunks(5));
+        let case = gen_case(seed, &db, &domain, 25, 150, Batching::Chunks(5));
         let mut engine = NaiveRecompute::new();
         run(&mut engine, &case).unwrap_or_else(|f| panic!("参照实现不应失败: {f}"));
     }
@@ -39,10 +45,10 @@ fn naive_engine_is_green_across_many_seeds() {
 
 #[test]
 fn naive_engine_satisfies_batch_invariance() {
-    let schema = schema();
+    let db = db();
     let domain = Domain::default();
     for seed in seed_range().into_iter().take(10) {
-        let case = gen_case(seed, &schema, &domain, 25, 120, Batching::All);
+        let case = gen_case(seed, &db, &domain, 25, 120, Batching::All);
         check_batch_invariance(&case, NaiveRecompute::new)
             .unwrap_or_else(|f| panic!("参照实现不应违反批次无关性: {f}"));
     }
@@ -67,9 +73,10 @@ fn saved_regressions_still_pass() {
 /// 正说明只比最终状态会漏掉它。
 #[test]
 fn per_batch_oracle_comparison_catches_transient_drift() {
-    let schema = schema();
+    let db = db();
     let domain = Domain::default();
-    let case = gen_case(3, &schema, &domain, 25, 150, Batching::Chunks(5));
+    let case = gen_case(3, &db, &domain, 25, 150, Batching::Chunks(5));
+    let table = case.database.tables()[0].table.clone();
 
     // drift_at = 2：第 1 次 materialize 是 bootstrap，第 2 次是第一批之后
     let mut engine = TransientDriftEngine::new(2);
@@ -86,26 +93,33 @@ fn per_batch_oracle_comparison_catches_transient_drift() {
 
     // 手工重放到底：证明这个引擎的最终状态是正确的
     let mut settled = TransientDriftEngine::new(2);
-    let mut base = ZSet::from_rows(case.initial.iter().cloned().map(|r| (r, 1)));
+    let mut base = ZSet::from_rows(
+        case.initial
+            .get(&table)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| (r, 1)),
+    );
+    let bases = BTreeMap::from([(table.clone(), base.clone())]);
     settled
-        .create_view(&case.schema, &case.query, &base)
+        .create_view(&case.database, &case.query, &bases)
         .unwrap();
     let _ = settled.materialize().unwrap(); // call 1: bootstrap
 
     // 未合并的原始 raw delta——与新签名一致，engine 自己决定要不要 consolidate。
     // harness 侧的 `base` 仍然照常合并，用来喂 oracle。
-    let raw: Vec<(Row, i64)> = case.ops.iter().flat_map(|op| op.to_delta()).collect();
+    let raw: Vec<(Row, i64)> = case.ops.iter().flat_map(|(_, op)| op.to_delta()).collect();
     for (row, w) in &raw {
         base.update(row.clone(), *w);
     }
-    settled.apply(&case.schema.table, &raw).unwrap();
+    settled.apply(&table, &raw).unwrap();
     settled.refresh().unwrap();
     let _ = settled.materialize().unwrap(); // call 2: 被污染的那次
     let settled_state = settled.materialize().unwrap(); // call 3: 已恢复
 
-    let db = Database::single(case.schema.clone());
-    let bases = BTreeMap::from([(case.schema.table.clone(), base.clone())]);
-    let want = recompute_via_sqlite(&db, &case.query, &bases).unwrap();
+    let bases = BTreeMap::from([(table, base)]);
+    let want = recompute_via_sqlite(&case.database, &case.query, &bases).unwrap();
     assert_eq!(
         settled_state, want,
         "末尾状态必须正确——这正是只比最终状态会漏掉这个 bug 的原因"
@@ -129,9 +143,9 @@ fn per_batch_oracle_comparison_catches_transient_drift() {
 /// 于是引擎全程只会汇报"正确"的状态，`run` 会返回 `Ok`，而不是期望的 `Err`。
 #[test]
 fn oracle_comparison_runs_after_every_batch_not_only_at_the_end() {
-    let schema = schema();
+    let db = db();
     let domain = Domain::default();
-    let case = gen_case(3, &schema, &domain, 25, 150, Batching::Chunks(5));
+    let case = gen_case(3, &db, &domain, 25, 150, Batching::Chunks(5));
 
     // Batching::Chunks(5) 对 150 步操作产出 30 批。正确行为下 materialize
     // 的调用序列是：call 1 = bootstrap，call (k+2) = 第 k 批（k 从 0 开始）
@@ -158,10 +172,10 @@ fn oracle_comparison_runs_after_every_batch_not_only_at_the_end() {
 /// `op_count == 0`，所以这句注释从未被验证过。
 #[test]
 fn zero_op_case_still_gets_checked() {
-    let schema = schema();
+    let db = db();
     let domain = Domain::default();
     for seed in seed_range().into_iter().take(5) {
-        let case = gen_case(seed, &schema, &domain, 25, 0, Batching::Chunks(5));
+        let case = gen_case(seed, &db, &domain, 25, 0, Batching::Chunks(5));
         assert!(case.ops.is_empty());
         let mut engine = NaiveRecompute::new();
         run(&mut engine, &case).unwrap_or_else(|f| panic!("零 ops 用例不应失败: {f}"));
@@ -176,9 +190,9 @@ fn zero_op_case_still_gets_checked() {
 /// 正是最容易在这个点出错的地方。
 #[test]
 fn bootstrap_drift_is_caught_at_the_bootstrap_stage() {
-    let schema = schema();
+    let db = db();
     let domain = Domain::default();
-    let case = gen_case(1, &schema, &domain, 25, 0, Batching::Chunks(5));
+    let case = gen_case(1, &db, &domain, 25, 0, Batching::Chunks(5));
     assert!(
         case.ops.is_empty(),
         "唯一一次 materialize 调用必须是 bootstrap 本身"
@@ -196,13 +210,13 @@ fn bootstrap_drift_is_caught_at_the_bootstrap_stage() {
 /// M0 完成判定其一：框架必须抓到植入的 bug。
 #[test]
 fn harness_catches_the_missing_retraction_bug() {
-    let schema = schema();
+    let db = db();
     let domain = Domain::default();
     let seeds = seed_range();
     let total = seeds.len();
     let mut caught = 0;
     for seed in seeds {
-        let case = gen_case(seed, &schema, &domain, 25, 150, Batching::Chunks(5));
+        let case = gen_case(seed, &db, &domain, 25, 150, Batching::Chunks(5));
         let mut engine = NoRetractionEngine::new();
         if run(&mut engine, &case).is_err() {
             caught += 1;
@@ -218,12 +232,12 @@ fn harness_catches_the_missing_retraction_bug() {
 /// M0 完成判定其二：失败用例必须能缩到 10 步以内，并被固化成回归用例。
 #[test]
 fn failing_case_shrinks_to_under_ten_ops() {
-    let schema = schema();
+    let db = db();
     let domain = Domain::default();
 
     let case = seed_range()
         .into_iter()
-        .map(|seed| gen_case(seed, &schema, &domain, 25, 150, Batching::Chunks(5)))
+        .map(|seed| gen_case(seed, &db, &domain, 25, 150, Batching::Chunks(5)))
         .find(|c| {
             let mut engine = NoRetractionEngine::new();
             run(&mut engine, c).is_err()
@@ -295,4 +309,16 @@ fn saved_regressions_still_reproduce_their_original_failure() {
             case.seed
         );
     }
+}
+
+/// 本 Phase 的交付判据：框架能表达多表用例。
+/// 查询仍是单表聚合（join 在引擎计划的 Phase 3），但两张表都在接收变更，
+/// 所以 apply 的表名路由、按表的 live 集合、oracle 的多表建立都被真正走到。
+#[test]
+fn a_two_table_case_runs_green_against_the_reference_engine() {
+    let mut rng = StdRng::seed_from_u64(7);
+    let db = gen_database(&mut rng, 2);
+    let case = gen_case(7, &db, &Domain::default(), 25, 150, Batching::Chunks(5));
+    let mut engine = NaiveRecompute::new();
+    run(&mut engine, &case).unwrap_or_else(|f| panic!("参照实现不应失败: {f}"));
 }

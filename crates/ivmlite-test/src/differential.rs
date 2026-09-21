@@ -5,8 +5,8 @@ use rand::rngs::StdRng;
 use rand::SeedableRng;
 
 use crate::{
-    check_invariants, enumerate, gen_ops, gen_rows, recompute_via_sqlite, view_query_to_sql,
-    Domain, Engine, Op, Schema, ViewQuery,
+    check_invariants, enumerate, gen_initial, gen_ops, recompute_via_sqlite, view_query_to_sql,
+    Domain, Engine, Op, ViewQuery,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -22,10 +22,10 @@ pub enum Batching {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TestCase {
     pub seed: u64,
-    pub schema: Schema,
+    pub database: Database,
     pub query: ViewQuery,
-    pub initial: Vec<Row>,
-    pub ops: Vec<Op>,
+    pub initial: BTreeMap<String, Vec<Row>>,
+    pub ops: Vec<(String, Op)>,
     pub batching: Batching,
 }
 
@@ -65,31 +65,27 @@ pub fn seed_range() -> Vec<u64> {
     parse_seed_arg(std::env::var("IVMLITE_SEED").ok())
 }
 
+/// 生成一个差分用例。`db` 声明用例涉及的全部基表（顺序确定，spec §9.4）；
+/// 查询目前仍是单表聚合——渲染与枚举都固定用 `db.tables()[0]`（anchor 表），
+/// join 查询的渲染属引擎计划（Phase 3），Task 3 的 oracle 已经把这条限制
+/// 写死在 `recompute_via_sqlite` 里，这里跟随保持一致。
 pub fn gen_case(
     seed: u64,
-    schema: &Schema,
+    db: &Database,
     domain: &Domain,
-    initial_rows: usize,
+    rows_per_table: usize,
     op_count: usize,
     batching: Batching,
 ) -> TestCase {
     let mut rng = StdRng::seed_from_u64(seed);
-    let initial = gen_rows(&mut rng, schema, domain, initial_rows);
-    // `gen_ops` 现在是多表签名（task 4）：单表用例包成一个只有这一张表
-    // 的 `Database`，再把表标签剥掉还原成 `Vec<Op>`——`TestCase` 的序列化
-    // 形状（含已落盘的回归用例 JSON）保持不变。
-    let db = Database::single(schema.clone());
-    let mut initial_map = BTreeMap::new();
-    initial_map.insert(schema.table.clone(), initial.clone());
-    let ops = gen_ops(&mut rng, &db, domain, &initial_map, op_count)
-        .into_iter()
-        .map(|(_, op)| op)
-        .collect();
-    let queries = enumerate(schema);
+    let initial = gen_initial(&mut rng, db, domain, rows_per_table);
+    let ops = gen_ops(&mut rng, db, domain, &initial, op_count);
+    let anchor = db.tables().first().expect("database 不应为空");
+    let queries = enumerate(anchor);
     let query = queries[seed as usize % queries.len()].clone();
     TestCase {
         seed,
-        schema: schema.clone(),
+        database: db.clone(),
         query,
         initial,
         ops,
@@ -97,23 +93,41 @@ pub fn gen_case(
     }
 }
 
-/// 把 ops 切成批次，每批是**未合并**的原始 `(Row, i64)` 序列——同一行在同一批
-/// 里可以出现多次，是否 consolidate 交给引擎的 `apply` 决定（spec §8.2）。
-/// harness 自己不做任何折叠：这正是 M1 的 consolidation 必须真正落地才能
-/// 通过测试的原因。
-fn batches(ops: &[Op], batching: Batching) -> Vec<Vec<(Row, i64)>> {
+/// 把 ops 切成批次，每批按表分组成**未合并**的原始 `(Row, i64)` 序列——同一行
+/// 在同一批同一张表里可以出现多次，是否 consolidate 交给引擎的 `apply` 决定
+/// （spec §8.2）。harness 自己不做任何折叠：这正是 M1 的 consolidation 必须
+/// 真正落地才能通过测试的原因。分组用 `BTreeMap` 保证按表迭代顺序确定
+/// （spec §9.4），组内顺序沿用原始 op 序列顺序。
+fn batches(ops: &[(String, Op)], batching: Batching) -> Vec<BTreeMap<String, Vec<(Row, i64)>>> {
     let size = match batching {
         Batching::All => ops.len().max(1),
         Batching::One => 1,
         Batching::Chunks(n) => n.max(1),
     };
     ops.chunks(size)
-        .map(|chunk| chunk.iter().flat_map(Op::to_delta).collect())
+        .map(|chunk| {
+            let mut grouped: BTreeMap<String, Vec<(Row, i64)>> = BTreeMap::new();
+            for (table, op) in chunk {
+                grouped
+                    .entry(table.clone())
+                    .or_default()
+                    .extend(op.to_delta());
+            }
+            grouped
+        })
         .collect()
 }
 
-fn initial_zset(initial: &[Row]) -> ZSet {
-    ZSet::from_rows(initial.iter().cloned().map(|r| (r, 1)))
+fn initial_bases(initial: &BTreeMap<String, Vec<Row>>) -> BTreeMap<String, ZSet> {
+    initial
+        .iter()
+        .map(|(table, rows)| {
+            (
+                table.clone(),
+                ZSet::from_rows(rows.iter().cloned().map(|r| (r, 1))),
+            )
+        })
+        .collect()
 }
 
 /// 跑完一个用例：逐批应用 delta，**每一个可观察的 refresh 点**都检查不变量
@@ -125,6 +139,11 @@ fn initial_zset(initial: &[Row]) -> ZSet {
 ///
 /// 代价是复杂度从 O(n) 变成 O(n × 基表规模)，因此差分测试的用例规模必须
 /// 保持很小（默认 25 行初始数据、150 步操作）。大规模场景交给 benchmark。
+///
+/// 每批只调一次 `refresh`，不是每张表一次（spec §8.2 「N 次 apply、一次
+/// refresh」）：批内先把该批的 `(表名, Op)` 按表分组，对每张有变更的表各调
+/// 一次 `apply`，随后统一调一次 `refresh`——这是 consolidation 唯一能发挥
+/// 作用的地方。
 pub fn run<E: Engine>(engine: &mut E, case: &TestCase) -> Result<(), Failure> {
     let fail = |stage: &str, detail: String| Failure {
         case_seed: case.seed,
@@ -132,51 +151,56 @@ pub fn run<E: Engine>(engine: &mut E, case: &TestCase) -> Result<(), Failure> {
         detail,
     };
 
-    let compare = |engine: &mut E, base: &ZSet, stage: &str| -> Result<(), Failure> {
-        let got = engine
-            .materialize()
-            .map_err(|e| fail(&format!("materialize[{stage}]"), e.to_string()))?;
-        check_invariants(&got, &case.query)
-            .map_err(|e| fail(&format!("invariants[{stage}]"), e))?;
-        let db = Database::single(case.schema.clone());
-        let bases = BTreeMap::from([(case.schema.table.clone(), base.clone())]);
-        let want = recompute_via_sqlite(&db, &case.query, &bases)
-            .map_err(|e| fail(&format!("oracle[{stage}]"), e.to_string()))?;
-        if got != want {
-            return Err(fail(
-                &format!("diff[{stage}]"),
-                format!(
-                    "引擎与 oracle 不一致\n  query: {}\n  引擎: {:?}\n  oracle: {:?}",
-                    view_query_to_sql(&case.query, &case.schema),
-                    got,
-                    want
-                ),
-            ));
-        }
-        Ok(())
-    };
+    let compare =
+        |engine: &mut E, bases: &BTreeMap<String, ZSet>, stage: &str| -> Result<(), Failure> {
+            let got = engine
+                .materialize()
+                .map_err(|e| fail(&format!("materialize[{stage}]"), e.to_string()))?;
+            check_invariants(&got, &case.query)
+                .map_err(|e| fail(&format!("invariants[{stage}]"), e))?;
+            let want = recompute_via_sqlite(&case.database, &case.query, bases)
+                .map_err(|e| fail(&format!("oracle[{stage}]"), e.to_string()))?;
+            if got != want {
+                let anchor = &case.database.tables()[0];
+                return Err(fail(
+                    &format!("diff[{stage}]"),
+                    format!(
+                        "引擎与 oracle 不一致\n  query: {}\n  引擎: {:?}\n  oracle: {:?}",
+                        view_query_to_sql(&case.query, anchor),
+                        got,
+                        want
+                    ),
+                ));
+            }
+            Ok(())
+        };
 
-    let mut base = initial_zset(&case.initial);
+    let mut bases = initial_bases(&case.initial);
     engine
-        .create_view(&case.schema, &case.query, &base)
+        .create_view(&case.database, &case.query, &bases)
         .map_err(|e| fail("create_view", e.to_string()))?;
 
     // bootstrap 之后立刻比对一次——空 ops 的用例也因此被真正检查到。
-    compare(engine, &base, "bootstrap")?;
+    compare(engine, &bases, "bootstrap")?;
 
-    for (i, raw) in batches(&case.ops, case.batching).into_iter().enumerate() {
-        engine
-            .apply(&case.schema.table, &raw)
-            .map_err(|e| fail(&format!("apply[{i}]"), e.to_string()))?;
+    for (i, grouped) in batches(&case.ops, case.batching).into_iter().enumerate() {
+        for (table, raw) in &grouped {
+            engine
+                .apply(table, raw)
+                .map_err(|e| fail(&format!("apply[{i}][{table}]"), e.to_string()))?;
+        }
         engine
             .refresh()
             .map_err(|e| fail(&format!("refresh[{i}]"), e.to_string()))?;
         // harness 自己的 reference bookkeeping 在这里合并——这是 harness 的业务，
-        // 不是引擎的（spec §8.2）。引擎那边看到的仍然是 `raw` 的原始形态。
-        for (row, weight) in &raw {
-            base.update(row.clone(), *weight);
+        // 不是引擎的（spec §8.2）。引擎那边看到的仍然是每张表 `raw` 的原始形态。
+        for (table, raw) in &grouped {
+            let zset = bases.entry(table.clone()).or_default();
+            for (row, weight) in raw {
+                zset.update(row.clone(), *weight);
+            }
         }
-        compare(engine, &base, &i.to_string())?;
+        compare(engine, &bases, &i.to_string())?;
     }
     Ok(())
 }
@@ -230,7 +254,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Agg, AggFn, Column, ColumnType, Domain, EngineError, NaiveRecompute, Predicate};
+    use crate::{
+        Agg, AggFn, Column, ColumnType, Domain, EngineError, NaiveRecompute, Predicate, Schema,
+    };
     use ivmlite_core::Value;
 
     fn schema() -> Schema {
@@ -251,6 +277,32 @@ mod tests {
         }
     }
 
+    fn single_table_case(seed: u64, rows: Vec<Row>, ops: Vec<Op>, batching: Batching) -> TestCase {
+        let schema = schema();
+        let db = Database::single(schema.clone());
+        let query = ViewQuery {
+            group_by: vec![0],
+            aggs: vec![Agg {
+                func: AggFn::Count,
+                column: None,
+            }],
+            predicate: Predicate::None,
+        };
+        let initial = BTreeMap::from([(schema.table.clone(), rows)]);
+        let ops = ops
+            .into_iter()
+            .map(|op| (schema.table.clone(), op))
+            .collect();
+        TestCase {
+            seed,
+            database: db,
+            query,
+            initial,
+            ops,
+            batching,
+        }
+    }
+
     /// 只做记录、不做别的：把真正的计算委托给 `NaiveRecompute`（保证 `run`
     /// 内部的 oracle 比对不会因为我们自己的引擎错误而失败），同时把每次
     /// `apply` 收到的 `(table, raw)` 原样存下来，供守卫测试断言。
@@ -263,11 +315,11 @@ mod tests {
     impl Engine for RecordingEngine {
         fn create_view(
             &mut self,
-            schema: &Schema,
+            db: &Database,
             query: &ViewQuery,
-            initial: &ZSet,
+            initial: &BTreeMap<String, ZSet>,
         ) -> Result<(), EngineError> {
-            self.inner.create_view(schema, query, initial)
+            self.inner.create_view(db, query, initial)
         }
 
         fn apply(&mut self, table: &str, raw: &[(Row, i64)]) -> Result<(), EngineError> {
@@ -291,24 +343,13 @@ mod tests {
     /// chunk 折进一个 `ZSet` 再展开——这个测试必须变红。
     #[test]
     fn apply_receives_unconsolidated_raw_deltas() {
-        let schema = schema();
-        let query = ViewQuery {
-            group_by: vec![0],
-            aggs: vec![Agg {
-                func: AggFn::Count,
-                column: None,
-            }],
-            predicate: Predicate::None,
-        };
         let dup = Row::new(vec![Value::Text("a".into()), Value::Int(1)]);
-        let case = TestCase {
-            seed: 0,
-            schema,
-            query,
-            initial: vec![],
-            ops: vec![Op::Insert(dup.clone()), Op::Insert(dup.clone())],
-            batching: Batching::All,
-        };
+        let case = single_table_case(
+            0,
+            vec![],
+            vec![Op::Insert(dup.clone()), Op::Insert(dup.clone())],
+            Batching::All,
+        );
 
         let mut engine = RecordingEngine::default();
         run(&mut engine, &case).unwrap_or_else(|f| panic!("不应失败: {f}"));
@@ -332,34 +373,24 @@ mod tests {
     /// 这个测试必须变红。
     #[test]
     fn apply_receives_the_schema_table_name() {
-        let schema = schema();
-        let query = ViewQuery {
-            group_by: vec![0],
-            aggs: vec![Agg {
-                func: AggFn::Count,
-                column: None,
-            }],
-            predicate: Predicate::None,
-        };
-        let case = TestCase {
-            seed: 0,
-            schema: schema.clone(),
-            query,
-            initial: vec![],
-            ops: vec![Op::Insert(Row::new(vec![
+        let case = single_table_case(
+            0,
+            vec![],
+            vec![Op::Insert(Row::new(vec![
                 Value::Text("a".into()),
                 Value::Int(1),
             ]))],
-            batching: Batching::All,
-        };
+            Batching::All,
+        );
 
         let mut engine = RecordingEngine::default();
         run(&mut engine, &case).unwrap_or_else(|f| panic!("不应失败: {f}"));
 
         assert_eq!(engine.received.len(), 1);
         assert_eq!(
-            engine.received[0].0, case.schema.table,
-            "apply 收到的表名必须等于 case.schema.table"
+            engine.received[0].0,
+            case.database.tables()[0].table,
+            "apply 收到的表名必须等于用例声明的表名"
         );
     }
 
@@ -379,9 +410,13 @@ mod tests {
             }],
             predicate: Predicate::None,
         };
-        let base = ZSet::from_rows([(Row::new(vec![Value::Text("a".into()), Value::Int(1)]), 1)]);
+        let db = Database::single(schema.clone());
+        let bases = BTreeMap::from([(
+            schema.table.clone(),
+            ZSet::from_rows([(Row::new(vec![Value::Text("a".into()), Value::Int(1)]), 1)]),
+        )]);
         let mut engine = NaiveRecompute::new();
-        engine.create_view(&schema, &query, &base).unwrap();
+        engine.create_view(&db, &query, &bases).unwrap();
         let before = engine.materialize().unwrap();
 
         let new_row = Row::new(vec![Value::Text("b".into()), Value::Int(2)]);
@@ -404,9 +439,10 @@ mod tests {
     #[test]
     fn naive_engine_passes_every_enumerated_query() {
         let schema = schema();
+        let db = Database::single(schema.clone());
         let domain = Domain::default();
         for (i, query) in crate::enumerate(&schema).into_iter().enumerate() {
-            let mut case = gen_case(i as u64, &schema, &domain, 30, 200, Batching::Chunks(7));
+            let mut case = gen_case(i as u64, &db, &domain, 30, 200, Batching::Chunks(7));
             case.query = query;
             let mut engine = NaiveRecompute::new();
             run(&mut engine, &case).unwrap_or_else(|f| {
@@ -417,18 +453,18 @@ mod tests {
 
     #[test]
     fn batch_invariance_holds_for_naive_engine() {
-        let schema = schema();
+        let db = Database::single(schema());
         let domain = Domain::default();
-        let case = gen_case(4242, &schema, &domain, 30, 200, Batching::All);
+        let case = gen_case(4242, &db, &domain, 30, 200, Batching::All);
         check_batch_invariance(&case, NaiveRecompute::new).unwrap();
     }
 
     #[test]
     fn same_seed_produces_the_same_case() {
-        let schema = schema();
+        let db = Database::single(schema());
         let domain = Domain::default();
-        let a = gen_case(5, &schema, &domain, 10, 40, Batching::One);
-        let b = gen_case(5, &schema, &domain, 10, 40, Batching::One);
+        let a = gen_case(5, &db, &domain, 10, 40, Batching::One);
+        let b = gen_case(5, &db, &domain, 10, 40, Batching::One);
         assert_eq!(a.initial, b.initial);
         assert_eq!(a.ops, b.ops);
     }

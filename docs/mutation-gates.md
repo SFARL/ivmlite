@@ -75,6 +75,9 @@ M0 结束时的最终全分支评审用**变异测试**——把实现改坏、�
 | §9.4 `IVMLITE_SEED` 非数字须 panic | 改为静默忽略 | `parse_seed_arg_panics_on_non_numeric_value` | **已验证** |
 | §9.1 植入 bug 的引擎必须保持有 bug 且能被抓到 | 修好 `NoRetractionEngine` | `harness_catches_the_missing_retraction_bug` | **已验证** |
 | §9.1 漂移污染必须绕过不变量层 | 污染改为只在末列是 `Int` 时生效 | `drift_still_happens_when_the_aggregate_column_is_null` | **已验证** |
+| §8.5 `apply` 必须把每批的 delta 按表路由到各自的基表，而非全部塞给同一张表（M1a Phase 1 Task 5：M0 只有一张表时这个参数形同虚设，多表化后才第一次真的需要路由） | 在 `run` 里把递给 `apply` 的表名改写死成 `db.tables()[0].table`（只改这一处引擎接缝，`bases` 的参照 bookkeeping 仍按原表名推进——两边都改会让 oracle 与引擎一起偏航、测不出任何东西） | `a_two_table_case_runs_green_against_the_reference_engine` | **已验证** |
+| §8.2「N 次 apply、一次 refresh」：一批之内对多张表的 delta 只应触发一次 refresh（M1a Phase 1 Task 5） | 把 `run` 改成对批内每张表各调一次 `refresh`（而非批末统一调一次） | 无——**已知不被现有测试守护**：`NaiveRecompute::refresh` 只是把 `pending` drain 进 `base`，不在 `refresh` 内部做 consolidation，所以“更细粒度地调用 refresh”和“批末调一次”对它是同一件事，两种调用节奏产出完全相同的最终状态。真正能区分这条要求的是一个把 consolidation 逻辑放在 `refresh` 内部的引擎，属引擎计划（M1）范围，本计划不为此新增测试 | 不适用 |
+| §9.3 shrinker 的合法性门禁必须**按表**校验：用 A 表当时存在的行去合法化对 B 表的 DELETE/UPDATE 是错误的（M1a Phase 1 Task 5：单表时这个形态根本不存在） | `is_legal` 的存在性检查改成跨全部表的行联合查找，而不是只看 `table` 自己的 live 集合 | `deleting_a_row_that_exists_in_another_table_is_illegal` | **已验证** |
 
 ## ivmlite-workload / ivmlite-bench
 
@@ -94,7 +97,7 @@ M0 结束时的最终全分支评审用**变异测试**——把实现改坏、�
 
 ## 统计与欠账
 
-表内共 **46** 行：已验证 **45** 条、未验证 **0** 条、不适用 **1** 条
+表内共 **49** 行：已验证 **47** 条、未验证 **0** 条、不适用 **2** 条
 （`Value` 无 Real/Blob 由类型系统而非测试守护，加变体会编译失败）。
 
 这三个数字由 `scripts/count-mutation-gates.py` 从本文件数出来，不是手写的——
