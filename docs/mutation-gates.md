@@ -84,7 +84,7 @@ M0 结束时的最终全分支评审用**变异测试**——把实现改坏、�
 | §8.2 `run` 自己的参照 bookkeeping（`bases`，喂给 oracle 的那份状态）必须真的推进每一张非 anchor 表（最终评审 I2 发现）：上一行登记的是引擎侧 `NaiveRecompute` 会静默丢非 anchor delta；这一行是它的镜像——harness 侧自己维护的 `bases` 也可能犯同样的错，而且更要命，因为 `bases` 直接就是 oracle 的输入 | 在 `run` 的批循环末尾，把递给 `bases.entry(...)` 的按表更新改成只在 `table == anchor` 时才执行，非 anchor 表的 `bases` 记账被静默跳过（引擎侧 `apply` 收到的表名与 raw delta 不变，只改 harness 自己的参照 bookkeeping 这一处） | 无——**已知不被现有测试守护**，原因与上一行相同：Phase 1 的查询与 oracle 都只渲染 anchor 表的单表 SQL，`bases` 里非 anchor 表的值在 `recompute_via_sqlite` 的输出里不可观察，静默冻结它也不会让任何比对变红。跑变异实测：改后仍能编译，`cargo test --workspace --locked --no-fail-fast` 全绿（110/110） | 不适用 |
 | §9.3 `shrink` 的 phase 3（逐表、逐行删初始数据）必须真的遍历 `best.initial` 的每一张表，而不只是循环第一次碰到的那张（I4，最终评审发现：评审用探针 `assert!(case.database.len() <= 1)` 证实此前没有任何调用点喂给 `shrink` 一个真正的多表用例，反转该循环的表迭代顺序也不会让任何测试变红） | 把 phase 3 的 `let tables: Vec<String> = best.initial.keys().cloned().collect();` 改成 `.take(1)`，只处理第一张表 | `shrink_reduces_initial_rows_in_every_table_of_a_multi_table_case` | **已验证** |
 | §9.3 同上，补充说明：**反转**该循环的表迭代顺序（而非只处理第一张表）不属于这一行的守护范围 | 把上面同一段代码改成 `tables.reverse()` 后再迭代 | 无——**已知不被任何断言守护，且大概率永远不会被守护**：phase 3 对每张表的逐行删减是相互独立的贪心搜索，每个候选删除只用 `still_fails` 单独判定是否保留，不依赖其他表当时被缩到什么程度；实测反转顺序后 `cargo test --workspace --locked --no-fail-fast` 全绿（12/12 集成测试仍通过）。这与"只处理第一张表"是两类不同的缺口：后者是覆盖率缺口（有表整个没被访问到），前者是顺序敏感性缺口——而这个算法结构下顺序客观上不影响结果，不是测试没写到 | 不适用 |
-| §9.1 `check_batch_invariance` 必须能在真正的多表用例上跑通（I4，最终评审发现：探针同上，证实此前没有任何调用点喂给它一个真正的多表用例） | 新增 `batch_invariance_holds_for_naive_engine_on_a_two_table_case`，用两表 `Database` 跑 `check_batch_invariance` | `batch_invariance_holds_for_naive_engine_on_a_two_table_case`（这条只钉死"多表用例能跑通 `check_batch_invariance` 而不 panic/不报错"；与 I2/上面两行 §8.5、§8.2 缺口同一个根因，`materialize()` 与 oracle 都只读 anchor 表，非 anchor 表的 delta 是否真的影响了批次无关性的结果，在 Phase 1 里无法被任何断言区分——这一层留到 join 落地后重新处理，见文末"Join 落地"清单） | **已验证** |
+| §9.1 `check_batch_invariance` 必须能在真正的多表用例上跑通（I4，最终评审发现：探针同上，证实此前没有任何调用点喂给它一个真正的多表用例） | 新增 `batch_invariance_holds_for_naive_engine_on_a_two_table_case`，用两表 `Database` 跑 `check_batch_invariance` | `batch_invariance_holds_for_naive_engine_on_a_two_table_case`（这条只钉死"多表用例能跑通 `check_batch_invariance` 而不 panic/不报错"；与 I2/上面两行 §8.5、§8.2 缺口同一个根因，`materialize()` 与 oracle 都只读 anchor 表，非 anchor 表的 delta 是否真的影响了批次无关性的结果，在 Phase 1 里无法被任何断言区分——这一层留到 join 落地后重新处理，见文末"Join 落地"清单） | 不适用——**本行从未跑过变异**：这一行登记的是「新增了一个多表测试」，而不是「改坏什么会让它变红」。实测确认它抓不到非 anchor 表的簿记错误（让 `NaiveRecompute::apply` 丢弃非 anchor delta 后全套仍 113/113 绿），根因与上面两行相同：Phase 1 的 oracle 只渲染 anchor 表。join 落地后按文末清单第 3 条重新处理 |
 
 ## ivmlite-workload / ivmlite-bench
 
@@ -104,7 +104,7 @@ M0 结束时的最终全分支评审用**变异测试**——把实现改坏、�
 
 ## 统计与欠账
 
-表内共 **56** 行：已验证 **50** 条、未验证 **0** 条、不适用 **6** 条
+表内共 **56** 行：已验证 **49** 条、未验证 **0** 条、不适用 **7** 条
 （`Value` 无 Real/Blob 由类型系统而非测试守护，加变体会编译失败）。
 
 这三个数字由 `scripts/count-mutation-gates.py` 从本文件数出来，不是手写的——
@@ -118,6 +118,18 @@ M0 结束时的最终全分支评审用**变异测试**——把实现改坏、�
 ```bash
 python3 scripts/count-mutation-gates.py --fix
 ```
+
+**这个脚本不检查什么**（2026-09-21 补，起因见下）：它只核对文末统计句与表格
+单元格的字面内容是否一致。它**不**判断某一行的"已验证"是否真的跑过变异，也
+**不**核对表格与本文档其他散文段落是否自洽。M1a Phase 1 最终评审的定向复审
+就抓到过一次：`batch_invariance_holds_for_naive_engine_on_a_two_table_case`
+那一行被标成"已验证"，而它的"变异"格描述的是*新增一个测试*而不是改坏什么，
+实际从未跑过变异；文末"Join 落地"清单三行之后还明写这三条"标记都是不适用"。
+脚本照样报"一致"。
+
+所以：**`一致` 不等于这张表是诚实的**，它只等于数字没抄错。一行的"已验证"
+是否名副其实，仍然只能靠真的去跑那条变异——这正是本文开头那段话的意思，
+而它连这份文档自己都没能豁免。
 
 M1a Phase 1 Task 1（2026-09-20）把此前标"未验证"的 25 条逐条真的改坏、跑了一遍
 `cargo test --workspace --locked`：23 条按原表所记的测试变红；2 条不是——
