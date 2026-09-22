@@ -1074,14 +1074,24 @@ mod tests {
 
     #[test]
     fn an_unchanged_group_emits_nothing() {
-        // 本批的变更相互抵消、组的输出没变时，一对 (-1,+1) 也不该发。
-        let mut s = sum_state();
-        s.absorb(&ZSet::from_rows([(row(vec![txt("a"), int(10)]), 1)]));
-        let d = s.absorb(&ZSet::from_rows([
-            (row(vec![txt("a"), int(7)]), 1),
-            (row(vec![txt("a"), int(7)]), -1),
+        // 组被触及、但它的**输出**没变时，一对 (-1,+1) 也不该发。
+        //
+        // 输入必须是两条**不同的**行（一进一出），不能是同一行的 +1/-1：
+        // 后者在 `ZSet::from_rows` 里就相消成空集了，`absorb` 根本不会看到
+        // 任何输入，于是 `touched` 为空、发射循环一次都不执行——测试会通过，
+        // 但通过的理由与它声称守护的东西无关，而「把 `new_out != emitted`
+        // 改成恒真」这个变异也不会让它变红。
+        let mut s = count_state();
+        s.absorb(&ZSet::from_rows([
+            (row(vec![txt("a"), int(1)]), 1),
+            (row(vec![txt("a"), int(2)]), 1),
         ]));
-        assert!(d.is_empty(), "输出未变时不得发射：{d:?}");
+        // 换掉组内一行：行变了，但组的行数没变，于是 COUNT 的输出不变。
+        let d = s.absorb(&ZSet::from_rows([
+            (row(vec![txt("a"), int(3)]), 1),
+            (row(vec![txt("a"), int(1)]), -1),
+        ]));
+        assert!(d.is_empty(), "组被触及但输出未变时不得发射：{d:?}");
     }
 
     #[test]
