@@ -28,6 +28,10 @@ pub enum Node {
         input: Box<Node>,
         columns: Vec<usize>,
     },
+    Aggregate {
+        input: Box<Node>,
+        state: crate::AggState,
+    },
 }
 
 impl Node {
@@ -44,9 +48,14 @@ impl Node {
                 input: Box::new(Node::build(input)?),
                 columns: columns.clone(),
             }),
-            Plan::Aggregate { .. } => {
-                Err(NodeError("Aggregate 算子尚未实现（本计划 Task 4）".into()))
-            }
+            Plan::Aggregate {
+                input,
+                group_by,
+                aggs,
+            } => Ok(Node::Aggregate {
+                input: Box::new(Node::build(input)?),
+                state: crate::AggState::new(group_by.clone(), aggs.clone()),
+            }),
         }
     }
 
@@ -89,6 +98,15 @@ impl Node {
                     out.update(narrowed, w);
                 }
                 out
+            }
+            Node::Aggregate {
+                input: child,
+                state,
+            } => {
+                // spec §6.2：聚合是本引擎唯一的有状态算子。上游 delta 先算出来，
+                // 再交给 `AggState` 去决定对外该撤回什么、发出什么。
+                let upstream = child.delta(table, input);
+                state.absorb(&upstream)
             }
         }
     }
@@ -288,19 +306,34 @@ mod tests {
     }
 
     #[test]
-    fn building_an_aggregate_is_an_error_until_task_4() {
-        // 占位：Task 4 把这个测试删掉并换成真实的聚合测试。留它在这里是为了
-        // 「未实现」有一个明确的、会被执行到的形态，而不是一个 panic。
-        let err = Node::build(&Plan::Aggregate {
-            input: Box::new(Plan::Scan {
-                table: "t".into(),
-                columns: vec![0],
-            }),
-            group_by: vec![0],
-            aggs: vec![],
-        })
-        .expect_err("Task 3 尚未实现 Aggregate");
-        assert!(err.0.contains("Aggregate"));
+    fn aggregate_can_be_built_and_runs_through_the_tree() {
+        // 端到端：Scan → Filter → Project → Aggregate 整棵树推一批 delta。
+        let plan = crate::lower(
+            &crate::ViewQuery {
+                group_by: vec![0],
+                aggs: vec![crate::Agg {
+                    func: crate::AggFn::Count,
+                    column: None,
+                }],
+                predicate: Predicate::IntGt {
+                    column: 1,
+                    value: 3,
+                },
+            },
+            "t",
+            2,
+        )
+        .unwrap();
+        let mut n = Node::build(&plan).unwrap();
+        let d = ZSet::from_rows([
+            (row(vec![Value::Text("a".into()), int(9)]), 1),
+            (row(vec![Value::Text("a".into()), int(1)]), 1), // 被 Filter 挡掉
+        ]);
+        assert_eq!(
+            n.delta("t", &d),
+            ZSet::from_rows([(row(vec![Value::Text("a".into()), int(1)]), 1)]),
+            "只有通过谓词的那一行进入计数"
+        );
     }
 
     #[test]

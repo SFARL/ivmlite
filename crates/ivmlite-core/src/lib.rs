@@ -1,3 +1,4 @@
+mod agg;
 mod arrangement;
 mod database;
 mod node;
@@ -8,6 +9,7 @@ mod schema;
 mod value;
 mod zset;
 
+pub use agg::AggState;
 pub use arrangement::{Arrangement, MemArrangement};
 pub use database::Database;
 pub use node::{Node, NodeError};
