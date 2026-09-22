@@ -79,6 +79,11 @@ M0 结束时的最终全分支评审用**变异测试**——把实现改坏、�
 | **M1a Phase 2 Task 5 复审 Finding 1**：`IncrementalEngine` 的固有 `materialize(&self) -> ZSet` 与 `Engine::materialize(&mut self) -> Result<ZSet, EngineError>` 同名——固有方法在方法解析里总是优先于同名 trait 方法，任何持有具体 `IncrementalEngine` 类型（而非 `impl Engine` 泛型）的调用点会悄悄调错方法且没有编译期信号。首次落地时这个遮蔽已经真实发生过一次，逼着 `harness_catches_bugs.rs` 用 UFCS 绕开。修法：固有方法改名为 `snapshot`，把根因（重名）设计掉而不是在调用点绕 | 编译期设计约束，非运行时行为——没有"改坏它会红的测试"这个形状：`Engine::materialize` 与 `IncrementalEngine::snapshot` 现在是两个不同的名字，遮蔽在类型系统层面已经不可能发生（把 `snapshot` 改回 `materialize` 会让 `harness_catches_bugs.rs` 里 `inc.materialize().unwrap()` 编译失败——`ZSet` 没有 `unwrap`——这是编译器在拒绝重新引入这个缺陷，不是一条会变红的测试） | 无——不是变异可验证的性质 | 不适用——**设计约束，用编译失败而非测试红线守护**：这一行记录的是"为什么改名"，不是一条可以跑变异的不变量；改名前的遮蔽本身也从未被任何测试直接抓到过，是复审读代码 + 论证 M1b 调用形状发现的 |
 | §5.2 的边界校验必须在 `create_view` 处以 `Err` 的形式传给调用者，不能在内部 `.unwrap()` panic 掉——`lower` 的错误必须能被 `?` 一路带出去，而不是等到 `refresh` 才炸 | `create_view` 里 `lower(...).map_err(|e| EngineError(e.0))?` 改成 `lower(...).unwrap()` | `create_view_rejects_a_global_aggregate` | **已验证**——编译通过，`cargo test --workspace --locked --no-fail-fast` 得 154 passed / 1 failed（基线 155/0） |
 | §6.2 同上的**引擎层**形态（上方「§6.2 同上的节点层形态」一行把这条债交棒到此处）：`refresh` 必须复用 `create_view` 建好的 `self.tree`，不能每次都从 plan 重新 `Node::build`——重建会让 `AggState` 在两次 refresh 之间丢光状态，于是每次都从空 group 起算，永不撤回上一次发出的行，只发裸 `+1`（M1a Phase 2 Task 5） | 给 `IncrementalEngine` **临时**加一个 `plan_for_mutation_test: Option<Plan>` 字段（`create_view` 里连带存一份 `plan.clone()`），把 `refresh` 改成从这个字段 `Node::build` 出一棵全新的树、完全不碰 `self.tree`；验证完立刻把字段和改动一起还原，不进入生产代码——做法与上一行「评审原本用的是 `let mut scratch = state.clone()`」一致：只为跑通这条变异临时加，不是为了给变异专门扩大公开 API | `incremental_engine_matches_naive_recompute_at_every_refresh_point`（同一变异下 `incremental_engine_is_green_across_the_enumerated_space` 也一并变红） | **已验证**——编译通过，`cargo test --workspace --locked --no-fail-fast` 得 153 passed / 2 failed（基线 155/0）；变异还原、字段移除后重新跑同一条命令，155/155 全绿 |
+| §8.2/§8.5 `refresh` 必须先按 `ZSet` 合并本批 raw Δ 再推进算子树，不能逐条推进（consolidation，M1a Phase 2 Task 6）——这是本条计划唯一在意的性能故事：合并不改变结果，只改变工作量，于是必须靠 `rows_processed_last_refresh` 这个计数器才可观测 | `refresh` 退回 Task 5 的逐条推进：对 `pending` 里每一条 raw `(table, row, w)` 各建一个单行 `ZSet::from_rows` 并各自 `tree.delta`，`rows_processed` 每条 raw Δ 记 1（不做任何合并） | `engine::tests::duplicate_rows_in_one_batch_are_merged_before_reaching_the_operators`、`engine::tests::rows_that_cancel_within_a_batch_never_reach_the_operators` | **已验证**——编译通过，`cargo test --workspace --locked --no-fail-fast` 得 161 passed / 2 failed（基线 163/0），红的正是这两条、不多不少 |
+| §8.2 同一行值出现在两张表里时不得跨表合并——按表分组合并是正确性要求，不只是性能优化：跨表相消会让一张表的变更悄悄抵消另一张表的变更 | `refresh` 不按表分组，取 `pending` 里第一条的表名当唯一 key，把全部原始 Δ（不分表）合并进同一个 `ZSet`，再用这一个 key 调一次 `tree.delta` | `engine::tests::deltas_for_different_tables_are_consolidated_separately` | **已验证——比预期红得更多，这是发现**：编译通过，`cargo test --workspace --locked --no-fail-fast` 得 158 passed / 3 failed（基线 163/0）。除了 brief 预测的那一条单测，`ivmlite-test` 差分套件里 `incremental_engine_is_green_across_the_enumerated_space` 与 `incremental_engine_matches_naive_recompute_at_every_refresh_point` 也一并变红——这两条内部都用 `gen_database(2)` 建真正的双表用例（`crates/ivmlite-test/tests/harness_catches_bugs.rs:341,362`），不像 m6 登记的 anchor-only 缺口那样被 oracle 单表渲染挡住；跨表合并把非 anchor 表的行错误地打上 anchor 表名喂进 `tree.delta`，被 `Scan` 当成合法输入吃进去，直接产出错误结果，而不是「结构性不可见」 |
+| §11「写放大有明确数字」：`rows_processed_last_refresh` 必须反映「上一次」`refresh` 推进算子树的行数，不能累计多次 `refresh` | 删掉 `self.rows_processed = 0` 这一行归零，改成跨 `refresh` 累计 | `engine::tests::the_counter_resets_between_refreshes` | **已验证**——编译通过，`cargo test --workspace --locked --no-fail-fast` 得 162 passed / 1 failed（基线 163/0） |
+| §11 同上：计数必须是合并后实际推进的**行数**，不能是「有变更的表数」——否则一张表里 3 行不同的行和 1 行会显示成同一个数字，写放大就没法从这个数字读出来 | `self.rows_processed += delta.len()` 改成 `+= 1`（每张有变更的表只记 1，不管合并后剩几行） | `engine::tests::distinct_rows_are_not_over_merged` | **已验证——比 brief 预测的多红一条，这是发现**：编译通过，`cargo test --workspace --locked --no-fail-fast` 得 161 passed / 2 failed（基线 163/0）。除了 brief 点名的 `distinct_rows_are_not_over_merged`，`engine::tests::rows_that_cancel_within_a_batch_never_reach_the_operators` 也一并变红——该测试里合并后净权重为 0，`delta.len()` 是 0，但 `by_table.entry("t").or_default()` 已经在 `BTreeMap` 里建了一个空 `ZSet` 的 key，`+= 1` 对着这个空条目也记了 1，而正确实现的 `+= delta.len()` 在这里应得 0。两条测试断言的其实是同一处代码，不是巧合命中 |
+| §9.4 合并按表分组用 `BTreeMap` 而非 `HashMap`——迭代顺序确定 | `by_table` 的 `BTreeMap` 换成 `HashMap` | 无——**已知不被现有测试守护，实测确认**：编译通过，`cargo test --workspace --locked --no-fail-fast` 全绿（163/163）。单表时 `by_table` 只有一个 key，顺序无意义；多表时 `for (table, delta) in &by_table` 的推进顺序目前只影响 `self.view.merge(...)` 调用的先后，而 `ZSet::merge` 是逐点加法、与调用顺序无关，所以当前没有任何观察点能看出这个顺序 | 不适用——**并入文末「Join 落地」清单第 5 条**：join 落地后 `ΔR⋈ΔS` 项会同时读两侧 arrangement 的当前状态，那时两侧更新顺序才第一次影响输出，必须重新跑这条变异确认它转红 |
 
 ## ivmlite-test：生成器
 
@@ -155,7 +160,7 @@ M0 结束时的最终全分支评审用**变异测试**——把实现改坏、�
 
 ## 统计与欠账
 
-表内共 **97** 行：已验证 **82** 条、未验证 **0** 条、不适用 **15** 条
+表内共 **102** 行：已验证 **86** 条、未验证 **0** 条、不适用 **16** 条
 （`Value` 无 Real/Blob 由类型系统而非测试守护，加变体会编译失败）。
 
 这三个数字由 `scripts/count-mutation-gates.py` 从本文件数出来，不是手写的——
@@ -247,6 +252,14 @@ Task 2 落地 `Arrangement`/`MemArrangement` 时根本没有消费者，集成�
      后是否会留下僵尸状态"这件事在 `DELETE`-based 实现里是否存在（很可能
      不存在——SQL `DELETE` 没有"空壳容器"这个概念），如果存在就自己写一条
      等价的测试，不能因为 `MemArrangement` 这边"已验证"过就默认它也没事。
+5. `ivmlite-core` 表格里 `refresh` 合并按表分组用 `BTreeMap` 换 `HashMap`
+   那一行（M1a Phase 2 Task 6 新增）——单表时 `by_table` 只有一个 key，顺序
+   无意义；多表时当前 `for (table, delta) in &by_table` 的推进顺序只影响
+   `self.view.merge(...)` 调用的先后，而 `ZSet::merge` 是逐点加法、与调用
+   顺序无关，所以现在没有任何观察点能看出这个顺序，实测也确认了这一点
+   （163/163 全绿）。join 落地后 `ΔR⋈ΔS` 项会同时读两侧 arrangement 的
+   当前状态，两侧 `apply`/`refresh` 的先后顺序第一次会影响输出——那时必须
+   把这条变异重新跑一遍，确认它转红，再把"不适用"改成"已验证"。
 
 **第二条比第一条更要命**，这也是它被单独列出来的原因：`bases` 不是某个
 待测引擎的内部状态，它是直接喂给 `recompute_via_sqlite` 的 oracle 输入。
