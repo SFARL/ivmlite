@@ -7,7 +7,7 @@ use crate::{Agg, AggFn, Row, Value, ZSet};
 /// `Sum` 必须同时维护 `sum` 与 `non_null`：spec §6.1 明写，只维护累加值的
 /// 实现会在「组非空但该列全为 NULL」时输出 `0`，而 SQLite 输出 `NULL`，
 /// 且这个不一致是静默的。
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 struct Acc {
     sum: i64,
     non_null: i64,
@@ -26,9 +26,20 @@ struct Group {
 
 /// spec §6.2 的聚合算子状态。
 ///
-/// `BTreeMap` 而非 `HashMap`：group 的遍历顺序进入 delta 流，而 spec §9.4
-/// 要求失败用例能凭 seed 精确重放。
-#[derive(Debug, Clone)]
+/// **本类型必须在两批之间存活**：`emitted` 记的是「上一次对外发过什么」，
+/// 只有跨批保留它，第二批才撤得回第一批发出的那行。每批新建一个 `AggState`
+/// （或在 `Node::delta` 里对它取一份临时拷贝）会让每批都只发 `+1`、永不撤回，
+/// 而这正是 §6.2 说的那个最大 bug 源。由 `node.rs` 的
+/// `aggregate_retracts_across_two_batches_through_the_same_node` 钉住。
+///
+/// `groups` 用 `BTreeMap` 而非 `HashMap`：**不是**因为遍历顺序会进入 delta 流
+/// ——实测它今天进不去（`absorb` 返回 `ZSet`，本身就是 `BTreeMap`；`groups`
+/// 也从不被迭代，只有按 key 的 `entry`/`get_mut`/`remove`）。换成 `HashMap`
+/// 并删掉发射前的 `keys.sort()`，全套测试连跑 12 个独立进程 12/12 全绿。
+/// 留着它是为了 spec §9.4 在下游改成消费**有序的** delta 序列（而不是 `ZSet`）
+/// 之后仍然成立——见 `absorb` 里 `keys.sort()` 处的注释与
+/// docs/mutation-gates.md 对应的「不适用」行。
+#[derive(Debug)]
 pub struct AggState {
     group_by: Vec<usize>,
     aggs: Vec<Agg>,
@@ -65,7 +76,14 @@ impl AggState {
                 if agg.func != AggFn::Sum {
                     continue;
                 }
-                let col = agg.column.expect("SUM 必须带列（lower 已校验）");
+                // `lower` 会拒绝不带列的 SUM（`sum_without_a_column_is_
+                // rejected_at_the_boundary`），所以经由 `Node::build` 建出来的
+                // 树走不到这个 `expect`。`AggState::new` 是公开的，绕过 `lower`
+                // 直接构造时仍会 panic——那是调用方跳过边界校验的后果，不是
+                // 引擎在 create_view 之后残留的 panic 路径。
+                let col = agg
+                    .column
+                    .expect("SUM 必须带列；经 lower 建出的树已在边界上校验过");
                 if let Value::Int(v) = row.get(col) {
                     g.accs[i].sum += v * w;
                     g.accs[i].non_null += w;
@@ -113,13 +131,14 @@ impl AggState {
             // `new_out == g.emitted` 时什么都不发。
             //
             // **这个判断今天也不可观察，实测确认**：把它改成恒真之后全套
-            // 仍然全绿（148/148）。原因是输出未变时撤回与重发的是**同一行**，
+            // 仍然全绿（实测 152/152）。原因是输出未变时撤回与重发的是**同一行**，
             // `ZSet::update` 把 `-1` 与 `+1` 精确相消并删掉条目，多发的这一对
             // 在返回值里一点痕迹都不留。所以在当前形状下它是一处优化
             // （省掉两次 `BTreeMap` 操作），不是可证伪的语义——
             // 见 docs/mutation-gates.md 对应的「不适用」行。
             // 漏发（该发却不发）则完全是另一回事，由 `if let Some(old)`
-            // 那条撤回守着，删掉它会让四个测试变红。
+            // 那条撤回守着，删掉它会让六个测试变红（实测；其中一个是 node.rs 的
+            // aggregate_retracts_across_two_batches_through_the_same_node）。
             if new_out != g.emitted {
                 if let Some(old) = &g.emitted {
                     out.update(old.clone(), -1);
@@ -311,6 +330,41 @@ mod tests {
                 (row(vec![txt("a"), int(10)]), 1),
             ]),
             "撤回 1 份后和从 15 降到 10；忽略权重的实现会升到 20"
+        );
+    }
+
+    #[test]
+    fn each_agg_reads_its_own_accumulator() {
+        // aggs 的顺序刻意写成 `[Count, Sum]`，于是 SUM 落在下标 1 而不是 0。
+        //
+        // 上面每一条测试都只有一个 agg，在它们下面 `g.accs[i]` 与 `g.accs[0]`
+        // 完全等价——实测：只把**读**侧的 `g.accs[i]` 改成 `g.accs[0]`，全套
+        // 仍然全绿。差分层也堵不住这个洞：`crates/ivmlite-test/src/query.rs`
+        // 的 `enumerate` 只产出 `[Sum(i)]` 或 `[Sum(i), Count]`，SUM 恒在下标 0。
+        // 但 `lower` 接受 `[Count, Sum]`，`AggState::new` 也是公开的，于是
+        // 「累加器下标必须与 agg 下标对齐」这条今天只有这一条测试守着。
+        // 读错下标的后果是 SUM 静默变成 NULL——正是 §6.1 点名的那一类。
+        let mut s = AggState::new(
+            vec![0],
+            vec![
+                Agg {
+                    func: AggFn::Count,
+                    column: None,
+                },
+                Agg {
+                    func: AggFn::Sum,
+                    column: Some(1),
+                },
+            ],
+        );
+        let d = s.absorb(&ZSet::from_rows([
+            (row(vec![txt("a"), int(5)]), 1),
+            (row(vec![txt("a"), int(7)]), 1),
+        ]));
+        assert_eq!(
+            d,
+            ZSet::from_rows([(row(vec![txt("a"), int(2), int(12)]), 1)]),
+            "COUNT=2、SUM=12；读错累加器下标会让 SUM 静默变成 NULL"
         );
     }
 

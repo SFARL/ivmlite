@@ -337,6 +337,63 @@ mod tests {
     }
 
     #[test]
+    fn aggregate_retracts_across_two_batches_through_the_same_node() {
+        // **`AggState` 必须在两批之间存活。** 这与「delta 必须真的喂给
+        // `AggState`」是两条互相独立的性质：`aggregate_can_be_built_and_runs_
+        // through_the_tree` 只推一批，于是整个 retraction 协议通过 `Node`
+        // 这一层根本没有被测到——实测：把 `Aggregate` 分支改成
+        // `let mut scratch = state.clone(); scratch.absorb(&upstream)`
+        // （并给 `AggState` 临时加回 `Clone`），全套仍然全绿。
+        //
+        // 这不是一个牵强的变异：spec §5.3 存的是 SQL 原文而不是序列化的 IR，
+        // 所以「每次 refresh 重新 build 一棵树」是完全可能的重构；把 `delta`
+        // 改成收 `&self` 也一样。任何一个都会把引擎里唯一的有状态算子变回
+        // 无状态——每批只发 `+1`、永不撤回，而这正是 §6.2 的「最大的 bug 来源」。
+        let plan = crate::lower(
+            &crate::ViewQuery {
+                group_by: vec![0],
+                aggs: vec![crate::Agg {
+                    func: crate::AggFn::Count,
+                    column: None,
+                }],
+                predicate: Predicate::IntGt {
+                    column: 1,
+                    value: 3,
+                },
+            },
+            "t",
+            2,
+        )
+        .unwrap();
+        let mut n = Node::build(&plan).unwrap();
+
+        let first = n.delta(
+            "t",
+            &ZSet::from_rows([(row(vec![Value::Text("a".into()), int(9)]), 1)]),
+        );
+        assert_eq!(
+            first,
+            ZSet::from_rows([(row(vec![Value::Text("a".into()), int(1)]), 1)]),
+            "第一批：组 a 首次出现，COUNT=1"
+        );
+
+        // 第二批推进**同一个** Node。组 a 的 COUNT 从 1 变 2，于是必须先撤回
+        // 上一批发出的那行、再发新行——不是单独一行 +1。
+        let second = n.delta(
+            "t",
+            &ZSet::from_rows([(row(vec![Value::Text("a".into()), int(5)]), 1)]),
+        );
+        assert_eq!(
+            second,
+            ZSet::from_rows([
+                (row(vec![Value::Text("a".into()), int(1)]), -1),
+                (row(vec![Value::Text("a".into()), int(2)]), 1),
+            ]),
+            "跨批必须撤回上一批发出的 COUNT=1 那行；只发 (a,2) w=+1 说明状态没有跨批存活"
+        );
+    }
+
+    #[test]
     fn filter_evaluates_predicate_against_base_table_columns_not_narrowed_ones() {
         // Task 1 遗留的债务（见 docs/mutation-gates.md 对应行）：`lower()`
         // 产出的 `Filter` 谓词必须按**基表**列下标求值，这只有在 `Filter`

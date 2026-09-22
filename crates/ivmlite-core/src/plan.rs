@@ -1,4 +1,4 @@
-use crate::{Agg, Predicate, ViewQuery};
+use crate::{Agg, AggFn, Predicate, ViewQuery};
 
 /// spec §5.2 的 plan IR。
 ///
@@ -67,6 +67,21 @@ pub fn lower(query: &ViewQuery, table: &str, arity: usize) -> Result<Plan, PlanE
              而 Z-set 权重与 SQL 行数在该形状下语义不一致"
                 .into(),
         ));
+    }
+
+    // `SUM` 必须带列。这条校验**不是**冗余的：`Agg` 的 `column` 是
+    // `Option<usize>`（`COUNT(*)` 为 `None`），类型系统拦不住
+    // `Agg { func: Sum, column: None }`，而 `AggState::absorb` 对 SUM 的列
+    // 只能 `expect`——少了这道门，一个合法构造出来的 `ViewQuery` 会一路
+    // 通过 `lower` 与 `Node::build`，直到第一批 delta 才 panic。
+    // `out_of_range_column_is_rejected` 那条的理由在这里原样适用：
+    // 引擎在 create_view 之后不应再有可预见的 panic 路径。
+    for (i, agg) in query.aggs.iter().enumerate() {
+        if agg.func == AggFn::Sum && agg.column.is_none() {
+            return Err(PlanError(format!(
+                "spec §5.2：第 {i} 个 agg 是 SUM 但没有指定列；只有 COUNT(*) 允许不带列"
+            )));
+        }
     }
 
     let check = |c: usize, what: &str| -> Result<(), PlanError> {
@@ -345,6 +360,38 @@ mod tests {
         assert!(
             err.0.contains("agg"),
             "错误信息应指名是 aggs 的问题：{}",
+            err.0
+        );
+    }
+
+    #[test]
+    fn sum_without_a_column_is_rejected_at_the_boundary() {
+        // `Agg::column` 是 `Option<usize>`（`COUNT(*)` 为 `None`），所以
+        // `Agg { func: Sum, column: None }` 是一个类型系统拦不住的合法构造。
+        // 没有这道校验时它会一路通过 `lower` 与 `Node::build`，直到
+        // `AggState::absorb` 第一次处理这个 agg 才 panic——正是
+        // `out_of_range_column_is_rejected` 明写要避免的那类
+        // 「create_view 之后仍存在的可预见 panic 路径」。
+        // 唯一的生产者 `enumerate` 从不产出这种形状，但 `ViewQuery` 可以在
+        // `enumerate` 之外自由构造（M1b 的 create-view 路径就会）。
+        let bad = Agg {
+            func: AggFn::Sum,
+            column: None,
+        };
+        let err = lower(
+            &q(vec![0], vec![count(), bad], Predicate::None),
+            "orders",
+            2,
+        )
+        .expect_err("不带列的 SUM 必须被拒绝");
+        assert!(
+            err.0.contains("SUM"),
+            "错误信息应指名是 SUM 的问题：{}",
+            err.0
+        );
+        assert!(
+            err.0.contains('1'),
+            "错误信息应指出是第几个 agg（这里是下标 1）：{}",
             err.0
         );
     }
