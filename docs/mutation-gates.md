@@ -38,8 +38,9 @@ M0 结束时的最终全分支评审用**变异测试**——把实现改坏、�
 | §5.1 权重归零的 (key,val) 必须删除，不留僵尸条目 | 删掉 `MemArrangement::update` 里 `if *w == 0 { vals.remove(val); if vals.is_empty() { self.inner.remove(key); } }` 整段 | `weights_accumulate_and_zero_removes_the_entry`（同一变异也会让 `a_key_with_no_values_left_disappears_from_scan` 一起红，因为两条不变量共用这段代码） | **已验证** |
 | 值集合空掉后，key 本身也必须从 `inner` 里删除，否则 `inner` 的条目数会随历史（用过又清空的 key）而非当前状态增长 | 只删 `update` 里 `if vals.is_empty() { self.inner.remove(key); }` 这一行，保留 `vals.remove(val)` | `a_key_with_no_values_left_disappears_from_scan`——**注：brief 给的原始测试只断言 `scan()` 的输出，这个变异下该断言其实仍然是绿的**：`scan()` 用 `flat_map` 遍历 `inner`，一个空的内层 `BTreeMap` 天然贡献零条记录，不管外层 key 是否还留在 `inner` 里，所以这条不变量本来就不可能只靠 `Arrangement` 的三个公开方法观察到。已经在这个测试末尾加了一段白盒断言（直接查 `a.inner.contains_key(...)`），把它补成真正能红的守护 | **已验证**（加白盒断言后） |
 | §9.4 `scan()` 的迭代顺序必须确定（失败用例要能凭 seed 精确重放） | 外层 `BTreeMap<Row, BTreeMap<Row, i64>>` 换成 `HashMap<Row, BTreeMap<Row, i64>>` | `scan_order_is_deterministic` | **已验证（统计性，非绝对）**——`HashMap` 的 `RandomState` 逐次构造重新播种，3 个 key 理论上约有 1/3! ≈ 16.7% 概率巧合排出正确顺序，不能保证每次都红。连续跑了 15 次独立进程（`cargo test -p ivmlite-core --locked arrangement::tests::scan_order_is_deterministic`），**15/15 全部变红**（含测试内 `assert_eq!(build(), build())` 这条同进程内两次调用互相比较的断言也失败，说明种子并非只按进程变化，逐次 `HashMap::new()` 都不同）。这是统计性守护，不是绝对保证——参照 `crates/ivmlite-core/src/database.rs` 的 `table_order_is_preserved` 一节的措辞 |
-| `update` 里 `if weight_delta == 0 { return; }` 短路——纯属性能优化，没有可观察语义：`or_insert(0)` 之后再加 0、判零删除的逻辑与直接 `return` 在所有可观察行为上等价 | 删掉这一行 | 无——**已知不被守护**：删除后仍能编译，`cargo test --workspace --locked --no-fail-fast` 全绿（134/134） | 不适用 |
-| `MemArrangement` 本任务落地后**暂无消费者**——v0 的 `Aggregate` 用普通 `BTreeMap` 存 group 状态，不经过 `Arrangement`；`Arrangement` 真正的消费者是 join 的两侧（Phase 3）与 M1b 的 SQLite shadow table 实现，本任务范围内没有任何算子依赖这个 trait | 不适用——没有集成层面的调用点可供变异，任何"删掉一处 `Arrangement` 用法"式的变异都无处下手 | 无——`MemArrangement` 目前只被它自己的单元测试覆盖（`crates/ivmlite-core/src/arrangement.rs` 的 `mod tests`），没有任何集成测试引用它，因此上面 4 行"已验证"的变异守护范围仅限于 `MemArrangement` 自身，任何真正跨算子的集成层面变异现在都测不到它 | 不适用——见文末"Join 落地"清单第 4 条：Phase 3 join 落地、成为 `Arrangement` 第一个真实消费者时，必须把本任务上面登记为通过的那 4 条变异重新跑一遍，确认它们在有真实消费者之后仍然会红 |
+| §9.4 `scan()` 的输出不得依赖到达该状态所走的 update 历史——只检查"同一条代码路径重放两次自洽"和"key 有序"不够：两个用不同顺序（甚至含一段插入又撤回的弯路）到达完全相同最终状态的 `MemArrangement`，`scan()` 必须给出逐元素相同的输出，否则 delta 流不可能只凭最终状态和 seed 精确重放（复审 Finding 1 发现，`scan_order_is_deterministic` 测不出这一层） | 内层值容器从 `BTreeMap<Row, i64>` 换成插入序的 `Vec<(Row, i64)>`（线性查找/删除，外部行为不变） | `scan_order_is_independent_of_update_history`——`scan_order_is_deterministic` 对这个变异**仍然是绿的**：它只把同一条代码路径重放两次，两次的插入顺序完全相同，"自洽"这条断言天然测不出"输出依赖历史"这件事；升序插入 `[10,20,30]` 得到 `scan()` 顺序 `10,20,30`，降序插入（且中途插入又撤回一个无关值 5）得到 `30,20,10`，两者末状态完全相同但 `scan()` 输出不同 | **已验证** |
+| `update` 里 `if weight_delta == 0 { return; }` 短路——纯属性能优化，没有可观察语义：`or_insert(0)` 之后再加 0、判零删除的逻辑与直接 `return` 在所有可观察行为上等价 | 删掉这一行 | 无——**已知不被守护**：删除后仍能编译，`cargo test --workspace --locked --no-fail-fast` 全绿（129/129） | 不适用 |
+| `MemArrangement` 本任务落地后**暂无消费者**——v0 的 `Aggregate` 用普通 `BTreeMap` 存 group 状态，不经过 `Arrangement`；`Arrangement` 真正的消费者是 join 的两侧（Phase 3）与 M1b 的 SQLite shadow table 实现，本任务范围内没有任何算子依赖这个 trait | 不适用——没有集成层面的调用点可供变异，任何"删掉一处 `Arrangement` 用法"式的变异都无处下手 | 无——`MemArrangement` 目前只被它自己的单元测试覆盖（`crates/ivmlite-core/src/arrangement.rs` 的 `mod tests`），没有任何集成测试引用它，因此上面 5 行"已验证"的变异守护范围仅限于 `MemArrangement` 自身，任何真正跨算子的集成层面变异现在都测不到它。这 5 行本身也不是同一类：4 行（`get` 多值、归零删除、`scan` 顺序确定的两条）测的是 `Arrangement` 公开 trait 契约本身，只靠 `get`/`scan` 观察，原则上可以对任何实现重跑；1 行（空 key 是否留在 `inner` 里的白盒断言）直接查了 `MemArrangement` 的私有字段，绑死在这一个实现上，不可能通过 `dyn Arrangement` 或任何别的实现验证 | 不适用——见文末"Join 落地"清单第 4 条：Phase 3 join 落地、成为 `Arrangement` 第一个真实消费者时必须重新处理，但两类分开处理，不能一起打勾 |
 
 ## ivmlite-test：生成器
 
@@ -116,7 +117,7 @@ M0 结束时的最终全分支评审用**变异测试**——把实现改坏、�
 
 ## 统计与欠账
 
-表内共 **68** 行：已验证 **60** 条、未验证 **0** 条、不适用 **8** 条
+表内共 **69** 行：已验证 **61** 条、未验证 **0** 条、不适用 **8** 条
 （`Value` 无 Real/Blob 由类型系统而非测试守护，加变体会编译失败）。
 
 这三个数字由 `scripts/count-mutation-gates.py` 从本文件数出来，不是手写的——
@@ -181,12 +182,33 @@ Task 2 落地 `Arrangement`/`MemArrangement` 时根本没有消费者，集成�
 3. `§9.1` 表格里 `batch_invariance_holds_for_naive_engine_on_a_two_table_case`
    ——这条测试目前只证明多表用例能跑通 `check_batch_invariance` 而不出错，
    不证明非 anchor 表的 delta 真的参与了比对（I4，最终评审新增）。
-4. `ivmlite-core` 表格里 `MemArrangement` 的那一行（M1a Phase 2 Task 2 新增）
+4. `ivmlite-core` 表格里 `MemArrangement` 的那一行（M1a Phase 2 Task 2 新增，
+   复审 Finding 5 之后拆成 4a/4b——两类不能混在一起处理）
    ——join 是 `Arrangement` 在这份计划里的第一个真实消费者：v0 的 `Aggregate`
-   用普通 `BTreeMap` 存 group 状态，从不经过 `Arrangement`，所以 Task 2 那
-   4 条"已验证"的变异（`get` 多值、归零删除、空 key 消失、`scan` 顺序确定）
-   目前只被 `MemArrangement` 自己的单元测试守着，没有任何集成路径能验证
-   join 算子真的按 `Arrangement` 的契约在用它。
+   用普通 `BTreeMap` 存 group 状态，从不经过 `Arrangement`，所以 Task 2 登记
+   的 5 条"已验证"变异目前只被 `MemArrangement` 自己的单元测试守着，没有
+   任何集成路径能验证 join 算子真的按 `Arrangement` 的契约在用它。
+
+   - **4a（公开 trait 契约，可移植、可重新验证）**：`get` 只靠迭代 key 的多个
+     值（`one_key_can_hold_multiple_values`）、归零删除（`weights_accumulate_
+     and_zero_removes_the_entry` / `a_key_with_no_values_left_disappears_
+     from_scan` 的 `scan()` 断言部分）、`scan()` 顺序确定（`scan_order_is_
+     deterministic`）、`scan()` 输出不依赖 update 历史（`scan_order_is_
+     independent_of_update_history`）——这 4 条只通过 `Arrangement` 的公开
+     方法（`get`/`update`/`scan`）观察，原则上可以对**任何** `Arrangement`
+     实现重跑，包括 join 里真正用到的那个实现。join 落地时必须把这 4 条
+     变异原样重跑一遍，确认它们在有真实消费者之后仍然会红。
+   - **4b（`MemArrangement` 私有实现细节，不可移植、不可重新验证）**：只删
+     `if vals.is_empty() { self.inner.remove(key); }` 一行那条变异，`会红的
+     测试` 那一列已经记录得很清楚——它靠的是直接查 `MemArrangement` 私有
+     字段 `inner` 的白盒断言（`a.inner.contains_key(...)`），而不是任何公开
+     方法的输出。这条断言天生绑死在 `MemArrangement` 这一个类型上，join
+     落地后无论怎么跑，都不可能通过 `dyn Arrangement` 或任何别的实现重新
+     验证——不是"暂时没测到"，是这条测试的写法本身就只能测这一个实现。
+     M1b 的 SQLite shadow table 实现不继承这条守护：它必须自己判断"清空
+     后是否会留下僵尸状态"这件事在 `DELETE`-based 实现里是否存在（很可能
+     不存在——SQL `DELETE` 没有"空壳容器"这个概念），如果存在就自己写一条
+     等价的测试，不能因为 `MemArrangement` 这边"已验证"过就默认它也没事。
 
 **第二条比第一条更要命**，这也是它被单独列出来的原因：`bases` 不是某个
 待测引擎的内部状态，它是直接喂给 `recompute_via_sqlite` 的 oracle 输入。
@@ -198,10 +220,16 @@ Task 2 落地 `Arrangement`/`MemArrangement` 时根本没有消费者，集成�
 `got == want` 会照样成立，`run` 会照样返回 `Ok`，而这正是全套测试里唯一
 一个"oracle 自己说谎"却没有任何机制能拆穿的位置。
 
-**到那时必须把四条都重新跑一遍变异**，逐条确认它们这次真的会让测试变红，
-变红后再把对应行的"不适用"改成"已验证"。第二条尤其不能省——它检查的
-不是某个待测组件是否正确，而是评判组件本身是否还站得住。第四条同样不能
-用"trait 本身的单元测试已经绿过"来顶替——单元测试证明的是 `MemArrangement`
-自己实现对不对，证明不了 join 算子有没有正确地依赖这个 trait（比如误把
-状态存进自己的局部变量、绕开 `Arrangement` 接口）。这个收尾清单写在这份
-文档里，不靠任何人记住。
+**到那时必须把第 1、2、3 条与第 4a 条都重新跑一遍变异**，逐条确认它们这次
+真的会让测试变红，变红后再把对应行的"不适用"改成"已验证"。第二条尤其不
+能省——它检查的不是某个待测组件是否正确，而是评判组件本身是否还站得住。
+第 4a 条同样不能用"trait 本身的单元测试已经绿过"来顶替——单元测试证明的
+是 `MemArrangement` 自己实现对不对，证明不了 join 算子有没有正确地依赖这
+个 trait（比如误把状态存进自己的局部变量、绕开 `Arrangement` 接口）。
+
+**第 4b 条不进入这次重新验证**，原因见上面 4b 自己的说明：它测的是
+`MemArrangement` 的私有字段，重新跑变异也不会因为 join 用上了 `Arrangement`
+就变得可验证——这条本身就不该、也不能被"重新验证"这个动作覆盖到。它的
+"不适用"会一直是"不适用"，直到 M1b 决定 SQLite shadow table 实现是否需要
+一条自己的等价测试；如果需要，那是 M1b 自己任务里的新一行，不是把这一行
+的状态改掉。这个收尾清单写在这份文档里，不靠任何人记住。
