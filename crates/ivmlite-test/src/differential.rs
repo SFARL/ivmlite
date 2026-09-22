@@ -29,6 +29,13 @@ pub struct TestCase {
     pub batching: Batching,
 }
 
+impl TestCase {
+    /// 本用例的分批结果，与 `run` 内部走的是同一条代码路径。
+    pub fn batches(&self) -> Vec<BTreeMap<String, Vec<(Row, i64)>>> {
+        batches(&self.ops, self.batching)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Failure {
     pub case_seed: u64,
@@ -77,12 +84,26 @@ pub fn gen_case(
     op_count: usize,
     batching: Batching,
 ) -> TestCase {
-    let mut rng = StdRng::seed_from_u64(seed);
-    let initial = gen_initial(&mut rng, db, domain, rows_per_table);
-    let ops = gen_ops(&mut rng, db, domain, &initial, op_count);
     let anchor = db.tables().first().expect("database 不应为空");
     let queries = enumerate(anchor);
     let query = queries[seed as usize % queries.len()].clone();
+    gen_case_with_query(seed, db, domain, query, rows_per_table, op_count, batching)
+}
+
+/// 与 `gen_case` 同一条代码路径，但由调用方指定 `query` 而不是从
+/// `enumerate` 里按 seed 挑一个——要按枚举**逐个**覆盖查询空间就需要这个入口。
+pub fn gen_case_with_query(
+    seed: u64,
+    db: &Database,
+    domain: &Domain,
+    query: ViewQuery,
+    rows_per_table: usize,
+    op_count: usize,
+    batching: Batching,
+) -> TestCase {
+    let mut rng = StdRng::seed_from_u64(seed);
+    let initial = gen_initial(&mut rng, db, domain, rows_per_table);
+    let ops = gen_ops(&mut rng, db, domain, &initial, op_count);
     TestCase {
         seed,
         database: db.clone(),
@@ -183,7 +204,7 @@ pub fn run<E: Engine>(engine: &mut E, case: &TestCase) -> Result<(), Failure> {
     // bootstrap 之后立刻比对一次——空 ops 的用例也因此被真正检查到。
     compare(engine, &bases, "bootstrap")?;
 
-    for (i, grouped) in batches(&case.ops, case.batching).into_iter().enumerate() {
+    for (i, grouped) in case.batches().into_iter().enumerate() {
         for (table, raw) in &grouped {
             engine
                 .apply(table, raw)

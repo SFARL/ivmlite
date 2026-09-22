@@ -1,8 +1,9 @@
-use ivmlite_core::{Database, Row, ZSet};
+use ivmlite_core::{Database, IncrementalEngine, Row, ZSet};
 use ivmlite_test::{
-    check_batch_invariance, gen_case, gen_database, is_legal, load_regressions,
-    recompute_via_sqlite, run, save_regression, seed_range, shrink, Batching, Column, ColumnType,
-    Domain, Engine, NaiveRecompute, NoRetractionEngine, Schema, TransientDriftEngine,
+    check_batch_invariance, enumerate, gen_case, gen_case_with_query, gen_database, is_legal,
+    load_regressions, recompute_via_sqlite, run, save_regression, seed_range, shrink, Agg, AggFn,
+    Batching, Column, ColumnType, Domain, Engine, NaiveRecompute, NoRetractionEngine, Predicate,
+    Schema, TransientDriftEngine, ViewQuery,
 };
 use std::collections::BTreeMap;
 
@@ -417,5 +418,112 @@ fn shrink_reduces_initial_rows_in_every_table_of_a_multi_table_case() {
         "两张表加总的初始行数应当收敛到个位数——查询只读 anchor 表 t0，\
          非 anchor 的 t1 对 oracle 比对完全不可观察，正确的 shrink 应当把它\
          整个缩到 0 行；实得 {rows_by_table:?}"
+    );
+}
+
+/// M1a 检查点（spec §11）：差分框架第一次在真实增量引擎上跑绿。
+///
+/// 这条测试与 `naive_engine_is_green_across_many_seeds` 的结构相同，
+/// 但被测对象换成了 `IncrementalEngine`——它是增量的，而参照实现是全量
+/// 重算，两者在每个 refresh 点都要与 oracle 一致。
+#[test]
+fn incremental_engine_is_green_across_the_enumerated_space() {
+    let db = gen_database(2);
+    let domain = Domain::default();
+    let queries = enumerate(&db.tables()[0]);
+    let mut checked = 0usize;
+    for seed in seed_range() {
+        let query = &queries[seed as usize % queries.len()];
+        let case = gen_case_with_query(
+            seed,
+            &db,
+            &domain,
+            query.clone(),
+            20,
+            60,
+            Batching::Chunks(4),
+        );
+        let mut engine = IncrementalEngine::new();
+        if let Err(f) = run(&mut engine, &case) {
+            panic!("增量引擎在 seed={seed} 上与 oracle 不一致：{f}");
+        }
+        checked += 1;
+    }
+    assert!(checked >= 50, "至少要跑过 50 个 seed，实跑 {checked}");
+}
+
+/// 增量引擎必须与全量重算在**每个 refresh 点**都一致，而不只是最终状态。
+/// TransientDriftEngine 的存在就是为了证明这两者不是一回事（spec §9.1）。
+#[test]
+fn incremental_engine_matches_naive_recompute_at_every_refresh_point() {
+    let db = gen_database(2);
+    let case = gen_case(11, &db, &Domain::default(), 25, 120, Batching::Chunks(5));
+
+    let mut inc = IncrementalEngine::new();
+    let mut naive = NaiveRecompute::new();
+    let bases: BTreeMap<String, ZSet> = case
+        .initial
+        .iter()
+        .map(|(t, rows)| {
+            (
+                t.clone(),
+                ZSet::from_rows(rows.iter().map(|r| (r.clone(), 1))),
+            )
+        })
+        .collect();
+    inc.create_view(&case.database, &case.query, &bases)
+        .unwrap();
+    naive
+        .create_view(&case.database, &case.query, &bases)
+        .unwrap();
+    // `IncrementalEngine::materialize` 的固有方法返回裸 `ZSet`（签名见
+    // engine.rs），会遮蔽同名的 `Engine::materialize`（返回
+    // `Result<ZSet, EngineError>`）——固有方法总是优先于 trait 方法。这里
+    // 要的是能 `.unwrap()` 的那个，所以用 UFCS 显式点名 trait 方法。
+    assert_eq!(
+        Engine::materialize(&mut inc).unwrap(),
+        naive.materialize().unwrap(),
+        "bootstrap 即不一致"
+    );
+
+    for batch in case.batches() {
+        for (table, raw) in &batch {
+            inc.apply(table, raw).unwrap();
+            naive.apply(table, raw).unwrap();
+        }
+        inc.refresh().unwrap();
+        naive.refresh().unwrap();
+        assert_eq!(
+            Engine::materialize(&mut inc).unwrap(),
+            naive.materialize().unwrap(),
+            "增量与全量重算在某个 refresh 点分叉"
+        );
+    }
+}
+
+/// spec §5.2 的边界校验必须在 create_view 处生效，而不是等到 refresh 时 panic。
+#[test]
+fn create_view_rejects_a_global_aggregate() {
+    let db = gen_database(1);
+    let bad = ViewQuery {
+        group_by: vec![],
+        aggs: vec![Agg {
+            func: AggFn::Count,
+            column: None,
+        }],
+        predicate: Predicate::None,
+    };
+    let mut engine = IncrementalEngine::new();
+    let err = engine
+        .create_view(
+            &db,
+            &bad,
+            &BTreeMap::from([(db.tables()[0].table.clone(), ZSet::new())]),
+        )
+        .expect_err("空 group_by 必须在 create_view 处被拒绝");
+    assert!(
+        err.0.contains("GROUP BY") || err.0.contains("group_by"),
+        "错误应指名 group_by：{}",
+        err.0
     );
 }
