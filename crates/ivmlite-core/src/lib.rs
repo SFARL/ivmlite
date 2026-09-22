@@ -1,5 +1,6 @@
 mod arrangement;
 mod database;
+mod node;
 mod plan;
 mod query;
 mod row;
@@ -9,6 +10,7 @@ mod zset;
 
 pub use arrangement::{Arrangement, MemArrangement};
 pub use database::Database;
+pub use node::{Node, NodeError};
 pub use plan::{lower, Plan, PlanError};
 pub use query::{Agg, AggFn, Predicate, ViewQuery};
 pub use row::Row;
