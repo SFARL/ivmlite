@@ -34,6 +34,12 @@ M0 结束时的最终全分支评审用**变异测试**——把实现改坏、�
 | `Scan` 必须取基表全部列——`lowers_to_scan_filter_project_aggregate` 对 `Scan.columns` 有一条直接的结构断言（`assert_eq!(columns, &vec![0, 1], …)`），这条断言真的守着 `Scan` 的列表本身 | 把 `Scan` 的 `columns` 改成 `keep.clone()`（即在 `Scan` 处就收窄） | `lowers_to_scan_filter_project_aggregate`——它会变红，但原因**只是**上面那条对 `Scan.columns` 的直接结构断言；同一测试里更早的 `assert_eq!(predicate, &Predicate::IntGt { column: 1, value: 3 })` 在这个变异下**仍然通过**，因为 `Filter` 把 `query.predicate.clone()` 逐字存进节点，从不针对其 `input` 的列表重新索引或校验。**「`Filter` 必须按基表原始下标求值，而这只有在 `Scan` 吐出全部列时才成立」这条语义要求，今天没有任何测试覆盖，也覆盖不了**——`Plan` 目前没有任何消费者（求值器），所以列下标语义是否用对根本不可观察。这条语义要求要到 Task 3 算子求值器落地后才第一次可证伪，届时必须在那次任务的门禁表里单独开一行、并真的跑一次变异验证；不能靠这一行顶替 | **已验证**（仅验证 `Scan.columns` 的结构断言；`Filter` 语义留给 Task 3） |
 | `Predicate::None` 不应产生一个恒真的 `Filter` 节点——多一个节点就多一处每批都要走的无谓遍历，也会让「`Filter` 被正确跳过」这件事不可观察 | `Predicate::None` 时也插入 `Filter` 节点 | `no_filter_node_when_predicate_is_none` | **已验证** |
 | `keep` 的去重必须以「这一列是否已经在 `keep` 里」为准，而不是「这一列是否等于某个 `group_by` 列」——两者只在被去重的列本身就是某个 group_by 列时才等价；`group_by=[0], aggs=[Sum(1), Sum(1)]` 时两个 agg 共用的列 1 根本不在 `group_by` 里，后一种判据永远为真，`Project.columns` 会变成 `[0, 1, 1]`——3 宽投影喂给一张 2 列的表（最终评审 Task 1 复审发现：`lower` 自己的文档注释拿"`ViewQuery` 可以自由构造"作为边界校验必须在此处的理由，而这正是那类构造） | agg 循环里的去重判据从 `!keep.contains(&c)` 改成 `!query.group_by.contains(&c)` | `two_aggs_sharing_a_non_group_by_column_are_projected_once` | **已验证** |
+| §6.3 `Arrangement::get` 必须返回迭代器（key → 多值），不是 `Option`——v0 的 group-by 每个 key 只存一个值用不上，但 join 的每一侧都是 key → 多行，这个形状现在就必须成立 | `get` 里 `vals.iter()` 后加 `.take(1)`，只返回一个值 | `one_key_can_hold_multiple_values`（`crates/ivmlite-core/src/arrangement.rs`） | **已验证** |
+| §5.1 权重归零的 (key,val) 必须删除，不留僵尸条目 | 删掉 `MemArrangement::update` 里 `if *w == 0 { vals.remove(val); if vals.is_empty() { self.inner.remove(key); } }` 整段 | `weights_accumulate_and_zero_removes_the_entry`（同一变异也会让 `a_key_with_no_values_left_disappears_from_scan` 一起红，因为两条不变量共用这段代码） | **已验证** |
+| 值集合空掉后，key 本身也必须从 `inner` 里删除，否则 `inner` 的条目数会随历史（用过又清空的 key）而非当前状态增长 | 只删 `update` 里 `if vals.is_empty() { self.inner.remove(key); }` 这一行，保留 `vals.remove(val)` | `a_key_with_no_values_left_disappears_from_scan`——**注：brief 给的原始测试只断言 `scan()` 的输出，这个变异下该断言其实仍然是绿的**：`scan()` 用 `flat_map` 遍历 `inner`，一个空的内层 `BTreeMap` 天然贡献零条记录，不管外层 key 是否还留在 `inner` 里，所以这条不变量本来就不可能只靠 `Arrangement` 的三个公开方法观察到。已经在这个测试末尾加了一段白盒断言（直接查 `a.inner.contains_key(...)`），把它补成真正能红的守护 | **已验证**（加白盒断言后） |
+| §9.4 `scan()` 的迭代顺序必须确定（失败用例要能凭 seed 精确重放） | 外层 `BTreeMap<Row, BTreeMap<Row, i64>>` 换成 `HashMap<Row, BTreeMap<Row, i64>>` | `scan_order_is_deterministic` | **已验证（统计性，非绝对）**——`HashMap` 的 `RandomState` 逐次构造重新播种，3 个 key 理论上约有 1/3! ≈ 16.7% 概率巧合排出正确顺序，不能保证每次都红。连续跑了 15 次独立进程（`cargo test -p ivmlite-core --locked arrangement::tests::scan_order_is_deterministic`），**15/15 全部变红**（含测试内 `assert_eq!(build(), build())` 这条同进程内两次调用互相比较的断言也失败，说明种子并非只按进程变化，逐次 `HashMap::new()` 都不同）。这是统计性守护，不是绝对保证——参照 `crates/ivmlite-core/src/database.rs` 的 `table_order_is_preserved` 一节的措辞 |
+| `update` 里 `if weight_delta == 0 { return; }` 短路——纯属性能优化，没有可观察语义：`or_insert(0)` 之后再加 0、判零删除的逻辑与直接 `return` 在所有可观察行为上等价 | 删掉这一行 | 无——**已知不被守护**：删除后仍能编译，`cargo test --workspace --locked --no-fail-fast` 全绿（134/134） | 不适用 |
+| `MemArrangement` 本任务落地后**暂无消费者**——v0 的 `Aggregate` 用普通 `BTreeMap` 存 group 状态，不经过 `Arrangement`；`Arrangement` 真正的消费者是 join 的两侧（Phase 3）与 M1b 的 SQLite shadow table 实现，本任务范围内没有任何算子依赖这个 trait | 不适用——没有集成层面的调用点可供变异，任何"删掉一处 `Arrangement` 用法"式的变异都无处下手 | 无——`MemArrangement` 目前只被它自己的单元测试覆盖（`crates/ivmlite-core/src/arrangement.rs` 的 `mod tests`），没有任何集成测试引用它，因此上面 4 行"已验证"的变异守护范围仅限于 `MemArrangement` 自身，任何真正跨算子的集成层面变异现在都测不到它 | 不适用——见文末"Join 落地"清单第 4 条：Phase 3 join 落地、成为 `Arrangement` 第一个真实消费者时，必须把本任务上面登记为通过的那 4 条变异重新跑一遍，确认它们在有真实消费者之后仍然会红 |
 
 ## ivmlite-test：生成器
 
@@ -110,7 +116,7 @@ M0 结束时的最终全分支评审用**变异测试**——把实现改坏、�
 
 ## 统计与欠账
 
-表内共 **62** 行：已验证 **56** 条、未验证 **0** 条、不适用 **6** 条
+表内共 **68** 行：已验证 **60** 条、未验证 **0** 条、不适用 **8** 条
 （`Value` 无 Real/Blob 由类型系统而非测试守护，加变体会编译失败）。
 
 这三个数字由 `scripts/count-mutation-gates.py` 从本文件数出来，不是手写的——
@@ -163,9 +169,11 @@ M1 新增的每一条 spec 强制行为——delta consolidation、bootstrap 水
 
 计划里每写一条"必须满足 X"，就要同时写出"若 X 被删会红的那个测试"，并在这张表里占一行。
 
-**Join 落地（引擎计划 Phase 3）时必须重新处理的三条**，标记都是"不适用"
-而不是"已验证"，原因相同：Phase 1 的 oracle 只渲染 anchor 表的单表 SQL，
-非 anchor 表的状态天生不可观察。
+**Join 落地（引擎计划 Phase 3）时必须重新处理的四条**，标记都是"不适用"
+而不是"已验证"，但原因分两类：前三条是 Phase 1 的 oracle 只渲染 anchor
+表的单表 SQL，非 anchor 表的状态天生不可观察；第四条是 M1a Phase 2
+Task 2 落地 `Arrangement`/`MemArrangement` 时根本没有消费者，集成层面无
+处下手做变异。
 
 1. `§8.5` 表格里"让 `NaiveRecompute::apply` 静默丢弃非 anchor 表"——引擎侧。
 2. `§8.2` 表格里"让 `run` 自己的 `bases` bookkeeping 跳过非 anchor 表"——
@@ -173,6 +181,12 @@ M1 新增的每一条 spec 强制行为——delta consolidation、bootstrap 水
 3. `§9.1` 表格里 `batch_invariance_holds_for_naive_engine_on_a_two_table_case`
    ——这条测试目前只证明多表用例能跑通 `check_batch_invariance` 而不出错，
    不证明非 anchor 表的 delta 真的参与了比对（I4，最终评审新增）。
+4. `ivmlite-core` 表格里 `MemArrangement` 的那一行（M1a Phase 2 Task 2 新增）
+   ——join 是 `Arrangement` 在这份计划里的第一个真实消费者：v0 的 `Aggregate`
+   用普通 `BTreeMap` 存 group 状态，从不经过 `Arrangement`，所以 Task 2 那
+   4 条"已验证"的变异（`get` 多值、归零删除、空 key 消失、`scan` 顺序确定）
+   目前只被 `MemArrangement` 自己的单元测试守着，没有任何集成路径能验证
+   join 算子真的按 `Arrangement` 的契约在用它。
 
 **第二条比第一条更要命**，这也是它被单独列出来的原因：`bases` 不是某个
 待测引擎的内部状态，它是直接喂给 `recompute_via_sqlite` 的 oracle 输入。
@@ -184,7 +198,10 @@ M1 新增的每一条 spec 强制行为——delta consolidation、bootstrap 水
 `got == want` 会照样成立，`run` 会照样返回 `Ok`，而这正是全套测试里唯一
 一个"oracle 自己说谎"却没有任何机制能拆穿的位置。
 
-**到那时必须把三条都重新跑一遍变异**，逐条确认它们这次真的会让测试变红，
+**到那时必须把四条都重新跑一遍变异**，逐条确认它们这次真的会让测试变红，
 变红后再把对应行的"不适用"改成"已验证"。第二条尤其不能省——它检查的
-不是某个待测组件是否正确，而是评判组件本身是否还站得住。这个收尾清单
-写在这份文档里，不靠任何人记住。
+不是某个待测组件是否正确，而是评判组件本身是否还站得住。第四条同样不能
+用"trait 本身的单元测试已经绿过"来顶替——单元测试证明的是 `MemArrangement`
+自己实现对不对，证明不了 join 算子有没有正确地依赖这个 trait（比如误把
+状态存进自己的局部变量、绕开 `Arrangement` 接口）。这个收尾清单写在这份
+文档里，不靠任何人记住。
