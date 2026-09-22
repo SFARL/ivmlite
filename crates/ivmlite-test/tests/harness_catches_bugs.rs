@@ -53,14 +53,52 @@ fn naive_engine_satisfies_batch_invariance() {
     }
 }
 
-/// 固化下来的历史失败用例必须始终通过。M0 里参照实现平凡正确，因此这个测试
-/// 的作用是把机制建起来；它真正开始拦 bug 是在 M1 接入真实引擎之后。
+/// 最终评审 Finding K：`check_batch_invariance` 内部覆盖 `Batching::All` /
+/// `One` / `Chunks(3)` / `Chunks(17)` 四种模式，但在这条测试补上之前，
+/// `IncrementalEngine` 从未被这样跑过——两条既有的集成测试
+/// （`incremental_engine_is_green_across_the_enumerated_space`、
+/// `incremental_engine_matches_naive_recompute_at_every_refresh_point`）
+/// 都只用 `Batching::Chunks`，真正的增量引擎因此从未在 `All`（一次性摄入
+/// 整批）或 `One`（逐条摄入）下跑过差分比对。
+#[test]
+fn incremental_engine_satisfies_batch_invariance() {
+    let db = gen_database(2);
+    let domain = Domain::default();
+    for seed in seed_range().into_iter().take(10) {
+        let case = gen_case(seed, &db, &domain, 25, 120, Batching::All);
+        check_batch_invariance(&case, IncrementalEngine::new)
+            .unwrap_or_else(|f| panic!("增量引擎不应违反批次无关性: {f}"));
+    }
+}
+
+/// 固化下来的历史失败用例必须始终通过。M0 里参照实现平凡正确，这条测试当时
+/// 的作用只是把机制建起来；`feat/m1a-phase2-engine`（本分支）正是注释里说的
+/// "M1 接入真实引擎"那次落地——下面的 `saved_regressions_still_pass_against_
+/// incremental_engine` 把这句话兑现成真的回归重放，而不再是一句尚未成立的
+/// 承诺（最终评审 Finding J）。这条测试本身仍然只跑 `NaiveRecompute`：它证明
+/// 的是"参照实现在回归用例上仍然平凡正确"，与下面那条证明的是两件不同的事。
 #[test]
 fn saved_regressions_still_pass() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/regressions");
     for case in load_regressions(&dir).expect("读取回归用例目录失败") {
         let mut engine = NaiveRecompute::new();
         run(&mut engine, &case).unwrap_or_else(|f| panic!("回归用例失败: {f}"));
+    }
+}
+
+/// 最终评审 Finding J：本分支是上面那条注释所说的"M1 接入真实引擎"，但直到
+/// 这条测试补上之前，回归重放从未真的跑过 `IncrementalEngine`——只跑过
+/// `NaiveRecompute`（trivially correct 的参照实现）和 `NoRetractionEngine`
+/// （故意植入 bug 的反例引擎）。这里让已固化的回归用例集合也在真实引擎上
+/// 重放一遍，证明它们不仅"形式合法"，在真正会被拿去维护视图的引擎上也仍然
+/// 正确。
+#[test]
+fn saved_regressions_still_pass_against_incremental_engine() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/regressions");
+    for case in load_regressions(&dir).expect("读取回归用例目录失败") {
+        let mut engine = IncrementalEngine::new();
+        run(&mut engine, &case)
+            .unwrap_or_else(|f| panic!("回归用例在 IncrementalEngine 上失败: {f}"));
     }
 }
 
@@ -431,9 +469,17 @@ fn incremental_engine_is_green_across_the_enumerated_space() {
     let db = gen_database(2);
     let domain = Domain::default();
     let queries = enumerate(&db.tables()[0]);
+    // 最终评审 Finding D：这个测试的名字承诺"覆盖枚举出来的整个查询空间"，
+    // 但此前的断言（`checked >= 50`）数的是**跑过的 seed 数**，不是**覆盖到
+    // 的查询数**——两者只是因为 `seed_range()` 默认给 50 个、`queries.len()`
+    // 目前是 36（50 > 36）才碰巧重合。改数 `exercised` 这个索引集合，让
+    // 断言真正验证名字里说的那件事：即使将来 `enumerate` 的产出长过 50，
+    // 这里也不会静默失去覆盖率保证。
+    let mut exercised: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
     let mut checked = 0usize;
     for seed in seed_range() {
-        let query = &queries[seed as usize % queries.len()];
+        let idx = seed as usize % queries.len();
+        let query = &queries[idx];
         let case = gen_case_with_query(
             seed,
             &db,
@@ -447,9 +493,26 @@ fn incremental_engine_is_green_across_the_enumerated_space() {
         if let Err(f) = run(&mut engine, &case) {
             panic!("增量引擎在 seed={seed} 上与 oracle 不一致：{f}");
         }
+        exercised.insert(idx);
         checked += 1;
     }
-    assert!(checked >= 50, "至少要跑过 50 个 seed，实跑 {checked}");
+    assert!(checked >= 1, "至少要跑过 1 个 seed，实跑 {checked}");
+
+    // `IVMLITE_SEED` 单 seed 重放模式下只跑一个 query，"覆盖整个枚举空间"
+    // 这条要求在这个模式下根本不适用——`Failure::Display` 打印的重放命令
+    // 正是 `IVMLITE_SEED=<seed> cargo test ...`，若这条断言在单 seed 下依然
+    // 要求覆盖全部 36 条查询，跟着 Failure 提示重放会先撞上一个与原始 bug
+    // 无关的红（最终评审 Finding D）。
+    if std::env::var("IVMLITE_SEED").is_err() {
+        assert_eq!(
+            exercised.len(),
+            queries.len(),
+            "必须覆盖 enumerate 产出的全部 {} 条查询，实际只覆盖了 {} 条：{:?}",
+            queries.len(),
+            exercised.len(),
+            exercised
+        );
+    }
 }
 
 /// 增量引擎必须与全量重算在**每个 refresh 点**都一致，而不只是最终状态。
