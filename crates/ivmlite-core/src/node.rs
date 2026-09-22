@@ -104,8 +104,20 @@ fn passes(predicate: &Predicate, row: &Row) -> bool {
         Predicate::None => true,
         Predicate::IntGt { column, value } => match row.get(*column) {
             Value::Int(i) => i > value,
-            // NULL > 3 是 UNKNOWN；Text > Int 在 v0 的枚举里不会出现
-            // （enumerate_only_sums_integer_columns 之外，IntGt 只对 Integer 列生成）。
+            // NULL > 3 是 UNKNOWN，`false` 是对的。
+            //
+            // Text > Int 的 `false` 则不是同一类保证：它在 v0 里从未被观察到，
+            // 是因为 `crates/ivmlite-test/src/query.rs` 的 `enumerate` 只对
+            // `int_cols` 里的列生成 `IntGt`（第 41-47 行），Text 列永远不会
+            // 走到这个分支——不是因为 `false` 这个答案本身是对的。
+            //
+            // 它甚至是错的：SQLite 的类型排序是 NULL < INTEGER/REAL < TEXT
+            // < BLOB，`'abc' > 3` 在 SQLite 里的真实答案是 `1`（true），不是
+            // `0`。这里返回 `false` 与 oracle 相反，只是因为 v0 从不生成会
+            // 触发这条分支的查询，所以从未被任何测试或差分比对拆穿——
+            // `NaiveRecompute::passes`（`crates/ivmlite-test/src/naive.rs`
+            // 第 37-40 行）有一模一样的折叠，差分层结构性地测不出来。
+            // 见 docs/mutation-gates.md 对应「不适用」行。
             _ => false,
         },
         Predicate::IsNotNull { column } => !matches!(row.get(*column), Value::Null),
@@ -299,21 +311,28 @@ mod tests {
         // `Plan` 在 Task 1 落地时还没有任何消费者，这条语义要求当时不可
         // 证伪。`Node` 是第一个消费者，这里补上——这个测试就是那笔债。
         //
-        // 用 lower() 建出真实的树：group_by=[0]（只保留列 0），谓词读列 1
-        // （IntGt{column:1,...}）——谓词列与投影列不同，用错下标（收窄后
-        // 只剩列 0）要么会把列 0 的值错当成谓词输入，要么直接越界 panic。
+        // 第一版用 group_by=[0]、predicate 读列 1，Project 把行收窄到只剩
+        // 1 列，于是"用错下标"必然越界 panic——这实际钉住的是"下标别越界"，
+        // 不是 spec 要求的"谓词必须按基表下标求值"；一次把 `Row::get` 换成
+        // `i.min(len - 1)` 式钳制的未来重构会让它悄悄变绿，而语义仍然是错的
+        // （复审 Finding 1 指出）。
+        //
+        // 现在改用 arity=3、group_by=[2]、aggs=[Sum(1)]、predicate 读列 0：
+        // keep=[2, 1]，narrowed 行仍然是 2 列宽，基表下标 0 与收窄后下标 0
+        // 指向两个都存在、但不同的列——用错下标不会 panic，只会算出一个
+        // 错误但合法形状的答案。
         let query = ViewQuery {
-            group_by: vec![0],
+            group_by: vec![2],
             aggs: vec![Agg {
-                func: AggFn::Count,
-                column: None,
+                func: AggFn::Sum,
+                column: Some(1),
             }],
             predicate: Predicate::IntGt {
-                column: 1,
+                column: 0,
                 value: 3,
             },
         };
-        let plan = lower(&query, "t", 2).expect("合法查询必须能降下来");
+        let plan = lower(&query, "t", 3).expect("合法查询必须能降下来");
         let Plan::Aggregate { input, .. } = plan else {
             panic!("lower 的根算子必须是 Aggregate");
         };
@@ -322,18 +341,19 @@ mod tests {
         // 而不是手写一棵形状相似的等价树。
         let mut n = Node::build(&input).unwrap();
 
-        // 列 0 = group key（会被保留），列 1 = 谓词看的列（会被收窄掉）。
+        // 列 0 = 谓词看的列（会被收窄掉），列 1 = SUM 的列，列 2 = group key。
         let d = ZSet::from_rows([
-            (row(vec![int(100), int(5)]), 1), // 列 1: 5 > 3 → 通过
-            (row(vec![int(200), int(1)]), 1), // 列 1: 1 > 3 → 不通过
+            (row(vec![int(100), int(5), int(1)]), 1), // 基表列 0: 100 > 3 → 通过
+            (row(vec![int(1), int(5), int(200)]), 1), // 基表列 0: 1，不 > 3 → 不通过
         ]);
         let got = n.delta("t", &d);
         assert_eq!(
             got,
-            ZSet::from_rows([(row(vec![int(100)]), 1)]),
-            "谓词必须按基表下标（列 1）求值；若按收窄后的下标求值，\
-             收窄后的行只剩 1 列，取列 1 要么越界 panic，要么错误地把\
-             列 0（group key）的值当成谓词输入"
+            ZSet::from_rows([(row(vec![int(1), int(5)]), 1)]),
+            "谓词必须按基表下标（列 0）求值；若按收窄后的下标求值（keep=[2, 1]，\
+             收窄后位置 0 实际是基表列 2），会把第二行误判为通过、第一行误判为\
+             不通过，得到 {{Row([200, 5]): 1}} 而不是 {{Row([1, 5]): 1}}——\
+             是一个错误答案，不是越界 panic"
         );
     }
 }
