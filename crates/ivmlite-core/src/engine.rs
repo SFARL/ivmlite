@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{lower, Database, Node, Row, ViewQuery, ZSet};
 
@@ -13,13 +13,66 @@ impl std::fmt::Display for EngineError {
 
 impl std::error::Error for EngineError {}
 
+/// 包住 `Node`，把「一次调用推进了多少行」变成算子树自己记的账，而不是
+/// 调用方在调用前另外算出来的数字。
+///
+/// 最终评审 Finding B：`refresh` 曾经这样写——`rows_processed` 由推进前的
+/// `delta.len()` 单独算出来，`tree.delta(table, delta)` 是紧挨着的下一行、
+/// 但在语法上与前者毫无关联。把 `refresh` 改成对 `delta` 里每一行各调一次
+/// `tree.delta`（而不是整批调一次）之后，两处都能各自独立编译通过、语义
+/// 也不变（因为 delta 已经在 `by_table` 那一步合并过），但「consolidation
+/// 让算子树少被推进几次」这件事——spec §8.2/§8.5 唯一在意的性能故事——
+/// 就从这个计数器身上彻底测不出来了。
+///
+/// `CountingTree` 把 `node` 字段设为私有：`IncrementalEngine` 里除了这个
+/// 类型自己的 `delta` 方法之外，没有第二条路径能摸到底下的 `Node`。于是
+/// `pushes`/`rows_fed` 不是「猜」出来的，是 `Node::delta` **真的被调用时**
+/// 自己记的——调用方无论把同一批 delta拆成多少次调用喂进来，这两个数字
+/// 都会如实反映。
+#[derive(Debug)]
+struct CountingTree {
+    node: Node,
+    /// 本次 `refresh` 里 `Node::delta`（顶层入口）被调用的次数。
+    /// consolidation 生效时，同一张表在一次 `refresh` 里应当恰好被推进
+    /// 一次，不管合并后剩几行。
+    pushes: usize,
+    /// 本次 `refresh` 里累计喂给 `Node::delta` 的行数——从调用本身的实参
+    /// 观察到，不是从推进前的 `ZSet` 独立算出来的。
+    rows_fed: usize,
+}
+
+impl CountingTree {
+    fn new(node: Node) -> Self {
+        Self {
+            node,
+            pushes: 0,
+            rows_fed: 0,
+        }
+    }
+
+    fn delta(&mut self, table: &str, input: &ZSet) -> ZSet {
+        self.pushes += 1;
+        self.rows_fed += input.len();
+        self.node.delta(table, input)
+    }
+
+    fn reset_counts(&mut self) {
+        self.pushes = 0;
+        self.rows_fed = 0;
+    }
+}
+
 /// v0 的增量引擎。
 ///
 /// `apply` 只堆 pending，`refresh` 才推进算子树——spec §8.5 要求两者分离，
 /// 且 §8.2 规定显式 refresh 是永久 API 而非 v0 的临时妥协。
 #[derive(Debug, Default)]
 pub struct IncrementalEngine {
-    tree: Option<Node>,
+    tree: Option<CountingTree>,
+    /// `create_view` 声明过的全部表名——`apply` 用它拒绝未声明的表
+    /// （最终评审 Finding L）。引擎本身不持有 `Database`，这是唯一的
+    /// 记录方式。
+    tables: BTreeSet<String>,
     /// 视图的当前物化结果。算子发出的 delta 并进这里。
     view: ZSet,
     /// 已摄入但未维护的原始 Δ，**未合并**（§8.5）。
@@ -31,7 +84,14 @@ pub struct IncrementalEngine {
     /// consolidation 不改变结果、只改变工作量，于是它无法由「输出对不对」
     /// 观察到——spec §8.5 把这种情形称作结构性不可见。这个计数器是它唯一的
     /// 可观测足迹，也是 §11 要求的「写放大有明确数字」的来源。
+    ///
+    /// 最终评审 Finding B 之后：这个数字来自 `CountingTree::rows_fed`，
+    /// 也就是 `Node::delta` 实际被调用时收到的行数总和，而不是 `refresh`
+    /// 在调用之前自己另算的 `delta.len()`。
     rows_processed: usize,
+    /// 上一次 `refresh` 里 `Node::delta`（顶层入口）被调用的次数——见
+    /// `CountingTree` 的文档注释。
+    tree_pushes: usize,
 }
 
 impl IncrementalEngine {
@@ -48,9 +108,13 @@ impl IncrementalEngine {
         let anchor = db
             .tables()
             .first()
+            // M1b 里表的顺序来自 `__ivm_dep`，不是查询的 FROM 子句——
+            // 这里选「第一张」只是 v0 的既有约定（最终评审 Finding I）：
+            // 单表用例下 anchor 与「查询所读的表」碰巧重合，但这不是
+            // `db.tables()` 的顺序保证，只是碰巧从没被更复杂的用例拆穿过。
             .ok_or_else(|| EngineError("Database 至少要有一张表".into()))?;
         let plan = lower(query, &anchor.table, anchor.arity()).map_err(|e| EngineError(e.0))?;
-        let mut tree = Node::build(&plan).map_err(|e| EngineError(e.0))?;
+        let mut tree = CountingTree::new(Node::build(&plan));
 
         // bootstrap：把每张表的初始状态当成第一批 delta 推进去。
         // 声明了表却没给初始状态是错误，不是空表——与 oracle 的
@@ -59,13 +123,24 @@ impl IncrementalEngine {
         // 直接钉住（M1a Phase 2 Task 5 复审 Finding 2；差分 harness 的
         // `gen_initial` 总是给每张表填数据，走不到这条路径，所以补一条
         // 不依赖 harness 用例分布的单元测试）。
-        self.view = ZSet::new();
+        //
+        // 最终评审 Finding A：bootstrap 循环建在局部变量 `view` 上，只有
+        // 整个循环都成功之后才把 `self.view`/`self.tree`/`self.tables`
+        // 一起提交。此前 `self.view = ZSet::new()` 在循环之前就直接写进
+        // `self` ——循环中途因为某张表缺初始状态而 `?` 提前返回时，
+        // `self.view` 已经变成一个只吸收了部分表的半成品，而 `self.tree`
+        // 还停在上一次成功的 `create_view` 建的那棵树上——两者从此永久
+        // 不一致，且此后任何 `apply`/`refresh` 都不会再报错，只会安静地
+        // 算出错误答案。
+        let mut view = ZSet::new();
         for schema in db.tables() {
             let base = initial.get(&schema.table).ok_or_else(|| {
                 EngineError(format!("表 {} 被声明但没有给出初始状态", schema.table))
             })?;
-            self.view.merge(&tree.delta(&schema.table, base));
+            view.merge(&tree.delta(&schema.table, base));
         }
+        self.view = view;
+        self.tables = db.tables().iter().map(|s| s.table.clone()).collect();
         self.tree = Some(tree);
         self.pending.clear();
         Ok(())
@@ -74,6 +149,18 @@ impl IncrementalEngine {
     pub fn apply(&mut self, table: &str, raw: &[(Row, i64)]) -> Result<(), EngineError> {
         if self.tree.is_none() {
             return Err(EngineError("apply 在 create_view 之前被调用".into()));
+        }
+        // 最终评审 Finding L：引擎不持有 `Database`，此前对未声明的表名
+        // 来者不拒——直接堆进 `pending`，`refresh` 时喂给 `Node::Scan`，
+        // 而 `Scan` 只按表名路由（见 `node.rs`），不认识的表名会被它自己
+        // 悄悄吃成一个空 delta，`apply` 因此看起来"成功"了，视图却完全
+        // 没被这次调用影响到——M1b 里这类表名来自 shadow-table 的接缝，
+        // 一旦对不上，这里必须报错而不是产出一个"过期但看着合理"的视图。
+        if !self.tables.contains(table) {
+            return Err(EngineError(format!(
+                "apply 收到未声明的表 {table}；create_view 声明的表是 {:?}",
+                self.tables
+            )));
         }
         self.pending
             .extend(raw.iter().map(|(r, w)| (table.to_string(), r.clone(), *w)));
@@ -94,16 +181,18 @@ impl IncrementalEngine {
             by_table.entry(table).or_default().update(row, w);
         }
 
-        self.rows_processed = 0;
+        tree.reset_counts();
         for (table, delta) in &by_table {
             // 合并后净权重为 0 的行已被 `ZSet::update` 删掉（§5.1），
-            // 于是它们根本不会出现在这里。
-            self.rows_processed += delta.len();
+            // 于是它们根本不会出现在这里；空 delta 的表干脆不推进算子树，
+            // 这本身也是 `tree_pushes` 该反映出来的一部分。
             if delta.is_empty() {
                 continue;
             }
             self.view.merge(&tree.delta(table, delta));
         }
+        self.rows_processed = tree.rows_fed;
+        self.tree_pushes = tree.pushes;
         Ok(())
     }
 
@@ -111,8 +200,20 @@ impl IncrementalEngine {
     ///
     /// 合并生效时，同一行在一批里出现 5 次只会被推进 1 次；`+1` 与 `-1`
     /// 相消的行会被推进 0 次。这两个数字是 consolidation 唯一的可观测足迹。
+    /// 读的是 `CountingTree::rows_fed`——`Node::delta` 真正收到的行数总和。
     pub fn rows_processed_last_refresh(&self) -> usize {
         self.rows_processed
+    }
+
+    /// 上一次 `refresh` 里算子树的顶层入口（`Node::delta`）被调用的次数。
+    ///
+    /// consolidation 生效时，一张表在一次 `refresh` 里无论合并前有多少条
+    /// 原始 raw Δ、合并后剩几行，都应当恰好触发一次调用——这是「少推进
+    /// 几次」这个性能故事在调用次数这个维度上的直接证据，`rows_processed`
+    /// 只从行数维度证明，两者合起来才堵住「按行逐条推进」这类重构
+    /// （最终评审 Finding B）。
+    pub fn tree_pushes_last_refresh(&self) -> usize {
+        self.tree_pushes
     }
 
     /// 取视图的当前物化结果。
@@ -257,6 +358,11 @@ mod tests {
             "5 条相同的 raw Δ 必须先合并成 1 条再进算子"
         );
         assert_eq!(
+            e.tree_pushes_last_refresh(),
+            1,
+            "合并后只剩一行，算子树本来就只该被推进一次"
+        );
+        assert_eq!(
             e.snapshot()
                 .weight_of(&Row::new(vec![Value::Text("a".into()), Value::Int(5)])),
             1,
@@ -286,6 +392,16 @@ mod tests {
             e.rows_processed_last_refresh(),
             3,
             "三行互不相同，一条都不该被并掉"
+        );
+        // 最终评审 Finding B：这三行同属一张表、同一次 refresh，consolidation
+        // 的意义正是把它们合并后**整批**一次性推进算子树——不是合并后逐行
+        // 各推一次。`rows_processed_last_refresh` 只能证明「进了算子的行数
+        // 对不对」，证明不了「进算子的次数对不对」；后者只有靠一个真正在
+        // `Node::delta` 调用点上计数的值才能钉住（见 `CountingTree`）。
+        assert_eq!(
+            e.tree_pushes_last_refresh(),
+            1,
+            "三行分属同一张表、同一次 refresh，只应向算子树推进一次，不是逐行 push"
         );
     }
 
@@ -321,6 +437,11 @@ mod tests {
             2,
             "两张表各自一条，不得跨表相消"
         );
+        assert_eq!(
+            e.tree_pushes_last_refresh(),
+            2,
+            "两张表各自需要一次独立的 push——Scan 按表名路由，一次调用只能带一个表名"
+        );
     }
 
     #[test]
@@ -334,6 +455,78 @@ mod tests {
             e.rows_processed_last_refresh(),
             1,
             "计数是「上一次 refresh」而非累计"
+        );
+    }
+
+    // --- 最终评审 Finding A：create_view 失败不得污染既有状态 ---
+
+    #[test]
+    fn a_failed_create_view_does_not_corrupt_existing_state() {
+        // 第一次 create_view 成功并推进过一批数据，建立一个正确的基线。
+        let mut e = engine();
+        e.apply("t", &[(row("a", 1), 1)]).unwrap();
+        e.refresh().unwrap();
+        let before = e.snapshot();
+        assert_eq!(
+            before.weight_of(&Row::new(vec![Value::Text("a".into()), Value::Int(1)])),
+            1,
+            "基线本身必须正确：COUNT(a)=1"
+        );
+
+        // 第二次 create_view 声明了 t0/t1 两张表，但 initial 只给了 t0 的
+        // 状态——bootstrap 循环处理到 t1 时必然报错。此前的实现会在报错
+        // 之前就已经把 self.view 重置成空 ZSet，而 self.tree 还停在第一次
+        // create_view 建的那棵树上，两者从此永久不一致（Finding A 的探针：
+        // 真实场景下 truth 是 {(a,2),(b,1)}，引擎会报告 {(a,1),(b,1)} 且
+        // 永不恢复）。
+        let two = Database::new(vec![table("t0"), table("t1")]);
+        let err = e
+            .create_view(
+                &two,
+                &count_query(),
+                &BTreeMap::from([("t0".to_string(), ZSet::new())]), // t1 缺失
+            )
+            .expect_err("t1 没有给出初始状态，第二次 create_view 必须报错");
+        assert!(err.0.contains("t1"));
+
+        // 失败的第二次 create_view 不得动到既有状态——快照必须与失败前
+        // 逐点相等，而不只是"大致差不多"。
+        assert_eq!(
+            e.snapshot(),
+            before,
+            "失败的第二次 create_view 不得污染既有视图状态"
+        );
+
+        // 且引擎必须仍然是第一次 create_view 建立的那个可用状态：后续
+        // apply + refresh 应当继续在旧视图基础上正确前进，而不是在一棵
+        // 悬空的树上算出垃圾、或者直接 panic。
+        e.apply("t", &[(row("b", 1), 1)]).unwrap();
+        e.refresh().unwrap();
+        let after = e.snapshot();
+        assert_eq!(
+            after.weight_of(&Row::new(vec![Value::Text("a".into()), Value::Int(1)])),
+            1,
+            "旧状态里 a 的计数不应被失败的 create_view 或之后的操作破坏"
+        );
+        assert_eq!(
+            after.weight_of(&Row::new(vec![Value::Text("b".into()), Value::Int(1)])),
+            1,
+            "失败之后引擎必须仍能在旧视图上正确前进"
+        );
+    }
+
+    // --- 最终评审 Finding L：apply 必须拒绝未声明的表 ---
+
+    #[test]
+    fn apply_rejects_an_unknown_table() {
+        let mut e = engine(); // 只声明了表 "t"
+        let err = e
+            .apply("nope", &[(row("a", 1), 1)])
+            .expect_err("apply 收到 create_view 未声明过的表名必须报错");
+        assert!(
+            err.0.contains("nope"),
+            "错误信息应指名是哪个未声明的表：{}",
+            err.0
         );
     }
 }

@@ -1,16 +1,5 @@
 use crate::{Plan, Predicate, Row, Value, ZSet};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeError(pub String);
-
-impl std::fmt::Display for NodeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl std::error::Error for NodeError {}
-
 /// 带状态的算子树。由 `Plan` 建出，此后 `delta` 反复被调用。
 ///
 /// 与 `Plan` 分开是因为 `Plan` 是纯描述（可比较、可打印、将来可从 SQL 重建），
@@ -35,27 +24,35 @@ pub enum Node {
 }
 
 impl Node {
-    pub fn build(plan: &Plan) -> Result<Node, NodeError> {
+    /// 由 `Plan` 递归建出算子树。
+    ///
+    /// 曾经返回 `Result<Node, NodeError>`，但 `build` 的每个分支从落地起
+    /// 就只写 `Ok(...)`——`NodeError` 从未被构造过，`engine.rs` 里跟着它的
+    /// `.map_err` 是一段死代码。M1a Phase 2 最终评审 Finding H：把从不失败
+    /// 的签名改回 `Result` 之外的形状比留着一个假错误路径更诚实；M1b 需要
+    /// 一个真会失败的 `build`（比如从 SQLite 侧重建节点）时，编译器会在
+    /// 每个调用点机械地指出要不要处理这个新 `Err`，加回来是局部改动。
+    pub fn build(plan: &Plan) -> Node {
         match plan {
-            Plan::Scan { table, .. } => Ok(Node::Scan {
+            Plan::Scan { table, .. } => Node::Scan {
                 table: table.clone(),
-            }),
-            Plan::Filter { input, predicate } => Ok(Node::Filter {
-                input: Box::new(Node::build(input)?),
+            },
+            Plan::Filter { input, predicate } => Node::Filter {
+                input: Box::new(Node::build(input)),
                 predicate: predicate.clone(),
-            }),
-            Plan::Project { input, columns } => Ok(Node::Project {
-                input: Box::new(Node::build(input)?),
+            },
+            Plan::Project { input, columns } => Node::Project {
+                input: Box::new(Node::build(input)),
                 columns: columns.clone(),
-            }),
+            },
             Plan::Aggregate {
                 input,
                 group_by,
                 aggs,
-            } => Ok(Node::Aggregate {
-                input: Box::new(Node::build(input)?),
+            } => Node::Aggregate {
+                input: Box::new(Node::build(input)),
                 state: crate::AggState::new(group_by.clone(), aggs.clone()),
-            }),
+            },
         }
     }
 
@@ -162,8 +159,7 @@ mod tests {
         let mut n = Node::build(&Plan::Scan {
             table: "orders".into(),
             columns: vec![0, 1],
-        })
-        .unwrap();
+        });
         let d = ZSet::from_rows([(row(vec![int(1), int(2)]), 1)]);
         assert_eq!(n.delta("orders", &d), d, "自己的表：原样穿过");
         assert_eq!(n.delta("customers", &d), ZSet::new(), "别人的表：空");
@@ -183,8 +179,7 @@ mod tests {
                 column: 0,
                 value: 3,
             },
-        })
-        .unwrap();
+        });
         let d = ZSet::from_rows([(row(vec![int(5)]), 1), (row(vec![int(9)]), -2)]);
         assert_eq!(n.delta("t", &d), d);
     }
@@ -200,8 +195,7 @@ mod tests {
                 column: 0,
                 value: 3,
             },
-        })
-        .unwrap();
+        });
         let d = ZSet::from_rows([(row(vec![int(1)]), 1), (row(vec![int(5)]), 1)]);
         assert_eq!(n.delta("t", &d), ZSet::from_rows([(row(vec![int(5)]), 1)]));
     }
@@ -220,8 +214,7 @@ mod tests {
                 column: 0,
                 value: 3,
             },
-        })
-        .unwrap();
+        });
         let d = ZSet::from_rows([
             (row(vec![int(1)]), 1),
             (row(vec![Value::Null]), 1),
@@ -244,8 +237,7 @@ mod tests {
                 columns: vec![0],
             }),
             predicate: Predicate::IsNotNull { column: 0 },
-        })
-        .unwrap();
+        });
         let d = ZSet::from_rows([(row(vec![Value::Null]), 1), (row(vec![int(5)]), 1)]);
         assert_eq!(n.delta("t", &d), ZSet::from_rows([(row(vec![int(5)]), 1)]));
     }
@@ -258,8 +250,7 @@ mod tests {
                 columns: vec![0, 1, 2],
             }),
             columns: vec![2, 0],
-        })
-        .unwrap();
+        });
         let d = ZSet::from_rows([(row(vec![int(1), int(2), int(3)]), 4)]);
         assert_eq!(
             n.delta("t", &d),
@@ -278,8 +269,7 @@ mod tests {
                 columns: vec![0, 1],
             }),
             columns: vec![0],
-        })
-        .unwrap();
+        });
         let d = ZSet::from_rows([
             (row(vec![int(7), int(1)]), 2),
             (row(vec![int(7), int(2)]), 3),
@@ -296,8 +286,7 @@ mod tests {
                 columns: vec![0, 1],
             }),
             columns: vec![0],
-        })
-        .unwrap();
+        });
         let d = ZSet::from_rows([
             (row(vec![int(7), int(1)]), 2),
             (row(vec![int(7), int(2)]), -2),
@@ -324,7 +313,7 @@ mod tests {
             2,
         )
         .unwrap();
-        let mut n = Node::build(&plan).unwrap();
+        let mut n = Node::build(&plan);
         let d = ZSet::from_rows([
             (row(vec![Value::Text("a".into()), int(9)]), 1),
             (row(vec![Value::Text("a".into()), int(1)]), 1), // 被 Filter 挡掉
@@ -365,7 +354,7 @@ mod tests {
             2,
         )
         .unwrap();
-        let mut n = Node::build(&plan).unwrap();
+        let mut n = Node::build(&plan);
 
         let first = n.delta(
             "t",
@@ -429,7 +418,7 @@ mod tests {
         // Task 3 还没有 Aggregate 节点（Task 4 才加），所以从 Aggregate 的
         // input——也就是 lower() 真实产出的 Filter/Project 子树——建 Node，
         // 而不是手写一棵形状相似的等价树。
-        let mut n = Node::build(&input).unwrap();
+        let mut n = Node::build(&input);
 
         // 列 0 = 谓词看的列（会被收窄掉），列 1 = SUM 的列，列 2 = group key。
         let d = ZSet::from_rows([

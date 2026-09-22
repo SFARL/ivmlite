@@ -14,7 +14,7 @@ pub use agg::AggState;
 pub use arrangement::{Arrangement, MemArrangement};
 pub use database::Database;
 pub use engine::{EngineError, IncrementalEngine};
-pub use node::{Node, NodeError};
+pub use node::Node;
 pub use plan::{lower, Plan, PlanError};
 pub use query::{Agg, AggFn, Predicate, ViewQuery};
 pub use row::Row;

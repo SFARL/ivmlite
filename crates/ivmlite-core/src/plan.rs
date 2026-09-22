@@ -14,6 +14,15 @@ use crate::{Agg, AggFn, Predicate, ViewQuery};
 pub enum Plan {
     Scan {
         table: String,
+        /// **目前只写不读**（最终评审 Finding G）：`node.rs` 的 `Node::build`
+        /// 用 `Plan::Scan { table, .. }` 解构，`columns` 被 `..` 直接丢弃，
+        /// `Node::Scan` 根本不持有这个字段。它落地于 Task 1，当时 `Plan`
+        /// 还没有任何消费者，`lowers_to_scan_filter_project_aggregate` 那条
+        /// 直接断言这个字段本身的结构测试是它唯一的读者；Task 3 给 `Plan`
+        /// 加了第一个真消费者（`Node::build`）之后，这个字段就成了死数据。
+        /// **不要删**：M1b 的 delta-table reader 是这个字段合理的第一个
+        /// 消费者——它需要知道该对基表 `SELECT` 哪些列，而不是无条件读全部
+        /// 列。在那之前，它只是一份意图声明，不代表任何当前生效的约束。
         columns: Vec<usize>,
     },
     Filter {
@@ -400,8 +409,65 @@ mod tests {
     fn out_of_range_column_is_rejected() {
         // 下标越界必须在降的时候就报错，而不是等到 refresh 时 panic——
         // 引擎在 create_view 之后不应再有可预见的 panic 路径。
+        //
+        // **这条只钉死了 group_by 那一支的越界检查**（最终评审 Finding C）：
+        // `lower` 里一共有三处独立的 `check(...)` 调用（group_by / agg 列 /
+        // predicate 列），而这个用例的 aggs、predicate 全部在范围内，只有
+        // group_by=[7] 越界。删掉这条测试守护范围之外的另外两处 `check`
+        // 中的任意一处，本测试仍然全绿——真正单独钉住它们的是下面两条新
+        // 测试。
         let err = lower(&q(vec![7], vec![count()], Predicate::None), "orders", 2)
             .expect_err("越界 group key 必须被拒绝");
         assert!(err.0.contains('7'), "错误信息应指出越界的下标：{}", err.0);
+    }
+
+    #[test]
+    fn out_of_range_agg_column_is_rejected() {
+        // 最终评审 Finding C：`out_of_range_column_is_rejected` 只覆盖了
+        // group_by 越界这一支。用手术刀式变异实测过：单独删掉 agg 列那处
+        // `check(c, "agg")?`（保留另外两处），`out_of_range_column_is_rejected`
+        // 依然全绿，`create_view` 会成功，直到第一批非空 delta 才在
+        // `Row::get` 里 panic——这正是 `plan.rs:87` 那条注释声称已经堵死
+        // 的"create_view 之后仍存在的可预见 panic 路径"。这里让 group_by
+        // 与 predicate 都合法，只让 agg 列（列 7）越界，单独钉住这一处。
+        let bad = Agg {
+            func: AggFn::Sum,
+            column: Some(7),
+        };
+        let err = lower(&q(vec![0], vec![bad], Predicate::None), "orders", 2)
+            .expect_err("越界的 agg 列必须被拒绝");
+        assert!(err.0.contains('7'), "错误信息应指出越界的下标：{}", err.0);
+        assert!(
+            err.0.contains("agg"),
+            "错误信息应指名是 agg 的问题：{}",
+            err.0
+        );
+    }
+
+    #[test]
+    fn out_of_range_predicate_column_is_rejected() {
+        // 与上一条同一次复审发现：单独删掉 predicate 列那处
+        // `check(*column, "predicate")?`（保留另外两处），
+        // `out_of_range_column_is_rejected` 同样依然全绿。这里让 group_by
+        // 与 agg 列都合法，只让谓词引用的列（列 7）越界，单独钉住这一处。
+        let err = lower(
+            &q(
+                vec![0],
+                vec![count()],
+                Predicate::IntGt {
+                    column: 7,
+                    value: 3,
+                },
+            ),
+            "orders",
+            2,
+        )
+        .expect_err("越界的谓词列必须被拒绝");
+        assert!(err.0.contains('7'), "错误信息应指出越界的下标：{}", err.0);
+        assert!(
+            err.0.contains("predicate"),
+            "错误信息应指名是 predicate 的问题：{}",
+            err.0
+        );
     }
 }
