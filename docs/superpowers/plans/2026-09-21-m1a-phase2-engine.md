@@ -117,7 +117,7 @@ spec §5.2 的 `Plan` 写作 `Filter { predicate: Expr }`、`Project { exprs: Ve
 
 本计划的降法让 `Project` 真的承重：`Scan` 取全部列 → `Filter` 按原始列下标求值 → `Project` 收窄到查询真正需要的列（`group_by ∪ 各 SUM 的列`）→ `Aggregate` 按收窄后的新下标工作。
 
-于是 `Project` 在每一个枚举出来的用例上都被执行，且下标重映射是真实逻辑。举例：`group_by=[0]`、`aggs=[COUNT(*)]`、`predicate=IntGt{column:1}` 时，过滤用到列 1 而聚合只要列 0，`Project` 把 2 列收窄成 1 列。
+于是 `Project` 节点在每一个枚举出来的用例上都存在（`enumerate` × `lower` 在 arity 2 下实测跑遍全部 27 个用例，`Project` 无一缺席），但"存在"不等于"收窄"：同一次实测里，`Project` 在 12 个用例上真的把列数收窄，在另外 15 个用例上收窄到的列集合与输入相同、是一次恒等投影。举例：`group_by=[0]`、`aggs=[COUNT(*)]`、`predicate=IntGt{column:1}` 时，过滤用到列 1 而聚合只要列 0，`Project` 把 2 列收窄成 1 列——这属于那 12 个真收窄的用例。即便如此，加 `Project` 这一步仍然成立：不加它，`Project` 作为算子就没有任何可达的调用点，"12/27 会收窄"这件事根本无从谈起。
 
 - [ ] **Step 1: 写失败的测试**
 

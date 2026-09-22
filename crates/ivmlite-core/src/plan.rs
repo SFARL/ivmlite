@@ -108,6 +108,11 @@ pub fn lower(query: &ViewQuery, table: &str, arity: usize) -> Result<Plan, PlanE
             }
         }
     }
+    // `keep` 总是先放 group_by 的列、按原序、且（此刻）已去重，所以只要
+    // group_by 自身无重复，remap(group_by[i]) 可证恒等于 i——group_by 的
+    // 重映射永远是平凡恒等，不可能因为重映射逻辑错了而出错。真正可能出错、
+    // 也是这段逻辑唯一值得测的部分，是 agg 列的重映射（它们落在 `keep` 里
+    // group_by 之后的位置，具体是第几位取决于去重与顺序，不是平凡的）。
     let remap = |c: usize| {
         keep.iter()
             .position(|&k| k == c)
@@ -283,6 +288,36 @@ mod tests {
         assert_eq!(columns, &vec![0], "去重后只投影一次");
         assert_eq!(group_by, &vec![0]);
         assert_eq!(aggs[0].column, Some(0));
+    }
+
+    #[test]
+    fn two_aggs_sharing_a_non_group_by_column_are_projected_once() {
+        // 两个 agg 共用同一个非 group-by 列（此处都是 SUM(1)）时，去重必须
+        // 看的是"这一列是否已经在 keep 里"，而不是"这一列是否等于某个
+        // group_by 列"——后者对这个用例完全不生效，因为列 1 根本不在
+        // group_by 里，去重条件永远为真，`Project.columns` 会变成
+        // `[0, 1, 1]`：3 宽投影喂给一张 2 列的表。
+        let plan = lower(
+            &q(vec![0], vec![sum(1), sum(1)], Predicate::None),
+            "orders",
+            2,
+        )
+        .unwrap();
+        let Plan::Aggregate {
+            input,
+            group_by,
+            aggs,
+        } = &plan
+        else {
+            panic!("{plan:?}")
+        };
+        let Plan::Project { columns, .. } = &**input else {
+            panic!("{input:?}")
+        };
+        assert_eq!(columns, &vec![0, 1], "两个 agg 共用的列只投影一次");
+        assert_eq!(group_by, &vec![0]);
+        assert_eq!(aggs[0].column, Some(1), "第一个 SUM 重映射到收窄后的位置 1");
+        assert_eq!(aggs[1].column, Some(1), "第二个 SUM 同样重映射到位置 1");
     }
 
     #[test]

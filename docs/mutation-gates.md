@@ -31,8 +31,9 @@ M0 结束时的最终全分支评审用**变异测试**——把实现改坏、�
 | §5.2 根算子的 `Aggregate` 必须至少带一个 agg——没有 agg 的 "Aggregate" 实际是 `Scan`→`Project` 直接成为视图，Z-set 权重与 SQL 行数在该形状下语义不一致 | 删掉 `lower` 里的 `query.aggs.is_empty()` 校验 | `empty_aggs_is_rejected_at_the_boundary` | **已验证** |
 | `lower` 必须在下标越界（`group_by` / agg 列 / 谓词列引用的下标 ≥ `arity`）时立即报错，而不是留到 `refresh` 时 panic | 删掉 `lower` 里全部 `check(...)` 调用 | `out_of_range_column_is_rejected` | **已验证** |
 | `Project` 收窄的投影列集合（group key ∪ 各 SUM 的列）不得重复——同一列既当 group key 又被 SUM 时只应投影一次，否则 `Project` 的输出行宽与 `Aggregate` 的下标重映射对不上 | `keep` 收集时去掉 `if !keep.contains(&c)` 去重判断，直接 `push` | `a_column_used_as_both_group_key_and_sum_target_is_projected_once` | **已验证** |
-| `Scan` 必须取基表全部列，`Filter` 必须按基表原始下标求值——收窄只能发生在 `Project`，否则 `Filter` 的谓词列下标会指向收窄后错误的列 | 把 `Scan` 的 `columns` 改成 `keep.clone()`（即在 `Scan` 处就收窄） | `lowers_to_scan_filter_project_aggregate` | **已验证** |
+| `Scan` 必须取基表全部列——`lowers_to_scan_filter_project_aggregate` 对 `Scan.columns` 有一条直接的结构断言（`assert_eq!(columns, &vec![0, 1], …)`），这条断言真的守着 `Scan` 的列表本身 | 把 `Scan` 的 `columns` 改成 `keep.clone()`（即在 `Scan` 处就收窄） | `lowers_to_scan_filter_project_aggregate`——它会变红，但原因**只是**上面那条对 `Scan.columns` 的直接结构断言；同一测试里更早的 `assert_eq!(predicate, &Predicate::IntGt { column: 1, value: 3 })` 在这个变异下**仍然通过**，因为 `Filter` 把 `query.predicate.clone()` 逐字存进节点，从不针对其 `input` 的列表重新索引或校验。**「`Filter` 必须按基表原始下标求值，而这只有在 `Scan` 吐出全部列时才成立」这条语义要求，今天没有任何测试覆盖，也覆盖不了**——`Plan` 目前没有任何消费者（求值器），所以列下标语义是否用对根本不可观察。这条语义要求要到 Task 3 算子求值器落地后才第一次可证伪，届时必须在那次任务的门禁表里单独开一行、并真的跑一次变异验证；不能靠这一行顶替 | **已验证**（仅验证 `Scan.columns` 的结构断言；`Filter` 语义留给 Task 3） |
 | `Predicate::None` 不应产生一个恒真的 `Filter` 节点——多一个节点就多一处每批都要走的无谓遍历，也会让「`Filter` 被正确跳过」这件事不可观察 | `Predicate::None` 时也插入 `Filter` 节点 | `no_filter_node_when_predicate_is_none` | **已验证** |
+| `keep` 的去重必须以「这一列是否已经在 `keep` 里」为准，而不是「这一列是否等于某个 `group_by` 列」——两者只在被去重的列本身就是某个 group_by 列时才等价；`group_by=[0], aggs=[Sum(1), Sum(1)]` 时两个 agg 共用的列 1 根本不在 `group_by` 里，后一种判据永远为真，`Project.columns` 会变成 `[0, 1, 1]`——3 宽投影喂给一张 2 列的表（最终评审 Task 1 复审发现：`lower` 自己的文档注释拿"`ViewQuery` 可以自由构造"作为边界校验必须在此处的理由，而这正是那类构造） | agg 循环里的去重判据从 `!keep.contains(&c)` 改成 `!query.group_by.contains(&c)` | `two_aggs_sharing_a_non_group_by_column_are_projected_once` | **已验证** |
 
 ## ivmlite-test：生成器
 
@@ -109,7 +110,7 @@ M0 结束时的最终全分支评审用**变异测试**——把实现改坏、�
 
 ## 统计与欠账
 
-表内共 **61** 行：已验证 **55** 条、未验证 **0** 条、不适用 **6** 条
+表内共 **62** 行：已验证 **56** 条、未验证 **0** 条、不适用 **6** 条
 （`Value` 无 Real/Blob 由类型系统而非测试守护，加变体会编译失败）。
 
 这三个数字由 `scripts/count-mutation-gates.py` 从本文件数出来，不是手写的——
