@@ -26,7 +26,7 @@ M0 结束时的最终全分支评审用**变异测试**——把实现改坏、�
 | §5.1 权重归零的行必须删除，不留僵尸行 | 让 `ZSet::update` 在归零时保留条目 | `zero_weight_rows_are_removed_not_kept` | **已验证** |
 | §5.1 负权重在中间 delta 中合法 | 让 `update` 钳制负权重 | `negative_weights_are_representable` | **已验证** |
 | §9.4 迭代顺序确定（失败用例须可凭 seed 重放） | `BTreeMap` 换 `HashMap` | `iteration_order_is_deterministic` | **已验证** |
-| §5.1 `Value` 无 Real/Blob（浮点结合律 / 整数溢出顺序依赖） | 加 `Real` 变体 | 编译失败（类型系统即门禁） | — |
+| §5.1 `Value` 无 Real/Blob（浮点结合律 / 整数溢出顺序依赖） | 加 `Real` 变体 | 编译失败（类型系统即门禁） | 不适用 |
 | §5.2 根算子必须是聚合、`GROUP BY` 非空。**边界校验在 `lower`**（M1a Phase 2 Task 1）——此前只在生成器侧成立，由最终评审作为 m6 登记为「不适用」并排进 join 落地清单；`lower` 是引擎第一次真正消费 `ViewQuery`的入口，于是提前关掉了，清单里那一条也随之删除 | 删掉 `lower` 里的 `group_by.is_empty()` 校验 | `empty_group_by_is_rejected_at_the_boundary`（`crates/ivmlite-core/src/plan.rs`；此前这条约束只在生成器侧成立——唯一的生产者 `enumerate` 从不产出空 `group_by`，`enumerate_covers_the_v0_space_and_is_nonempty` 守的是这一点——但 `ViewQuery` 本身可以在 `enumerate` 之外自由构造。M1a Phase 2 Task 1 的 `lower` 是引擎第一次真正消费 `ViewQuery` 的入口，边界校验现在就在这里，不再只是生成器侧的偶然结果） | **已验证** |
 | §5.2 根算子的 `Aggregate` 必须至少带一个 agg——没有 agg 的 "Aggregate" 实际是 `Scan`→`Project` 直接成为视图，Z-set 权重与 SQL 行数在该形状下语义不一致 | 删掉 `lower` 里的 `query.aggs.is_empty()` 校验 | `empty_aggs_is_rejected_at_the_boundary` | **已验证** |
 | `lower` 必须在下标越界（`group_by` / agg 列 / 谓词列引用的下标 ≥ `arity`）时立即报错，而不是留到 `refresh` 时 panic | 删掉 `lower` 里全部 `check(...)` 调用 | `out_of_range_column_is_rejected` | **已验证** |

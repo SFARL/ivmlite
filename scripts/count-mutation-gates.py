@@ -24,13 +24,23 @@ def count(text):
         if len(cells) != 4 or cells[0] in ("spec 要求",) or set(cells[0]) <= set("-: "):
             continue
         total += 1
-        status = cells[3]
-        if "已验证" in status:
+        # 状态必须由单元格的**开头**决定，不能用子串包含判断。
+        # 子串判断有一个真实的坑：一条「不适用」的行在解释自己时完全可能写出
+        # 「此前标成已验证是错的」，于是被算进已验证——在一份以可机械核对为
+        # 全部意义的文档里静默错分。M1a Phase 2 Task 2 的实现者撞上过，
+        # 当时是靠改措辞绕开的；绕开不是修好。
+        status = cells[3].strip().lstrip("*").strip()
+        if status.startswith("已验证"):
             verified += 1
-        elif "未验证" in status:
+        elif status.startswith("未验证"):
             unverified += 1
-        else:
+        elif status.startswith("不适用"):
             na += 1
+        else:
+            raise ValueError(
+                f"第 {total} 行的状态格无法识别：{cells[3]!r}\n"
+                "必须以「已验证」「未验证」「不适用」之一开头。"
+            )
     return dict(total=total, verified=verified, unverified=unverified, na=na)
 
 
