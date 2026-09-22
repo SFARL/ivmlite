@@ -24,11 +24,16 @@ impl std::error::Error for EngineError {}
 /// 让算子树少被推进几次」这件事——spec §8.2/§8.5 唯一在意的性能故事——
 /// 就从这个计数器身上彻底测不出来了。
 ///
-/// `CountingTree` 把 `node` 字段设为私有：`IncrementalEngine` 里除了这个
-/// 类型自己的 `delta` 方法之外，没有第二条路径能摸到底下的 `Node`。于是
-/// `pushes`/`rows_fed` 不是「猜」出来的，是 `Node::delta` **真的被调用时**
-/// 自己记的——调用方无论把同一批 delta拆成多少次调用喂进来，这两个数字
-/// 都会如实反映。
+/// 于是 `pushes`/`rows_fed` 不是「猜」出来的，是 `Node::delta` **真的被
+/// 调用时**自己记的——调用方无论把同一批 delta 拆成多少次调用喂进来，
+/// 这两个数字都会如实反映。
+///
+/// 但**不要把 `node` 字段的私有当成结构性保证**：Rust 的字段私有是
+/// 模块级的，而 `CountingTree` 与 `IncrementalEngine` 同在本文件里，
+/// `refresh` 完全可以写 `tree.node.delta(...)` 绕过计数——终审复审实测
+/// 过，那样改能编译。今天绕过去会被抓到（计数停在 0，四个测试变红），
+/// 但那是因为现有测试断言的是确切的非零值，不是因为类型挡住了它。
+/// 若日后本文件里新增了别的持有 `CountingTree` 的代码，这一点要重新想。
 #[derive(Debug)]
 struct CountingTree {
     node: Node,
