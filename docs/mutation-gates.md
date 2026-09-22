@@ -27,7 +27,12 @@ M0 结束时的最终全分支评审用**变异测试**——把实现改坏、�
 | §5.1 负权重在中间 delta 中合法 | 让 `update` 钳制负权重 | `negative_weights_are_representable` | **已验证** |
 | §9.4 迭代顺序确定（失败用例须可凭 seed 重放） | `BTreeMap` 换 `HashMap` | `iteration_order_is_deterministic` | **已验证** |
 | §5.1 `Value` 无 Real/Blob（浮点结合律 / 整数溢出顺序依赖） | 加 `Real` 变体 | 编译失败（类型系统即门禁） | — |
-| §5.2 根算子必须是聚合、`GROUP BY` 非空——`ViewQuery` 移进 `ivmlite-core` 正是为了让 M1 引擎直接消费它，边界上却没有任何校验（m6，最终评审发现） | 直接构造 `ViewQuery { group_by: vec![], aggs: vec![], predicate: Predicate::None }`（不经过 `enumerate`），喂给 `check_invariants` | 无——**已知不被现有测试守护**：这条约束今天只在生成器侧成立，因为唯一的生产者 `enumerate` 从不产出这种形状（`enumerate_covers_the_v0_space_and_is_nonempty` 守的是这一点）；但 `ViewQuery` 本身可以在 `enumerate` 之外自由构造，`output_arity()` 对它返回 0，`check_invariants` 对空 `ZSet` 一路放行，不拒绝。实测已验证可构造且通过 `check_invariants`。**不加构造器校验**——引擎计划（Phase 3）第一次让 `ViewQuery` 真正跨越到 `enumerate` 之外的入口（M1 引擎直接消费），边界校验留到那时再补，见文末"Join 落地"清单 | 不适用 |
+| §5.2 根算子必须是聚合、`GROUP BY` 非空——`ViewQuery` 移进 `ivmlite-core` 正是为了让 M1 引擎直接消费它，边界上却没有任何校验（m6，最终评审发现） | 删掉 `lower` 里的 `group_by.is_empty()` 校验 | `empty_group_by_is_rejected_at_the_boundary`（`crates/ivmlite-core/src/plan.rs`；此前这条约束只在生成器侧成立——唯一的生产者 `enumerate` 从不产出空 `group_by`，`enumerate_covers_the_v0_space_and_is_nonempty` 守的是这一点——但 `ViewQuery` 本身可以在 `enumerate` 之外自由构造。M1a Phase 2 Task 1 的 `lower` 是引擎第一次真正消费 `ViewQuery` 的入口，边界校验现在就在这里，不再只是生成器侧的偶然结果） | **已验证** |
+| §5.2 根算子的 `Aggregate` 必须至少带一个 agg——没有 agg 的 "Aggregate" 实际是 `Scan`→`Project` 直接成为视图，Z-set 权重与 SQL 行数在该形状下语义不一致 | 删掉 `lower` 里的 `query.aggs.is_empty()` 校验 | `empty_aggs_is_rejected_at_the_boundary` | **已验证** |
+| `lower` 必须在下标越界（`group_by` / agg 列 / 谓词列引用的下标 ≥ `arity`）时立即报错，而不是留到 `refresh` 时 panic | 删掉 `lower` 里全部 `check(...)` 调用 | `out_of_range_column_is_rejected` | **已验证** |
+| `Project` 收窄的投影列集合（group key ∪ 各 SUM 的列）不得重复——同一列既当 group key 又被 SUM 时只应投影一次，否则 `Project` 的输出行宽与 `Aggregate` 的下标重映射对不上 | `keep` 收集时去掉 `if !keep.contains(&c)` 去重判断，直接 `push` | `a_column_used_as_both_group_key_and_sum_target_is_projected_once` | **已验证** |
+| `Scan` 必须取基表全部列，`Filter` 必须按基表原始下标求值——收窄只能发生在 `Project`，否则 `Filter` 的谓词列下标会指向收窄后错误的列 | 把 `Scan` 的 `columns` 改成 `keep.clone()`（即在 `Scan` 处就收窄） | `lowers_to_scan_filter_project_aggregate` | **已验证** |
+| `Predicate::None` 不应产生一个恒真的 `Filter` 节点——多一个节点就多一处每批都要走的无谓遍历，也会让「`Filter` 被正确跳过」这件事不可观察 | `Predicate::None` 时也插入 `Filter` 节点 | `no_filter_node_when_predicate_is_none` | **已验证** |
 
 ## ivmlite-test：生成器
 
@@ -104,7 +109,7 @@ M0 结束时的最终全分支评审用**变异测试**——把实现改坏、�
 
 ## 统计与欠账
 
-表内共 **56** 行：已验证 **49** 条、未验证 **0** 条、不适用 **7** 条
+表内共 **61** 行：已验证 **55** 条、未验证 **0** 条、不适用 **6** 条
 （`Value` 无 Real/Blob 由类型系统而非测试守护，加变体会编译失败）。
 
 这三个数字由 `scripts/count-mutation-gates.py` 从本文件数出来，不是手写的——
@@ -182,9 +187,3 @@ M1 新增的每一条 spec 强制行为——delta consolidation、bootstrap 水
 变红后再把对应行的"不适用"改成"已验证"。第二条尤其不能省——它检查的
 不是某个待测组件是否正确，而是评判组件本身是否还站得住。这个收尾清单
 写在这份文档里，不靠任何人记住。
-
-`§5.2` 根算子约束（m6，见上方"ivmlite-core"表最后一行）同样必须在这次
-收尾时一并处理：`ViewQuery` 的合法性目前只在生成器侧（`enumerate`）被
-守住，`ivmlite-core` 里的 `check_invariants` 对空 `group_by` / 空 `aggs`
-一路放行。join 落地后引擎会直接从 M1 的计划消费 `ViewQuery`，不再只经过
-`enumerate` 这一个入口，届时必须补上边界处的校验。
