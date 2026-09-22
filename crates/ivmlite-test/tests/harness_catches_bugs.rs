@@ -476,12 +476,8 @@ fn incremental_engine_matches_naive_recompute_at_every_refresh_point() {
     naive
         .create_view(&case.database, &case.query, &bases)
         .unwrap();
-    // `IncrementalEngine::materialize` 的固有方法返回裸 `ZSet`（签名见
-    // engine.rs），会遮蔽同名的 `Engine::materialize`（返回
-    // `Result<ZSet, EngineError>`）——固有方法总是优先于 trait 方法。这里
-    // 要的是能 `.unwrap()` 的那个，所以用 UFCS 显式点名 trait 方法。
     assert_eq!(
-        Engine::materialize(&mut inc).unwrap(),
+        inc.materialize().unwrap(),
         naive.materialize().unwrap(),
         "bootstrap 即不一致"
     );
@@ -494,7 +490,7 @@ fn incremental_engine_matches_naive_recompute_at_every_refresh_point() {
         inc.refresh().unwrap();
         naive.refresh().unwrap();
         assert_eq!(
-            Engine::materialize(&mut inc).unwrap(),
+            inc.materialize().unwrap(),
             naive.materialize().unwrap(),
             "增量与全量重算在某个 refresh 点分叉"
         );

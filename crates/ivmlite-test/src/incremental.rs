@@ -27,6 +27,6 @@ impl Engine for IncrementalEngine {
     }
 
     fn materialize(&mut self) -> Result<ZSet, EngineError> {
-        Ok(IncrementalEngine::materialize(self))
+        Ok(IncrementalEngine::snapshot(self))
     }
 }
