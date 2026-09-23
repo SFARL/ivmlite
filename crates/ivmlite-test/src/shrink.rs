@@ -13,22 +13,25 @@ where
     run(&mut engine, case).is_err()
 }
 
-/// 序列的合法性：每个 DELETE / UPDATE 必须命中**它自己那张表**当时存在的行。
+/// Sequence legality: every DELETE / UPDATE must hit a row that exists at that point **in its own table**.
 ///
-/// 这是自研 shrinker 而非直接用 proptest 的原因——朴素的缩小会删掉某个
-/// INSERT，让后续针对该行的 DELETE 悬空，产出一个引擎本就不该处理的非法
-/// 序列，于是"失败"变得毫无意义（spec §9.3）。这是自研 shrinker 唯一的
-/// load-bearing 性质，因此是 `pub`：调用方（包括集成测试）可以直接对
-/// `shrink` 的产出重新断言合法性，而不是只信任 shrink 内部没有用错它。
+/// This is why the shrinker is written in-house rather than using proptest: a
+/// naive shrink deletes some INSERT and leaves a later DELETE of that row
+/// dangling, producing an illegal sequence the engine was never obliged to
+/// handle, which makes the "failure" meaningless (spec §9.3). It is the
+/// in-house shrinker's one load-bearing property, and so it is `pub`: callers
+/// (integration tests included) can re-assert legality on `shrink`'s output
+/// directly instead of trusting that shrink uses it correctly internally.
 ///
-/// 多表化之后这条更容易出错：用 A 表的行去删 B 表是非法序列，而引擎从来
-/// 没有义务处理非法输入——在非法序列上「失败」毫无意义，这正是自研 shrinker
-/// 而不用 proptest 的全部理由（spec §9.3）。
+/// With multiple tables this is easier to get wrong: deleting from table B with
+/// a row from table A is an illegal sequence, and the engine was never obliged
+/// to handle illegal input — "failing" on an illegal sequence means nothing,
+/// which is the whole reason for an in-house shrinker over proptest (spec §9.3).
 pub fn is_legal(initial: &BTreeMap<String, Vec<Row>>, ops: &[(String, Op)]) -> bool {
     let mut live: BTreeMap<String, Vec<Row>> = initial.clone();
     for (table, op) in ops {
         let Some(l) = live.get_mut(table) else {
-            return false; // 未知表
+            return false; // unknown table
         };
         match op {
             Op::Insert(r) => l.push(r.clone()),
@@ -50,8 +53,9 @@ pub fn is_legal(initial: &BTreeMap<String, Vec<Row>>, ops: &[(String, Op)]) -> b
     true
 }
 
-/// 把失败用例缩到最小。顺序遵循 spec §9.3：**先缩更新序列，再缩 query，
-/// 最后缩数据**。每一步都要求缩小后的用例**仍然合法且仍然失败**。
+/// Shrink a failing case to a minimum. The order follows spec §9.3: **shrink
+/// the update sequence first, then the query, then the data**. Every step
+/// requires the smaller case to **still be legal and still fail**.
 pub fn shrink<E, F>(case: &TestCase, make: F) -> TestCase
 where
     E: Engine,
@@ -59,7 +63,7 @@ where
 {
     let mut best = case.clone();
 
-    // 阶段一：按 delta-debugging 的粒度递减删除 op 区间。
+    // Phase one: delete ranges of ops with delta-debugging's shrinking granularity.
     let mut granularity = best.ops.len().max(1);
     while granularity >= 1 {
         let mut improved = true;
@@ -80,7 +84,7 @@ where
                     if still_fails(&candidate, &make) {
                         best = candidate;
                         improved = true;
-                        continue; // 不推进 start，同一位置继续尝试
+                        continue; // do not advance start; keep trying at the same position
                     }
                 }
                 start = end;
@@ -92,12 +96,13 @@ where
         granularity /= 2;
     }
 
-    // 阶段二：缩小 query。缩 query 不影响序列合法性(合法性只关乎行，不关乎查询)，
-    // 所以这里不需要 is_legal 门禁。
+    // Phase two: shrink the query. Shrinking the query does not affect sequence
+    // legality (legality concerns rows, not the query), so no is_legal gate is
+    // needed here.
     loop {
         let mut improved = false;
 
-        // 去掉一个聚合，至少保留一个
+        // Drop an aggregate, keeping at least one
         if best.query.aggs.len() > 1 {
             for i in 0..best.query.aggs.len() {
                 let mut query = best.query.clone();
@@ -114,7 +119,7 @@ where
             }
         }
 
-        // 去掉一个 group-by 列，至少保留一个
+        // Drop a group-by column, keeping at least one
         if !improved && best.query.group_by.len() > 1 {
             for i in 0..best.query.group_by.len() {
                 let mut query = best.query.clone();
@@ -131,7 +136,7 @@ where
             }
         }
 
-        // 谓词退化成 None
+        // Degrade the predicate to None
         if !improved && best.query.predicate != Predicate::None {
             let mut query = best.query.clone();
             query.predicate = Predicate::None;
@@ -150,7 +155,7 @@ where
         }
     }
 
-    // 阶段三：逐张表、逐条删除初始行。
+    // Phase three: delete initial rows one by one, table by table.
     let tables: Vec<String> = best.initial.keys().cloned().collect();
     for table in tables {
         let mut i = 0;
@@ -160,7 +165,10 @@ where
                 break;
             }
             let mut initial = best.initial.clone();
-            initial.get_mut(&table).expect("表必须存在").remove(i);
+            initial
+                .get_mut(&table)
+                .expect("the table must exist")
+                .remove(i);
             if is_legal(&initial, &best.ops) {
                 let candidate = TestCase {
                     initial,
@@ -168,7 +176,7 @@ where
                 };
                 if still_fails(&candidate, &make) {
                     best = candidate;
-                    continue; // 不推进 i
+                    continue; // do not advance i
                 }
             }
             i += 1;
@@ -195,11 +203,12 @@ mod tests {
         ops.into_iter().map(|op| (table.to_string(), op)).collect()
     }
 
-    /// I2：这是自研 shrinker 而非直接用 proptest 的唯一理由（spec §9.3）。
-    /// 直接单元测试 `is_legal` 本身，而不是只通过间接的集成测试断言。
+    /// I2: this is the one reason the shrinker is in-house rather than proptest
+    /// (spec §9.3). It unit-tests `is_legal` itself directly, not only through
+    /// indirect integration-test assertions.
     #[test]
     fn dangling_delete_is_illegal() {
-        // 行 1 从未存在过（initial 为空），删它必须判非法。
+        // Row 1 never existed (initial is empty), so deleting it must be illegal.
         assert!(!is_legal(
             &initial(vec![]),
             &ops_on("t0", vec![Op::Delete(row(1))])
@@ -208,7 +217,7 @@ mod tests {
 
     #[test]
     fn dangling_update_is_illegal() {
-        // old=row(1) 不在 live 集合里，UPDATE 必须判非法。
+        // old=row(1) is not in the live set, so the UPDATE must be illegal.
         assert!(!is_legal(
             &initial(vec![]),
             &ops_on(
@@ -223,7 +232,7 @@ mod tests {
 
     #[test]
     fn legal_sequence_is_legal() {
-        // insert 1 → delete 1 → insert 2 → update 2->3：每一步都命中当时存在的行。
+        // insert 1 → delete 1 → insert 2 → update 2->3: every step hits a row that exists at that point.
         let ops = ops_on(
             "t0",
             vec![
@@ -249,7 +258,7 @@ mod tests {
 
     #[test]
     fn delete_after_insert_of_a_different_row_is_illegal() {
-        // insert 1，然后删 2——2 从未存在过。
+        // insert 1, then delete 2 — 2 never existed.
         assert!(!is_legal(
             &initial(vec![]),
             &ops_on("t0", vec![Op::Insert(row(1)), Op::Delete(row(2))])
@@ -258,10 +267,13 @@ mod tests {
 
     #[test]
     fn deleting_a_row_that_exists_in_another_table_is_illegal() {
-        // 单表时这个形态根本不存在；多表化后它是最容易被写错的一格。
+        // With one table this shape does not exist; with several it is the cell most easily got wrong.
         let initial =
             BTreeMap::from([("t0".to_string(), vec![row(1)]), ("t1".to_string(), vec![])]);
         let ops = vec![("t1".to_string(), Op::Delete(row(1)))];
-        assert!(!is_legal(&initial, &ops), "t1 里没有这一行，即便 t0 里有");
+        assert!(
+            !is_legal(&initial, &ops),
+            "t1 does not have this row, even though t0 does"
+        );
     }
 }

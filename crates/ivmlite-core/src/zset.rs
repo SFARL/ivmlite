@@ -3,10 +3,10 @@ use std::collections::BTreeMap;
 
 use crate::Row;
 
-/// 带权重的多重集。权重为 i64：INSERT = +1，DELETE = -1。
+/// A multiset with weights. Weights are i64: INSERT = +1, DELETE = -1.
 ///
-/// 用 BTreeMap 而非 HashMap，是为了让迭代顺序确定——差分测试的失败用例
-/// 必须能凭 seed 精确重放。
+/// A BTreeMap rather than a HashMap, so iteration order is deterministic: a
+/// failing differential-test case must replay exactly from its seed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ZSet {
     inner: BTreeMap<Row, i64>,
@@ -25,7 +25,7 @@ impl ZSet {
         z
     }
 
-    /// 把 `weight` 加到 `row` 现有的权重上。归零的行会被移除。
+    /// Add `weight` to `row`'s current weight. A row whose weight reaches zero is removed.
     pub fn update(&mut self, row: Row, weight: i64) {
         if weight == 0 {
             return;
@@ -91,7 +91,11 @@ mod tests {
         z.update(row(1), 1);
         z.update(row(1), -1);
         assert_eq!(z.weight_of(&row(1)), 0);
-        assert_eq!(z.len(), 0, "权重归零的行必须删除，不得留 w=0 的僵尸行");
+        assert_eq!(
+            z.len(),
+            0,
+            "a row whose weight reaches zero must be removed, leaving no w=0 zombie row"
+        );
         assert!(z.is_empty());
     }
 
@@ -117,7 +121,11 @@ mod tests {
         assert_eq!(a.weight_of(&row(1)), 0);
         assert_eq!(a.weight_of(&row(2)), 5);
         assert_eq!(a.weight_of(&row(3)), 2);
-        assert_eq!(a.len(), 2, "row(1) 归零后应被移除");
+        assert_eq!(
+            a.len(),
+            2,
+            "row(1) should be removed once its weight reaches zero"
+        );
     }
 
     #[test]
@@ -130,6 +138,10 @@ mod tests {
                 _ => unreachable!(),
             })
             .collect();
-        assert_eq!(seen, vec![1, 2, 3], "BTreeMap 保证顺序，HashMap 不保证");
+        assert_eq!(
+            seen,
+            vec![1, 2, 3],
+            "a BTreeMap guarantees the order; a HashMap does not"
+        );
     }
 }

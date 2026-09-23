@@ -6,11 +6,12 @@ use rand::RngExt;
 
 use crate::{Column, ColumnType, Schema};
 
-/// 生成器的值域配置。
+/// The generator's value-domain configuration.
 ///
-/// `distinct` 刻意很小：若某列有上百万个不同值，每个 group 只有一行，
-/// 就永远测不到"同一个 group 反复增删"——而那正是 retraction 与僵尸行
-/// bug 的产地（spec §9.2）。
+/// `distinct` is deliberately small: if a column had a million distinct
+/// values, every group would have one row, and "the same group inserted into
+/// and deleted from repeatedly" would never be tested — which is exactly where
+/// retraction and zombie-row bugs come from (spec §9.2).
 #[derive(Debug, Clone)]
 pub struct Domain {
     pub distinct: usize,
@@ -34,10 +35,11 @@ pub fn gen_row(rng: &mut StdRng, schema: &Schema, domain: &Domain) -> Row {
             if col.nullable && rng.random_bool(domain.null_rate) {
                 return Value::Null;
             }
-            // item 10（deferred minor）：`distinct == 0` 会让 `0..domain.distinct`
-            // 变成空区间，`random_range` panic。`.max(1)` 与
-            // `ivmlite-workload/src/lib.rs:136,153` 的写法保持同一种拼法，
-            // 让"同一条规则在仓库里只有一种写法"这件事成立。
+            // Item 10 (a deferred minor): `distinct == 0` would make
+            // `0..domain.distinct` an empty range and panic `random_range`.
+            // `.max(1)` is spelled the same way as `ivmlite-workload`'s row
+            // generation (`group_cardinality.max(1)` / `amount_max.max(1)`),
+            // so the one rule has one spelling across the repository.
             let n = rng.random_range(0..domain.distinct.max(1)) as i64;
             match col.ty {
                 ColumnType::Integer => Value::Int(n),
@@ -52,13 +54,15 @@ pub fn gen_rows(rng: &mut StdRng, schema: &Schema, domain: &Domain, count: usize
     (0..count).map(|_| gen_row(rng, schema, domain)).collect()
 }
 
-/// 生成差分用例的表结构。
+/// Generate the table structure for a differential test case.
 ///
-/// 每表固定 2 列（两列都可空：一个 TEXT、一个 INTEGER），列数**不是**可调
-/// 参数：spec §9.2 第 4 条把它定为「穷举优于随机」成立的前提，实测加宽到
-/// 3 列会让穷举规模从约 554 涨到约 4209。两列都可空是为了让 spec §6.1
-/// 的「`SUM` 无非 NULL 输入时返回 NULL」这条路径在随机测试里真的走得
-/// 到——M0 的集成测试正是为此把 `amount` 改成可空的。
+/// Each table has exactly 2 columns (both nullable: one TEXT, one INTEGER),
+/// and the column count is **not** a tunable parameter: spec §9.2 item 4 makes it
+/// a precondition for "enumeration beats randomness", and widening to 3 columns
+/// was measured to grow the enumeration from about 554 to about 4209. Both
+/// columns are nullable so that spec §6.1's "`SUM` over no non-NULL input
+/// returns NULL" path is really reached by random testing — which is why M0's
+/// integration tests made `amount` nullable.
 pub fn gen_database(table_count: usize) -> Database {
     let tables = (0..table_count)
         .map(|i| Schema {
@@ -80,8 +84,9 @@ pub fn gen_database(table_count: usize) -> Database {
     Database::new(tables)
 }
 
-/// 按 `Database` 声明的每张表各生成一批初始行，按表名建立 `BTreeMap`——
-/// 用 `BTreeMap` 而非 `HashMap`：迭代顺序必须确定（spec §9.4）。
+/// Generate a batch of initial rows for each table the `Database` declares,
+/// keyed by table name in a `BTreeMap` — a `BTreeMap` rather than a `HashMap`,
+/// because the iteration order must be deterministic (spec §9.4).
 pub fn gen_initial(
     rng: &mut StdRng,
     db: &Database,
@@ -124,26 +129,28 @@ mod tests {
         let d = Domain::default();
         assert_eq!(
             d.distinct, 8,
-            "窄值域是抓 retraction bug 的前提（spec §9.2）"
+            "a narrow value domain is the precondition for catching retraction bugs (spec §9.2)"
         );
         #[allow(clippy::float_cmp)]
         {
             assert_eq!(
                 d.null_rate, 0.2,
-                "NULL 率必须是 0.2，这是在测试中实现高 NULL 频率的关键"
+                "the NULL rate must be 0.2, which is what makes NULL frequent in the tests"
             );
         }
     }
 
-    /// spec §6.1：SQLite 的整数 SUM 溢出时报错，且是否报错取决于扫描顺序，
-    /// 因此增量与全量重算会在溢出区分叉。生成器必须让溢出不可达。
+    /// Spec §6.1: SQLite's integer SUM raises an error on overflow, and whether
+    /// it does depends on scan order, so incremental and full recomputation
+    /// diverge in the overflow region. The generator must make overflow
+    /// unreachable.
     #[test]
     fn domain_cannot_overflow_integer_sum() {
         let d = Domain::default();
         let worst_case_sum = (d.distinct as i128) * 1_000_000;
         assert!(
             worst_case_sum < (1i128 << 62),
-            "即使百万行全落在同一个 group，和也必须远小于 2^62"
+            "even with a million rows all in one group, the sum must stay far below 2^62"
         );
     }
 
@@ -157,7 +164,7 @@ mod tests {
         let distinct_regions: HashSet<&Value> = rows.iter().map(|r| r.get(0)).collect();
         assert!(
             distinct_regions.len() <= domain.distinct + 1,
-            "不同值数量必须受 domain 限制（+1 容纳 NULL），实得 {}",
+            "the number of distinct values must be bounded by the domain (+1 for NULL), got {}",
             distinct_regions.len()
         );
     }
@@ -169,7 +176,7 @@ mod tests {
         let nulls = rows.iter().filter(|r| r.get(0) == &Value::Null).count();
         assert!(
             nulls > 0,
-            "NULL 在 GROUP BY 中自成一组，是经典 bug 点，必须高频出现"
+            "NULL forms its own group under GROUP BY, a classic bug site, so it must appear often"
         );
     }
 
@@ -180,8 +187,8 @@ mod tests {
         assert!(rows.iter().all(|r| r.get(1) != &Value::Null));
     }
 
-    /// item 10（deferred minor）：`distinct == 0` 必须不 panic，而不是让
-    /// `0..0` 这个空区间炸给 `random_range`。
+    /// Item 10 (a deferred minor): `distinct == 0` must not panic, rather than
+    /// handing the empty range `0..0` to `random_range`.
     #[test]
     fn zero_distinct_domain_does_not_panic() {
         let mut rng = rand::rngs::StdRng::seed_from_u64(1);

@@ -15,14 +15,16 @@ impl std::fmt::Display for EngineError {
 
 impl std::error::Error for EngineError {}
 
-/// 被测实现与测试框架之间唯一的接缝。
+/// The only seam between an implementation under test and the test framework.
 ///
-/// M0 提供 NaiveRecompute（平凡正确）与 NoRetractionEngine（故意有 bug）；
-/// M1 的真实引擎实现同一个 trait 后即可直接接入全部测试与 benchmark。
+/// M0 provides NaiveRecompute (trivially correct) and NoRetractionEngine
+/// (deliberately buggy); M1's real engine implements the same trait and plugs
+/// straight into every test and the benchmark.
 pub trait Engine {
-    /// `db` 声明用例涉及的全部基表（顺序确定，spec §9.4）；`initial` 按表名
-    /// 给出每张基表的初始状态——多表化之后 `create_view` 第一次真的需要
-    /// 不止一张表的初始状态（task 5）。
+    /// `db` declares every base table the case involves (in a deterministic
+    /// order, spec §9.4); `initial` gives each base table's initial state, keyed
+    /// by table name — since the harness went multi-table, `create_view`
+    /// genuinely needs more than one table's initial state (Task 5).
     fn create_view(
         &mut self,
         db: &Database,
@@ -30,20 +32,23 @@ pub trait Engine {
         initial: &BTreeMap<String, ZSet>,
     ) -> Result<(), EngineError>;
 
-    /// 摄入一批**未合并**的变更，指明它们属于哪张表。
+    /// Ingest a batch of **unconsolidated** changes, naming the table they belong to.
     ///
-    /// `raw` 刻意是 `&[(Row, i64)]` 而非 `ZSet`：同一行可以在同一批里出现多次，
-    /// 引擎必须自己决定要不要先 consolidate。spec §8.2 把 consolidation 列为
-    /// M1 的内容而非优化项——如果 harness 替引擎合并好，M1 的 consolidation
-    /// 就从这个接缝上结构性不可见。
+    /// `raw` is deliberately `&[(Row, i64)]` rather than a `ZSet`: the same row
+    /// can appear several times in one batch, and the engine must decide for
+    /// itself whether to consolidate first. Spec §8.2 makes consolidation M1
+    /// content rather than an optimization — if the harness merged for the
+    /// engine, M1's consolidation would be structurally invisible at this seam.
     fn apply(&mut self, table: &str, raw: &[(Row, i64)]) -> Result<(), EngineError>;
 
-    /// 把已摄入但未应用的变更维护进视图状态。
+    /// Maintain the ingested but unapplied changes into the view state.
     ///
-    /// 与 `apply` 分离是因为 spec §8.2 规定显式 refresh 是永久 API，而非 v0
-    /// 的临时妥协；§9.1 的批次无关性也只有在维护时刻可控时才可测。
+    /// It is separate from `apply` because spec §8.2 makes explicit refresh a
+    /// permanent API, not a temporary v0 compromise, and §9.1's batch
+    /// independence is testable only when the moment of maintenance is
+    /// controllable.
     fn refresh(&mut self) -> Result<(), EngineError>;
 
-    /// 取 &mut self：真实引擎读取前可能需要先 drain 待处理的 delta（spec §8.2）。
+    /// Takes &mut self: a real engine may need to drain pending deltas before reading (spec §8.2).
     fn materialize(&mut self) -> Result<ZSet, EngineError>;
 }

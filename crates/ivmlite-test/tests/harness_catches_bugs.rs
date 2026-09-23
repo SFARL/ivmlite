@@ -1,13 +1,15 @@
-use ivmlite_core::{Database, Row, ZSet};
+use ivmlite_core::{Database, IncrementalEngine, Row, ZSet};
 use ivmlite_test::{
-    check_batch_invariance, gen_case, gen_database, is_legal, load_regressions,
-    recompute_via_sqlite, run, save_regression, seed_range, shrink, Batching, Column, ColumnType,
-    Domain, Engine, NaiveRecompute, NoRetractionEngine, Schema, TransientDriftEngine,
+    check_batch_invariance, enumerate, gen_case, gen_case_with_query, gen_database, is_legal,
+    load_regressions, recompute_via_sqlite, run, save_regression, seed_range, shrink, Agg, AggFn,
+    Batching, Column, ColumnType, Domain, Engine, NaiveRecompute, NoRetractionEngine, Predicate,
+    Schema, TransientDriftEngine, ViewQuery,
 };
 use std::collections::BTreeMap;
 
-/// `amount` 刻意可空：否则"SUM 的非 NULL 输入为零行"这条路径在随机测试里
-/// 永远走不到，spec §6.1 的 NULL 语义契约就只有单元测试覆盖，没有差分覆盖。
+/// `amount` is deliberately nullable: otherwise the "SUM over zero non-NULL
+/// inputs" path is never reached by random testing, and spec §6.1's
+/// NULL-semantics contract has unit-test coverage only, no differential coverage.
 fn schema() -> Schema {
     Schema {
         table: "orders".into(),
@@ -37,7 +39,8 @@ fn naive_engine_is_green_across_many_seeds() {
     for seed in seed_range() {
         let case = gen_case(seed, &db, &domain, 25, 150, Batching::Chunks(5));
         let mut engine = NaiveRecompute::new();
-        run(&mut engine, &case).unwrap_or_else(|f| panic!("参照实现不应失败: {f}"));
+        run(&mut engine, &case)
+            .unwrap_or_else(|f| panic!("the reference implementation should not fail: {f}"));
     }
 }
 
@@ -47,36 +50,87 @@ fn naive_engine_satisfies_batch_invariance() {
     let domain = Domain::default();
     for seed in seed_range().into_iter().take(10) {
         let case = gen_case(seed, &db, &domain, 25, 120, Batching::All);
-        check_batch_invariance(&case, NaiveRecompute::new)
-            .unwrap_or_else(|f| panic!("参照实现不应违反批次无关性: {f}"));
+        check_batch_invariance(&case, NaiveRecompute::new).unwrap_or_else(|f| {
+            panic!("the reference implementation should not violate batch independence: {f}")
+        });
     }
 }
 
-/// 固化下来的历史失败用例必须始终通过。M0 里参照实现平凡正确，因此这个测试
-/// 的作用是把机制建起来；它真正开始拦 bug 是在 M1 接入真实引擎之后。
+/// Final review Finding K: `check_batch_invariance` covers four modes
+/// internally — `Batching::All` / `One` / `Chunks(3)` / `Chunks(17)` — but until
+/// this test was added, `IncrementalEngine` had never been run that way. Both
+/// existing integration tests
+/// (`incremental_engine_is_green_across_the_enumerated_space` and
+/// `incremental_engine_matches_naive_recompute_at_every_refresh_point`) use only
+/// `Batching::Chunks`, so the real incremental engine had never been
+/// differentially compared under `All` (ingesting the whole batch at once) or
+/// `One` (ingesting one delta at a time).
+#[test]
+fn incremental_engine_satisfies_batch_invariance() {
+    let db = gen_database(2);
+    let domain = Domain::default();
+    for seed in seed_range().into_iter().take(10) {
+        let case = gen_case(seed, &db, &domain, 25, 120, Batching::All);
+        check_batch_invariance(&case, IncrementalEngine::new).unwrap_or_else(|f| {
+            panic!("the incremental engine should not violate batch independence: {f}")
+        });
+    }
+}
+
+/// Frozen historical failing cases must always pass. In M0 the reference
+/// implementation was trivially correct, so this test only built the mechanism;
+/// M1a Phase 2, which plugged in the real incremental engine, is when the
+/// replay started to catch anything —
+/// `saved_regressions_still_pass_against_incremental_engine` below makes that a
+/// real regression replay rather than an unfulfilled promise (final review
+/// Finding J). This test itself still runs only `NaiveRecompute`: it proves
+/// "the reference implementation is still trivially correct on the regression
+/// cases", a different thing from what the test below proves.
 #[test]
 fn saved_regressions_still_pass() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/regressions");
-    for case in load_regressions(&dir).expect("读取回归用例目录失败") {
+    for case in load_regressions(&dir).expect("failed to read the regressions directory") {
         let mut engine = NaiveRecompute::new();
-        run(&mut engine, &case).unwrap_or_else(|f| panic!("回归用例失败: {f}"));
+        run(&mut engine, &case).unwrap_or_else(|f| panic!("a regression case failed: {f}"));
     }
 }
 
-/// 证明逐批比对 oracle 有独立价值：抓到「中途算错、形式合法、之后自愈」的实现。
+/// Final review Finding J: M1a Phase 2 is the "M1 plugs in the real engine" the
+/// comment above describes, yet until this test was added the regression replay
+/// had never actually run `IncrementalEngine` — only `NaiveRecompute` (the
+/// trivially correct reference) and `NoRetractionEngine` (the deliberately buggy
+/// counterexample). This replays the frozen regression cases on the real engine
+/// too, showing they are not only well-formed but still correct on the engine
+/// that will actually maintain views.
+#[test]
+fn saved_regressions_still_pass_against_incremental_engine() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/regressions");
+    for case in load_regressions(&dir).expect("failed to read the regressions directory") {
+        let mut engine = IncrementalEngine::new();
+        run(&mut engine, &case)
+            .unwrap_or_else(|f| panic!("a regression case failed on IncrementalEngine: {f}"));
+    }
+}
+
+/// Shows that comparing against the oracle per batch has independent value: it
+/// catches an implementation that "goes wrong midway, stays well-formed, and
+/// later heals itself".
 ///
-/// 这是 spec §9.1 为逐批比对付出 O(n × 基表规模) 代价的唯一证据。
-/// 断言分两半：run 必须在**非 bootstrap 的某个中间点**失败；而同一个引擎
-/// 手工重放到底之后，最终状态与 oracle **一致**——「末尾正确 + run 失败」
-/// 正说明只比最终状态会漏掉它。
+/// This is the only evidence for the O(n × base-table size) cost spec §9.1 pays
+/// for per-batch comparison. The assertion has two halves: run must fail at
+/// **some intermediate point other than bootstrap**, while the same engine
+/// replayed to the end by hand reaches a final state that **agrees** with the
+/// oracle — "correct at the end + run fails" is exactly why comparing only the
+/// final state would miss it.
 ///
-/// m5 更名说明：这个名字曾叫 `per_batch_oracle_comparison_catches_transient_drift`，
-/// 但它实际钉死的断言太松，守不住名字里"逐批比对"这个承诺——把
-/// `differential::run` 里循环内的逐批比对整个删掉、改成循环结束后只比对
-/// 一次，这个测试依然通过（细节见 `docs/mutation-gates.md`）。真正堵住那个
-/// 缺口的是下面新增的 `oracle_comparison_runs_after_every_batch_not_only_at_the_end`。
-/// 这个测试真正钉死、且始终成立的是它名字现在说的这件事：手工重放到底之后
-/// 最终状态必须正确。
+/// A note on the m5 rename: this test used to be called
+/// `per_batch_oracle_comparison_catches_transient_drift`, but its assertion was
+/// too loose to keep the name's promise of "per-batch comparison" — deleting the
+/// per-batch comparison inside `differential::run`'s loop and comparing once
+/// after the loop still let it pass (details in `docs/mutation-gates.md`). The
+/// gap is closed by `oracle_comparison_runs_after_every_batch_not_only_at_the_end`
+/// below. What this test really pins, and always holds, is what its name now
+/// says: replayed to the end by hand, the final state must be correct.
 #[test]
 fn transient_drift_has_a_correct_final_state() {
     let db = db();
@@ -84,20 +138,21 @@ fn transient_drift_has_a_correct_final_state() {
     let case = gen_case(3, &db, &domain, 25, 150, Batching::Chunks(5));
     let table = case.database.tables()[0].table.clone();
 
-    // drift_at = 2：第 1 次 materialize 是 bootstrap，第 2 次是第一批之后
+    // drift_at = 2: the first materialize is the bootstrap, the second comes after the first batch
     let mut engine = TransientDriftEngine::new(2);
-    let failure = run(&mut engine, &case).expect_err("逐批比对必须抓到中途漂移");
+    let failure =
+        run(&mut engine, &case).expect_err("per-batch comparison must catch the midway drift");
     assert!(
         failure.stage.starts_with("diff["),
-        "应当在 oracle 比对处失败，实得 stage={}",
+        "it should fail at the oracle comparison, got stage={}",
         failure.stage
     );
     assert_ne!(
         failure.stage, "diff[bootstrap]",
-        "漂移设定在第一批之后，不应在 bootstrap 处报出"
+        "the drift is set after the first batch and should not be reported at bootstrap"
     );
 
-    // 手工重放到底：证明这个引擎的最终状态是正确的
+    // Replay to the end by hand, showing this engine's final state is correct
     let mut settled = TransientDriftEngine::new(2);
     let mut base = ZSet::from_rows(
         case.initial
@@ -113,70 +168,80 @@ fn transient_drift_has_a_correct_final_state() {
         .unwrap();
     let _ = settled.materialize().unwrap(); // call 1: bootstrap
 
-    // 未合并的原始 raw delta——与新签名一致，engine 自己决定要不要 consolidate。
-    // harness 侧的 `base` 仍然照常合并，用来喂 oracle。
+    // Unconsolidated raw deltas — matching the signature, the engine decides for
+    // itself whether to consolidate. The harness-side `base` is merged as usual
+    // to feed the oracle.
     let raw: Vec<(Row, i64)> = case.ops.iter().flat_map(|(_, op)| op.to_delta()).collect();
     for (row, w) in &raw {
         base.update(row.clone(), *w);
     }
     settled.apply(&table, &raw).unwrap();
     settled.refresh().unwrap();
-    let _ = settled.materialize().unwrap(); // call 2: 被污染的那次
-    let settled_state = settled.materialize().unwrap(); // call 3: 已恢复
+    let _ = settled.materialize().unwrap(); // call 2: the corrupted one
+    let settled_state = settled.materialize().unwrap(); // call 3: recovered
 
     let bases = BTreeMap::from([(table, base)]);
     let want = recompute_via_sqlite(&case.database, &case.query, &bases).unwrap();
     assert_eq!(
         settled_state, want,
-        "末尾状态必须正确——这正是只比最终状态会漏掉这个 bug 的原因"
+        "the final state must be correct — which is exactly why comparing only the final state misses this bug"
     );
 }
 
-/// 缺口测试（M1a Phase 1 Task 1 变异审计新增）：`transient_drift_has_a_correct_final_state`
-/// （m5 更名前叫 `per_batch_oracle_comparison_catches_transient_drift`）
-/// 的断言太松——它只要求失败 stage 匹配 `diff[...]` 且不是 `diff[bootstrap]`，
-/// 而 `TransientDriftEngine::new(2)` 的第 2 次 `materialize` 调用，无论 `run`
-/// 是"每批都比对"还是"只在循环结束后比对一次"，都恰好落在第一次之后的下一次
-/// 调用上——两种实现都会让该测试变绿。用变异验证时（把 `differential::run`
-/// 里循环内的逐批 `compare` 删掉、改成循环结束后只 `compare` 一次），那条
-/// 测试确实没有变红，说明 spec §9.1"每个 refresh 点都比对 oracle"这条要求
-/// 事实上没有被守住。
+/// A gap test (added by M1a Phase 1 Task 1's mutation audit):
+/// `transient_drift_has_a_correct_final_state` (named
+/// `per_batch_oracle_comparison_catches_transient_drift` before the m5 rename)
+/// had too loose an assertion — it only required the failing stage to match
+/// `diff[...]` and not be `diff[bootstrap]`, and `TransientDriftEngine::new(2)`'s
+/// second `materialize` call lands on the call right after the first whether
+/// `run` "compares after every batch" or "compares once after the loop", so both
+/// implementations turned that test green. Verified by mutation (deleting the
+/// per-batch `compare` inside `differential::run`'s loop and comparing once after
+/// the loop instead): that test did not go red, showing spec §9.1's "compare
+/// against the oracle at every refresh point" was not in fact guarded.
 ///
-/// 这里用一个落在批次序列**中段**的 `drift_at`（而非紧跟 bootstrap 之后的第
-/// 2 次调用）来打破这个巧合：正确实现下，`materialize` 每批调用一次，
-/// `drift_at` 会命中某个中间批次，`run` 必须恰好在那个批次的 `diff[<i>]`
-/// 处失败；而"只在循环结束后比对一次"的实现全程只调用两次 `materialize`
-/// （bootstrap + 结束时一次），永远追不上一个刻意设在中段的 `drift_at`，
-/// 于是引擎全程只会汇报"正确"的状态，`run` 会返回 `Ok`，而不是期望的 `Err`。
+/// This test breaks the coincidence with a `drift_at` in the **middle** of the
+/// batch sequence (rather than the second call right after bootstrap): under
+/// the correct implementation `materialize` is called once per batch, `drift_at`
+/// hits some middle batch, and `run` must fail exactly at that batch's
+/// `diff[<i>]`; an implementation that "compares once after the loop" calls
+/// `materialize` only twice in all (bootstrap and once at the end), never
+/// reaches a `drift_at` placed deliberately in the middle, reports only
+/// "correct" states throughout, and `run` returns `Ok` instead of the expected
+/// `Err`.
 #[test]
 fn oracle_comparison_runs_after_every_batch_not_only_at_the_end() {
     let db = db();
     let domain = Domain::default();
     let case = gen_case(3, &db, &domain, 25, 150, Batching::Chunks(5));
 
-    // Batching::Chunks(5) 对 150 步操作产出 30 批。正确行为下 materialize
-    // 的调用序列是：call 1 = bootstrap，call (k+2) = 第 k 批（k 从 0 开始）
-    // 之后。drift_at = 16 落在批次 i = 14——既不是 bootstrap，也不是"只在
-    // 结束时比对一次"实现下唯二会发生的两次调用（bootstrap 与结束）之一。
+    // Batching::Chunks(5) turns 150 operations into 30 batches. Under correct
+    // behaviour the materialize calls are: call 1 = bootstrap, call (k+2) = after
+    // batch k (k from 0). drift_at = 16 lands on batch i = 14 — neither the
+    // bootstrap nor either of the only two calls (bootstrap and the end) that a
+    // "compare once at the end" implementation makes.
     let drift_at = 16;
     let expected_batch = drift_at - 2;
 
     let mut engine = TransientDriftEngine::new(drift_at);
     let failure = run(&mut engine, &case).expect_err(
-        "逐批比对必须在中段某一批之后就抓到漂移；若只在循环结束后比对一次，\
-         这个刻意设在中段的 drift_at 永远不会被触发，run 会误报成功",
+        "per-batch comparison must catch the drift right after a middle batch; comparing \
+         only once after the loop would never trigger this deliberately mid-sequence \
+         drift_at, and run would falsely report success",
     );
     assert_eq!(
         failure.stage,
         format!("diff[{expected_batch}]"),
-        "必须恰好在第 {expected_batch} 批之后的比对处失败——这是逐批比对（而非只比对一次）的直接证据，实得 stage={}",
+        "it must fail exactly at the comparison after batch {expected_batch} — direct evidence \
+         of per-batch comparison (rather than comparing once); got stage={}",
         failure.stage
     );
 }
 
-/// I3：兑现 `run` 里 bootstrap 比对那一行自己的注释——"空 ops 的用例也因此
-/// 被真正检查到"。在这条测试之前，代码库里没有任何一处 `gen_case` 传入
-/// `op_count == 0`，所以这句注释从未被验证过。
+/// I3: makes good on the comment on `run`'s bootstrap comparison — "so a case
+/// with no ops is genuinely checked too". Before this test, no `gen_case` call
+/// anywhere in the codebase passed `op_count == 0`, so that comment had never
+/// been verified.
 #[test]
 fn zero_op_case_still_gets_checked() {
     let db = db();
@@ -185,16 +250,17 @@ fn zero_op_case_still_gets_checked() {
         let case = gen_case(seed, &db, &domain, 25, 0, Batching::Chunks(5));
         assert!(case.ops.is_empty());
         let mut engine = NaiveRecompute::new();
-        run(&mut engine, &case).unwrap_or_else(|f| panic!("零 ops 用例不应失败: {f}"));
+        run(&mut engine, &case).unwrap_or_else(|f| panic!("a zero-op case should not fail: {f}"));
     }
 }
 
-/// I3 的实质守卫：bootstrap 之后的 oracle 比对（`differential.rs` 的
-/// `compare(engine, &base, "bootstrap")` 那一行）是唯一检查 `create_view`
-/// 正确性的地方。删掉它，一个在 bootstrap 时就算错初始状态、但此后不再
-/// 出错的引擎会骗过整个 `run`——尤其是在 `op_count == 0` 时，因为根本没有
-/// 后续批次的比对能顺带抓到它。M1 的 bootstrap 水位原子性（spec §7.3）
-/// 正是最容易在这个点出错的地方。
+/// I3's substantive guard: the oracle comparison after bootstrap (the
+/// `compare(engine, &base, "bootstrap")` line in `differential.rs`) is the only
+/// place `create_view`'s correctness is checked. Delete it, and an engine that
+/// computes the initial state wrong at bootstrap but never errs afterwards
+/// fools the whole `run` — especially when `op_count == 0`, since no later batch
+/// comparison exists to catch it along the way. M1's bootstrap watermark
+/// atomicity (spec §7.3) is exactly what is most likely to go wrong at this point.
 #[test]
 fn bootstrap_drift_is_caught_at_the_bootstrap_stage() {
     let db = db();
@@ -202,19 +268,20 @@ fn bootstrap_drift_is_caught_at_the_bootstrap_stage() {
     let case = gen_case(1, &db, &domain, 25, 0, Batching::Chunks(5));
     assert!(
         case.ops.is_empty(),
-        "唯一一次 materialize 调用必须是 bootstrap 本身"
+        "the only materialize call must be the bootstrap itself"
     );
 
-    // drift_at = 1：第 1 次（也是唯一一次）materialize 调用就是 bootstrap。
+    // drift_at = 1: the first (and only) materialize call is the bootstrap.
     let mut engine = TransientDriftEngine::new(1);
-    let failure = run(&mut engine, &case).expect_err("bootstrap 的错误初始状态必须被抓到");
+    let failure =
+        run(&mut engine, &case).expect_err("a wrong initial state at bootstrap must be caught");
     assert_eq!(
         failure.stage, "diff[bootstrap]",
-        "bootstrap 比对若被删掉，这个 op_count=0 的用例会完全跑通而不报任何错误"
+        "without the bootstrap comparison this op_count=0 case would run through without any error"
     );
 }
 
-/// M0 完成判定其一：框架必须抓到植入的 bug。
+/// M0's first acceptance criterion: the framework must catch the planted bug.
 #[test]
 fn harness_catches_the_missing_retraction_bug() {
     let db = db();
@@ -231,12 +298,14 @@ fn harness_catches_the_missing_retraction_bug() {
     }
     assert!(
         caught * 10 >= total * 9,
-        "{total} 个 seed 中只抓到 {caught} 个——生成器的 bug 检出率过低，\
-         说明值域或有偏采样的参数需要调整；不要放宽本断言"
+        "only {caught} of {total} seeds caught the bug — the generator's detection rate is \
+         too low, so the value domain or the biased-sampling parameters need adjusting; \
+         do not relax this assertion"
     );
 }
 
-/// M0 完成判定其二：失败用例必须能缩到 10 步以内，并被固化成回归用例。
+/// M0's second acceptance criterion: a failing case must shrink to 10 steps or
+/// fewer and be frozen as a regression case.
 #[test]
 fn failing_case_shrinks_to_under_ten_ops() {
     let db = db();
@@ -249,113 +318,127 @@ fn failing_case_shrinks_to_under_ten_ops() {
             let mut engine = NoRetractionEngine::new();
             run(&mut engine, c).is_err()
         })
-        .expect("应当至少有一个失败用例");
+        .expect("there should be at least one failing case");
 
     let minimal = shrink(&case, NoRetractionEngine::new);
 
-    // 缩小后的用例本身必须仍然合法——shrinker 的合法性门禁（spec §9.3）若
-    // 被打穿，产出的序列可能包含悬空 DELETE/UPDATE，是引擎本就不该处理的
-    // 非法输入。
+    // The shrunk case itself must still be legal — if the shrinker's legality
+    // gate (spec §9.3) were broken, the sequence could contain a dangling
+    // DELETE/UPDATE, illegal input the engine was never obliged to handle.
     assert!(
         is_legal(&minimal.initial, &minimal.ops),
-        "shrink 的产出必须始终合法：{minimal:?}"
+        "shrink's output must always be legal: {minimal:?}"
     );
 
     let mut engine = NoRetractionEngine::new();
-    let failure = run(&mut engine, &minimal).expect_err("缩小后必须仍然失败");
-    // 门禁损坏时（is_legal 恒真），非法序列会让某个 group 的权重变负，
-    // recompute_via_sqlite 会以 `oracle[...]` 拒绝——这是一个与原始 bug 无关
-    // 的伪产物，而 ≤10 步的断言察觉不到这个区别。真实的失败必须落在
-    // 不变量层或 oracle 差异层，而不是 oracle 自己拒绝了输入。
+    let failure = run(&mut engine, &minimal).expect_err("the shrunk case must still fail");
+    // With the gate broken (is_legal always true), an illegal sequence drives
+    // some group's weight negative and recompute_via_sqlite rejects it as
+    // `oracle[...]` — an artifact unrelated to the original bug, which the ≤10
+    // step assertion cannot tell apart. A real failure must land in the invariant
+    // layer or as an oracle diff, not as the oracle rejecting its input.
     assert!(
         !failure.stage.starts_with("oracle["),
-        "缩小后的用例在 stage={} 失败——这正是合法性门禁损坏时会收敛到的伪产物形态，\
-         而不是原始 bug 的同族失败",
+        "the shrunk case fails at stage={} — exactly the artifact a broken legality gate \
+         converges to, not a failure of the same family as the original bug",
         failure.stage
     );
     assert!(
         minimal.ops.len() <= 10,
-        "spec §11 M0 要求缩到 10 步以内，实得 {} 步",
+        "spec §11's M0 requires shrinking to 10 steps or fewer, got {} steps",
         minimal.ops.len()
     );
 
-    // 捕获路径默认写到系统临时目录，绝不弄脏被跟踪的工作区（C1）：
-    // `tests/regressions/` 下的 fixture 是输入,不是 `cargo test` 的输出。
-    // 只有显式设置 IVMLITE_CAPTURE=1 时才写回被跟踪目录，用来手动固化新用例;
-    // 此后由 saved_regressions_still_pass 与
-    // saved_regressions_still_reproduce_their_original_failure 守着它。
+    // Capture goes to the system temp directory by default and never dirties the
+    // tracked working tree (C1): the fixtures under `tests/regressions/` are
+    // inputs, not `cargo test` outputs. Only with IVMLITE_CAPTURE=1 set does it
+    // write back into the tracked directory, to freeze a new case by hand; from
+    // then on saved_regressions_still_pass and
+    // saved_regressions_still_reproduce_their_original_failure guard it.
     let dir = if std::env::var("IVMLITE_CAPTURE").as_deref() == Ok("1") {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/regressions")
     } else {
         std::env::temp_dir().join("ivmlite-test-captured-regressions")
     };
-    let path = save_regression(&dir, &minimal).expect("固化回归用例失败");
-    eprintln!("已固化最小用例: {}", path.display());
+    let path = save_regression(&dir, &minimal).expect("failed to freeze the regression case");
+    eprintln!("froze the minimal case: {}", path.display());
 }
 
-/// C1 的核心断言：已提交的 fixture 不只是能反序列化，它必须仍能复现它当初
-/// 被捕获时的那个失败——对 NoRetractionEngine 重放仍然 `Err`。
+/// C1's core assertion: a committed fixture must not merely deserialize, it must
+/// still reproduce the failure it was captured with — replaying it against
+/// NoRetractionEngine must still give `Err`.
 ///
-/// 这与 `saved_regressions_still_pass`（对 NaiveRecompute 重放、期望 `Ok`）
-/// 证明的是两件不同的事：那条测的是"参照实现在回归用例上仍然平凡正确"；
-/// 这条测的是"回归用例仍然是一个真实的失败见证，没有在 shrinker 行为变化
-/// 后被静默替换成别的东西"。
+/// This proves something different from `saved_regressions_still_pass`
+/// (replaying against NaiveRecompute and expecting `Ok`): that one shows "the
+/// reference implementation is still trivially correct on the regression
+/// cases"; this one shows "each regression case is still a genuine witness of a
+/// failure, not silently replaced by something else after the shrinker's
+/// behaviour changed".
 #[test]
 fn saved_regressions_still_reproduce_their_original_failure() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/regressions");
-    let cases = load_regressions(&dir).expect("读取回归用例目录失败");
+    let cases = load_regressions(&dir).expect("failed to read the regressions directory");
     assert!(
         !cases.is_empty(),
-        "回归目录不应为空——至少应含 seed0-ops1.json"
+        "the regressions directory should not be empty — it should hold at least seed0-ops1.json"
     );
     for case in cases {
         let mut engine = NoRetractionEngine::new();
         assert!(
             run(&mut engine, &case).is_err(),
-            "回归用例 seed={} 必须仍能让 NoRetractionEngine 失败，否则这条 fixture 已经失效",
+            "regression case seed={} must still make NoRetractionEngine fail, or this fixture has gone stale",
             case.seed
         );
     }
 }
 
-/// 本 Phase 的交付判据：框架能表达多表用例。
-/// 查询仍是单表聚合（join 在引擎计划的 Phase 3），但两张表都在接收变更，
-/// 所以下面三条代码路径都会被真正执行：apply 的表名路由、`NaiveRecompute`
-/// 按表持有的 base/pending 存储、oracle 对 `Database` 里每张表的建表/插入。
+/// This phase's deliverable: the framework can express multi-table cases. The
+/// query is still a single-table aggregate (join is in the engine plan's
+/// Phase 3), but both tables receive changes, so three code paths are genuinely
+/// executed: apply's table-name routing, `NaiveRecompute`'s per-table base /
+/// pending storage, and the oracle creating and loading every table in the
+/// `Database`.
 ///
-/// "被执行到"不等于"这个测试会抓到它坏了"——三条里只有第一条是：
-/// - apply 的表名路由：**会**。把 `run` 里递给 `apply` 的表名写死成
-///   `db.tables()[0].table`，本测试会在 `diff[0]` 处变红（评审已实测确认，
-///   见 `docs/mutation-gates.md` 里 M1a Phase 1 Task 5 那一行）。
-/// - `NaiveRecompute` 按表持有的 base/pending：**不会**。Phase 1 的查询与
-///   oracle 都只渲染 anchor 表（`db.tables()[0]`）的单表 SQL，非 anchor
-///   表存进去的状态在 `materialize()` 和 oracle 比对里都不可观察——静默
-///   丢弃它也不会让本测试变红。这是一个已登记的已知缺口，见
-///   `docs/mutation-gates.md`「§8.5 `apply` 必须真的保留非 anchor 表的
-///   delta」那一行；join 落地、oracle 开始渲染多表查询之后需要重新验证。
-/// - oracle 对每张表的建表/插入：**不会**（这条由 `oracle::tests::
-///   builds_every_table_in_the_database` 单独守护，不是本测试）。
+/// "Executed" is not "this test would catch it breaking" — only the first of
+/// the three is caught:
+/// - apply's table-name routing: **caught**. Hard-coding the table name `run`
+///   passes to `apply` as `db.tables()[0].table` reddens this test at `diff[0]`
+///   (measured by the review; see the M1a Phase 1 Task 5 row in
+///   `docs/mutation-gates.md`).
+/// - `NaiveRecompute`'s per-table base / pending: **not caught**. Phase 1's query
+///   and oracle render only the anchor table's (`db.tables()[0]`) single-table
+///   SQL, so the non-anchor state stored there is unobservable in both
+///   `materialize()` and the oracle comparison — silently dropping it does not
+///   redden this test. It is a registered known gap: see the row "§8.5 `apply`
+///   must really keep non-anchor tables' deltas" in `docs/mutation-gates.md`,
+///   to be re-verified once join lands and the oracle renders multi-table queries.
+/// - the oracle creating and loading every table: **not caught** here (it is
+///   guarded separately by `oracle::tests::builds_every_table_in_the_database`).
 #[test]
 fn a_two_table_case_runs_green_against_the_reference_engine() {
     let db = gen_database(2);
     for seed in seed_range() {
         let case = gen_case(seed, &db, &Domain::default(), 25, 150, Batching::Chunks(5));
         let mut engine = NaiveRecompute::new();
-        run(&mut engine, &case).unwrap_or_else(|f| panic!("参照实现不应失败: {f}"));
+        run(&mut engine, &case)
+            .unwrap_or_else(|f| panic!("the reference implementation should not fail: {f}"));
     }
 }
 
-/// I4：`shrink` 的 phase 3（逐表、逐行删初始数据）此前从未在真正的多表用例上
-/// 跑过——评审用探针 `assert!(case.database.len() <= 1)` 证实了这一点。这里
-/// 用一个两表 `Database` 找一个能让 `NoRetractionEngine` 失败的用例，喂给
-/// `shrink`，然后断言两张表各自的初始行数都被真的缩小过，而不只是恰好在
-/// 循环第一次迭代碰到的那张表。
+/// I4: `shrink`'s phase 3 (deleting initial data row by row, table by table) had
+/// never run on a genuinely multi-table case — the review's probe
+/// `assert!(case.database.len() <= 1)` confirmed it. This finds a two-table case
+/// that makes `NoRetractionEngine` fail, feeds it to `shrink`, and asserts that
+/// both tables' initial row counts were really reduced, not just the one table
+/// the loop happens to meet first.
 ///
-/// 这条用例里查询仍然只读 anchor 表（`t0`）——查询渲染固定用 anchor，是
-/// Phase 1 的既有限制——所以 `t1` 对 oracle 比对完全不可观察，正确的 shrink
-/// 应当把它整个缩到 0 行。这正是本测试用来分辨"phase 3 处理了每一张表"与
-/// "phase 3 只处理了第一张表"的信号：如果循环只处理第一张表（或压根没走到
-/// `t1`），`t1` 会原样留着 25 行初始数据。
+/// The query in this case still reads only the anchor table (`t0`) — query
+/// rendering always uses the anchor, an existing Phase 1 limitation — so `t1` is
+/// completely unobservable to the oracle comparison, and a correct shrink should
+/// reduce it to 0 rows. That is the signal this test uses to tell "phase 3
+/// processed every table" from "phase 3 processed only the first table": if the
+/// loop handled only the first table (or never reached `t1`), `t1` would keep
+/// all 25 of its initial rows.
 #[test]
 fn shrink_reduces_initial_rows_in_every_table_of_a_multi_table_case() {
     let db = gen_database(2);
@@ -368,37 +451,39 @@ fn shrink_reduces_initial_rows_in_every_table_of_a_multi_table_case() {
             let mut engine = NoRetractionEngine::new();
             run(&mut engine, c).is_err()
         })
-        .expect("应当至少有一个两表失败用例");
+        .expect("there should be at least one failing two-table case");
 
-    // I4 的探针：phase 3 的逐表循环必须真的在一个 initial 里有多张表的用例上
-    // 运行到，不能只是"签名接受多表、实际从未被这样调用过"。
+    // I4's probe: phase 3's per-table loop must really run on a case with more
+    // than one table in `initial`, not merely "accept several tables in its
+    // signature and never be called that way".
     assert_eq!(
         case.database.len(),
         2,
-        "这条测试必须喂给 shrink 一个真正的两表用例"
+        "this test must feed shrink a genuine two-table case"
     );
     assert!(
         case.initial.keys().count() > 1,
-        "phase 3 循环遍历的 best.initial.keys() 在起点就必须有一张以上的表"
+        "the best.initial.keys() that phase 3 iterates over must start with more than one table"
     );
 
     let minimal = shrink(&case, NoRetractionEngine::new);
 
-    // shrinker 的合法性门禁（spec §9.3）在多表路径上必须仍然成立。
+    // The shrinker's legality gate (spec §9.3) must still hold on the multi-table path.
     assert!(
         is_legal(&minimal.initial, &minimal.ops),
-        "shrink 的产出必须始终合法：{minimal:?}"
+        "shrink's output must always be legal: {minimal:?}"
     );
 
     let mut engine = NoRetractionEngine::new();
-    let failure = run(&mut engine, &minimal).expect_err("缩小后必须仍然失败");
-    // 与 failing_case_shrinks_to_under_ten_ops 同一个理由：is_legal 若被打穿，
-    // 这个断言是唯一能把"伪产物"和"原始 bug 的同族失败"区分开的地方——在
-    // 多表路径上这条门禁尤其容易被写错（用 A 表的行给 B 表的删改当合法性
-    // 依据），所以这里也要求它真的挡住。
+    let failure = run(&mut engine, &minimal).expect_err("the shrunk case must still fail");
+    // The same reasoning as failing_case_shrinks_to_under_ten_ops: if is_legal were
+    // broken, this assertion is the only thing that tells "an artifact" apart from
+    // "a failure of the same family as the original bug" — and on the
+    // multi-table path the gate is especially easy to get wrong (legitimising a
+    // delete on table B with a row from table A), so it must really hold here too.
     assert!(
         !failure.stage.starts_with("oracle["),
-        "缩小后的用例在 stage={} 失败——这是合法性门禁损坏时会收敛到的伪产物形态",
+        "the shrunk case fails at stage={} — the artifact a broken legality gate converges to",
         failure.stage
     );
 
@@ -409,13 +494,148 @@ fn shrink_reduces_initial_rows_in_every_table_of_a_multi_table_case() {
         .collect();
     assert!(
         rows_by_table.values().all(|&n| n < 25),
-        "phase 3 必须真的对每一张表都做过逐行删减，不能有表原封不动留着全部 25 行初始数据：{rows_by_table:?}"
+        "phase 3 must really have deleted rows from every table; no table may keep all 25 of \
+         its initial rows: {rows_by_table:?}"
     );
     let total_rows: usize = rows_by_table.values().sum();
     assert!(
         total_rows <= 10,
-        "两张表加总的初始行数应当收敛到个位数——查询只读 anchor 表 t0，\
-         非 anchor 的 t1 对 oracle 比对完全不可观察，正确的 shrink 应当把它\
-         整个缩到 0 行；实得 {rows_by_table:?}"
+        "the two tables' combined initial rows should converge to single digits — the query \
+         reads only the anchor table t0, the non-anchor t1 is completely unobservable to the \
+         oracle comparison, and a correct shrink should reduce it to 0 rows; got \
+         {rows_by_table:?}"
+    );
+}
+
+/// The M1a checkpoint (spec §11): the differential framework running green on a
+/// real incremental engine for the first time.
+///
+/// This test has the same structure as `naive_engine_is_green_across_many_seeds`,
+/// with `IncrementalEngine` as the subject — it is incremental while the
+/// reference recomputes in full, and both must agree with the oracle at every
+/// refresh point.
+#[test]
+fn incremental_engine_is_green_across_the_enumerated_space() {
+    let db = gen_database(2);
+    let domain = Domain::default();
+    let queries = enumerate(&db.tables()[0]);
+    // Final review Finding D: this test's name promises "covers the whole
+    // enumerated query space", but the old assertion (`checked >= 50`) counted
+    // **seeds run**, not **queries covered** — the two coincided only because
+    // `seed_range()` yields 50 seeds by default and `enumerate` currently
+    // produces fewer queries than that. Counting the `exercised` index set makes
+    // the assertion verify what the name says: even if `enumerate` someday
+    // produces more than 50 queries, coverage is not silently lost here.
+    let mut exercised: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+    let mut checked = 0usize;
+    for seed in seed_range() {
+        let idx = seed as usize % queries.len();
+        let query = &queries[idx];
+        let case = gen_case_with_query(
+            seed,
+            &db,
+            &domain,
+            query.clone(),
+            20,
+            60,
+            Batching::Chunks(4),
+        );
+        let mut engine = IncrementalEngine::new();
+        if let Err(f) = run(&mut engine, &case) {
+            panic!("the incremental engine disagrees with the oracle at seed={seed}: {f}");
+        }
+        exercised.insert(idx);
+        checked += 1;
+    }
+    assert!(checked >= 1, "at least one seed must run, ran {checked}");
+
+    // In `IVMLITE_SEED` single-seed replay mode only one query runs, so "cover the
+    // whole enumerated space" does not apply — the replay command
+    // `Failure::Display` prints is precisely `IVMLITE_SEED=<seed> cargo test ...`,
+    // and if this assertion still demanded every enumerated query in single-seed
+    // mode, following that replay instruction would first hit a red unrelated to
+    // the original bug (final review Finding D).
+    if std::env::var("IVMLITE_SEED").is_err() {
+        assert_eq!(
+            exercised.len(),
+            queries.len(),
+            "every one of the {} queries enumerate produces must be covered; only {} were: {:?}",
+            queries.len(),
+            exercised.len(),
+            exercised
+        );
+    }
+}
+
+/// The incremental engine must agree with full recomputation at **every refresh
+/// point**, not only at the final state. TransientDriftEngine exists to prove
+/// the two are not the same thing (spec §9.1).
+#[test]
+fn incremental_engine_matches_naive_recompute_at_every_refresh_point() {
+    let db = gen_database(2);
+    let case = gen_case(11, &db, &Domain::default(), 25, 120, Batching::Chunks(5));
+
+    let mut inc = IncrementalEngine::new();
+    let mut naive = NaiveRecompute::new();
+    let bases: BTreeMap<String, ZSet> = case
+        .initial
+        .iter()
+        .map(|(t, rows)| {
+            (
+                t.clone(),
+                ZSet::from_rows(rows.iter().map(|r| (r.clone(), 1))),
+            )
+        })
+        .collect();
+    inc.create_view(&case.database, &case.query, &bases)
+        .unwrap();
+    naive
+        .create_view(&case.database, &case.query, &bases)
+        .unwrap();
+    assert_eq!(
+        inc.materialize().unwrap(),
+        naive.materialize().unwrap(),
+        "they already disagree at bootstrap"
+    );
+
+    for batch in case.batches() {
+        for (table, raw) in &batch {
+            inc.apply(table, raw).unwrap();
+            naive.apply(table, raw).unwrap();
+        }
+        inc.refresh().unwrap();
+        naive.refresh().unwrap();
+        assert_eq!(
+            inc.materialize().unwrap(),
+            naive.materialize().unwrap(),
+            "incremental maintenance and full recomputation diverge at a refresh point"
+        );
+    }
+}
+
+/// Spec §5.2's boundary check must take effect at create_view, not as a panic at refresh.
+#[test]
+fn create_view_rejects_a_global_aggregate() {
+    let db = gen_database(1);
+    let bad = ViewQuery {
+        group_by: vec![],
+        aggs: vec![Agg {
+            func: AggFn::Count,
+            column: None,
+        }],
+        predicate: Predicate::None,
+    };
+    let mut engine = IncrementalEngine::new();
+    let err = engine
+        .create_view(
+            &db,
+            &bad,
+            &BTreeMap::from([(db.tables()[0].table.clone(), ZSet::new())]),
+        )
+        .expect_err("an empty group_by must be rejected at create_view");
+    assert!(
+        err.0.contains("GROUP BY") || err.0.contains("group_by"),
+        "the error should name group_by: {}",
+        err.0
     );
 }

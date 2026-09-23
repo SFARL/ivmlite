@@ -1,6 +1,7 @@
-/// v0 的值域。刻意不含 Real 与 Blob：
-/// Real 会让增量 SUM 与全量重算无法 bit-for-bit 相等（浮点加法不满足结合律），
-/// Blob 在 v0 的 STRICT table 限制下用不到。两者均排在 M4。
+/// v0's value domain. It deliberately has no Real and no Blob: Real would keep
+/// an incremental SUM from matching a full recomputation bit for bit (floating-
+/// point addition is not associative), and Blob is not needed under v0's STRICT
+/// table restriction. Both are scheduled for M4.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Value {

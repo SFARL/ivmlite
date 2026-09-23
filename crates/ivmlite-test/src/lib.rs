@@ -2,6 +2,7 @@ mod buggy;
 mod data;
 mod differential;
 mod engine;
+mod incremental;
 mod invariants;
 mod naive;
 mod ops;
@@ -16,11 +17,14 @@ mod test_support;
 pub use buggy::{NoRetractionEngine, TransientDriftEngine};
 pub use data::{gen_database, gen_initial, gen_row, gen_rows, Domain};
 pub use differential::{
-    check_batch_invariance, gen_case, run, seed_range, Batching, Failure, TestCase,
+    check_batch_invariance, gen_case, gen_case_with_query, run, seed_range, Batching, Failure,
+    TestCase,
 };
 pub use engine::{Engine, EngineError};
 pub use invariants::check_invariants;
-pub use ivmlite_core::{Agg, AggFn, Column, ColumnType, Predicate, Schema, ViewQuery};
+pub use ivmlite_core::{
+    Agg, AggFn, Column, ColumnType, IncrementalEngine, Predicate, Schema, ViewQuery,
+};
 pub use naive::NaiveRecompute;
 pub use ops::{gen_ops, Op};
 pub use oracle::recompute_via_sqlite;

@@ -1,101 +1,101 @@
-# M1a Phase 2：单表增量引擎 Implementation Plan
+# M1a Phase 2: Single-Table Incremental Engine Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 在 `ivmlite-core` 里建出 v0 的增量引擎——plan IR、`Arrangement`、Filter / Project / Aggregate、delta consolidation——并让它接进 Phase 1 的差分框架，在全部枚举查询 × 有偏更新序列上跑绿。
+**Goal:** Build v0's incremental engine in `ivmlite-core` — the plan IR, `Arrangement`, Filter / Project / Aggregate, delta consolidation — and plug it into Phase 1's differential harness, green across every enumerated query × biased update sequence.
 
-**Architecture:** `ViewQuery`（harness 的扁平查询表示）经 `lower()` 降到 spec §5.2 的 `Plan` 树；`Plan` 再建成带状态的 `Node` 算子树。算子按 §6.1 的三类分工：Filter / Project 无状态、delta 直接穿过；Aggregate 持组状态并按 §6.2 发 retraction 对。`refresh` 先把本批 raw Δ 按 Z-set 合并，再推进算子树——consolidation 因此是引擎的**可观测**行为而非优化细节。引擎实现在 core，`ivmlite-test` 侧加一个 `impl Engine` 适配器接进 harness。
+**Architecture:** `ViewQuery` (the harness's flat query representation) is lowered by `lower()` into spec §5.2's `Plan` tree; the `Plan` is then built into a stateful `Node` operator tree. Operators split along §6.1's three kinds: Filter / Project are stateless and deltas pass straight through; Aggregate holds per-group state and emits retraction pairs per §6.2. `refresh` first merges the batch's raw Δ as a Z-set, then pushes it through the operator tree — so consolidation is an **observable** behaviour of the engine, not an optimisation detail. The engine lives in core; `ivmlite-test` adds an `impl Engine` adapter to plug it into the harness.
 
-**Tech Stack:** Rust 1.95、纯 Rust 无 `unsafe`、无新依赖（`ivmlite-core` 按 §4.2 不得依赖 `rusqlite`）
+**Tech Stack:** Rust 1.95, pure Rust with no `unsafe`, no new dependencies (per §4.2 `ivmlite-core` must not depend on `rusqlite`)
 
 **Spec:** `docs/superpowers/specs/2026-09-18-ivmlite-design.md`
 
-**前序计划:** `docs/superpowers/plans/2026-09-20-m1a-phase1-multi-table-harness.md`（已完成并合入 master，41ea247）
+**Preceding plan:** `docs/superpowers/plans/2026-09-20-m1a-phase1-multi-table-harness.md` (complete and merged into master, 41ea247)
 
 ---
 
-## 本计划的范围边界与三条设计裁定
+## This plan's scope boundary and three design rulings
 
-### 范围：本计划**不含 Join**
+### Scope: this plan **does not include Join**
 
-spec §11 给 M1a 设了一个内部检查点：「先完成多表框架重构并让单表引擎跑绿，再上 join。这样 join 出 bug 时能二分定位（是 join 引入的，还是框架重构就错了），而不必同时调两类 bug。」
+Spec §11 gives M1a an internal checkpoint: "first finish the multi-table harness refactor and get the single-table engine green, then add join. That way, when join has a bug it can be bisected (introduced by join, or already wrong in the harness refactor) instead of debugging two kinds of bug at once."
 
-Phase 1 已交付多表框架。本计划交付**单表引擎跑绿**，即检查点本身。Join 是 Phase 3，单独一份计划。这条分割不是保守，是那个二分论证的直接落地：join 是唯一的双线性算子，它的 `ΔR⋈ΔS` 项和两侧 arrangement 都是本计划任何部分都不具备的新失败形态。
+Phase 1 delivered the multi-table harness. This plan delivers **the single-table engine running green**, which is the checkpoint itself. Join is Phase 3, a plan of its own. This split is not caution; it is the direct application of that bisection argument: join is the only bilinear operator, and its `ΔR⋈ΔS` term and the arrangements on both sides are new failure modes no part of this plan has.
 
-**本计划不含的另外两项**（留给后续里程碑，此处列出以免被当成遗漏）：
-- benchmark 对比（§11 的 M1 完成判定之一）。M0 的 benchmark 两个对照组都跑在 SQLite 里，而 M1a 引擎是纯内存 Rust，直接比是苹果对橘子。等 M1b 的 `ivmlite-sqlite` 把引擎接上真实 shadow table 之后才有可比性。
-- `ivmlite-sql`（`sqlparser-rs` → IR）。M1b。
+**Two other items this plan does not include** (left to later milestones, listed here so they are not taken for omissions):
+- A benchmark comparison (one of §11's M1 completion criteria). Both of M0's benchmark control groups run inside SQLite, while the M1a engine is in-memory Rust; comparing them directly is apples to oranges. It becomes comparable once M1b's `ivmlite-sqlite` connects the engine to real shadow tables.
+- `ivmlite-sql` (`sqlparser-rs` → IR). M1b.
 
-### 裁定一：`ViewQuery` 保留为 harness 表面，`Plan` 是引擎 IR，`lower()` 连接两者
+### Ruling one: `ViewQuery` stays as the harness surface, `Plan` is the engine IR, and `lower()` connects them
 
-`ViewQuery { group_by: Vec<usize>, aggs: Vec<Agg>, predicate: Predicate }` **就是** v0 的合法形状的扁平编码——spec §5.2 规定根算子必须是带非空 `GROUP BY` 的 `Aggregate`，于是每个合法 v0 查询都恰好是 `Scan → Filter? → Project → Aggregate`。
+`ViewQuery { group_by: Vec<usize>, aggs: Vec<Agg>, predicate: Predicate }` **is** a flat encoding of v0's legal shape — spec §5.2 requires the root operator to be an `Aggregate` with a non-empty `GROUP BY`, so every legal v0 query is exactly `Scan → Filter? → Project → Aggregate`.
 
-不把 harness 改成直接枚举 `Plan` 树，理由有三：
+There are three reasons not to change the harness to enumerate `Plan` trees directly:
 
-1. **穷举优于随机这条前提依赖扁平形状。** `enumerate` 的规模可控（单表 27 个查询）正因为空间是 `group_by × aggs × predicate` 的乘积；枚举树形 IR 要先解决「哪些树是合法的」，而那正是 `ViewQuery` 已经用类型编码掉的东西。
-2. **oracle 按 `ViewQuery` 渲染 SQL。** 改成 `Plan` 要重写 `view_query_to_sql`，而 oracle 的独立性（§9.1）是整套验证的地基，不该为引擎的内部表示动它。
-3. **§5.3 明说 IR 可以自由演进**——持久化的是 SQL 原文而非序列化 IR，正是为了让 IR 不承担兼容负担。多一层表示的成本因此只有 `lower()` 一个函数。
+1. **The "exhaustive beats random" premise depends on the flat shape.** `enumerate`'s size is controlled (27 queries for a single table) precisely because the space is the product `group_by × aggs × predicate`; enumerating a tree IR would first have to solve "which trees are legal", which is exactly what `ViewQuery` already encodes away in its types.
+2. **The oracle renders SQL from `ViewQuery`.** Switching to `Plan` would mean rewriting `view_query_to_sql`, and the oracle's independence (§9.1) is the foundation of the whole verification; it should not move for the engine's internal representation.
+3. **§5.3 says outright that the IR may evolve freely** — what is persisted is the SQL text, not a serialised IR, precisely so the IR carries no compatibility burden. The cost of one extra representation is therefore just one function, `lower()`.
 
-**代价与归属**：join 落地时 `ViewQuery` 是单表的，必须扩展或被取代。**这个决定归 Phase 3**，不在本计划里预判——那时算子树是真实代码而非推测，约束会自己显形。
+**Cost and ownership**: when join lands, `ViewQuery` is single-table and must be extended or replaced. **That decision belongs to Phase 3**, and this plan does not pre-judge it — by then the operator tree is real code rather than speculation, and the constraints will show themselves.
 
-### 裁定二：`lower()` 在边界上做 §5.2 校验，提前关闭一条已登记的缺口
+### Ruling two: `lower()` performs §5.2's validation at the boundary, closing a registered gap early
 
-`docs/mutation-gates.md` 有一行登记着（m6，最终评审发现）：§5.2 的根算子约束**只在生成器侧**成立——`ViewQuery` 可以在 `enumerate` 之外自由构造出 `group_by: vec![]`，`check_invariants` 一路放行。文末「Join 落地」清单把补边界校验排在 join 那时。
+`docs/mutation-gates.md` has a registered row (m6, found by the final review): §5.2's root-operator constraint holds **only on the generator side** — a `ViewQuery` with `group_by: vec![]` can be built freely outside `enumerate`, and `check_invariants` lets it through all the way. The "When join lands" checklist at the end of the file schedules the boundary check for the join work.
 
-**提前到本计划**：本计划正是 `ViewQuery` 第一次跨越到 `enumerate` 之外的入口——引擎直接消费它。`lower()` 返回 `Result`，对空 `group_by` 或空 `aggs` 硬报错。那一行的「不适用」在本计划 Task 1 改成「已验证」，并从 join 清单里划掉。
+**Moved into this plan**: this plan is exactly the first entry point where `ViewQuery` crosses outside `enumerate` — the engine consumes it directly. `lower()` returns a `Result` and hard-errors on an empty `group_by` or empty `aggs`. That row's "n/a" becomes "verified" in this plan's Task 1 and is struck from the join checklist.
 
-### 裁定三：不引入只有一个变体的 `Expr`
+### Ruling three: no `Expr` with only one variant
 
-spec §5.2 的 `Plan` 写作 `Filter { predicate: Expr }`、`Project { exprs: Vec<Expr> }`、`Aggregate { group_by: Vec<Expr> }`。但 §5.2 同时规定 v0 的 group-by key **只能是裸列**，§6.1 的比较运算符白名单也没有任何需要表达式树的形式。
+Spec §5.2 writes `Plan` as `Filter { predicate: Expr }`, `Project { exprs: Vec<Expr> }`, `Aggregate { group_by: Vec<Expr> }`. But §5.2 also requires v0's group-by keys to be **bare columns only**, and §6.1's whitelist of comparison operators contains nothing that needs an expression tree.
 
-于是 v0 的 `Expr` 会是一个只有 `Column(usize)` 一个变体的枚举——纯粹的空壳泛化。本计划用 `Vec<usize>`（投影与 group-by 列）与既有的 `Predicate`（过滤）代替。当第一个真正需要表达式的特性出现时（M4 的 `MIN`/`MAX` 之外的计算列），那时引入 `Expr` 是一次局部改动，而现在引入它是五个算子都要穿过的一层无内容的间接。
+So v0's `Expr` would be an enum with a single variant, `Column(usize)` — pure hollow generalisation. This plan uses `Vec<usize>` (projection and group-by columns) and the existing `Predicate` (filtering) instead. When the first feature that really needs expressions appears (computed columns beyond M4's `MIN`/`MAX`), introducing `Expr` then is a local change, whereas introducing it now is a contentless layer of indirection every one of five operators has to pass through.
 
 ---
 
 ## Global Constraints
 
-以下每条都来自 spec，是全部任务的隐含要求：
+Each of the following comes from the spec and is an implicit requirement of every task:
 
-- **§4.2 `ivmlite-core` 不得依赖 `rusqlite`**，也不得依赖 `ivmlite-test`（后者依赖前者，反向会成环）。本计划不引入任何新依赖。
-- **§4.2 全项目唯一允许 `unsafe` 的地方是 `ivmlite-sqlite`（M1b）。** 本计划一行 `unsafe` 都不应出现。
-- **§5.1 权重归零的行必须删除**，不留僵尸条目。`ZSet::update` 已如此，算子状态也必须如此。
-- **§5.2 根算子必须是 `Aggregate` 且 `group_by` 非空**；禁止全局聚合。
-- **§6.1 `SUM` 在非 NULL 输入为零行时返回 `NULL` 而非 `0`。** 聚合状态必须同时维护累加值与非 NULL 输入计数。
-- **§6.1 谓词是三值逻辑**：NULL 求值为 UNKNOWN，该行不进入结果；**不得据此认为 `NOT p` 等价于 `!p`**。
-- **§6.1 整数溢出未定义**，值域由生成器夹住（`|组内和| < 2^62`）；引擎不做静态检查。
-- **§6.2 聚合必须发 retraction 对**：SUM 从 100 变 150 时发 `(key,100) w=-1` 与 `(key,150) w=+1`，不是单独一行 `+1`。这是 IVM 最大的 bug 来源。
-- **§6.3 `Arrangement::get` 返回迭代器而非 `Option`**（key → 多值），且 trait 必须 object-safe（用 `Box<dyn Iterator>`，不用 RPITIT）。
-- **§8.5 `apply` 收未合并的原始 Δ**；`refresh` 与 `apply` 分离；`apply` 带表名。这三条签名一律不得改动。
-- **§9.4 迭代顺序确定**：任何可能影响输出的迭代都用 `Vec` / `BTreeMap`，不得用 `HashMap` / `HashSet`。
-- **变异门禁**：每条 spec 强制的行为都要在 `docs/mutation-gates.md` 登记一行，且「已验证」必须是真跑过变异的。改坏 → **确认仍能编译** → 跑测试 → 确认指名的测试变红 → 还原。编译失败不产生测试输出，粗心过滤时与「测试通过」一模一样。
-- **测试命令必须是 `cargo test --workspace --locked --no-fail-fast`。** 省掉 `--no-fail-fast` 时上游 crate 的失败会掩盖真正的目标。
-- 每次提交前 `cargo fmt --all -- --check` 与 `cargo clippy --workspace --all-targets --locked -- -D warnings` 必须通过。
-- 加门禁行后跑 `python3 scripts/count-mutation-gates.py --fix`，再裸跑一次确认打印「一致」。注意该脚本**只核对统计句与单元格字面内容**，不判断某行的「已验证」是否真跑过变异——「一致」不等于这张表诚实。
-- 暂存具体文件，不用 `git add -A`；不得使用 `--no-verify`。提交信息结尾附：
+- **§4.2 `ivmlite-core` must not depend on `rusqlite`**, nor on `ivmlite-test` (the latter depends on the former; the reverse would create a cycle). This plan introduces no new dependency.
+- **§4.2 the only place in the whole project allowed to use `unsafe` is `ivmlite-sqlite` (M1b).** Not one line of `unsafe` should appear in this plan.
+- **§5.1 a row whose weight reaches zero must be deleted**, leaving no zombie entries. `ZSet::update` already does this; operator state must too.
+- **§5.2 the root operator must be an `Aggregate` with a non-empty `group_by`**; global aggregates are forbidden.
+- **§6.1 `SUM` over zero non-NULL inputs returns `NULL`, not `0`.** Aggregate state must maintain both the running sum and the count of non-NULL inputs.
+- **§6.1 predicates use three-valued logic**: NULL evaluates to UNKNOWN and the row is not included; **do not conclude from this that `NOT p` is equivalent to `!p`**.
+- **§6.1 integer overflow is undefined**; the value range is clamped by the generator (`|per-group sum| < 2^62`); the engine does no static check.
+- **§6.2 aggregates must emit retraction pairs**: when a SUM goes from 100 to 150, emit `(key,100) w=-1` and `(key,150) w=+1`, not a lone `+1` row. This is IVM's biggest source of bugs.
+- **§6.3 `Arrangement::get` returns an iterator, not an `Option`** (key → many values), and the trait must be object-safe (use `Box<dyn Iterator>`, not RPITIT).
+- **§8.5 `apply` takes the unconsolidated raw Δ**; `refresh` is separate from `apply`; `apply` carries a table name. None of these three signatures may change.
+- **§9.4 iteration order is deterministic**: any iteration that can affect the output uses `Vec` / `BTreeMap`, never `HashMap` / `HashSet`.
+- **Mutation gates**: every spec-mandated behaviour gets a row in `docs/mutation-gates.md`, and "verified" must come from actually running the mutation. Break it → **confirm it still compiles** → run the tests → confirm the named test goes red → restore. A compile failure produces no test output, which under careless filtering looks exactly like "tests passed".
+- **The test command must be `cargo test --workspace --locked --no-fail-fast`.** Without `--no-fail-fast`, a failure in an upstream crate masks the real target.
+- Before every commit, `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets --locked -- -D warnings` must pass.
+- After adding gate rows, run `python3 scripts/count-mutation-gates.py --fix`, then run it bare once more to confirm it prints "consistent". Note the script **checks only the summary sentence and the literal cell contents**; it does not judge whether a row's "verified" was really obtained by running the mutation — "consistent" does not mean the table is honest.
+- Stage specific files, not `git add -A`; never use `--no-verify`. End the commit message with:
   `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`
 
 ---
 
 ## File Structure
 
-| 文件 | 职责 |
+| File | Responsibility |
 |---|---|
-| `crates/ivmlite-core/src/plan.rs`（新建） | spec §5.2 的 `Plan` 枚举；`lower(&ViewQuery, &str) -> Result<Plan, PlanError>`；§5.2 的边界校验 |
-| `crates/ivmlite-core/src/arrangement.rs`（新建） | spec §6.3 的 `Arrangement` trait；`MemArrangement`（M1a 的内存实现，M1b 换成 shadow table） |
-| `crates/ivmlite-core/src/node.rs`（新建） | 带状态的算子树 `Node`：从 `Plan` 建树，`delta()` 按 §6.1 的三类规则推进 |
-| `crates/ivmlite-core/src/agg.rs`（新建） | `Aggregate` 的组状态与 §6.2 的 retraction 逻辑。单独成文件是因为它是 v0 全部难度所在（§6.1：「v0 的全部难度集中在聚合」） |
-| `crates/ivmlite-core/src/engine.rs`（新建） | `IncrementalEngine`：持有算子树与按表的 pending raw Δ；`refresh` 先 consolidate 再推进 |
-| `crates/ivmlite-core/src/lib.rs`（修改） | 导出上述模块 |
-| `crates/ivmlite-test/src/incremental.rs`（新建） | `impl Engine for IncrementalEngine` 适配器（本地 trait + 外部类型，允许） |
-| `crates/ivmlite-test/src/lib.rs`（修改） | 导出适配器 |
-| `crates/ivmlite-test/tests/harness_catches_bugs.rs`（修改） | 真实引擎接入差分框架的端到端测试 |
-| `docs/mutation-gates.md`（修改） | 每个任务登记自己的门禁行 |
+| `crates/ivmlite-core/src/plan.rs` (new) | spec §5.2's `Plan` enum; `lower(&ViewQuery, &str) -> Result<Plan, PlanError>`; §5.2's boundary validation |
+| `crates/ivmlite-core/src/arrangement.rs` (new) | spec §6.3's `Arrangement` trait; `MemArrangement` (M1a's in-memory implementation, replaced by a shadow table in M1b) |
+| `crates/ivmlite-core/src/node.rs` (new) | The stateful operator tree `Node`: built from a `Plan`; `delta()` advances by §6.1's three kinds of rule |
+| `crates/ivmlite-core/src/agg.rs` (new) | `Aggregate`'s group state and §6.2's retraction logic. It gets its own file because it is where all of v0's difficulty lies (§6.1: "all of v0's difficulty is concentrated in aggregation") |
+| `crates/ivmlite-core/src/engine.rs` (new) | `IncrementalEngine`: holds the operator tree and the per-table pending raw Δ; `refresh` consolidates first, then advances |
+| `crates/ivmlite-core/src/lib.rs` (modified) | Exports the modules above |
+| `crates/ivmlite-test/src/incremental.rs` (new) | The `impl Engine for IncrementalEngine` adapter (local trait + foreign type, allowed) |
+| `crates/ivmlite-test/src/lib.rs` (modified) | Exports the adapter |
+| `crates/ivmlite-test/tests/harness_catches_bugs.rs` (modified) | End-to-end tests of the real engine plugged into the differential harness |
+| `docs/mutation-gates.md` (modified) | Each task registers its own gate rows |
 
-算子拆成 `node.rs` + `agg.rs` 两个文件而非一个：线性算子的 delta 规则是三行（`Δ(f(R)) = f(ΔR)`），聚合是几十行带状态机。放一起时后者会淹没前者，而两者的正确性论证完全不同。
+The operators are split into two files, `node.rs` + `agg.rs`, rather than one: a linear operator's delta rule is three lines (`Δ(f(R)) = f(ΔR)`), while aggregation is dozens of lines with a state machine. Put together, the latter drowns the former, and their correctness arguments are entirely different.
 
 ---
 
-## Task 1：Plan IR、lowering、§5.2 边界校验
+## Task 1: Plan IR, lowering, §5.2 boundary validation
 
 **Files:**
 - Create: `crates/ivmlite-core/src/plan.rs`
@@ -103,25 +103,25 @@ spec §5.2 的 `Plan` 写作 `Filter { predicate: Expr }`、`Project { exprs: Ve
 - Modify: `docs/mutation-gates.md`
 
 **Interfaces:**
-- Consumes: `ivmlite_core::{ViewQuery, Agg, AggFn, Predicate}`（已存在于 `query.rs`）
+- Consumes: `ivmlite_core::{ViewQuery, Agg, AggFn, Predicate}` (already in `query.rs`)
 - Produces:
   - `pub enum Plan { Scan { table: String, columns: Vec<usize> }, Filter { input: Box<Plan>, predicate: Predicate }, Project { input: Box<Plan>, columns: Vec<usize> }, Aggregate { input: Box<Plan>, group_by: Vec<usize>, aggs: Vec<Agg> } }`
   - `pub struct PlanError(pub String)`
   - `pub fn lower(query: &ViewQuery, table: &str, arity: usize) -> Result<Plan, PlanError>`
 
-> **`Join` 变体本计划不加。** spec §5.2 把它列在 `Plan` 里并标注「M1a」，但加一个所有匹配分支都要写 `unreachable!()` 的变体，等于在每个 `match` 上留一处没有测试能到达的代码——正是本项目反复在压的那一类。Phase 3 加变体时，编译器会把所有需要处理它的地方逐个指出来，这比预留占位更可靠。
+> **This plan does not add the `Join` variant.** Spec §5.2 lists it in `Plan` marked "M1a", but adding a variant every match arm has to answer with `unreachable!()` leaves, on every `match`, code no test can reach — exactly the kind this project keeps pushing down. When Phase 3 adds the variant, the compiler will point out every place that must handle it, one by one, which is more reliable than a reserved placeholder.
 
-### 为什么 lowering 要发出 `Project`
+### Why lowering emits a `Project`
 
-朴素的降法是 `Aggregate { input: Filter { Scan } }`，根本不产生 `Project`。但 spec §11 把 `Project` 列进 M1a，于是会出现一个**没有任何测试能到达**的算子。
+The naive lowering is `Aggregate { input: Filter { Scan } }`, which produces no `Project` at all. But spec §11 lists `Project` in M1a, so there would be an operator that **no test can reach**.
 
-本计划的降法让 `Project` 真的承重：`Scan` 取全部列 → `Filter` 按原始列下标求值 → `Project` 收窄到查询真正需要的列（`group_by ∪ 各 SUM 的列`）→ `Aggregate` 按收窄后的新下标工作。
+This plan's lowering makes `Project` really carry weight: `Scan` takes every column → `Filter` evaluates against the original column indices → `Project` narrows to the columns the query actually needs (`group_by ∪ each SUM's column`) → `Aggregate` works on the narrowed new indices.
 
-于是 `Project` 在每一个枚举出来的用例上都被执行，且下标重映射是真实逻辑。举例：`group_by=[0]`、`aggs=[COUNT(*)]`、`predicate=IntGt{column:1}` 时，过滤用到列 1 而聚合只要列 0，`Project` 把 2 列收窄成 1 列。
+So a `Project` node exists in every enumerated case (`enumerate` × `lower` at arity 2 was measured across all 27 cases, with `Project` present in every one), but "present" does not mean "narrowing": in the same measurement, `Project` really narrowed the column count in 12 cases, and in the other 15 it narrowed to the same column set as its input — an identity projection. For example: with `group_by=[0]`, `aggs=[COUNT(*)]`, `predicate=IntGt{column:1}`, the filter uses column 1 while the aggregate needs only column 0, and `Project` narrows 2 columns to 1 — one of those 12 truly narrowing cases. Even so, adding the `Project` step still holds up: without it, `Project` as an operator has no reachable call site at all, and "12/27 narrow" could not even be said.
 
-- [ ] **Step 1: 写失败的测试**
+- [ ] **Step 1: Write the failing tests**
 
-`crates/ivmlite-core/src/plan.rs` 末尾：
+At the end of `crates/ivmlite-core/src/plan.rs`:
 
 ```rust
 #[cfg(test)]
@@ -143,133 +143,133 @@ mod tests {
 
     #[test]
     fn lowers_to_scan_filter_project_aggregate() {
-        // predicate 用列 1，聚合只要列 0——Project 必须把 2 列收窄成 1 列，
-        // 且 Aggregate 的 group_by 下标必须重映射到收窄后的位置。
+        // The predicate uses column 1 and the aggregate needs only column 0 — Project must narrow 2 columns to 1,
+        // and Aggregate's group_by indices must be remapped to the narrowed positions.
         let plan = lower(
             &q(vec![0], vec![count()], Predicate::IntGt { column: 1, value: 3 }),
             "orders",
             2,
         )
-        .expect("合法查询必须能降下来");
+        .expect("a legal query must lower");
 
         let Plan::Aggregate { input, group_by, aggs } = &plan else {
-            panic!("根算子必须是 Aggregate（spec §5.2）：{plan:?}");
+            panic!("the root operator must be Aggregate (spec §5.2): {plan:?}");
         };
-        assert_eq!(group_by, &vec![0], "收窄后 group key 落在位置 0");
+        assert_eq!(group_by, &vec![0], "after narrowing, the group key lands at position 0");
         assert_eq!(aggs.len(), 1);
 
         let Plan::Project { input, columns } = &**input else {
-            panic!("Aggregate 之下必须是 Project：{input:?}");
+            panic!("Aggregate's input must be a Project: {input:?}");
         };
-        assert_eq!(columns, &vec![0], "只有列 0 被聚合用到");
+        assert_eq!(columns, &vec![0], "only column 0 is used by the aggregate");
 
         let Plan::Filter { input, predicate } = &**input else {
-            panic!("Project 之下必须是 Filter：{input:?}");
+            panic!("Project's input must be a Filter: {input:?}");
         };
         assert_eq!(predicate, &Predicate::IntGt { column: 1, value: 3 });
 
         let Plan::Scan { table, columns } = &**input else {
-            panic!("最底层必须是 Scan：{input:?}");
+            panic!("the bottom must be a Scan: {input:?}");
         };
         assert_eq!(table, "orders");
-        assert_eq!(columns, &vec![0, 1], "Scan 取全部列——Filter 按原始下标求值");
+        assert_eq!(columns, &vec![0, 1], "Scan takes every column — Filter evaluates against the original indices");
     }
 
     #[test]
     fn no_filter_node_when_predicate_is_none() {
-        // Predicate::None 不应产生一个恒真的 Filter 节点：多一个节点就多一处
-        // 每批都要走的无谓遍历，且会让「Filter 被正确跳过」这件事不可观察。
+        // Predicate::None must not produce an always-true Filter node: one more node is one more
+        // pointless pass every batch, and it would make "Filter is correctly skipped" unobservable.
         let plan = lower(&q(vec![0], vec![count()], Predicate::None), "orders", 2).unwrap();
         let Plan::Aggregate { input, .. } = &plan else { panic!("{plan:?}") };
         let Plan::Project { input, .. } = &**input else { panic!("{input:?}") };
         assert!(
             matches!(&**input, Plan::Scan { .. }),
-            "Predicate::None 之下应直接是 Scan，不得插入恒真 Filter：{input:?}"
+            "under Predicate::None the input should be a Scan directly, with no always-true Filter inserted: {input:?}"
         );
     }
 
     #[test]
     fn projection_keeps_group_keys_and_summed_columns_in_a_stable_order() {
-        // group key 是列 1，SUM 的是列 0——收窄后的顺序必须确定且可预测，
-        // 否则 Aggregate 的下标重映射无从对齐（spec §9.4）。
+        // The group key is column 1 and the SUM is over column 0 — the narrowed order must be deterministic and predictable,
+        // or Aggregate's index remapping cannot line up (spec §9.4).
         let plan = lower(&q(vec![1], vec![sum(0)], Predicate::None), "orders", 2).unwrap();
         let Plan::Aggregate { input, group_by, aggs } = &plan else { panic!("{plan:?}") };
         let Plan::Project { columns, .. } = &**input else { panic!("{input:?}") };
-        assert_eq!(columns, &vec![1, 0], "先 group key（按原序），再各 agg 的列（按原序）");
-        assert_eq!(group_by, &vec![0], "group key 重映射到收窄后的位置 0");
-        assert_eq!(aggs[0].column, Some(1), "SUM 的列重映射到收窄后的位置 1");
+        assert_eq!(columns, &vec![1, 0], "group keys first (in original order), then each agg's column (in original order)");
+        assert_eq!(group_by, &vec![0], "the group key is remapped to narrowed position 0");
+        assert_eq!(aggs[0].column, Some(1), "the SUM's column is remapped to narrowed position 1");
     }
 
     #[test]
     fn a_column_used_as_both_group_key_and_sum_target_is_projected_once() {
-        // 同一列既当 group key 又被 SUM 时不得在投影里出现两次——出现两次
-        // 会让 Project 的输出行宽与 Aggregate 的预期不一致。
+        // A column that is both a group key and a SUM target must not appear twice in the projection — appearing twice
+        // would make Project's output row width disagree with what Aggregate expects.
         let plan = lower(&q(vec![0], vec![sum(0)], Predicate::None), "orders", 2).unwrap();
         let Plan::Aggregate { input, group_by, aggs } = &plan else { panic!("{plan:?}") };
         let Plan::Project { columns, .. } = &**input else { panic!("{input:?}") };
-        assert_eq!(columns, &vec![0], "去重后只投影一次");
+        assert_eq!(columns, &vec![0], "projected only once after dedup");
         assert_eq!(group_by, &vec![0]);
         assert_eq!(aggs[0].column, Some(0));
     }
 
     #[test]
     fn empty_group_by_is_rejected_at_the_boundary() {
-        // spec §5.2：禁止全局聚合——空表时它返回 1 行（值为 NULL），而分组
-        // 聚合返回 0 行，「组内计数归零就删行」这条规则对前者是错的。
-        // 此前这条只在生成器侧成立（enumerate 从不产出这种形状）；引擎直接
-        // 消费 ViewQuery 之后，边界校验必须在这里。
+        // spec §5.2: global aggregates are forbidden — over an empty table one returns 1 row (with NULL values), while a grouped
+        // aggregate returns 0 rows, and the rule "delete the row when the group count reaches zero" is wrong for the former.
+        // Until now this held only on the generator side (enumerate never produces this shape); once the engine
+        // consumes ViewQuery directly, the boundary check must be here.
         let err = lower(&q(vec![], vec![count()], Predicate::None), "orders", 2)
-            .expect_err("空 group_by 必须被拒绝");
+            .expect_err("an empty group_by must be rejected");
         assert!(
             err.0.contains("group_by") || err.0.contains("GROUP BY"),
-            "错误信息应指名是 group_by 的问题：{}",
+            "the error should say the problem is group_by: {}",
             err.0
         );
     }
 
     #[test]
     fn empty_aggs_is_rejected_at_the_boundary() {
-        // 根算子必须是 Aggregate；没有任何聚合的 "Aggregate" 实际是
-        // Scan→Project 直接成为视图，而那正是 §5.2 判为非法的形状
-        // （Z-set 权重 2 会显示成 2 行，普通 SQL 视图显示 3 行）。
+        // The root operator must be an Aggregate; an "Aggregate" with no aggregates is really
+        // Scan→Project becoming the view directly, which is exactly the shape §5.2 rules illegal
+        // (a Z-set weight of 2 shows as 2 rows, while an ordinary SQL view shows 3).
         let err = lower(&q(vec![0], vec![], Predicate::None), "orders", 2)
-            .expect_err("空 aggs 必须被拒绝");
-        assert!(err.0.contains("agg"), "错误信息应指名是 aggs 的问题：{}", err.0);
+            .expect_err("an empty aggs must be rejected");
+        assert!(err.0.contains("agg"), "the error should say the problem is aggs: {}", err.0);
     }
 
     #[test]
     fn out_of_range_column_is_rejected() {
-        // 下标越界必须在降的时候就报错，而不是等到 refresh 时 panic——
-        // 引擎在 create_view 之后不应再有可预见的 panic 路径。
+        // An out-of-range index must be reported while lowering, not as a panic at refresh —
+        // after create_view the engine should have no foreseeable panic path.
         let err = lower(&q(vec![7], vec![count()], Predicate::None), "orders", 2)
-            .expect_err("越界 group key 必须被拒绝");
-        assert!(err.0.contains('7'), "错误信息应指出越界的下标：{}", err.0);
+            .expect_err("an out-of-range group key must be rejected");
+        assert!(err.0.contains('7'), "the error should name the out-of-range index: {}", err.0);
     }
 }
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [ ] **Step 2: Run them to confirm they fail**
 
 Run: `cargo test -p ivmlite-core --locked plan`
-Expected: 编译失败，`cannot find function lower` / `cannot find type Plan`
+Expected: a compile failure, `cannot find function lower` / `cannot find type Plan`
 
-- [ ] **Step 3: 写实现**
+- [ ] **Step 3: Write the implementation**
 
-`crates/ivmlite-core/src/plan.rs` 开头：
+At the start of `crates/ivmlite-core/src/plan.rs`:
 
 ```rust
 use crate::{Agg, Predicate, ViewQuery};
 
-/// spec §5.2 的 plan IR。
+/// spec §5.2's plan IR.
 ///
-/// v0 的合法形状恒为 `Scan → Filter? → Project → Aggregate`，由 `lower` 保证。
-/// `Join` 变体留到 Phase 3 与 join 算子一起加——现在加一个所有 match 分支都
-/// 只能写 `unreachable!()` 的变体，等于在每处匹配上留一段没有测试能到达的代码。
+/// v0's legal shape is always `Scan → Filter? → Project → Aggregate`, guaranteed by `lower`.
+/// The `Join` variant is added in Phase 3 together with the join operator — adding now a variant every match arm
+/// can only answer with `unreachable!()` would leave, at every match, code no test can reach.
 ///
-/// spec §5.2 把节点内的表达式写作 `Expr`，本实现用 `Vec<usize>`（列下标）与
-/// `Predicate` 代替：v0 的 group-by key 只能是裸列（§5.2），谓词白名单（§6.1）
-/// 也没有任何需要表达式树的形式，于是 `Expr` 在 v0 会是只有 `Column(usize)`
-/// 一个变体的空壳。第一个真需要表达式的特性出现时再引入它是局部改动。
+/// spec §5.2 writes the expressions inside nodes as `Expr`; this implementation uses `Vec<usize>` (column indices) and
+/// `Predicate` instead: v0's group-by keys can only be bare columns (§5.2), and the predicate whitelist (§6.1)
+/// contains nothing that needs an expression tree, so in v0 `Expr` would be a hollow enum with a single variant,
+/// `Column(usize)`. Introducing it when the first feature that really needs expressions appears is a local change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Plan {
     Scan {
@@ -282,14 +282,14 @@ pub enum Plan {
     },
     Project {
         input: Box<Plan>,
-        /// 要保留的**输入**列下标，按输出顺序排列。
+        /// The **input** column indices to keep, in output order.
         columns: Vec<usize>,
     },
     Aggregate {
         input: Box<Plan>,
-        /// 下标相对于 `Project` 的**输出**，不是基表。
+        /// Indices are relative to `Project`'s **output**, not the base table.
         group_by: Vec<usize>,
-        /// 各 `Agg::column` 同样已重映射到 `Project` 的输出位置。
+        /// Each `Agg::column` is likewise already remapped to `Project`'s output positions.
         aggs: Vec<Agg>,
     },
 }
@@ -305,26 +305,26 @@ impl std::fmt::Display for PlanError {
 
 impl std::error::Error for PlanError {}
 
-/// 把 harness 的扁平 `ViewQuery` 降成算子树，并在边界上执行 §5.2 的合法性校验。
+/// Lower the harness's flat `ViewQuery` into an operator tree, enforcing §5.2's legality checks at the boundary.
 ///
-/// 这是 `ViewQuery` 第一次跨越到 `enumerate` 之外的入口——引擎直接消费它。
-/// `enumerate` 从不产出非法形状（`enumerate_covers_the_v0_space_and_is_nonempty`
-/// 守着这一点），但 `ViewQuery` 本身可以自由构造，所以校验必须在这里。
+/// This is the first entry point where `ViewQuery` crosses outside `enumerate` — the engine consumes it directly.
+/// `enumerate` never produces an illegal shape (`enumerate_covers_the_v0_space_and_is_nonempty`
+/// guards that), but a `ViewQuery` can be built freely, so the check has to be here.
 ///
-/// `arity` 是基表的列数，用于下标越界检查。
+/// `arity` is the base table's column count, used for index bounds checks.
 pub fn lower(query: &ViewQuery, table: &str, arity: usize) -> Result<Plan, PlanError> {
     if query.group_by.is_empty() {
         return Err(PlanError(
-            "spec §5.2：视图的根算子必须是带非空 GROUP BY 的 Aggregate；\
-             禁止全局聚合（空表时它返回 1 行而分组聚合返回 0 行，\
-             「组内计数归零就删行」这条规则对前者是错的）"
+            "spec §5.2: the view's root operator must be an Aggregate with a non-empty GROUP BY; \
+             global aggregates are forbidden (over an empty table one returns 1 row while a grouped aggregate returns 0, \
+             and the rule \"delete the row when the group count reaches zero\" is wrong for the former)"
                 .into(),
         ));
     }
     if query.aggs.is_empty() {
         return Err(PlanError(
-            "spec §5.2：没有任何 agg 的查询实际是 Scan→Project 直接成为视图，\
-             而 Z-set 权重与 SQL 行数在该形状下语义不一致"
+            "spec §5.2: a query with no agg is really Scan→Project becoming the view directly, \
+             and in that shape Z-set weights and SQL row counts disagree semantically"
                 .into(),
         ));
     }
@@ -332,7 +332,7 @@ pub fn lower(query: &ViewQuery, table: &str, arity: usize) -> Result<Plan, PlanE
     let mut check = |c: usize, what: &str| -> Result<(), PlanError> {
         if c >= arity {
             Err(PlanError(format!(
-                "{what} 引用了列下标 {c}，但表 {table} 只有 {arity} 列"
+                "{what} references column index {c}, but table {table} has only {arity} columns"
             )))
         } else {
             Ok(())
@@ -353,8 +353,8 @@ pub fn lower(query: &ViewQuery, table: &str, arity: usize) -> Result<Plan, PlanE
         }
     }
 
-    // 投影保留的列：先 group key（按原序），再各 agg 的列（按原序），去重。
-    // 顺序必须确定，否则 Aggregate 的下标重映射无从对齐（spec §9.4）。
+    // Columns the projection keeps: group keys first (in original order), then each agg's column (in original order), deduplicated.
+    // The order must be deterministic, or Aggregate's index remapping cannot line up (spec §9.4).
     let mut keep: Vec<usize> = Vec::new();
     for &c in &query.group_by {
         if !keep.contains(&c) {
@@ -371,10 +371,10 @@ pub fn lower(query: &ViewQuery, table: &str, arity: usize) -> Result<Plan, PlanE
     let remap = |c: usize| {
         keep.iter()
             .position(|&k| k == c)
-            .expect("keep 由 group_by 与 agg 列构造，必然包含它们")
+            .expect("keep is built from group_by and the agg columns, so it must contain them")
     };
 
-    // Scan 取全部列：Filter 的谓词按**基表**下标求值，收窄发生在 Filter 之后。
+    // Scan takes every column: Filter's predicate is evaluated against **base-table** indices, and narrowing happens after Filter.
     let mut node = Plan::Scan {
         table: table.to_string(),
         columns: (0..arity).collect(),
@@ -404,47 +404,47 @@ pub fn lower(query: &ViewQuery, table: &str, arity: usize) -> Result<Plan, PlanE
 }
 ```
 
-`crates/ivmlite-core/src/lib.rs` 增加：
+`crates/ivmlite-core/src/lib.rs` gains:
 
 ```rust
 pub mod plan;
 pub use plan::{lower, Plan, PlanError};
 ```
 
-- [ ] **Step 4: 运行确认通过**
+- [ ] **Step 4: Run them to confirm they pass**
 
 Run: `cargo test --workspace --locked --no-fail-fast`
-Expected: 全部通过
+Expected: everything passes
 
-- [ ] **Step 5: 变异验证**
+- [ ] **Step 5: Mutation verification**
 
-逐条跑，每条都先确认**能编译**再看测试输出：
+Run them one at a time, each time first confirming it **compiles** before reading the test output:
 
-1. 删掉 `query.group_by.is_empty()` 那个分支 → 期望 `empty_group_by_is_rejected_at_the_boundary` 红
-2. 删掉 `query.aggs.is_empty()` 那个分支 → 期望 `empty_aggs_is_rejected_at_the_boundary` 红
-3. 删掉全部 `check(...)` 调用 → 期望 `out_of_range_column_is_rejected` 红
-4. `keep` 的去重条件 `if !keep.contains(&c)` 全部去掉（直接 push）→ 期望 `a_column_used_as_both_group_key_and_sum_target_is_projected_once` 红
-5. `Scan` 的 `columns` 改成 `keep.clone()`（即在 Scan 处就收窄）→ 期望 `lowers_to_scan_filter_project_aggregate` 红（Filter 的谓词下标会指向错误的列）
-6. `Predicate::None` 时也插入 `Filter` 节点 → 期望 `no_filter_node_when_predicate_is_none` 红
+1. Delete the `query.group_by.is_empty()` branch → expect `empty_group_by_is_rejected_at_the_boundary` to go red
+2. Delete the `query.aggs.is_empty()` branch → expect `empty_aggs_is_rejected_at_the_boundary` to go red
+3. Delete every `check(...)` call → expect `out_of_range_column_is_rejected` to go red
+4. Remove every `if !keep.contains(&c)` dedup condition on `keep` (push directly) → expect `a_column_used_as_both_group_key_and_sum_target_is_projected_once` to go red
+5. Change `Scan`'s `columns` to `keep.clone()` (narrowing at the Scan) → expect `lowers_to_scan_filter_project_aggregate` to go red (Filter's predicate index would point at the wrong column)
+6. Insert a `Filter` node even under `Predicate::None` → expect `no_filter_node_when_predicate_is_none` to go red
 
-- [ ] **Step 6: 登记门禁并提交**
+- [ ] **Step 6: Register the gates and commit**
 
-`docs/mutation-gates.md` 的「ivmlite-core」表加上述 6 条，「已验证」填 `**已验证**`。
+Add the 6 rows above to the "ivmlite-core" table of `docs/mutation-gates.md`, with "verified" set to `**verified**`.
 
-**同时**把 m6 那一行——`§5.2 根算子必须是聚合、GROUP BY 非空——ViewQuery 移进 ivmlite-core 正是为了让 M1 引擎直接消费它，边界上却没有任何校验`——从「不适用」改成 `**已验证**`，变异填「删掉 `lower` 里的 `group_by.is_empty()` 校验」，会红的测试填 `empty_group_by_is_rejected_at_the_boundary`。
+**Also** change the m6 row — `§5.2 the root operator must be an aggregate with a non-empty GROUP BY — ViewQuery moved into ivmlite-core precisely so the M1 engine could consume it directly, yet there is no check at the boundary` — from "n/a" to `**verified**`, with the mutation "delete the `group_by.is_empty()` check in `lower`" and the test that goes red `empty_group_by_is_rejected_at_the_boundary`.
 
-**并且**把文末「Join 落地」清单里关于 §5.2 的那段删掉，因为它已经不再欠着了。清单只应列真正还欠的东西——留一条已还的账在上面，会让下一个执行清单的人对整张清单打折扣。
+**And** delete the §5.2 paragraph from the "When join lands" checklist at the end of the file, since it is no longer owed. The checklist should list only what is really still owed — leaving a debt that has been paid on it makes the next person working through the list discount the whole thing.
 
 ```bash
 python3 scripts/count-mutation-gates.py --fix && python3 scripts/count-mutation-gates.py
 cargo fmt --all -- --check && cargo clippy --workspace --all-targets --locked -- -D warnings
 git add crates/ivmlite-core/src/plan.rs crates/ivmlite-core/src/lib.rs docs/mutation-gates.md
-git commit -m "feat(core): plan IR 与 lowering，并在边界上执行 §5.2 校验"
+git commit -m "feat(core): plan IR and lowering, with §5.2 validation at the boundary"
 ```
 
 ---
 
-## Task 2：`Arrangement` trait 与内存实现
+## Task 2: The `Arrangement` trait and an in-memory implementation
 
 **Files:**
 - Create: `crates/ivmlite-core/src/arrangement.rs`
@@ -455,13 +455,13 @@ git commit -m "feat(core): plan IR 与 lowering，并在边界上执行 §5.2 �
 - Consumes: `ivmlite_core::Row`
 - Produces:
   - `pub trait Arrangement { fn get(&self, key: &Row) -> Box<dyn Iterator<Item = (Row, i64)> + '_>; fn update(&mut self, key: &Row, val: &Row, weight_delta: i64); fn scan(&self) -> Box<dyn Iterator<Item = (Row, Row, i64)> + '_>; }`
-  - `pub struct MemArrangement`（`Default` + `new()`）
+  - `pub struct MemArrangement` (`Default` + `new()`)
 
-> `get` 返回迭代器而非 `Option` 是 spec §6.3 的硬要求：v0 的 group-by 每个 key 只存一个值，用不上多值，但 **join 的每一侧都是 key → 多行**。M0 已按 §6.3 为此付过账，本任务是兑现。同理，trait 必须 object-safe——用 `Box<dyn Iterator>` 而非 `-> impl Iterator`，否则 `dyn Arrangement` 不成立，类型参数会在整个算子树上传播（§6.3 实现注记）。
+> `get` returning an iterator rather than an `Option` is a hard requirement of spec §6.3: v0's group-by stores only one value per key and has no use for multiple values, but **each side of a join is key → many rows**. M0 already paid for this per §6.3; this task collects on it. Likewise the trait must be object-safe — `Box<dyn Iterator>` rather than `-> impl Iterator`, or `dyn Arrangement` does not hold and type parameters propagate through the whole operator tree (§6.3 implementation note).
 
-- [ ] **Step 1: 写失败的测试**
+- [ ] **Step 1: Write the failing tests**
 
-`crates/ivmlite-core/src/arrangement.rs` 末尾：
+At the end of `crates/ivmlite-core/src/arrangement.rs`:
 
 ```rust
 #[cfg(test)]
@@ -475,9 +475,9 @@ mod tests {
 
     #[test]
     fn one_key_can_hold_multiple_values() {
-        // spec §6.3：get 返回迭代器而非 Option，因为 join 的每一侧都是
-        // key → 多行。v0 的 group-by 用不上，但这个形状现在就必须成立，
-        // 否则 Phase 3 要改的是整个算子树的签名。
+        // spec §6.3: get returns an iterator rather than an Option, because each side of a join is
+        // key → many rows. v0's group-by has no use for it, but this shape must hold now,
+        // or Phase 3 would have to change the signature of the whole operator tree.
         let mut a = MemArrangement::new();
         a.update(&r(vec![1]), &r(vec![10]), 1);
         a.update(&r(vec![1]), &r(vec![20]), 3);
@@ -488,29 +488,29 @@ mod tests {
 
     #[test]
     fn weights_accumulate_and_zero_removes_the_entry() {
-        // spec §5.1：权重归零的行必须删除，不留僵尸条目。
+        // spec §5.1: a row whose weight reaches zero must be deleted, leaving no zombie entry.
         let mut a = MemArrangement::new();
         a.update(&r(vec![1]), &r(vec![10]), 2);
         a.update(&r(vec![1]), &r(vec![10]), -2);
-        assert_eq!(a.get(&r(vec![1])).count(), 0, "归零后不得留下条目");
-        assert_eq!(a.scan().count(), 0, "scan 也不得看到它");
+        assert_eq!(a.get(&r(vec![1])).count(), 0, "no entry may remain after reaching zero");
+        assert_eq!(a.scan().count(), 0, "scan must not see it either");
     }
 
     #[test]
     fn a_key_with_no_values_left_disappears_from_scan() {
-        // 仅删掉 (key,val) 还不够——key 本身也不能留成空壳，
-        // 否则 scan 的行数会随历史增长而不随当前状态。
+        // Removing only the (key, val) is not enough — the key itself must not remain as an empty shell,
+        // or scan's row count would grow with history rather than with the current state.
         let mut a = MemArrangement::new();
         a.update(&r(vec![1]), &r(vec![10]), 1);
         a.update(&r(vec![2]), &r(vec![20]), 1);
         a.update(&r(vec![1]), &r(vec![10]), -1);
         let keys: Vec<Row> = a.scan().map(|(k, _, _)| k).collect();
-        assert_eq!(keys, vec![r(vec![2])], "空掉的 key 必须消失");
+        assert_eq!(keys, vec![r(vec![2])], "a key that became empty must disappear");
     }
 
     #[test]
     fn negative_weights_are_representable() {
-        // 中间 delta 里负权重合法（spec §5.1）——只有最终物化结果里不该有。
+        // Negative weights are legal in intermediate deltas (spec §5.1) — they only must not appear in the final materialised result.
         let mut a = MemArrangement::new();
         a.update(&r(vec![1]), &r(vec![10]), -5);
         assert_eq!(a.get(&r(vec![1])).collect::<Vec<_>>(), vec![(r(vec![10]), -5)]);
@@ -518,8 +518,8 @@ mod tests {
 
     #[test]
     fn scan_order_is_deterministic() {
-        // spec §9.4：失败用例要凭 seed 精确重放，任何可能影响输出的迭代
-        // 都必须来自有序容器。
+        // spec §9.4: a failing case must replay exactly from its seed, so any iteration that can affect the output
+        // must come from an ordered container.
         let build = || {
             let mut a = MemArrangement::new();
             for k in [3, 1, 2] {
@@ -533,7 +533,7 @@ mod tests {
         let keys: Vec<Row> = build().into_iter().map(|(k, _, _)| k).collect();
         let mut sorted = keys.clone();
         sorted.sort();
-        assert_eq!(keys, sorted, "scan 必须按 key 有序");
+        assert_eq!(keys, sorted, "scan must be ordered by key");
     }
 
     #[test]
@@ -544,8 +544,8 @@ mod tests {
 
     #[test]
     fn mem_arrangement_is_usable_as_a_trait_object() {
-        // spec §6.3 实现注记：trait 必须 object-safe，否则算子树上会被迫
-        // 传播类型参数。这个测试就是那条约束的编译期门禁。
+        // spec §6.3 implementation note: the trait must be object-safe, or type parameters would be forced
+        // to propagate through the operator tree. This test is that constraint's compile-time gate.
         let mut a: Box<dyn Arrangement> = Box::new(MemArrangement::new());
         a.update(&r(vec![1]), &r(vec![10]), 1);
         assert_eq!(a.get(&r(vec![1])).count(), 1);
@@ -553,39 +553,39 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [ ] **Step 2: Run them to confirm they fail**
 
 Run: `cargo test -p ivmlite-core --locked arrangement`
-Expected: 编译失败，`cannot find type MemArrangement`
+Expected: a compile failure, `cannot find type MemArrangement`
 
-- [ ] **Step 3: 写实现**
+- [ ] **Step 3: Write the implementation**
 
-`crates/ivmlite-core/src/arrangement.rs` 开头：
+At the start of `crates/ivmlite-core/src/arrangement.rs`:
 
 ```rust
 use std::collections::BTreeMap;
 
 use crate::Row;
 
-/// spec §6.3。key → 多个 (value, weight)。
+/// spec §6.3. key → many (value, weight).
 ///
-/// `get` 返回迭代器而非 `Option`：v0 的 group-by 每个 key 只存一个值，用不上
-/// 多值，但 join 的每一侧都是 key → 多行（§6.3 明写这是 M0 就不许做出会让
-/// join 返工的决定的主要落点）。
+/// `get` returns an iterator rather than an `Option`: v0's group-by stores only one value per key and has no use
+/// for multiple values, but each side of a join is key → many rows (§6.3 says outright this is the main place where M0 must
+/// not make a decision that would force join to be reworked).
 ///
-/// 用 `Box<dyn Iterator>` 而非 RPITIT 是为了 object-safety：算子需要持有
-/// `dyn Arrangement`（M1b 的实现来自 `ivmlite-sqlite`），RPITIT 会让该 trait
-/// 不是 object-safe，迫使类型参数在整个算子树上传播。
+/// `Box<dyn Iterator>` rather than RPITIT is for object safety: operators need to hold a
+/// `dyn Arrangement` (M1b's implementation comes from `ivmlite-sqlite`), and RPITIT would make the trait
+/// not object-safe, forcing type parameters to propagate through the whole operator tree.
 pub trait Arrangement {
     fn get(&self, key: &Row) -> Box<dyn Iterator<Item = (Row, i64)> + '_>;
     fn update(&mut self, key: &Row, val: &Row, weight_delta: i64);
     fn scan(&self) -> Box<dyn Iterator<Item = (Row, Row, i64)> + '_>;
 }
 
-/// M1a 的内存实现。M1b 会另加一个走 SQLite shadow table 的实现。
+/// M1a's in-memory implementation. M1b adds another implementation backed by SQLite shadow tables.
 ///
-/// 两层都用 `BTreeMap`：spec §9.4 要求任何可能影响输出的迭代顺序都确定，
-/// 而 `scan()` 的顺序直接进 delta 流。
+/// Both levels use `BTreeMap`: spec §9.4 requires every iteration order that can affect the output to be deterministic,
+/// and `scan()`'s order goes straight into the delta stream.
 #[derive(Debug, Clone, Default)]
 pub struct MemArrangement {
     inner: BTreeMap<Row, BTreeMap<Row, i64>>,
@@ -612,8 +612,8 @@ impl Arrangement for MemArrangement {
         let vals = self.inner.entry(key.clone()).or_default();
         let w = vals.entry(val.clone()).or_insert(0);
         *w += weight_delta;
-        // spec §5.1：归零即删，不留僵尸条目。key 空掉后连 key 一起删，
-        // 否则 scan 的规模会随历史而非当前状态增长。
+        // spec §5.1: delete on reaching zero, no zombie entries. When a key becomes empty the key goes too,
+        // or scan's size would grow with history rather than with the current state.
         if *w == 0 {
             vals.remove(val);
             if vals.is_empty() {
@@ -632,40 +632,40 @@ impl Arrangement for MemArrangement {
 }
 ```
 
-`crates/ivmlite-core/src/lib.rs` 增加：
+`crates/ivmlite-core/src/lib.rs` gains:
 
 ```rust
 pub mod arrangement;
 pub use arrangement::{Arrangement, MemArrangement};
 ```
 
-- [ ] **Step 4: 运行确认通过**
+- [ ] **Step 4: Run them to confirm they pass**
 
 Run: `cargo test --workspace --locked --no-fail-fast`
-Expected: 全部通过
+Expected: everything passes
 
-- [ ] **Step 5: 变异验证**
+- [ ] **Step 5: Mutation verification**
 
-1. `get` 改成最多返回一个值（`vals.iter().take(1)`）→ 期望 `one_key_can_hold_multiple_values` 红
-2. 删掉 `if *w == 0 { vals.remove(val); ... }` 整段 → 期望 `weights_accumulate_and_zero_removes_the_entry` 红
-3. 只删 `if vals.is_empty() { self.inner.remove(key); }` 一行 → 期望 `a_key_with_no_values_left_disappears_from_scan` 红
-4. 外层 `BTreeMap` 换 `HashMap`（`scan` 的顺序随之不定）→ 期望 `scan_order_is_deterministic` 红。**注意这一条是统计性的**：`HashMap` 的 `RandomState` 逐进程重新播种，3 个 key 有 1/3! ≈ 16.7% 概率凑巧有序。跑至少 10 次进程确认，并在门禁行里如实写明它是统计性守护而非绝对守护。
-5. `update` 里 `if weight_delta == 0 { return; }` 删掉 → 期望**仍绿**（`or_insert(0)` 之后加 0 再判零会把条目删掉，行为等价）。这一条记为「已知不被守护」，理由是它纯属短路优化，没有可观察的语义。
+1. Make `get` return at most one value (`vals.iter().take(1)`) → expect `one_key_can_hold_multiple_values` to go red
+2. Delete the whole `if *w == 0 { vals.remove(val); ... }` block → expect `weights_accumulate_and_zero_removes_the_entry` to go red
+3. Delete only the line `if vals.is_empty() { self.inner.remove(key); }` → expect `a_key_with_no_values_left_disappears_from_scan` to go red
+4. Replace the outer `BTreeMap` with a `HashMap` (making `scan`'s order nondeterministic) → expect `scan_order_is_deterministic` to go red. **Note this one is statistical**: `HashMap`'s `RandomState` reseeds per process, and 3 keys have a 1/3! ≈ 16.7% chance of happening to come out ordered. Run at least 10 processes to confirm, and state honestly in the gate row that this is a statistical guard, not an absolute one.
+5. Delete `if weight_delta == 0 { return; }` in `update` → expect it to **stay green** (after `or_insert(0)`, adding 0 and then checking for zero deletes the entry — equivalent behaviour). Record this row as "known unguarded", because it is purely a short-circuit optimisation with no observable semantics.
 
-- [ ] **Step 6: 登记门禁并提交**
+- [ ] **Step 6: Register the gates and commit**
 
-前 4 条填 `**已验证**`（第 4 条注明统计性），第 5 条填 `不适用` 并写明理由。
+Set the first 4 rows to `**verified**` (noting the 4th is statistical), and the 5th to `n/a` with the reason written out.
 
 ```bash
 python3 scripts/count-mutation-gates.py --fix && python3 scripts/count-mutation-gates.py
 cargo fmt --all -- --check && cargo clippy --workspace --all-targets --locked -- -D warnings
 git add crates/ivmlite-core/src/arrangement.rs crates/ivmlite-core/src/lib.rs docs/mutation-gates.md
-git commit -m "feat(core): Arrangement trait 与内存实现"
+git commit -m "feat(core): the Arrangement trait and an in-memory implementation"
 ```
 
 ---
 
-## Task 3：线性算子——Filter 与 Project
+## Task 3: Linear operators — Filter and Project
 
 **Files:**
 - Create: `crates/ivmlite-core/src/node.rs`
@@ -673,21 +673,21 @@ git commit -m "feat(core): Arrangement trait 与内存实现"
 - Modify: `docs/mutation-gates.md`
 
 **Interfaces:**
-- Consumes: `Plan`（Task 1）、`ZSet`、`Row`、`Value`、`Predicate`
+- Consumes: `Plan` (Task 1), `ZSet`, `Row`, `Value`, `Predicate`
 - Produces:
-  - `pub enum Node { Scan { table: String }, Filter { input: Box<Node>, predicate: Predicate }, Project { input: Box<Node>, columns: Vec<usize> }, Aggregate { input: Box<Node>, agg: AggState } }`（`Aggregate` 变体的内部类型由 Task 4 定义；**本任务先只实现前三个变体，`Node::build` 遇到 `Plan::Aggregate` 时返回 `NodeError`**）
+  - `pub enum Node { Scan { table: String }, Filter { input: Box<Node>, predicate: Predicate }, Project { input: Box<Node>, columns: Vec<usize> }, Aggregate { input: Box<Node>, agg: AggState } }` (the inner type of the `Aggregate` variant is defined by Task 4; **this task implements only the first three variants, and `Node::build` returns a `NodeError` on `Plan::Aggregate`**)
   - `pub struct NodeError(pub String)`
   - `impl Node { pub fn build(plan: &Plan) -> Result<Node, NodeError>; pub fn delta(&mut self, table: &str, input: &ZSet) -> ZSet }`
 
-> **为什么 `Aggregate` 分两个任务**：线性算子的 delta 规则是 `Δ(f(R)) = f(ΔR)`——三行，无状态，正确性一眼可证。聚合是带状态机的几十行，且 §6.1 明写「v0 的全部难度集中在聚合」。合成一个任务时，评审必须同时评两类完全不同的正确性论证，而其中一类会淹没另一类。
+> **Why `Aggregate` is split into two tasks**: a linear operator's delta rule is `Δ(f(R)) = f(ΔR)` — three lines, stateless, correct at a glance. Aggregation is dozens of lines with a state machine, and §6.1 says outright that "all of v0's difficulty is concentrated in aggregation". In one combined task, the review would have to judge two entirely different kinds of correctness argument at once, and one would drown the other.
 
-### `Scan` 的 delta 规则与表名
+### `Scan`'s delta rule and the table name
 
-`Scan { table }` 的 `delta(t, input)` 在 `t == table` 时返回 `input`，否则返回空 `ZSet`。单表时这个判断看似多余，但它正是 join 的两侧各自只吸收自己那张表的 delta 的机制——Phase 3 不必改动 `Scan`。
+`Scan { table }`'s `delta(t, input)` returns `input` when `t == table` and an empty `ZSet` otherwise. With a single table the check looks redundant, but it is exactly the mechanism by which each side of a join absorbs only its own table's deltas — Phase 3 need not change `Scan`.
 
-- [ ] **Step 1: 写失败的测试**
+- [ ] **Step 1: Write the failing tests**
 
-`crates/ivmlite-core/src/node.rs` 末尾：
+At the end of `crates/ivmlite-core/src/node.rs`:
 
 ```rust
 #[cfg(test)]
@@ -705,23 +705,23 @@ mod tests {
 
     #[test]
     fn scan_only_absorbs_its_own_table() {
-        // 单表时这看似多余，但它正是 join 两侧各自只吸收自己那张表的
-        // delta 的机制（Phase 3 不必改动 Scan）。
+        // With a single table this looks redundant, but it is exactly the mechanism by which each side of a join absorbs only
+        // its own table's deltas (Phase 3 need not change Scan).
         let mut n = Node::build(&Plan::Scan {
             table: "orders".into(),
             columns: vec![0, 1],
         })
         .unwrap();
         let d = ZSet::from_rows([(row(vec![int(1), int(2)]), 1)]);
-        assert_eq!(n.delta("orders", &d), d, "自己的表：原样穿过");
-        assert_eq!(n.delta("customers", &d), ZSet::new(), "别人的表：空");
+        assert_eq!(n.delta("orders", &d), d, "its own table: passes through unchanged");
+        assert_eq!(n.delta("customers", &d), ZSet::new(), "another table: empty");
     }
 
     #[test]
     fn filter_passes_deltas_through_unchanged_for_matching_rows() {
-        // spec §6.1：线性算子 Δ(f(R)) = f(ΔR)——delta 直接穿过，无状态。
-        // 权重必须原样保留，包括负权重（撤回一行满足谓词的行，
-        // 撤回动作本身也要穿过去）。
+        // spec §6.1: linear operators satisfy Δ(f(R)) = f(ΔR) — deltas pass straight through, stateless.
+        // Weights must be kept unchanged, including negative ones (retracting a row that satisfies the predicate —
+        // the retraction itself must pass through too).
         let mut n = Node::build(&Plan::Filter {
             input: Box::new(Plan::Scan { table: "t".into(), columns: vec![0] }),
             predicate: Predicate::IntGt { column: 0, value: 3 },
@@ -744,9 +744,9 @@ mod tests {
 
     #[test]
     fn filter_treats_null_as_unknown_not_as_false_negation() {
-        // spec §6.1 三值逻辑：v 取 {1, NULL, 5} 时 `v > 3` 命中 1 行，
-        // `NOT (v > 3)` 也只命中 1 行——两者加起来是 2 而不是 3。
-        // 这个测试钉的是 NULL 行两边都不进，而不是「NULL 等价于 false」。
+        // spec §6.1 three-valued logic: with v in {1, NULL, 5}, `v > 3` matches 1 row,
+        // and `NOT (v > 3)` also matches only 1 row — together 2, not 3.
+        // What this test pins is that the NULL row goes into neither side, not that "NULL is equivalent to false".
         let mut n = Node::build(&Plan::Filter {
             input: Box::new(Plan::Scan { table: "t".into(), columns: vec![0] }),
             predicate: Predicate::IntGt { column: 0, value: 3 },
@@ -759,7 +759,7 @@ mod tests {
         ]);
         let got = n.delta("t", &d);
         assert_eq!(got, ZSet::from_rows([(row(vec![int(5)]), 1)]));
-        assert_eq!(got.weight_of(&row(vec![Value::Null])), 0, "NULL 行不得进入结果");
+        assert_eq!(got.weight_of(&row(vec![Value::Null])), 0, "the NULL row must not enter the result");
     }
 
     #[test]
@@ -784,14 +784,14 @@ mod tests {
         assert_eq!(
             n.delta("t", &d),
             ZSet::from_rows([(row(vec![int(3), int(1)]), 4)]),
-            "列按 columns 给出的顺序重排，权重原样保留"
+            "columns are reordered as `columns` specifies, weights kept unchanged"
         );
     }
 
     #[test]
     fn project_merges_rows_that_become_identical_after_narrowing() {
-        // 两行在收窄后变成同一行时，权重必须相加而不是后者覆盖前者——
-        // 这是 Z-set 语义，也是 Project 唯一一处不平凡的地方。
+        // When two rows become the same row after narrowing, their weights must add rather than the latter overwriting the former —
+        // this is Z-set semantics, and the only non-trivial thing about Project.
         let mut n = Node::build(&Plan::Project {
             input: Box::new(Plan::Scan { table: "t".into(), columns: vec![0, 1] }),
             columns: vec![0],
@@ -806,7 +806,7 @@ mod tests {
 
     #[test]
     fn project_drops_rows_whose_weights_cancel_after_narrowing() {
-        // 收窄后权重相消为 0 的行必须消失（spec §5.1），不得留成权重 0 的条目。
+        // A row whose weights cancel to 0 after narrowing must disappear (spec §5.1), not remain as a weight-0 entry.
         let mut n = Node::build(&Plan::Project {
             input: Box::new(Plan::Scan { table: "t".into(), columns: vec![0, 1] }),
             columns: vec![0],
@@ -816,32 +816,32 @@ mod tests {
             (row(vec![int(7), int(1)]), 2),
             (row(vec![int(7), int(2)]), -2),
         ]);
-        assert!(n.delta("t", &d).is_empty(), "相消后必须为空");
+        assert!(n.delta("t", &d).is_empty(), "must be empty after cancellation");
     }
 
     #[test]
     fn building_an_aggregate_is_an_error_until_task_4() {
-        // 占位：Task 4 把这个测试删掉并换成真实的聚合测试。留它在这里是为了
-        // 「未实现」有一个明确的、会被执行到的形态，而不是一个 panic。
+        // Placeholder: Task 4 deletes this test and replaces it with real aggregate tests. It is here so that
+        // "not implemented" has an explicit shape that actually gets executed, rather than a panic.
         let err = Node::build(&Plan::Aggregate {
             input: Box::new(Plan::Scan { table: "t".into(), columns: vec![0] }),
             group_by: vec![0],
             aggs: vec![],
         })
-        .expect_err("Task 3 尚未实现 Aggregate");
+        .expect_err("Task 3 has not implemented Aggregate yet");
         assert!(err.0.contains("Aggregate"));
     }
 }
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [ ] **Step 2: Run them to confirm they fail**
 
 Run: `cargo test -p ivmlite-core --locked node`
-Expected: 编译失败，`cannot find type Node`
+Expected: a compile failure, `cannot find type Node`
 
-- [ ] **Step 3: 写实现**
+- [ ] **Step 3: Write the implementation**
 
-`crates/ivmlite-core/src/node.rs` 开头：
+At the start of `crates/ivmlite-core/src/node.rs`:
 
 ```rust
 use crate::{Plan, Predicate, Row, Value, ZSet};
@@ -857,10 +857,10 @@ impl std::fmt::Display for NodeError {
 
 impl std::error::Error for NodeError {}
 
-/// 带状态的算子树。由 `Plan` 建出，此后 `delta` 反复被调用。
+/// The stateful operator tree. Built from a `Plan`, after which `delta` is called repeatedly.
 ///
-/// 与 `Plan` 分开是因为 `Plan` 是纯描述（可比较、可打印、将来可从 SQL 重建），
-/// 而算子要持有状态。spec §5.3 存 SQL 原文而非序列化 IR，正是靠这条分离。
+/// Separate from `Plan` because `Plan` is a pure description (comparable, printable, and one day rebuildable from SQL),
+/// while operators must hold state. Spec §5.3 storing the SQL text rather than a serialised IR relies on this separation.
 #[derive(Debug)]
 pub enum Node {
     Scan {
@@ -891,15 +891,15 @@ impl Node {
                 columns: columns.clone(),
             }),
             Plan::Aggregate { .. } => Err(NodeError(
-                "Aggregate 算子尚未实现（本计划 Task 4）".into(),
+                "the Aggregate operator is not implemented yet (this plan's Task 4)".into(),
             )),
         }
     }
 
-    /// 把某张表的一批 delta 推过本节点，返回本节点输出的 delta。
+    /// Push one batch of a table's deltas through this node, returning this node's output delta.
     ///
-    /// spec §6.1：线性算子满足 `Δ(f(R)) = f(ΔR)`，于是 Filter / Project 无状态，
-    /// delta 直接穿过。
+    /// spec §6.1: linear operators satisfy `Δ(f(R)) = f(ΔR)`, so Filter / Project are stateless and
+    /// deltas pass straight through.
     pub fn delta(&mut self, table: &str, input: &ZSet) -> ZSet {
         match self {
             Node::Scan { table: own } => {
@@ -923,8 +923,8 @@ impl Node {
                 let upstream = child.delta(table, input);
                 let mut out = ZSet::new();
                 for (row, &w) in upstream.iter() {
-                    // 收窄后可能与另一行重合——`ZSet::update` 累加权重并在
-                    // 归零时删条目，正是需要的 Z-set 语义。
+                    // After narrowing it may coincide with another row — `ZSet::update` adds the weights and
+                    // deletes the entry on reaching zero, exactly the Z-set semantics needed.
                     let narrowed = Row::new(columns.iter().map(|&c| row.get(c).clone()).collect());
                     out.update(narrowed, w);
                 }
@@ -934,18 +934,18 @@ impl Node {
     }
 }
 
-/// spec §6.1 的三值逻辑：NULL 求值为 UNKNOWN，该行不进入结果。
+/// spec §6.1's three-valued logic: NULL evaluates to UNKNOWN, and the row is not included.
 ///
-/// 返回 `bool` 而非三值枚举，是因为在**筛选**语义下「不通过」与「未知」
-/// 合并为同一种处理。但**不得据此认为 `NOT p` 等价于 `!p`**——v0 的谓词
-/// 白名单里没有 `NOT`，正是因为每加一个都要重新论证一次三值逻辑。
+/// It returns `bool` rather than a three-valued enum because under **filtering** semantics "does not pass" and "unknown"
+/// merge into the same treatment. But **do not conclude from this that `NOT p` is equivalent to `!p`** — v0's predicate
+/// whitelist has no `NOT` precisely because every addition means re-arguing three-valued logic.
 fn passes(predicate: &Predicate, row: &Row) -> bool {
     match predicate {
         Predicate::None => true,
         Predicate::IntGt { column, value } => match row.get(*column) {
             Value::Int(i) => i > value,
-            // NULL > 3 是 UNKNOWN；Text > Int 在 v0 的枚举里不会出现
-            // （enumerate_only_sums_integer_columns 之外，IntGt 只对 Integer 列生成）。
+            // NULL > 3 is UNKNOWN; Text > Int does not occur in v0's enumeration
+            // (as enumerate_only_sums_integer_columns implies, IntGt is generated only for Integer columns).
             _ => false,
         },
         Predicate::IsNotNull { column } => !matches!(row.get(*column), Value::Null),
@@ -953,78 +953,78 @@ fn passes(predicate: &Predicate, row: &Row) -> bool {
 }
 ```
 
-`crates/ivmlite-core/src/lib.rs` 增加：
+`crates/ivmlite-core/src/lib.rs` gains:
 
 ```rust
 pub mod node;
 pub use node::{Node, NodeError};
 ```
 
-- [ ] **Step 4: 运行确认通过**
+- [ ] **Step 4: Run them to confirm they pass**
 
 Run: `cargo test --workspace --locked --no-fail-fast`
-Expected: 全部通过
+Expected: everything passes
 
-- [ ] **Step 5: 变异验证**
+- [ ] **Step 5: Mutation verification**
 
-1. `Node::Scan` 的 `delta` 去掉表名判断（恒返回 `input.clone()`）→ 期望 `scan_only_absorbs_its_own_table` 红
-2. `passes` 对 `Value::Null` 返回 `true` → 期望 `filter_treats_null_as_unknown_not_as_false_negation` 与 `is_not_null_predicate_filters_null_rows` 红
-3. `Project` 的 `out.update(narrowed, w)` 改成直接插入覆盖（用一个临时 `BTreeMap` 并 `insert`）→ 期望 `project_merges_rows_that_become_identical_after_narrowing` 红
-4. `Filter` 的 `out.update(row.clone(), w)` 把 `w` 换成 `1` → 期望 `filter_passes_deltas_through_unchanged_for_matching_rows` 红
-5. `Project` 的 `columns.iter().map(...)` 改成原样克隆整行 → 期望 `project_narrows_columns_and_preserves_weights` 红
+1. Remove the table-name check from `Node::Scan`'s `delta` (always return `input.clone()`) → expect `scan_only_absorbs_its_own_table` to go red
+2. Make `passes` return `true` for `Value::Null` → expect `filter_treats_null_as_unknown_not_as_false_negation` and `is_not_null_predicate_filters_null_rows` to go red
+3. Change `Project`'s `out.update(narrowed, w)` to a direct overwriting insert (via a temporary `BTreeMap` and `insert`) → expect `project_merges_rows_that_become_identical_after_narrowing` to go red
+4. Replace `w` with `1` in `Filter`'s `out.update(row.clone(), w)` → expect `filter_passes_deltas_through_unchanged_for_matching_rows` to go red
+5. Change `Project`'s `columns.iter().map(...)` to clone the whole row as is → expect `project_narrows_columns_and_preserves_weights` to go red
 
-- [ ] **Step 6: 登记门禁并提交**
+- [ ] **Step 6: Register the gates and commit**
 
 ```bash
 python3 scripts/count-mutation-gates.py --fix && python3 scripts/count-mutation-gates.py
 cargo fmt --all -- --check && cargo clippy --workspace --all-targets --locked -- -D warnings
 git add crates/ivmlite-core/src/node.rs crates/ivmlite-core/src/lib.rs docs/mutation-gates.md
-git commit -m "feat(core): 线性算子 Filter 与 Project"
+git commit -m "feat(core): linear operators Filter and Project"
 ```
 
 ---
 
-## Task 4：Aggregate 与 retraction 语义
+## Task 4: Aggregate and retraction semantics
 
 **Files:**
 - Create: `crates/ivmlite-core/src/agg.rs`
-- Modify: `crates/ivmlite-core/src/node.rs`（加 `Aggregate` 变体，删 Task 3 的占位测试）
+- Modify: `crates/ivmlite-core/src/node.rs` (add the `Aggregate` variant, delete Task 3's placeholder test)
 - Modify: `crates/ivmlite-core/src/lib.rs`
 - Modify: `docs/mutation-gates.md`
 
 **Interfaces:**
-- Consumes: `Agg`、`AggFn`、`Row`、`Value`、`ZSet`、`Node`（Task 3）
+- Consumes: `Agg`, `AggFn`, `Row`, `Value`, `ZSet`, `Node` (Task 3)
 - Produces:
-  - `pub struct AggState`，含 `pub fn new(group_by: Vec<usize>, aggs: Vec<Agg>) -> AggState` 与 `pub fn absorb(&mut self, input: &ZSet) -> ZSet`
-  - `Node::Aggregate { input: Box<Node>, state: AggState }` 变体，`Node::build` 不再对 `Plan::Aggregate` 报错
+  - `pub struct AggState`, with `pub fn new(group_by: Vec<usize>, aggs: Vec<Agg>) -> AggState` and `pub fn absorb(&mut self, input: &ZSet) -> ZSet`
+  - The `Node::Aggregate { input: Box<Node>, state: AggState }` variant; `Node::build` no longer errors on `Plan::Aggregate`
 
-> **这是本计划全部难度所在。** spec §6.2 开篇即写「这是 IVM 最大的 bug 来源，必须严格遵守」。
+> **This is where all of this plan's difficulty lies.** Spec §6.2 opens with "this is IVM's biggest source of bugs and must be followed strictly".
 
-### 状态与 retraction 契约
+### The state and the retraction contract
 
-每个 group 维护：
+Each group maintains:
 
-- `rows: i64` — 组内行的权重和。`COUNT(*)` 的输出就是它；归零时该组从输出中消失。
-- 每个 agg 一个累加器：
-  - `Count` 不需要额外状态（用 `rows`）。
-  - `Sum` 需要**两个**量：`sum: i64`（累加值）与 `non_null: i64`（非 NULL 输入的权重和）。§6.1 明写只维护累加值的实现会在「组非空但该列全为 NULL」时输出 `0`，而 SQLite 输出 `NULL`，且这个不一致是**静默**的。
-- `emitted: Option<Row>` — **本组上一次对外发出过的行**。§6.2：聚合必须记住自己发过什么才能撤回它。这是聚合需要状态的真正原因。
+- `rows: i64` — the sum of the weights of the group's rows. It is exactly `COUNT(*)`'s output; when it reaches zero, the group disappears from the output.
+- One accumulator per agg:
+  - `Count` needs no extra state (it uses `rows`).
+  - `Sum` needs **two** quantities: `sum: i64` (the running sum) and `non_null: i64` (the sum of the weights of non-NULL inputs). §6.1 says outright that an implementation maintaining only the running sum outputs `0` when "the group is non-empty but the column is all NULL", while SQLite outputs `NULL`, and that mismatch is **silent**.
+- `emitted: Option<Row>` — **the row this group last emitted**. §6.2: an aggregate must remember what it emitted in order to retract it. This is the real reason aggregation needs state.
 
-发射规则（每批结束时对每个被触及的 group 各做一次）：
+The emission rule (once for each touched group at the end of every batch):
 
 ```
-new_out = if rows > 0 { Some(组的输出行) } else { None }
+new_out = if rows > 0 { Some(the group's output row) } else { None }
 if new_out != emitted:
-    if let Some(old) = emitted      -> out.update(old, -1)      // 撤回旧行
-    if let Some(new) = &new_out     -> out.update(new.clone(), +1)  // 发出新行
+    if let Some(old) = emitted      -> out.update(old, -1)      // retract the old row
+    if let Some(new) = &new_out     -> out.update(new.clone(), +1)  // emit the new row
     emitted = new_out
 ```
 
-`new_out == emitted` 时**什么都不发**——这不是优化，是正确性：多发一对 `(-1, +1)` 会在下游产生不必要的抖动，而漏发则是 §6.2 说的那个最大 bug 源。
+When `new_out == emitted`, **emit nothing** — this is not an optimisation, it is correctness: an extra `(-1, +1)` pair causes needless churn downstream, while a missing one is exactly the biggest bug source §6.2 describes.
 
-- [ ] **Step 1: 写失败的测试**
+- [ ] **Step 1: Write the failing tests**
 
-`crates/ivmlite-core/src/agg.rs` 末尾：
+At the end of `crates/ivmlite-core/src/agg.rs`:
 
 ```rust
 #[cfg(test)]
@@ -1045,7 +1045,7 @@ mod tests {
     }
 
     fn sum_state() -> AggState {
-        // group key 是列 0，SUM 的是列 1
+        // The group key is column 0; the SUM is over column 1
         AggState::new(vec![0], vec![Agg { func: AggFn::Sum, column: Some(1) }])
     }
 
@@ -1055,8 +1055,8 @@ mod tests {
 
     #[test]
     fn a_changed_sum_emits_a_retraction_pair_not_a_bare_insert() {
-        // spec §6.2：SUM 从 100 变 150 时发的是 (key,100) w=-1 与 (key,150) w=+1，
-        // 不是单独一行 +1。这是 IVM 最大的 bug 来源。
+        // spec §6.2: when a SUM goes from 100 to 150, what is emitted is (key,100) w=-1 and (key,150) w=+1,
+        // not a lone +1 row. This is IVM's biggest source of bugs.
         let mut s = sum_state();
         let first = s.absorb(&ZSet::from_rows([(row(vec![txt("a"), int(100)]), 1)]));
         assert_eq!(first, ZSet::from_rows([(row(vec![txt("a"), int(100)]), 1)]));
@@ -1068,40 +1068,50 @@ mod tests {
                 (row(vec![txt("a"), int(100)]), -1),
                 (row(vec![txt("a"), int(150)]), 1),
             ]),
-            "必须撤回旧输出行并发出新行"
+            "the old output row must be retracted and the new one emitted"
         );
     }
 
     #[test]
     fn an_unchanged_group_emits_nothing() {
-        // 本批的变更相互抵消、组的输出没变时，一对 (-1,+1) 也不该发。
-        let mut s = sum_state();
-        s.absorb(&ZSet::from_rows([(row(vec![txt("a"), int(10)]), 1)]));
-        let d = s.absorb(&ZSet::from_rows([
-            (row(vec![txt("a"), int(7)]), 1),
-            (row(vec![txt("a"), int(7)]), -1),
+        // When a group is touched but its **output** does not change, not even a (-1,+1) pair should be emitted.
+        //
+        // The input must be two **different** rows (one in, one out), not +1/-1 of the same row:
+        // the latter already cancels to an empty set inside `ZSet::from_rows`, `absorb` would never see
+        // any input, so `touched` would be empty and the emission loop would not run once — the test would pass,
+        // but for a reason unrelated to what it claims to guard, and the mutation "make `new_out != emitted`
+        // always true" would not turn it red either.
+        let mut s = count_state();
+        s.absorb(&ZSet::from_rows([
+            (row(vec![txt("a"), int(1)]), 1),
+            (row(vec![txt("a"), int(2)]), 1),
         ]));
-        assert!(d.is_empty(), "输出未变时不得发射：{d:?}");
+        // Replace one row in the group: the rows changed, but the group's row count did not, so COUNT's output is unchanged.
+        let d = s.absorb(&ZSet::from_rows([
+            (row(vec![txt("a"), int(3)]), 1),
+            (row(vec![txt("a"), int(1)]), -1),
+        ]));
+        assert!(d.is_empty(), "nothing may be emitted when a group is touched but its output is unchanged: {d:?}");
     }
 
     #[test]
     fn a_group_that_empties_is_retracted_and_not_replaced() {
-        // spec §5.2：分组聚合在空表时返回 0 行（与全局聚合不同）。
-        // 组内计数归零时只发撤回，不发任何新行。
+        // spec §5.2: a grouped aggregate returns 0 rows over an empty table (unlike a global aggregate).
+        // When a group's count reaches zero, only the retraction is emitted, no new row.
         let mut s = count_state();
         s.absorb(&ZSet::from_rows([(row(vec![txt("a"), int(1)]), 1)]));
         let d = s.absorb(&ZSet::from_rows([(row(vec![txt("a"), int(1)]), -1)]));
         assert_eq!(
             d,
             ZSet::from_rows([(row(vec![txt("a"), int(1)]), -1)]),
-            "只撤回，不发新行"
+            "only a retraction, no new row"
         );
     }
 
     #[test]
     fn sum_over_only_null_inputs_is_null_not_zero() {
-        // spec §6.1（已实测）：组非空但该列全为 NULL 时，组出现、COUNT(*) 为正、
-        // 而 SUM 为 NULL。只维护累加值的实现会输出 0，与 SQLite 静默不一致。
+        // spec §6.1 (measured): when the group is non-empty but the column is all NULL, the group appears, COUNT(*) is positive,
+        // and SUM is NULL. An implementation maintaining only the running sum would output 0, silently disagreeing with SQLite.
         let mut s = sum_state();
         let d = s.absorb(&ZSet::from_rows([
             (row(vec![txt("a"), Value::Null]), 1),
@@ -1110,14 +1120,14 @@ mod tests {
         assert_eq!(
             d,
             ZSet::from_rows([(row(vec![txt("a"), Value::Null]), 1)]),
-            "SUM 必须是 NULL 而不是 Int(0)"
+            "SUM must be NULL, not Int(0)"
         );
     }
 
     #[test]
     fn sum_that_genuinely_totals_zero_is_int_zero_not_null() {
-        // 与上一条相对：有非 NULL 输入、其和恰为 0 时必须是 Int(0)。
-        // 只看「和是否为 0」的实现会在这里输出 NULL。
+        // The counterpart of the previous test: with non-NULL inputs whose sum is exactly 0, it must be Int(0).
+        // An implementation that only checks "is the sum 0" would output NULL here.
         let mut s = sum_state();
         let d = s.absorb(&ZSet::from_rows([
             (row(vec![txt("a"), int(5)]), 1),
@@ -1128,8 +1138,8 @@ mod tests {
 
     #[test]
     fn a_group_whose_last_non_null_input_leaves_falls_back_to_null() {
-        // 非 NULL 输入被删光、但组仍非空时，SUM 必须从 Int 变回 NULL——
-        // 这条路径只有同时维护 sum 与 non_null 计数才走得对。
+        // When the non-NULL inputs are all deleted but the group is still non-empty, SUM must go from Int back to NULL —
+        // this path is only right if both sum and the non_null count are maintained.
         let mut s = sum_state();
         s.absorb(&ZSet::from_rows([
             (row(vec![txt("a"), int(5)]), 1),
@@ -1142,7 +1152,7 @@ mod tests {
                 (row(vec![txt("a"), int(5)]), -1),
                 (row(vec![txt("a"), Value::Null]), 1),
             ]),
-            "组还在（那行 NULL 仍在），但 SUM 退回 NULL"
+            "the group is still there (the NULL row remains), but SUM falls back to NULL"
         );
     }
 
@@ -1160,14 +1170,14 @@ mod tests {
                 (row(vec![txt("a"), int(1)]), -1),
                 (row(vec![txt("a"), int(2)]), 1),
             ]),
-            "只有 a 组受影响，b 组不得出现在 delta 里"
+            "only group a is affected; group b must not appear in the delta"
         );
     }
 
     #[test]
     fn a_null_group_key_is_a_group_like_any_other() {
-        // NULL 作为 group key 在 SQL GROUP BY 里自成一组（与 WHERE 的三值
-        // 逻辑不同）。差分测试的值域 NULL 高频，这条路径一定会被走到。
+        // NULL as a group key forms its own group in SQL GROUP BY (unlike WHERE's three-valued
+        // logic). NULL is frequent in the differential-testing value domain, so this path is certain to be exercised.
         let mut s = count_state();
         let d = s.absorb(&ZSet::from_rows([(row(vec![Value::Null, int(1)]), 1)]));
         assert_eq!(d, ZSet::from_rows([(row(vec![Value::Null, int(1)]), 1)]));
@@ -1175,25 +1185,25 @@ mod tests {
 
     #[test]
     fn emitted_output_weight_is_always_one() {
-        // spec §5.2：group key → 恰好一个输出行，__w 在最终输出中恒为 1。
-        // 权重只出现在内部 delta 与算子状态里。
+        // spec §5.2: group key → exactly one output row; __w is always 1 in the final output.
+        // Weights appear only in internal deltas and operator state.
         let mut s = count_state();
         let d = s.absorb(&ZSet::from_rows([(row(vec![txt("a"), int(1)]), 5)]));
         assert_eq!(
             d,
             ZSet::from_rows([(row(vec![txt("a"), int(5)]), 1)]),
-            "输入权重 5 变成 COUNT=5 的一行，输出权重是 1 而不是 5"
+            "an input weight of 5 becomes one row with COUNT=5, whose output weight is 1, not 5"
         );
     }
 }
 ```
 
-`crates/ivmlite-core/src/node.rs` 的测试模块里，把 `building_an_aggregate_is_an_error_until_task_4` **删掉**，换成：
+In the test module of `crates/ivmlite-core/src/node.rs`, **delete** `building_an_aggregate_is_an_error_until_task_4` and replace it with:
 
 ```rust
     #[test]
     fn aggregate_can_be_built_and_runs_through_the_tree() {
-        // 端到端：Scan → Filter → Project → Aggregate 整棵树推一批 delta。
+        // End to end: push one batch of deltas through the whole Scan → Filter → Project → Aggregate tree.
         let plan = crate::lower(
             &crate::ViewQuery {
                 group_by: vec![0],
@@ -1207,56 +1217,56 @@ mod tests {
         let mut n = Node::build(&plan).unwrap();
         let d = ZSet::from_rows([
             (row(vec![Value::Text("a".into()), int(9)]), 1),
-            (row(vec![Value::Text("a".into()), int(1)]), 1), // 被 Filter 挡掉
+            (row(vec![Value::Text("a".into()), int(1)]), 1), // blocked by the Filter
         ]);
         assert_eq!(
             n.delta("t", &d),
             ZSet::from_rows([(row(vec![Value::Text("a".into()), int(1)]), 1)]),
-            "只有通过谓词的那一行进入计数"
+            "only the row that passes the predicate enters the count"
         );
     }
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [ ] **Step 2: Run them to confirm they fail**
 
 Run: `cargo test -p ivmlite-core --locked agg`
-Expected: 编译失败，`cannot find type AggState`
+Expected: a compile failure, `cannot find type AggState`
 
-- [ ] **Step 3: 写实现**
+- [ ] **Step 3: Write the implementation**
 
-`crates/ivmlite-core/src/agg.rs` 开头：
+At the start of `crates/ivmlite-core/src/agg.rs`:
 
 ```rust
 use std::collections::BTreeMap;
 
 use crate::{Agg, AggFn, Row, Value, ZSet};
 
-/// 一个 agg 的累加器。
+/// One agg's accumulator.
 ///
-/// `Sum` 必须同时维护 `sum` 与 `non_null`：spec §6.1 明写，只维护累加值的
-/// 实现会在「组非空但该列全为 NULL」时输出 `0`，而 SQLite 输出 `NULL`，
-/// 且这个不一致是静默的。
+/// `Sum` must maintain both `sum` and `non_null`: spec §6.1 says outright that an implementation maintaining only
+/// the running sum outputs `0` when "the group is non-empty but the column is all NULL", while SQLite outputs `NULL`,
+/// and that mismatch is silent.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Acc {
     sum: i64,
     non_null: i64,
 }
 
-/// 一个 group 的状态。
+/// One group's state.
 #[derive(Debug, Clone, Default)]
 struct Group {
-    /// 组内行的权重和。`COUNT(*)` 的输出即此值；归零时该组从输出中消失。
+    /// The sum of the weights of the group's rows. `COUNT(*)`'s output is exactly this; when it reaches zero the group disappears from the output.
     rows: i64,
     accs: Vec<Acc>,
-    /// 本组上一次对外发出过的行。spec §6.2：聚合必须记住自己发过什么
-    /// 才能撤回它——这是聚合需要状态的真正原因。
+    /// The row this group last emitted. spec §6.2: an aggregate must remember what it emitted
+    /// in order to retract it — this is the real reason aggregation needs state.
     emitted: Option<Row>,
 }
 
-/// spec §6.2 的聚合算子状态。
+/// spec §6.2's aggregate operator state.
 ///
-/// `BTreeMap` 而非 `HashMap`：group 的遍历顺序进入 delta 流，而 spec §9.4
-/// 要求失败用例能凭 seed 精确重放。
+/// `BTreeMap` rather than `HashMap`: the order groups are walked in goes into the delta stream, and spec §9.4
+/// requires a failing case to replay exactly from its seed.
 #[derive(Debug, Clone)]
 pub struct AggState {
     group_by: Vec<usize>,
@@ -1273,11 +1283,11 @@ impl AggState {
         }
     }
 
-    /// 吸收一批输入 delta，返回本算子**对外**发出的 delta。
+    /// Absorb one batch of input deltas, returning the delta this operator emits **outward**.
     pub fn absorb(&mut self, input: &ZSet) -> ZSet {
-        // 先把本批的全部变更并进组状态，记下哪些组被触及；发射统一在之后做。
-        // 分两阶段是必要的：同一个组在一批里可能被多行触及，逐行发射会发出
-        // 一串中间状态的 retraction 对，而对外只应看到本批的净变化。
+        // First merge the batch's changes into the group state, noting which groups were touched; emission happens afterwards, all at once.
+        // The two phases are necessary: the same group may be touched by several rows in one batch, and emitting row by row would emit
+        // a chain of retraction pairs for intermediate states, whereas outside only the batch's net change should be seen.
         let mut touched: Vec<Row> = Vec::new();
         for (row, &w) in input.iter() {
             let key = Row::new(self.group_by.iter().map(|&c| row.get(c).clone()).collect());
@@ -1297,19 +1307,19 @@ impl AggState {
                 if agg.func != AggFn::Sum {
                     continue;
                 }
-                let col = agg.column.expect("SUM 必须带列（lower 已校验）");
+                let col = agg.column.expect("SUM must carry a column (lower has checked)");
                 if let Value::Int(v) = row.get(col) {
                     g.accs[i].sum += v * w;
                     g.accs[i].non_null += w;
                 }
-                // NULL 输入既不进 sum 也不进 non_null——这正是「全为 NULL 时
-                // 输出 NULL」那条契约在状态层面的落点。
+                // A NULL input goes into neither sum nor non_null — this is where the contract "output NULL when
+                // everything is NULL" lands at the state level.
             }
         }
 
         let mut out = ZSet::new();
-        // 发射顺序取自 BTreeMap 的有序遍历而非 `touched` 的到达顺序，
-        // 以免输出 delta 的顺序依赖输入行的排列（spec §9.4）。
+        // The emission order comes from the BTreeMap's ordered walk rather than `touched`'s arrival order,
+        // so the output delta's order does not depend on the arrangement of the input rows (spec §9.4).
         let mut keys: Vec<Row> = touched;
         keys.sort();
         for key in keys {
@@ -1345,7 +1355,7 @@ impl AggState {
                 g.emitted = new_out;
             }
 
-            // spec §5.1：组彻底空掉后不留僵尸状态。
+            // spec §5.1: once a group is completely empty, no zombie state remains.
             if g.rows == 0 && g.emitted.is_none() {
                 self.groups.remove(&key);
             }
@@ -1355,7 +1365,7 @@ impl AggState {
 }
 ```
 
-`crates/ivmlite-core/src/node.rs` 的 `Node` 枚举加变体，`build` 与 `delta` 各加一支：
+Add the variant to `crates/ivmlite-core/src/node.rs`'s `Node` enum, and one arm each to `build` and `delta`:
 
 ```rust
     Aggregate {
@@ -1378,79 +1388,79 @@ impl AggState {
             }
 ```
 
-`crates/ivmlite-core/src/lib.rs` 增加：
+`crates/ivmlite-core/src/lib.rs` gains:
 
 ```rust
 pub mod agg;
 pub use agg::AggState;
 ```
 
-- [ ] **Step 4: 运行确认通过**
+- [ ] **Step 4: Run them to confirm they pass**
 
 Run: `cargo test --workspace --locked --no-fail-fast`
-Expected: 全部通过
+Expected: everything passes
 
-- [ ] **Step 5: 变异验证**
+- [ ] **Step 5: Mutation verification**
 
-1. 删掉 `if let Some(old) = &g.emitted { out.update(old.clone(), -1); }` → 期望 `a_changed_sum_emits_a_retraction_pair_not_a_bare_insert` 与 `a_group_that_empties_is_retracted_and_not_replaced` 红
-2. 发射条件 `if new_out != g.emitted` 改成恒真 → 期望 `an_unchanged_group_emits_nothing` 红
-3. `if g.accs[i].non_null == 0 { Value::Null }` 的判据改成 `g.accs[i].sum == 0` → 期望 `sum_that_genuinely_totals_zero_is_int_zero_not_null` 红
-4. 删掉 `non_null` 字段的维护（`g.accs[i].non_null += w` 那行），判据改成只看 `rows` → 期望 `sum_over_only_null_inputs_is_null_not_zero` 红
-5. `g.accs[i].sum += v * w` 改成 `+= v`（忽略权重）→ 期望 `emitted_output_weight_is_always_one` 或 `a_changed_sum_emits_a_retraction_pair_not_a_bare_insert` 红；把实际变红的那个填进门禁表
-6. `out.update(new.clone(), 1)` 的权重改成 `g.rows` → 期望 `emitted_output_weight_is_always_one` 红
-7. `groups` 的 `BTreeMap` 换 `HashMap`，且 `keys.sort()` 删掉 → 期望某个多组测试红。**这条是统计性的**，跑至少 10 次进程确认，门禁行里如实写明
-8. 删掉 `if g.rows == 0 && g.emitted.is_none() { self.groups.remove(&key); }` → 期望**仍绿**（僵尸组状态不可观察，因为它的 `emitted` 为 `None`、`rows` 为 0，不会再发射任何东西）。记为「已知不被守护」，理由写明：它是内存回收而非语义，只有在长序列下的内存占用上可见，而差分测试不测内存
+1. Delete `if let Some(old) = &g.emitted { out.update(old.clone(), -1); }` → expect `a_changed_sum_emits_a_retraction_pair_not_a_bare_insert` and `a_group_that_empties_is_retracted_and_not_replaced` to go red
+2. Make the emission condition `if new_out != g.emitted` always true → expect `an_unchanged_group_emits_nothing` to go red
+3. Change the criterion of `if g.accs[i].non_null == 0 { Value::Null }` to `g.accs[i].sum == 0` → expect `sum_that_genuinely_totals_zero_is_int_zero_not_null` to go red
+4. Delete the maintenance of the `non_null` field (the `g.accs[i].non_null += w` line) and make the criterion look only at `rows` → expect `sum_over_only_null_inputs_is_null_not_zero` to go red
+5. Change `g.accs[i].sum += v * w` to `+= v` (ignoring the weight) → expect `emitted_output_weight_is_always_one` or `a_changed_sum_emits_a_retraction_pair_not_a_bare_insert` to go red; record whichever actually goes red in the gate table
+6. Change the weight in `out.update(new.clone(), 1)` to `g.rows` → expect `emitted_output_weight_is_always_one` to go red
+7. Replace `groups`' `BTreeMap` with a `HashMap`, and delete `keys.sort()` → expect some multi-group test to go red. **This one is statistical**; run at least 10 processes to confirm, and say so honestly in the gate row
+8. Delete `if g.rows == 0 && g.emitted.is_none() { self.groups.remove(&key); }` → expect it to **stay green** (zombie group state is unobservable, since its `emitted` is `None` and `rows` is 0, so it never emits anything again). Record it as "known unguarded", with the reason written out: it is memory reclamation rather than semantics, visible only in memory use over long sequences, and differential testing does not test memory
 
-- [ ] **Step 6: 登记门禁并提交**
+- [ ] **Step 6: Register the gates and commit**
 
 ```bash
 python3 scripts/count-mutation-gates.py --fix && python3 scripts/count-mutation-gates.py
 cargo fmt --all -- --check && cargo clippy --workspace --all-targets --locked -- -D warnings
 git add crates/ivmlite-core/src/agg.rs crates/ivmlite-core/src/node.rs crates/ivmlite-core/src/lib.rs docs/mutation-gates.md
-git commit -m "feat(core): Aggregate 算子与 §6.2 的 retraction 语义"
+git commit -m "feat(core): the Aggregate operator and §6.2's retraction semantics"
 ```
 
 ---
 
-## Task 5：引擎与 harness 适配器——差分框架第一次跑真实引擎
+## Task 5: The engine and the harness adapter — the differential harness runs a real engine for the first time
 
 **Files:**
 - Create: `crates/ivmlite-core/src/engine.rs`
 - Create: `crates/ivmlite-test/src/incremental.rs`
-- Modify: `crates/ivmlite-core/src/lib.rs`、`crates/ivmlite-test/src/lib.rs`
+- Modify: `crates/ivmlite-core/src/lib.rs`, `crates/ivmlite-test/src/lib.rs`
 - Modify: `crates/ivmlite-test/tests/harness_catches_bugs.rs`
 - Modify: `docs/mutation-gates.md`
 
 **Interfaces:**
-- Consumes: `lower`（Task 1）、`Node`（Task 3/4）、`Database`、`ViewQuery`、`ZSet`
+- Consumes: `lower` (Task 1), `Node` (Tasks 3/4), `Database`, `ViewQuery`, `ZSet`
 - Produces:
-  - `pub struct IncrementalEngine`，含：
+  - `pub struct IncrementalEngine`, with:
     - `pub fn new() -> IncrementalEngine`
     - `pub fn create_view(&mut self, db: &Database, query: &ViewQuery, initial: &BTreeMap<String, ZSet>) -> Result<(), EngineError>`
     - `pub fn apply(&mut self, table: &str, raw: &[(Row, i64)]) -> Result<(), EngineError>`
     - `pub fn refresh(&mut self) -> Result<(), EngineError>`
     - `pub fn materialize(&self) -> ZSet`
-  - `pub struct EngineError(pub String)`（core 自己的，与 `ivmlite-test` 的同名类型不同）
-- `ivmlite-test` 侧：`impl crate::Engine for ivmlite_core::IncrementalEngine`
+  - `pub struct EngineError(pub String)` (core's own, a different type from `ivmlite-test`'s type of the same name)
+- On the `ivmlite-test` side: `impl crate::Engine for ivmlite_core::IncrementalEngine`
 
-> 引擎放在 `ivmlite-core` 而不是 `ivmlite-test`：它是核心产物，M1b 的 `ivmlite-sqlite` 也要消费它。`Engine` trait 住在 `ivmlite-test`，而 core 不得依赖 test（§4.2，且反向会成环）。适配器写在 test 侧——本地 trait + 外部类型，孤儿规则允许。
+> The engine goes in `ivmlite-core` rather than `ivmlite-test`: it is the core product, and M1b's `ivmlite-sqlite` also consumes it. The `Engine` trait lives in `ivmlite-test`, and core must not depend on test (§4.2, and the reverse would create a cycle). The adapter is written on the test side — local trait + foreign type, which the orphan rule allows.
 
-### 本任务的交付判据
+### This task's deliverable
 
-**差分测试框架第一次在一个真正的增量引擎上跑绿**：枚举出的每个查询 × 有偏更新序列 × 逐批 oracle 比对 × 批次无关性。这是 M1a 的检查点本身（spec §11）。
+**The differential testing harness runs green on a real incremental engine for the first time**: every enumerated query × biased update sequence × per-batch oracle comparison × batch independence. This is M1a's checkpoint itself (spec §11).
 
-本任务**不做 consolidation**——`refresh` 把 pending 里的 raw Δ 逐条推进算子树。Task 6 再加合并，且那时 consolidation 的效果必须是**可观测**的。先不做是为了让 Task 6 的门禁有一个真实的「之前」可对照：如果 Task 5 就顺手合并了，Task 6 的变异会无从判断是不是真的在守 consolidation。
+This task **does not do consolidation** — `refresh` pushes the raw Δ in pending through the operator tree one by one. Task 6 adds merging, and then consolidation's effect must be **observable**. Not doing it yet gives Task 6's gates a real "before" to compare against: if Task 5 had merged along the way, Task 6's mutations could not tell whether they really guard consolidation.
 
-- [ ] **Step 1: 写失败的测试**
+- [ ] **Step 1: Write the failing tests**
 
-`crates/ivmlite-test/tests/harness_catches_bugs.rs` 末尾：
+At the end of `crates/ivmlite-test/tests/harness_catches_bugs.rs`:
 
 ```rust
-/// M1a 检查点（spec §11）：差分框架第一次在真实增量引擎上跑绿。
+/// The M1a checkpoint (spec §11): the differential harness running green on a real incremental engine for the first time.
 ///
-/// 这条测试与 `naive_engine_is_green_across_many_seeds` 的结构相同，
-/// 但被测对象换成了 `IncrementalEngine`——它是增量的，而参照实现是全量
-/// 重算，两者在每个 refresh 点都要与 oracle 一致。
+/// This test has the same structure as `naive_engine_is_green_across_many_seeds`,
+/// with `IncrementalEngine` as the subject — it is incremental while the reference implementation recomputes
+/// in full, and both must agree with the oracle at every refresh point.
 #[test]
 fn incremental_engine_is_green_across_the_enumerated_space() {
     let db = gen_database(2);
@@ -1462,15 +1472,15 @@ fn incremental_engine_is_green_across_the_enumerated_space() {
         let case = gen_case_with_query(seed, &db, &domain, query.clone(), 20, 60, Batching::Chunks(4));
         let mut engine = IncrementalEngine::new();
         if let Err(f) = run(&mut engine, &case) {
-            panic!("增量引擎在 seed={seed} 上与 oracle 不一致：{f}");
+            panic!("the incremental engine disagrees with the oracle at seed={seed}: {f}");
         }
         checked += 1;
     }
-    assert!(checked >= 50, "至少要跑过 50 个 seed，实跑 {checked}");
+    assert!(checked >= 50, "at least 50 seeds must run, ran {checked}");
 }
 
-/// 增量引擎必须与全量重算在**每个 refresh 点**都一致，而不只是最终状态。
-/// TransientDriftEngine 的存在就是为了证明这两者不是一回事（spec §9.1）。
+/// The incremental engine must agree with full recomputation at **every refresh point**, not only at the final state.
+/// TransientDriftEngine exists to prove the two are not the same thing (spec §9.1).
 #[test]
 fn incremental_engine_matches_naive_recompute_at_every_refresh_point() {
     let db = gen_database(2);
@@ -1485,7 +1495,7 @@ fn incremental_engine_matches_naive_recompute_at_every_refresh_point() {
         .collect();
     inc.create_view(&case.database, &case.query, &bases).unwrap();
     naive.create_view(&case.database, &case.query, &bases).unwrap();
-    assert_eq!(inc.materialize().unwrap(), naive.materialize().unwrap(), "bootstrap 即不一致");
+    assert_eq!(inc.materialize().unwrap(), naive.materialize().unwrap(), "they already disagree at bootstrap");
 
     for batch in case.batches() {
         for (table, raw) in &batch {
@@ -1497,12 +1507,12 @@ fn incremental_engine_matches_naive_recompute_at_every_refresh_point() {
         assert_eq!(
             inc.materialize().unwrap(),
             naive.materialize().unwrap(),
-            "增量与全量重算在某个 refresh 点分叉"
+            "incremental maintenance and full recomputation diverge at a refresh point"
         );
     }
 }
 
-/// spec §5.2 的边界校验必须在 create_view 处生效，而不是等到 refresh 时 panic。
+/// Spec §5.2's boundary check must take effect at create_view, not as a panic at refresh.
 #[test]
 fn create_view_rejects_a_global_aggregate() {
     let db = gen_database(1);
@@ -1514,44 +1524,44 @@ fn create_view_rejects_a_global_aggregate() {
     let mut engine = IncrementalEngine::new();
     let err = engine
         .create_view(&db, &bad, &BTreeMap::from([(db.tables()[0].table.clone(), ZSet::new())]))
-        .expect_err("空 group_by 必须在 create_view 处被拒绝");
+        .expect_err("an empty group_by must be rejected at create_view");
     assert!(
         err.0.contains("GROUP BY") || err.0.contains("group_by"),
-        "错误应指名 group_by：{}",
+        "the error should name group_by: {}",
         err.0
     );
 }
 ```
 
-> **`case.batches()` 本任务需要新增。** 目前 `batches(ops, batching)` 是
-> `differential.rs` 里的私有自由函数，`run` 内部调用它。第二个测试要用两个引擎
-> 并排走同一批序列，所以需要从外部拿到分批结果。加一个方法而非把自由函数改成
-> `pub`：批次划分是 `TestCase` 的属性，方法形式让调用点读起来就是「这个用例的
-> 批次」，也省得调用方自己把 `ops` 和 `batching` 配对（配错了不会编译失败，
-> 只会静默地按错误的批次跑）。
+> **This task needs to add `case.batches()`.** Today `batches(ops, batching)` is
+> a private free function in `differential.rs`, called inside `run`. The second test walks two engines
+> side by side through the same sequence of batches, so the batching has to be available from outside. Add a method rather than making the free function
+> `pub`: the batch split is a property of `TestCase`, the method form makes the call site read as "this case's
+> batches", and it saves callers from pairing `ops` and `batching` themselves (pairing them wrong would not fail to compile,
+> it would just silently run with the wrong batches).
 >
 > ```rust
 > impl TestCase {
->     /// 本用例的分批结果，与 `run` 内部走的是同一条代码路径。
+>     /// This case's batches, via the same code path `run` uses internally.
 >     pub fn batches(&self) -> Vec<BTreeMap<String, Vec<(Row, i64)>>> {
 >         batches(&self.ops, self.batching.clone())
 >     }
 > }
 > ```
 >
-> `run` 内部改为调用 `case.batches()`，不要让两条路径各自分批——否则
-> 「并排比对」比的可能是两种不同的批次划分，而那种失配不会有任何测试抓到。
+> Change `run` to call `case.batches()` internally; do not let the two paths batch separately — otherwise
+> the "side-by-side comparison" might compare two different batch splits, and that mismatch would be caught by no test.
 
-> **`gen_case_with_query` 是本任务新增的生成器入口**（`crates/ivmlite-test/src/differential.rs`），签名 `pub fn gen_case_with_query(seed: u64, db: &Database, domain: &Domain, query: ViewQuery, rows_per_table: usize, op_count: usize, batching: Batching) -> TestCase`。现有的 `gen_case` 自己从 `enumerate` 里挑一个 query；要按枚举**逐个**覆盖查询空间就需要能指定 query。把 `gen_case` 实现成 `gen_case_with_query(seed, db, domain, enumerate(&db.tables()[0])[seed as usize % n].clone(), ...)`，两者共用同一条代码路径。
+> **`gen_case_with_query` is a generator entry point this task adds** (`crates/ivmlite-test/src/differential.rs`), with signature `pub fn gen_case_with_query(seed: u64, db: &Database, domain: &Domain, query: ViewQuery, rows_per_table: usize, op_count: usize, batching: Batching) -> TestCase`. The existing `gen_case` picks a query from `enumerate` itself; covering the query space **one query at a time** by enumeration requires being able to specify the query. Implement `gen_case` as `gen_case_with_query(seed, db, domain, enumerate(&db.tables()[0])[seed as usize % n].clone(), ...)`, so the two share one code path.
 
-- [ ] **Step 2: 运行确认失败**
+- [ ] **Step 2: Run them to confirm they fail**
 
 Run: `cargo test -p ivmlite-test --locked incremental`
-Expected: 编译失败，`cannot find type IncrementalEngine`
+Expected: a compile failure, `cannot find type IncrementalEngine`
 
-- [ ] **Step 3: 写实现**
+- [ ] **Step 3: Write the implementation**
 
-`crates/ivmlite-core/src/engine.rs`：
+`crates/ivmlite-core/src/engine.rs`:
 
 ```rust
 use std::collections::BTreeMap;
@@ -1569,18 +1579,18 @@ impl std::fmt::Display for EngineError {
 
 impl std::error::Error for EngineError {}
 
-/// v0 的增量引擎。
+/// v0's incremental engine.
 ///
-/// `apply` 只堆 pending，`refresh` 才推进算子树——spec §8.5 要求两者分离，
-/// 且 §8.2 规定显式 refresh 是永久 API 而非 v0 的临时妥协。
+/// `apply` only piles up pending, and only `refresh` advances the operator tree — spec §8.5 requires the two to be separate,
+/// and §8.2 makes explicit refresh a permanent API rather than a temporary v0 compromise.
 #[derive(Debug, Default)]
 pub struct IncrementalEngine {
     tree: Option<Node>,
-    /// 视图的当前物化结果。算子发出的 delta 并进这里。
+    /// The view's current materialised result. Deltas emitted by the operators are merged in here.
     view: ZSet,
-    /// 已摄入但未维护的原始 Δ，**未合并**（§8.5）。
-    /// 用 `Vec` 而非按表的 map：本批内的到达顺序要保留到 `refresh`，
-    /// 合并与否是 `refresh` 的决定（Task 6）。
+    /// Raw Δ that has been ingested but not maintained yet, **unconsolidated** (§8.5).
+    /// A `Vec` rather than a per-table map: the arrival order within a batch is kept until `refresh`,
+    /// and whether to merge is `refresh`'s decision (Task 6).
     pending: Vec<(String, Row, i64)>,
 }
 
@@ -1598,17 +1608,17 @@ impl IncrementalEngine {
         let anchor = db
             .tables()
             .first()
-            .ok_or_else(|| EngineError("Database 至少要有一张表".into()))?;
+            .ok_or_else(|| EngineError("the Database must have at least one table".into()))?;
         let plan = lower(query, &anchor.table, anchor.arity()).map_err(|e| EngineError(e.0))?;
         let mut tree = Node::build(&plan).map_err(|e| EngineError(e.0))?;
 
-        // bootstrap：把每张表的初始状态当成第一批 delta 推进去。
-        // 声明了表却没给初始状态是错误，不是空表——与 oracle 的
-        // `missing_base_state_for_a_declared_table_is_an_error` 同一条约定。
+        // bootstrap: push each table's initial state in as the first batch of deltas.
+        // A declared table with no initial state is an error, not an empty table — the same convention as the oracle's
+        // `missing_base_state_for_a_declared_table_is_an_error`.
         self.view = ZSet::new();
         for schema in db.tables() {
             let base = initial.get(&schema.table).ok_or_else(|| {
-                EngineError(format!("表 {} 被声明但没有给出初始状态", schema.table))
+                EngineError(format!("table {} is declared but has no initial state", schema.table))
             })?;
             self.view.merge(&tree.delta(&schema.table, base));
         }
@@ -1619,7 +1629,7 @@ impl IncrementalEngine {
 
     pub fn apply(&mut self, table: &str, raw: &[(Row, i64)]) -> Result<(), EngineError> {
         if self.tree.is_none() {
-            return Err(EngineError("apply 在 create_view 之前被调用".into()));
+            return Err(EngineError("apply was called before create_view".into()));
         }
         self.pending
             .extend(raw.iter().map(|(r, w)| (table.to_string(), r.clone(), *w)));
@@ -1630,8 +1640,8 @@ impl IncrementalEngine {
         let tree = self
             .tree
             .as_mut()
-            .ok_or_else(|| EngineError("refresh 在 create_view 之前被调用".into()))?;
-        // Task 6 会在这里插入 consolidation。现在逐条推进：一条一批。
+            .ok_or_else(|| EngineError("refresh was called before create_view".into()))?;
+        // Task 6 inserts consolidation here. For now push one at a time: one row per batch.
         for (table, row, w) in std::mem::take(&mut self.pending) {
             let d = ZSet::from_rows([(row, w)]);
             self.view.merge(&tree.delta(&table, &d));
@@ -1645,7 +1655,7 @@ impl IncrementalEngine {
 }
 ```
 
-`crates/ivmlite-test/src/incremental.rs`：
+`crates/ivmlite-test/src/incremental.rs`:
 
 ```rust
 use std::collections::BTreeMap;
@@ -1654,10 +1664,10 @@ use ivmlite_core::{Database, IncrementalEngine, Row, ZSet};
 
 use crate::{Engine, EngineError, ViewQuery};
 
-/// 把 core 的引擎接进差分框架。本地 trait + 外部类型，孤儿规则允许。
+/// Plug core's engine into the differential harness. Local trait + foreign type, which the orphan rule allows.
 ///
-/// 只做错误类型的搬运：core 不得依赖 `ivmlite-test`（§4.2，且反向会成环），
-/// 所以两边各有一个 `EngineError`。
+/// It only translates the error type: core must not depend on `ivmlite-test` (§4.2, and the reverse would create a cycle),
+/// so each side has its own `EngineError`.
 impl Engine for IncrementalEngine {
     fn create_view(
         &mut self,
@@ -1682,33 +1692,33 @@ impl Engine for IncrementalEngine {
 }
 ```
 
-`crates/ivmlite-core/src/lib.rs` 与 `crates/ivmlite-test/src/lib.rs` 分别导出。
+Export them from `crates/ivmlite-core/src/lib.rs` and `crates/ivmlite-test/src/lib.rs` respectively.
 
-- [ ] **Step 4: 运行确认通过**
+- [ ] **Step 4: Run them to confirm they pass**
 
 Run: `cargo test --workspace --locked --no-fail-fast`
-Expected: 全部通过。**若差分测试红了，那是引擎真有 bug——去查，不要调宽断言。** 失败信息会打印 `IVMLITE_SEED=N` 供精确重放。
+Expected: everything passes. **If the differential tests go red, the engine really has a bug — investigate; do not loosen the assertions.** The failure message prints `IVMLITE_SEED=N` for exact replay.
 
-- [ ] **Step 5: 变异验证**
+- [ ] **Step 5: Mutation verification**
 
-1. `create_view` 里 bootstrap 的循环改成只处理 `db.tables()[0]` → 期望**仍绿**（Phase 1 已登记：查询只渲染 anchor 表）。这正是 join 落地清单上那三条的引擎侧对应物，**在门禁表里新增一行指回那份清单**，不要重复登记成一条独立缺口
-2. `refresh` 里的 `std::mem::take` 改成 `clone`（pending 不清空）→ 期望 `incremental_engine_matches_naive_recompute_at_every_refresh_point` 红（delta 被重复应用）
-3. `apply` 在 `tree.is_none()` 时返回 `Ok(())` 而非报错 → 期望**仍绿**（harness 从不在 create_view 之前调 apply）。记为「已知不被守护」，理由是它守的是误用而非语义
-4. `materialize` 返回 `ZSet::new()` → 期望差分测试大面积红
-5. `lower` 的错误不再向上传（`create_view` 里 `.unwrap()`）→ 期望 `create_view_rejects_a_global_aggregate` 红（变成 panic 而非 Err）
+1. Change `create_view`'s bootstrap loop to handle only `db.tables()[0]` → expect it to **stay green** (registered in Phase 1: the query renders only the anchor table). This is exactly the engine-side counterpart of the three items on the join-landing checklist; **add a new row to the gate table pointing back at that checklist**, rather than registering it again as a separate gap
+2. Change `std::mem::take` in `refresh` to `clone` (pending not cleared) → expect `incremental_engine_matches_naive_recompute_at_every_refresh_point` to go red (deltas applied repeatedly)
+3. Make `apply` return `Ok(())` rather than an error when `tree.is_none()` → expect it to **stay green** (the harness never calls apply before create_view). Record it as "known unguarded", because what it guards is misuse rather than semantics
+4. Make `materialize` return `ZSet::new()` → expect the differential tests to go red across the board
+5. Stop propagating `lower`'s error (`.unwrap()` in `create_view`) → expect `create_view_rejects_a_global_aggregate` to go red (it becomes a panic rather than an Err)
 
-- [ ] **Step 6: 登记门禁并提交**
+- [ ] **Step 6: Register the gates and commit**
 
 ```bash
 python3 scripts/count-mutation-gates.py --fix && python3 scripts/count-mutation-gates.py
 cargo fmt --all -- --check && cargo clippy --workspace --all-targets --locked -- -D warnings
 git add crates/ docs/mutation-gates.md
-git commit -m "feat: 增量引擎接入差分框架——M1a 检查点"
+git commit -m "feat: plug the incremental engine into the differential harness — the M1a checkpoint"
 ```
 
 ---
 
-## Task 6：delta consolidation
+## Task 6: Delta consolidation
 
 **Files:**
 - Modify: `crates/ivmlite-core/src/engine.rs`
@@ -1717,19 +1727,19 @@ git commit -m "feat: 增量引擎接入差分框架——M1a 检查点"
 **Interfaces:**
 - Produces: `IncrementalEngine::rows_processed_last_refresh(&self) -> usize`
 
-> spec §8.2 把 consolidation 列为 **M1 的内容而非后续优化**，§8.5 称它是「本项目最可能成立的性能故事」。§8.5 同时指出：如果 harness 替引擎合并好了，consolidation 就从接缝上**结构性不可见**——引擎做没做，测试结果都一样。`apply` 收 raw Δ 正是为了让它可见，而本任务要让它**可测**。
+> Spec §8.2 lists consolidation as **part of M1, not a later optimisation**, and §8.5 calls it "this project's most likely performance story". §8.5 also points out that if the harness merged for the engine, consolidation would be **structurally invisible** at the seam — the test results would be the same whether the engine did it or not. `apply` taking raw Δ is exactly what makes it visible, and this task makes it **testable**.
 
-### 为什么需要一个计数器
+### Why a counter is needed
 
-Consolidation 不改变结果，只改变工作量。于是它天然不可由「输出对不对」观察到——这正是 §8.5 警告的那种结构性不可见。
+Consolidation does not change the result, only the amount of work. So it is by nature unobservable through "is the output right" — exactly the structural invisibility §8.5 warns about.
 
-对策是让引擎公开一个统计量：上一次 `refresh` 实际推进算子树的行数。合并生效时，同一行在一批里出现 5 次只会被推进 1 次；`+1` 与 `-1` 相消的行会被推进 0 次。这两个数字是 consolidation 唯一的可观测足迹。
+The countermeasure is for the engine to expose a statistic: the number of rows the last `refresh` actually pushed through the operator tree. With merging in effect, a row appearing 5 times in one batch is pushed only once; a row whose `+1` and `-1` cancel is pushed 0 times. These two numbers are consolidation's only observable footprint.
 
-这不是测试专用的后门：写放大是 §11 的 M1 完成判定之一（「写放大有明确数字」），这个计数器正是那个数字的来源。
+This is not a test-only back door: write amplification is one of §11's M1 completion criteria ("write amplification has a definite number"), and this counter is where that number comes from.
 
-- [ ] **Step 1: 写失败的测试**
+- [ ] **Step 1: Write the failing tests**
 
-`crates/ivmlite-core/src/engine.rs` 末尾：
+At the end of `crates/ivmlite-core/src/engine.rs`:
 
 ```rust
 #[cfg(test)]
@@ -1768,8 +1778,8 @@ mod tests {
 
     #[test]
     fn duplicate_rows_in_one_batch_are_merged_before_reaching_the_operators() {
-        // spec §8.2/§8.5：同一行在一批里出现 5 次，合并后只推进 1 次。
-        // 这是 consolidation 唯一的可观测足迹——它不改变结果，只改变工作量。
+        // spec §8.2/§8.5: a row that appears 5 times in one batch is pushed only once after merging.
+        // This is consolidation's only observable footprint — it does not change the result, only the amount of work.
         let mut e = engine();
         let raw: Vec<(Row, i64)> = (0..5).map(|_| (row("a", 1), 1)).collect();
         e.apply("t", &raw).unwrap();
@@ -1777,39 +1787,39 @@ mod tests {
         assert_eq!(
             e.rows_processed_last_refresh(),
             1,
-            "5 条相同的 raw Δ 必须先合并成 1 条再进算子"
+            "5 identical raw Δ must be merged into 1 before reaching the operators"
         );
         assert_eq!(
             e.materialize().weight_of(&Row::new(vec![Value::Text("a".into()), Value::Int(5)])),
             1,
-            "合并不得改变结果：COUNT 仍是 5"
+            "merging must not change the result: COUNT is still 5"
         );
     }
 
     #[test]
     fn rows_that_cancel_within_a_batch_never_reach_the_operators() {
-        // 同一批里插入又删除同一行，合并后净权重为 0，根本不该进算子。
+        // Inserting and then deleting the same row in one batch gives a net weight of 0 after merging; it should never reach the operators.
         let mut e = engine();
         e.apply("t", &[(row("a", 1), 1), (row("a", 1), -1)]).unwrap();
         e.refresh().unwrap();
-        assert_eq!(e.rows_processed_last_refresh(), 0, "相消的行不得进算子");
+        assert_eq!(e.rows_processed_last_refresh(), 0, "rows that cancel must not reach the operators");
         assert!(e.materialize().is_empty());
     }
 
     #[test]
     fn distinct_rows_are_not_over_merged() {
-        // 反向守护：合并不得把不同的行并成一条。
+        // The reverse guard: merging must not merge different rows into one.
         let mut e = engine();
         e.apply("t", &[(row("a", 1), 1), (row("b", 1), 1), (row("a", 2), 1)])
             .unwrap();
         e.refresh().unwrap();
-        assert_eq!(e.rows_processed_last_refresh(), 3, "三行互不相同，一条都不该被并掉");
+        assert_eq!(e.rows_processed_last_refresh(), 3, "the three rows are all distinct; not one should be merged away");
     }
 
     #[test]
     fn deltas_for_different_tables_are_consolidated_separately() {
-        // 同样的行值出现在两张表里时不得跨表合并——那会让一张表的变更
-        // 消掉另一张表的变更。单表时这个形态不存在，join 落地后是常态。
+        // When the same row value appears in two tables it must not be merged across tables — that would let one table's changes
+        // cancel another table's. With a single table this shape does not exist; once join lands it is the norm.
         let two = Database::new(vec![
             Schema {
                 table: "t".into(),
@@ -1833,7 +1843,7 @@ mod tests {
         assert_eq!(
             e.rows_processed_last_refresh(),
             2,
-            "两张表各自一条，不得跨表相消"
+            "one row in each of the two tables; they must not cancel across tables"
         );
     }
 
@@ -1844,26 +1854,26 @@ mod tests {
         e.refresh().unwrap();
         e.apply("t", &[(row("b", 1), 1)]).unwrap();
         e.refresh().unwrap();
-        assert_eq!(e.rows_processed_last_refresh(), 1, "计数是「上一次 refresh」而非累计");
+        assert_eq!(e.rows_processed_last_refresh(), 1, "the count is for \"the last refresh\", not cumulative");
     }
 }
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [ ] **Step 2: Run them to confirm they fail**
 
 Run: `cargo test -p ivmlite-core --locked engine`
-Expected: 编译失败，`no method named rows_processed_last_refresh`
+Expected: a compile failure, `no method named rows_processed_last_refresh`
 
-- [ ] **Step 3: 写实现**
+- [ ] **Step 3: Write the implementation**
 
-`IncrementalEngine` 加字段与方法，`refresh` 改为先合并：
+Add a field and a method to `IncrementalEngine`, and change `refresh` to merge first:
 
 ```rust
-    /// 上一次 `refresh` 实际推进算子树的行数。
+    /// The number of rows the last `refresh` actually pushed through the operator tree.
     ///
-    /// consolidation 不改变结果、只改变工作量，于是它无法由「输出对不对」
-    /// 观察到——spec §8.5 把这种情形称作结构性不可见。这个计数器是它唯一的
-    /// 可观测足迹，也是 §11 要求的「写放大有明确数字」的来源。
+    /// Consolidation does not change the result, only the amount of work, so it cannot be observed through "is the output
+    /// right" — spec §8.5 calls this situation structural invisibility. This counter is its only
+    /// observable footprint, and the source of the "write amplification has a definite number" that §11 requires.
     rows_processed: usize,
 ```
 
@@ -1876,11 +1886,11 @@ Expected: 编译失败，`no method named rows_processed_last_refresh`
         let tree = self
             .tree
             .as_mut()
-            .ok_or_else(|| EngineError("refresh 在 create_view 之前被调用".into()))?;
+            .ok_or_else(|| EngineError("refresh was called before create_view".into()))?;
 
-        // spec §8.2：raw Δ 先按 Z-set 合并同一行的权重，再进算子。
-        // 按表分别合并——同样的行值出现在两张表里时跨表相消是错的。
-        // `BTreeMap` 而非 `HashMap`：推进顺序进入 delta 流（§9.4）。
+        // spec §8.2: raw Δ first has the weights of identical rows merged as a Z-set, then goes into the operators.
+        // Merge per table — cancelling across tables when the same row value appears in two tables would be wrong.
+        // `BTreeMap` rather than `HashMap`: the push order goes into the delta stream (§9.4).
         let mut by_table: BTreeMap<String, ZSet> = BTreeMap::new();
         for (table, row, w) in std::mem::take(&mut self.pending) {
             by_table.entry(table).or_default().update(row, w);
@@ -1888,8 +1898,8 @@ Expected: 编译失败，`no method named rows_processed_last_refresh`
 
         self.rows_processed = 0;
         for (table, delta) in &by_table {
-            // 合并后净权重为 0 的行已被 `ZSet::update` 删掉（§5.1），
-            // 于是它们根本不会出现在这里。
+            // Rows whose net weight is 0 after merging have already been deleted by `ZSet::update` (§5.1),
+            // so they never appear here at all.
             self.rows_processed += delta.len();
             if delta.is_empty() {
                 continue;
@@ -1900,59 +1910,59 @@ Expected: 编译失败，`no method named rows_processed_last_refresh`
     }
 ```
 
-- [ ] **Step 4: 运行确认通过**
+- [ ] **Step 4: Run them to confirm they pass**
 
 Run: `cargo test --workspace --locked --no-fail-fast`
-Expected: 全部通过，**包括 Task 5 的全部差分测试**——consolidation 不得改变任何结果。这一点本身就是它正确的必要条件。
+Expected: everything passes, **including all of Task 5's differential tests** — consolidation must not change any result. That in itself is a necessary condition for its correctness.
 
-- [ ] **Step 5: 变异验证**
+- [ ] **Step 5: Mutation verification**
 
-1. 去掉合并（退回 Task 5 的逐条推进）→ 期望 `duplicate_rows_in_one_batch_are_merged_before_reaching_the_operators` 与 `rows_that_cancel_within_a_batch_never_reach_the_operators` 红
-2. 合并不按表分组（全部并进一个 `ZSet`）→ 期望 `deltas_for_different_tables_are_consolidated_separately` 红
-3. `self.rows_processed = 0` 那行删掉（改成累计）→ 期望 `the_counter_resets_between_refreshes` 红
-4. `self.rows_processed += delta.len()` 改成 `+= 1`（每表记 1）→ 期望 `distinct_rows_are_not_over_merged` 红
-5. `by_table` 的 `BTreeMap` 换 `HashMap` → 期望**仍绿**（单表时只有一个键；多表时算子对表的推进顺序目前不可观察）。**这一条必须记为「已知不被守护」并写进 join 落地清单**：join 落地后两侧 arrangement 的更新顺序会影响 `ΔR⋈ΔS` 项，届时必须重跑确认它转红
+1. Remove the merging (back to Task 5's one-at-a-time push) → expect `duplicate_rows_in_one_batch_are_merged_before_reaching_the_operators` and `rows_that_cancel_within_a_batch_never_reach_the_operators` to go red
+2. Merge without grouping by table (everything into one `ZSet`) → expect `deltas_for_different_tables_are_consolidated_separately` to go red
+3. Delete the `self.rows_processed = 0` line (making it cumulative) → expect `the_counter_resets_between_refreshes` to go red
+4. Change `self.rows_processed += delta.len()` to `+= 1` (1 per table) → expect `distinct_rows_are_not_over_merged` to go red
+5. Replace `by_table`'s `BTreeMap` with a `HashMap` → expect it to **stay green** (with a single table there is only one key; with several, the order in which operators are pushed per table is currently unobservable). **This row must be recorded as "known unguarded" and added to the join-landing checklist**: once join lands, the update order of the two sides' arrangements affects the `ΔR⋈ΔS` term, and it must then be re-run to confirm it turns red
 
-- [ ] **Step 6: 登记门禁并提交**
+- [ ] **Step 6: Register the gates and commit**
 
 ```bash
 python3 scripts/count-mutation-gates.py --fix && python3 scripts/count-mutation-gates.py
 cargo fmt --all -- --check && cargo clippy --workspace --all-targets --locked -- -D warnings
 git add crates/ivmlite-core/src/engine.rs docs/mutation-gates.md
-git commit -m "feat(core): delta consolidation——合并后再进算子"
+git commit -m "feat(core): delta consolidation — merge before reaching the operators"
 ```
 
 ---
 
 ## Self-Review
 
-**1. Spec 覆盖**
+**1. Spec coverage**
 
-| Spec 要求 | 落点 |
+| Spec requirement | Where it lands |
 |---|---|
-| §5.2 plan IR 五个算子 | Task 1（IR）、Task 3（Scan/Filter/Project）、Task 4（Aggregate）。**Join 不在本计划**——Phase 3，理由见开头范围说明 |
-| §5.2 根算子必须是 Aggregate、GROUP BY 非空 | Task 1 的 `lower` 边界校验；同时把 m6 那条已登记缺口从「不适用」改成「已验证」并从 join 清单划掉 |
-| §5.2 禁止全局聚合 | Task 1 的 `empty_group_by_is_rejected_at_the_boundary`；Task 5 的 `create_view_rejects_a_global_aggregate` 守边界的**入口** |
-| §6.1 线性算子 Δ(f(R)) = f(ΔR) | Task 3 |
-| §6.1 SUM 无非 NULL 输入返回 NULL | Task 4，`sum_over_only_null_inputs_is_null_not_zero` 与其反向 `sum_that_genuinely_totals_zero_is_int_zero_not_null` 成对 |
-| §6.1 三值逻辑 | Task 3 的 `filter_treats_null_as_unknown_not_as_false_negation`；注释明写不得据此认为 `NOT p == !p` |
-| §6.1 整数溢出未定义 | 不实现，由生成器的窄值域保证（`domain_cannot_overflow_integer_sum` 已守）。本计划不加代码，**这是有意的**：spec 明写 v0 的对策是夹住值域而非检测 |
-| §6.2 retraction 对 | Task 4，五个测试分别守：改变发对、不变不发、清空只撤回、NULL 回退、输出权重恒为 1 |
-| §6.3 Arrangement key → 多值、object-safe | Task 2 |
-| §8.2/§8.5 consolidation | Task 6，用 `rows_processed_last_refresh` 让它可观测 |
-| §8.5 apply/refresh 分离、apply 带表名、apply 收 raw Δ | Task 5 的适配器；三条签名一律不动 |
-| §9.1 逐 refresh 点比对 oracle | Task 5 借 `run` 得到；`incremental_engine_matches_naive_recompute_at_every_refresh_point` 额外与参照实现逐点比 |
-| §9.4 顺序确定 | Task 2（`scan` 有序）、Task 4（组按 key 排序发射）、Task 6（`by_table` 用 `BTreeMap`） |
-| §11 M1a 检查点「单表引擎跑绿」 | Task 5 |
-| §11 benchmark、写放大数字 | **不在本计划**——M0 的两个对照组都跑在 SQLite 里，与纯内存引擎不可比；Task 6 的计数器是写放大数字的来源，真正出数要等 M1b |
+| §5.2 the plan IR's five operators | Task 1 (IR), Task 3 (Scan/Filter/Project), Task 4 (Aggregate). **Join is not in this plan** — Phase 3, for the reasons in the scope section at the start |
+| §5.2 the root operator must be an Aggregate with a non-empty GROUP BY | Task 1's `lower` boundary check; it also changes the registered m6 gap from "n/a" to "verified" and strikes it from the join checklist |
+| §5.2 no global aggregates | Task 1's `empty_group_by_is_rejected_at_the_boundary`; Task 5's `create_view_rejects_a_global_aggregate` guards the boundary's **entry point** |
+| §6.1 linear operators Δ(f(R)) = f(ΔR) | Task 3 |
+| §6.1 SUM over no non-NULL inputs returns NULL | Task 4, `sum_over_only_null_inputs_is_null_not_zero` paired with its converse `sum_that_genuinely_totals_zero_is_int_zero_not_null` |
+| §6.1 three-valued logic | Task 3's `filter_treats_null_as_unknown_not_as_false_negation`; the comment says outright not to conclude that `NOT p == !p` |
+| §6.1 integer overflow is undefined | Not implemented; guaranteed by the generator's narrow value domain (already guarded by `domain_cannot_overflow_integer_sum`). This plan adds no code, **on purpose**: the spec says outright that v0's countermeasure is clamping the value domain, not detection |
+| §6.2 retraction pairs | Task 4, five tests each guarding one thing: a change emits a pair, no change emits nothing, emptying only retracts, NULL fallback, output weight always 1 |
+| §6.3 Arrangement key → many values, object-safe | Task 2 |
+| §8.2/§8.5 consolidation | Task 6, made observable by `rows_processed_last_refresh` |
+| §8.5 apply/refresh separate, apply carries a table name, apply takes raw Δ | Task 5's adapter; none of the three signatures changes |
+| §9.1 oracle comparison at every refresh point | Task 5 gets it via `run`; `incremental_engine_matches_naive_recompute_at_every_refresh_point` additionally compares point by point with the reference implementation |
+| §9.4 deterministic order | Task 2 (`scan` ordered), Task 4 (groups emitted sorted by key), Task 6 (`by_table` uses `BTreeMap`) |
+| §11 the M1a checkpoint "single-table engine runs green" | Task 5 |
+| §11 benchmark, write-amplification number | **Not in this plan** — both of M0's control groups run in SQLite and are not comparable with a pure in-memory engine; Task 6's counter is the source of the write-amplification number, and real numbers wait for M1b |
 
-**已知未覆盖且有意为之**：`Arrangement` 在本计划里被 Task 2 建出来但**算子还没用到它**——v0 的 Aggregate 用 `BTreeMap` 持组状态就够了，`Arrangement` 的消费者是 join 的两侧（Phase 3）与 M1b 的 shadow table 实现。这是一个「实现了但没有消费者」的形态，正是本项目反复在压的那一类。**Task 2 的门禁行必须如实写明这一点**：`MemArrangement` 当前只被它自己的单元测试覆盖，没有任何算子消费它；Phase 3 的 join 是第一个消费者，届时必须重跑 Task 2 的全部变异确认它们仍然会红。这条也要进 join 落地清单。
+**Known uncovered, on purpose**: in this plan `Arrangement` is built by Task 2 but **no operator uses it yet** — v0's Aggregate holds group state in a `BTreeMap`, which is enough, and `Arrangement`'s consumers are the two sides of join (Phase 3) and M1b's shadow-table implementation. This is an "implemented but no consumer" shape, exactly the kind this project keeps pushing down. **Task 2's gate rows must state this honestly**: `MemArrangement` is currently covered only by its own unit tests, and no operator consumes it; Phase 3's join is the first consumer, and all of Task 2's mutations must then be re-run to confirm they still go red. This also goes on the join-landing checklist.
 
-> 为什么仍然现在就做：spec §6.3 明写「M0 不允许做出任何会导致加入 join 时返工的设计决定，`Arrangement` 的 key → 多值形状是这条约束的主要落点」。把 trait 的形状定下来并用内存实现验证它可用，成本是一个任务；等到 Phase 3 再定，join 的调试会和 trait 形状的调试纠缠。
+> Why still do it now: spec §6.3 says outright that "M0 must not make any design decision that would force rework when join is added, and `Arrangement`'s key → many-values shape is the main place this constraint lands". Settling the trait's shape and validating it with an in-memory implementation costs one task; settling it in Phase 3 would tangle join's debugging with debugging the trait's shape.
 
-**2. Placeholder 扫描**：无 TBD / TODO。每个 Step 3 都给出完整可编译代码。Task 3 的 `Node` 枚举在 Task 4 增加 `Aggregate` 变体——这是有意的增量，Task 3 里有一个显式的占位测试 `building_an_aggregate_is_an_error_until_task_4` 说明当前状态，Task 4 明确要求删掉它并给出替代测试。
+**2. Placeholder scan**: no TBD / TODO. Every Step 3 gives complete compilable code. Task 3's `Node` enum gains the `Aggregate` variant in Task 4 — a deliberate increment: Task 3 has an explicit placeholder test, `building_an_aggregate_is_an_error_until_task_4`, stating the current state, and Task 4 explicitly requires deleting it and gives replacement tests.
 
-**3. 类型一致性**：`lower(&ViewQuery, &str, usize) -> Result<Plan, PlanError>`（Task 1）→ `Node::build(&Plan) -> Result<Node, NodeError>`（Task 3）→ `AggState::new(Vec<usize>, Vec<Agg>)`（Task 4）→ `IncrementalEngine::create_view(&Database, &ViewQuery, &BTreeMap<String, ZSet>)`（Task 5）。`ivmlite-core::EngineError` 与 `ivmlite-test::EngineError` 同名不同类型，Task 5 的适配器显式搬运——这一点在 Task 5 的 Interfaces 里点明了。
+**3. Type consistency**: `lower(&ViewQuery, &str, usize) -> Result<Plan, PlanError>` (Task 1) → `Node::build(&Plan) -> Result<Node, NodeError>` (Task 3) → `AggState::new(Vec<usize>, Vec<Agg>)` (Task 4) → `IncrementalEngine::create_view(&Database, &ViewQuery, &BTreeMap<String, ZSet>)` (Task 5). `ivmlite-core::EngineError` and `ivmlite-test::EngineError` share a name but are different types, and Task 5's adapter translates explicitly — as Task 5's Interfaces point out.
 
 ---
 

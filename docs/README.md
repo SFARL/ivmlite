@@ -1,33 +1,35 @@
-# ivmlite 文档
+# ivmlite documentation
 
-## 目录
+## Contents
 
-- **`superpowers/specs/`** — 设计文档（spec）。实施前的权威依据。
-  - [`2026-09-18-ivmlite-design.md`](superpowers/specs/2026-09-18-ivmlite-design.md) — 总体设计
-- **`superpowers/plans/`** — 实施计划。
-  - [`2026-09-18-m0-test-and-bench-harness.md`](superpowers/plans/2026-09-18-m0-test-and-bench-harness.md) — M0：测试与基准骨架
-  - [`2026-09-20-m1a-phase1-multi-table-harness.md`](superpowers/plans/2026-09-20-m1a-phase1-multi-table-harness.md) — M1a Phase 1：多表框架重构
-- [`mutation-gates.md`](mutation-gates.md) — **变异门禁表**：spec 要求 → 变异 → 会红的测试。M1 新增的不变量必须在此登记。
-- **`bench/`** — benchmark 的结果、曲线与结论（[README](bench/README.md)）。
-- **`adr/`** — 架构决策记录（Architecture Decision Record）。
-- **`spikes/`** — 可行性探针及其结论。产出是结论，不是要保留的代码。
-  - [`2026-09-18-m-1-sqlite-extension-mechanics.md`](spikes/2026-09-18-m-1-sqlite-extension-mechanics.md) — M-1：控制面到底能不能按设想工作（阻塞 M1）
+- **`superpowers/specs/`** — design documents (specs). The authority implementation works from.
+  - [`2026-09-18-ivmlite-design.md`](superpowers/specs/2026-09-18-ivmlite-design.md) — the overall design
+- **`superpowers/plans/`** — implementation plans.
+  - [`2026-09-18-m0-test-and-bench-harness.md`](superpowers/plans/2026-09-18-m0-test-and-bench-harness.md) — M0: the test and benchmark harness
+  - [`2026-09-20-m1a-phase1-multi-table-harness.md`](superpowers/plans/2026-09-20-m1a-phase1-multi-table-harness.md) — M1a Phase 1: the multi-table harness refactor
+  - [`2026-09-21-m1a-phase2-engine.md`](superpowers/plans/2026-09-21-m1a-phase2-engine.md) — M1a Phase 2: the single-table incremental engine
+- [`mutation-gates.md`](mutation-gates.md) — **the mutation-gate table**: spec requirement → mutation → the test that goes red. Every invariant M1 adds must be registered here.
+- **`bench/`** — benchmark results, charts and conclusions ([README](bench/README.md)).
+- **`adr/`** — Architecture Decision Records (reserved; see below).
+- **`spikes/`** — feasibility probes and their conclusions. The output is a conclusion, not code to keep.
+  - [`2026-09-18-m-1-sqlite-extension-mechanics.md`](spikes/2026-09-18-m-1-sqlite-extension-mechanics.md) — M-1: can the control surface work as designed (blocks M1)
+  - [`2026-09-18-m-1-results.md`](spikes/2026-09-18-m-1-results.md) — M-1: results
 
-## ADR 的使用约定
+## How ADRs are used
 
-**当前所有"为什么不是另一条路"的决定都记录在总体设计文档的 §12「决策记录：被否决的方案」中**，包括：
+**Every "why not the other path" decision so far is recorded in §12 of the overall design, "Decision record: rejected alternatives"**, including:
 
-| 决策 | 位置 |
+| Decision | Location |
 |---|---|
-| 为什么目标是 SQLite 而不是 DuckDB | §12.1 |
-| 为什么是扩展形态而不是"SQLite 旁边的库" | §12.2 |
-| 为什么用 trigger 而不是 `preupdate_hook` / session extension | §12.3 |
-| 为什么不走 SQL-to-SQL 编译路线 | §12.4 |
-| 为什么不做静默全量回退 | §12.5 |
-| 为什么 v0 不建完整 DBSP circuit | §12.6 |
-| 为什么 DELETE 在 v0 而不是 v0.2 | §12.7 |
-| 为什么不与 TanStack DB 对比 | §12.8 |
+| Why the target is SQLite rather than DuckDB | §12.1 |
+| Why an extension rather than a "library next to SQLite" | §12.2 |
+| Why triggers rather than `preupdate_hook` / the session extension | §12.3 |
+| Why not the SQL-to-SQL compilation route | §12.4 |
+| Why no silent fallback to full recomputation | §12.5 |
+| Why v0 does not build a full DBSP circuit | §12.6 |
+| Why DELETE is in v0 rather than v0.2 | §12.7 |
+| Why not compare with TanStack DB | §12.8 |
 
-`adr/` 目录留给**spec 定稿之后**才出现的决策——即实施过程中推翻或新增的判断。届时每条一个文件，命名 `NNNN-<kebab-case-标题>.md`，并在本文件的表格中补一行。
+`adr/` is kept for decisions that appear **after the spec is final** — judgments overturned or added during implementation. Each then gets one file, named `NNNN-<kebab-case-title>.md`, plus a row in the table in this file.
 
-这样做的原因：在 spec 尚未实施时把决策拆散到十几个文件里，只会让阅读顺序断裂；而实施期的决策必须独立记录，否则会悄悄改掉 spec 的前提而无人察觉。
+The reason: splitting decisions across a dozen files while the spec is still unimplemented only breaks the reading order, whereas decisions made during implementation must be recorded on their own, or they quietly change the spec's premises without anyone noticing.

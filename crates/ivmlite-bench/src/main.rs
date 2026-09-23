@@ -3,7 +3,10 @@ mod plot;
 
 use std::path::Path;
 
-use baseline::{apply, install_trigger_view, recompute_all, seed_base, Baseline};
+use baseline::{
+    apply, install_trigger_view, recompute_all, seed_base, ApplyStatements, Baseline,
+    RecomputeStatements,
+};
 use ivmlite_workload::Workload;
 use rusqlite::Connection;
 
@@ -18,14 +21,15 @@ pub struct Record {
     pub maintain_ms: f64,
 }
 
-/// 跑一个已经完全具体化的矩阵格子。`cell` 由 `Workload::cells()` 产出，
-/// 此函数不再改动它——`base_rows` / `group_cardinality` / `batch_size` /
-/// `views` 四个维度全部由 `ivmlite-workload` 决定（spec §10.3 第 7 条），
-/// `main.rs` 只负责按基线跑它、计时、记录结果。
+/// Run one fully materialized matrix cell. `cell` comes from `Workload::cells()`
+/// and is not modified here: all four dimensions — `base_rows`,
+/// `group_cardinality`, `batch_size`, `views` — are decided by
+/// `ivmlite-workload` (spec §10.3 item 7). `main.rs` only runs the cell under
+/// each baseline, times it, and records the result.
 fn run_one(b: Baseline, cell: &Workload) -> rusqlite::Result<Record> {
     let conn = Connection::open_in_memory()?;
 
-    // ---- 以下全部不计时：建立初始状态 ----
+    // ---- untimed: build the initial state ----
     seed_base(&conn, cell)?;
     if b == Baseline::HandWrittenTrigger {
         for v in &cell.views {
@@ -34,12 +38,20 @@ fn run_one(b: Baseline, cell: &Workload) -> rusqlite::Result<Record> {
     }
     let ops = cell.update_trace();
 
-    // ---- 计时区间 ----
-    let apply_ms = apply(&conn, &cell.schema.table, &ops)?;
-    let maintain_ms = match b {
-        // trigger 的成本已计入 apply_ms——那正是写放大
-        Baseline::NoMaintenance | Baseline::HandWrittenTrigger => 0.0,
-        Baseline::NaiveRecompute => recompute_all(&conn, cell)?,
+    // Compile every statement the timed region runs, now that all triggers
+    // exist. See `ApplyStatements` for why this must not happen under the timer.
+    let mut apply_stmts = ApplyStatements::prepare(&conn, &cell.schema.table)?;
+    let mut recompute_stmts = match b {
+        Baseline::NaiveRecompute => Some(RecomputeStatements::prepare(&conn, cell)?),
+        Baseline::NoMaintenance | Baseline::HandWrittenTrigger => None,
+    };
+
+    // ---- timed region ----
+    let apply_ms = apply(&conn, &mut apply_stmts, &ops)?;
+    let maintain_ms = match recompute_stmts.as_mut() {
+        Some(stmts) => recompute_all(stmts)?,
+        // The trigger's cost is already in apply_ms: that is the write amplification.
+        None => 0.0,
     };
 
     Ok(Record {
@@ -64,13 +76,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Baseline::NaiveRecompute,
     ];
 
-    // 矩阵的结构（两次扫描、`card > base_rows` 的跳过规则、视图阈值公式）
-    // 现在完全活在 `Workload::cells()` 里（spec §10.3 第 7 条），这里只是
-    // 按基线遍历它产出的格子。跳过的格子不再在这里单独记一行 stderr——
-    // `cells()` 直接不产出它们，`main.rs` 没有 `card > rows` 这条判断可用
-    // 来识别"本该有但被跳过"的格子，硬凑一份就是把已经搬走的规则在这里
-    // 重新实现一遍；`docs/bench/README.md` 已经记录了这个跳过（`card=100000
-    // > base_rows=10000`），不需要 runner 再重复一次。
+    // The matrix's structure — the two sweeps, the `card > base_rows` skip rule,
+    // the view-threshold formula — lives entirely in `Workload::cells()`
+    // (spec §10.3 item 7); this loop only walks the cells it produces under each
+    // baseline. Skipped cells are not logged to stderr here: `cells()` simply
+    // does not produce them, and `main.rs` has no `card > rows` check with which
+    // to recognise a cell that "should have been there". Adding one would
+    // re-implement, here, a rule that was deliberately moved out.
+    // `docs/bench/README.md` already records the skip (`card=100000 >
+    // base_rows=10000`).
     for b in baselines {
         for cell in &cells {
             records.push(run_one(b, cell)?);
@@ -85,20 +99,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    // 每个 group 基数各出一张图——交叉点随该参数剧烈移动，只出一张等于
-    // 自己挑了个好看的点（spec §10.1）。基数取值与固定视图数直接读
-    // `[matrix]`，不再是 main.rs 里的常量。
+    // One chart per group cardinality: the crossover moves sharply with it, so
+    // publishing a single chart would amount to picking a flattering point
+    // (spec §10.1). Cardinalities and the fixed view count come from `[matrix]`,
+    // not from constants here.
     let matrix = base
         .matrix
         .as_ref()
-        .expect("workloads/m0-baseline.toml 缺少 [matrix] 段");
+        .expect("workloads/m0-baseline.toml has no [matrix] section");
     for card in matrix.group_cardinalities.clone() {
         let path = format!("docs/bench/m0-baseline-card{card}.svg");
         match plot::write_svg(Path::new(&path), &records, matrix.fixed_views, 100, card) {
-            Ok(()) => eprintln!("图已写入 {path}"),
-            // 某个 group 基数在所有基表规模下都被跳过时没有数据点，
-            // 这不是错误——照实说明并继续。
-            Err(e) => eprintln!("跳过 card={card} 的出图: {e}"),
+            Ok(()) => eprintln!("wrote chart {path}"),
+            // A group cardinality skipped at every base-table size has no data
+            // points. That is not an error: say so and carry on.
+            Err(e) => eprintln!("skipping the chart for card={card}: {e}"),
         }
     }
 
@@ -109,28 +124,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
 
-    /// 从 `docs/bench/m0-baseline.csv` 里读出的一行，只取跟矩阵格子相关的
-    /// 四个维度（忽略 baseline 名字与两个耗时列——它们不是 `cells()` 的
-    /// 产出）。
+    /// One row of `docs/bench/m0-baseline.csv`, keeping only the four matrix
+    /// dimensions (the baseline name and the two timing columns are not
+    /// something `cells()` produces).
     type CsvCellKey = (usize, usize, usize, usize); // (views, base_rows, batch_size, group_cardinality)
 
-    /// 手写一个最小 CSV 解析：这份文件里没有引号转义或内嵌逗号，字段全是
-    /// 简单的标识符/数字，不值得为它引入一个 csv 依赖。
+    /// A minimal hand-written CSV parse: the file has no quoting and no embedded
+    /// commas — every field is a plain identifier or number — so it does not
+    /// justify a csv dependency.
     fn read_csv_cell_keys(path: &Path) -> std::collections::BTreeSet<CsvCellKey> {
         let text = std::fs::read_to_string(path)
-            .unwrap_or_else(|e| panic!("读不到 {}: {e}", path.display()));
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
         let mut lines = text.lines();
-        let header = lines.next().expect("CSV 至少要有表头");
+        let header = lines.next().expect("the CSV must have a header row");
         assert_eq!(
             header, "baseline,views,base_rows,batch_size,group_cardinality,apply_ms,maintain_ms",
-            "CSV 表头形状变了，下面按位置取字段的假设不再成立"
+            "the CSV header changed shape, so reading fields by position below no longer holds"
         );
 
         lines
             .filter(|l| !l.is_empty())
             .map(|line| {
                 let fields: Vec<&str> = line.split(',').collect();
-                assert_eq!(fields.len(), 7, "CSV 行字段数不对: {line}");
+                assert_eq!(fields.len(), 7, "wrong number of CSV fields: {line}");
                 let views: usize = fields[1].parse().unwrap_or_else(|_| panic!("{line}"));
                 let base_rows: usize = fields[2].parse().unwrap_or_else(|_| panic!("{line}"));
                 let batch_size: usize = fields[3].parse().unwrap_or_else(|_| panic!("{line}"));
@@ -141,23 +157,25 @@ mod tests {
             .collect()
     }
 
-    /// M0 review 的 finding I7：另一个引擎的 runner 加载
-    /// `workloads/m0-baseline.toml` 后，必须能重新推导出与已发布的
-    /// `docs/bench/m0-baseline.csv` 完全一致的格子集合——这正是
-    /// `ivmlite-workload` 存在的意义（spec §10.3 第 7 条）。这条测试是那句话
-    /// 唯一的证明：把已发布 CSV 里出现过的 `(views, base_rows, batch_size,
-    /// group_cardinality)` 四元组去重，与 `base.cells()` 产出的同一组四元组
-    /// 做集合相等比较——数量相同、成员相同，没有多的也没有少的。
+    /// M0 review finding I7: another engine's runner that loads
+    /// `workloads/m0-baseline.toml` must be able to re-derive exactly the set of
+    /// cells in the published `docs/bench/m0-baseline.csv` — which is the whole
+    /// reason `ivmlite-workload` exists (spec §10.3 item 7). This test is the
+    /// only proof of that claim: it dedups the `(views, base_rows, batch_size,
+    /// group_cardinality)` tuples in the published CSV and compares them, as a
+    /// set, with the tuples `base.cells()` produces — same count, same members,
+    /// nothing missing and nothing extra.
     ///
-    /// 视图阈值本身不在 CSV 的列里（CSV 只记 `views` 的数量），所以这条测试
-    /// 额外独立按 `[matrix]` 里记录的 `view_threshold_stride` /
-    /// `view_threshold_modulus` 重新算一遍每个格子每个视图的阈值，并断言
-    /// 与 `cells()` 实际产出的阈值一致——否则"阈值公式从 main.rs 搬进
-    /// `MatrixSpec::views()` 时悄悄改了一个字符"这种回归，光靠
-    /// 四元组集合比较是测不出来的（CSV 里没有任何一列携带阈值信息）。
+    /// View thresholds are not a CSV column (the CSV records only how many views
+    /// there are), so the test also independently recomputes every view's
+    /// threshold from `[matrix]`'s `view_threshold_stride` /
+    /// `view_threshold_modulus` and asserts it matches what `cells()` produced.
+    /// Otherwise a regression like "one character of the threshold formula
+    /// changed when it moved from main.rs into `MatrixSpec::views()`" would be
+    /// invisible to the tuple comparison, since no CSV column carries it.
     ///
-    /// 不重新跑 benchmark（那要约 9 分钟）：这里只读已经提交的 CSV 文件，
-    /// 不改动它一个字节；它是这条测试要对照的既有事实（fixture）。
+    /// It does not re-run the benchmark (that takes about 9 minutes): it only
+    /// reads the committed CSV, byte for byte unchanged, as a fixture.
     #[test]
     fn cells_reproduce_exactly_the_published_csv_matrix() {
         let workload_path =
@@ -165,24 +183,25 @@ mod tests {
         let csv_path =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/bench/m0-baseline.csv");
 
-        let base = Workload::load(&workload_path).expect("发布的 workload 文件必须可解析");
+        let base = Workload::load(&workload_path).expect("the published workload file must parse");
         let matrix = base
             .matrix
             .as_ref()
-            .expect("workloads/m0-baseline.toml 缺少 [matrix] 段")
+            .expect("workloads/m0-baseline.toml has no [matrix] section")
             .clone();
 
         let cells = base.cells();
 
-        // 阈值公式的独立复核：与四元组集合比较无关，专门守住"阈值公式没有
-        // 在搬家过程中被悄悄改掉"这条不变式。
+        // Independent check of the threshold formula, separate from the tuple
+        // comparison: it guards the invariant that the formula was not quietly
+        // altered when it moved.
         for cell in &cells {
             for (i, v) in cell.views.iter().enumerate() {
                 let expected =
                     (i as i64 * matrix.view_threshold_stride) % matrix.view_threshold_modulus;
                 assert_eq!(
                     v.threshold, expected,
-                    "第 {i} 个视图的阈值应为 {expected}（stride={}, modulus={}），实际是 {}",
+                    "view {i} should have threshold {expected} (stride={}, modulus={}), got {}",
                     matrix.view_threshold_stride, matrix.view_threshold_modulus, v.threshold
                 );
             }
@@ -206,12 +225,12 @@ mod tests {
         let extra: Vec<_> = derived.difference(&published).collect();
         assert!(
             missing.is_empty() && extra.is_empty(),
-            "cells() 与已发布 CSV 的格子集合不一致:\n缺失（CSV 有、cells() 没有）: {missing:?}\n多余（cells() 有、CSV 没有）: {extra:?}"
+            "cells() and the published CSV disagree on the set of cells:\nmissing (in the CSV, not from cells()): {missing:?}\nextra (from cells(), not in the CSV): {extra:?}"
         );
         assert_eq!(
             derived.len(),
             published.len(),
-            "cells() 产出 {} 个不同格子, CSV 有 {} 个不同格子",
+            "cells() produced {} distinct cells, the CSV has {}",
             derived.len(),
             published.len()
         );

@@ -25,19 +25,19 @@
 <text x="54.0" y="118.8" dy="4" text-anchor="end">1000ms</text>
 <line x1="58.0" y1="73.1" x2="64.0" y2="73.1" stroke="#333"/>
 <text x="54.0" y="73.1" dy="4" text-anchor="end">10000ms</text>
-<polyline fill="none" stroke="#888888" stroke-width="2" points="64.0,254.9 360.0,255.0 656.0,253.5"/>
-<circle cx="64.0" cy="254.9" r="3" fill="#888888"/>
-<circle cx="360.0" cy="255.0" r="3" fill="#888888"/>
-<circle cx="656.0" cy="253.5" r="3" fill="#888888"/>
+<polyline fill="none" stroke="#888888" stroke-width="2" points="64.0,251.7 360.0,251.8 656.0,249.4"/>
+<circle cx="64.0" cy="251.7" r="3" fill="#888888"/>
+<circle cx="360.0" cy="251.8" r="3" fill="#888888"/>
+<circle cx="656.0" cy="249.4" r="3" fill="#888888"/>
 <text x="506" y="82" fill="#888888">hand_written_trigger</text>
-<polyline fill="none" stroke="#1f77b4" stroke-width="2" points="64.0,198.0 360.0,148.5 656.0,100.5"/>
-<circle cx="64.0" cy="198.0" r="3" fill="#1f77b4"/>
-<circle cx="360.0" cy="148.5" r="3" fill="#1f77b4"/>
-<circle cx="656.0" cy="100.5" r="3" fill="#1f77b4"/>
+<polyline fill="none" stroke="#1f77b4" stroke-width="2" points="64.0,188.2 360.0,145.7 656.0,99.5"/>
+<circle cx="64.0" cy="188.2" r="3" fill="#1f77b4"/>
+<circle cx="360.0" cy="145.7" r="3" fill="#1f77b4"/>
+<circle cx="656.0" cy="99.5" r="3" fill="#1f77b4"/>
 <text x="506" y="100" fill="#1f77b4">naive_recompute</text>
-<polyline fill="none" stroke="#d62728" stroke-width="2" points="64.0,320.4 360.0,318.4 656.0,312.0"/>
-<circle cx="64.0" cy="320.4" r="3" fill="#d62728"/>
-<circle cx="360.0" cy="318.4" r="3" fill="#d62728"/>
-<circle cx="656.0" cy="312.0" r="3" fill="#d62728"/>
+<polyline fill="none" stroke="#d62728" stroke-width="2" points="64.0,321.7 360.0,313.1 656.0,308.4"/>
+<circle cx="64.0" cy="321.7" r="3" fill="#d62728"/>
+<circle cx="360.0" cy="313.1" r="3" fill="#d62728"/>
+<circle cx="656.0" cy="308.4" r="3" fill="#d62728"/>
 <text x="506" y="118" fill="#d62728">no_maintenance</text>
 </svg>

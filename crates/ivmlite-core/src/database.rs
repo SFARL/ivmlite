@@ -1,9 +1,11 @@
 use crate::Schema;
 
-/// 差分用例涉及的全部基表。
+/// Every base table a differential test case involves.
 ///
-/// 用 `Vec` 而非 `HashMap`：表的数量是个位数，按名查找的线性扫描无关紧要，
-/// 而顺序确定是硬要求——失败用例必须能凭 seed 精确重放（spec §9.4）。
+/// A `Vec` rather than a `HashMap`: there are only a handful of tables, so a
+/// linear scan to look one up by name does not matter, while a deterministic
+/// order is a hard requirement — a failing case must replay exactly from its
+/// seed (spec §9.4).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Database {
@@ -15,7 +17,7 @@ impl Database {
         Database { tables }
     }
 
-    /// 单表用例就是只有一张表的多表用例。
+    /// A single-table case is just a multi-table case with one table.
     pub fn single(schema: Schema) -> Self {
         Database {
             tables: vec![schema],
@@ -67,16 +69,19 @@ mod tests {
         assert!(Database::single(s("orders")).get("nope").is_none());
     }
 
-    /// 顺序必须保留——失败用例要凭 seed 精确重放（spec §9.4）。
+    /// Order must be preserved — a failing case must replay exactly from its
+    /// seed (spec §9.4).
     ///
-    /// 这仍然只是一条统计意义上的守卫，不是绝对证明：`Database` 内部若
-    /// 换成按名字路由的 `HashMap`，从这个类型外部没有办法把"顺序确定"
-    /// 这件事钉死成必然——`HashMap` 的 `RandomState` 逐进程重新播种，
-    /// 每次运行都可能凑巧给出插入顺序。两张表时凑巧排对的概率是
-    /// 1/2! = 50%，测试形同虚设；五张互不相同的表把这个概率压到
-    /// 1/5! ≈ 0.83%，多跑几次就能把巧合筛掉。插入顺序特意选了非字典序
-    /// （也非字典序的反序），这样一个"看似保序、实则在内部按名字排序"
-    /// 的实现同样会被测出来。
+    /// This is still only a statistical guard, not a proof: if `Database` were
+    /// changed internally to route by name through a `HashMap`, nothing outside
+    /// the type could pin "the order is deterministic" as a certainty —
+    /// `HashMap`'s `RandomState` re-seeds per process, so any run might happen to
+    /// yield the insertion order. With two tables the chance of a coincidentally
+    /// correct order is 1/2! = 50%, which makes the test worthless; five distinct
+    /// tables push it down to 1/5! ≈ 0.83%, and a few runs filter the coincidence
+    /// out. The insertion order is deliberately neither lexicographic nor its
+    /// reverse, so an implementation that "looks order-preserving but sorts by
+    /// name internally" is caught as well.
     #[test]
     fn table_order_is_preserved() {
         let db = Database::new(vec![s("c"), s("a"), s("e"), s("b"), s("d")]);
@@ -84,7 +89,7 @@ mod tests {
         assert_eq!(
             names,
             vec!["c", "a", "e", "b", "d"],
-            "顺序必须保留——失败用例要凭 seed 精确重放"
+            "order must be preserved — a failing case must replay exactly from its seed"
         );
     }
 }

@@ -1,11 +1,21 @@
+mod agg;
+mod arrangement;
 mod database;
+mod engine;
+mod node;
+mod plan;
 mod query;
 mod row;
 mod schema;
 mod value;
 mod zset;
 
+pub use agg::AggState;
+pub use arrangement::{Arrangement, MemArrangement};
 pub use database::Database;
+pub use engine::{EngineError, IncrementalEngine};
+pub use node::Node;
+pub use plan::{lower, Plan, PlanError};
 pub use query::{Agg, AggFn, Predicate, ViewQuery};
 pub use row::Row;
 pub use schema::{Column, ColumnType, Schema};

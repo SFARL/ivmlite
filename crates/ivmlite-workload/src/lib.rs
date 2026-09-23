@@ -5,15 +5,15 @@ use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 use serde::{Deserialize, Serialize};
 
-/// M0 只有 Uniform。这个枚举现在就存在，是为了 M2 加 Zipf 时
-/// 不必改动 workload 文件格式（spec §10.6）。
+/// M0 has only Uniform. The enum exists already so that adding Zipf in M2 does
+/// not change the workload file format (spec §10.6).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Distribution {
     Uniform,
 }
 
-/// 同上：M2 会加 Hot（更新集中打热 group）。
+/// Likewise: M2 adds Hot (updates concentrated on hot groups).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Locality {
@@ -47,35 +47,37 @@ pub struct ViewSpec {
     pub threshold: i64,
 }
 
-/// M0 基准矩阵的派生规则（spec §10.3 第 7 条）。这是
-/// `docs/bench/m0-baseline.csv` 的唯一权威来源：`Workload::cells()` 读取
-/// 这一段，产出每个测量格子的具体 `Workload`，取代此前活在
-/// `ivmlite-bench/src/main.rs` 里的手写常量与两次扫描循环。任何引擎的
-/// runner 只要加载同一份 workload 文件、调用 `cells()`，就能重新推导出
-/// 与本仓库完全一致的格子集合。
+/// The derivation rules for the M0 benchmark matrix (spec §10.3 item 7). This is
+/// the single source of truth for `docs/bench/m0-baseline.csv`:
+/// `Workload::cells()` reads this section and produces a concrete `Workload` for
+/// every measured cell, replacing the hand-written constants and two sweep loops
+/// that used to live in `ivmlite-bench/src/main.rs`. Any engine's runner that
+/// loads the same workload file and calls `cells()` re-derives exactly the set
+/// of cells this repository measured.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MatrixSpec {
-    /// 两次扫描共用的基表规模取值。
+    /// Base-table sizes shared by both sweeps.
     pub base_rows: Vec<usize>,
-    /// 两次扫描共用的批大小取值。
+    /// Batch sizes shared by both sweeps.
     pub batch_sizes: Vec<usize>,
-    /// 扫描二（视图数 × 基表规模 × 批大小）里视图数的取值。
+    /// View counts for sweep two (view count × base-table size × batch size).
     pub view_counts: Vec<usize>,
-    /// 扫描一（group 基数 × 基表规模 × 批大小）里 group 基数的取值。
+    /// Group cardinalities for sweep one (group cardinality × base-table size × batch size).
     pub group_cardinalities: Vec<usize>,
-    /// 扫描一固定的视图数。
+    /// Sweep one's fixed view count.
     pub fixed_views: usize,
-    /// 扫描二固定的 group 基数。
+    /// Sweep two's fixed group cardinality.
     pub fixed_cardinality: usize,
-    /// 第 i 个视图的阈值 = `(i * view_threshold_stride) % view_threshold_modulus`。
+    /// The threshold of view i = `(i * view_threshold_stride) % view_threshold_modulus`.
     pub view_threshold_stride: i64,
     pub view_threshold_modulus: i64,
 }
 
 impl MatrixSpec {
-    /// 派生第 `n` 个视图的集合：阈值公式是让各视图彼此不同的手段，
-    /// 与 `ivmlite-bench` 此前 `variant()` 里写死的公式完全一致
-    /// （见本文件顶部关于 [matrix] 的说明）。
+    /// Derive the set of `n` views. The threshold formula is what keeps the views
+    /// distinct from one another; it is exactly the formula the benchmark runner
+    /// hard-coded before `[matrix]` existed, so the committed CSV stays
+    /// reproducible (see the `[matrix]` comments in `workloads/m0-baseline.toml`).
     fn views(&self, n: usize) -> Vec<ViewSpec> {
         (0..n)
             .map(|i| ViewSpec {
@@ -108,12 +110,13 @@ pub struct Workload {
     pub data: DataSpec,
     pub updates: UpdateSpec,
     pub views: Vec<ViewSpec>,
-    /// M0 基准矩阵的派生规则（spec §10.3 第 7 条）。只有作为矩阵起点的
-    /// workload 文件（如 `workloads/m0-baseline.toml`）需要这一段；由
-    /// `cells()` 产出的具体格子里这个字段是 `None`——它们已经是矩阵求值
-    /// 后的终点，不再需要一份求值规则。`#[serde(default)]` 让没有
-    /// `[matrix]` 段的 workload 文件（以及现有构造 `Workload` 字面量的
-    /// 测试代码）继续可以不提这个字段。
+    /// The derivation rules for the M0 benchmark matrix (spec §10.3 item 7). Only
+    /// a workload file that is the starting point of a matrix (such as
+    /// `workloads/m0-baseline.toml`) needs this section; in the concrete cells
+    /// `cells()` produces this field is `None` — they are already the result of
+    /// evaluating the matrix and need no evaluation rules of their own.
+    /// `#[serde(default)]` lets workload files without a `[matrix]` section (and
+    /// test code that builds `Workload` literals) keep leaving it out.
     #[serde(default)]
     pub matrix: Option<MatrixSpec>,
 }
@@ -141,8 +144,8 @@ impl std::fmt::Display for WorkloadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             WorkloadError::Io(e) => write!(f, "{e}"),
-            WorkloadError::Parse(e) => write!(f, "解析 workload 失败: {e}"),
-            WorkloadError::Invalid(e) => write!(f, "workload 配置不合法: {e}"),
+            WorkloadError::Parse(e) => write!(f, "failed to parse the workload: {e}"),
+            WorkloadError::Invalid(e) => write!(f, "invalid workload configuration: {e}"),
         }
     }
 }
@@ -157,33 +160,37 @@ impl Workload {
         Ok(w)
     }
 
-    /// `group_cardinality > base_rows` 没有意义：N 行的表不可能容纳超过 N 个
-    /// 不同的分组键。宁可在加载时就拒绝，也不要悄悄少生成——否则 benchmark
-    /// 会在一个它其实没用过的基数下报告结果。
+    /// `group_cardinality > base_rows` is meaningless: a table of N rows cannot
+    /// hold more than N distinct group keys. Better to reject it at load time
+    /// than to quietly generate fewer — otherwise the benchmark would report
+    /// results under a cardinality it never actually used.
     ///
-    /// `pub`（而非仅 `load` 内部私用）：这条规则只应该有一个家。`cells()`
-    /// 直接调这个方法来判断一个矩阵格子是否合法；此前
-    /// `ivmlite-bench/src/main.rs` 的 `variant()` + 手写的 `if card > rows`
-    /// 把同一条规则拆成两份维护，两份拼法迟早会分叉——现在两处都只剩这一个
-    /// 家。
+    /// `pub` (rather than private to `load`) because this rule should have
+    /// exactly one home: `cells()` calls this method directly to decide whether
+    /// a matrix cell is legal, so the rule is not maintained twice in two
+    /// spellings that would sooner or later diverge.
     pub fn validate(&self) -> Result<(), WorkloadError> {
         if self.data.group_cardinality > self.data.base_rows {
             return Err(WorkloadError::Invalid(format!(
-                "group_cardinality ({}) 不能大于 base_rows ({})",
+                "group_cardinality ({}) must not exceed base_rows ({})",
                 self.data.group_cardinality, self.data.base_rows
             )));
         }
         Ok(())
     }
 
-    /// 基表行。id 稠密且唯一；分组键的不同值数量**精确**等于 group_cardinality
-    /// ——前 card 行逐一覆盖每个键，其余行随机落入已有的键。随机落点无法保证
-    /// 覆盖全部键，而 benchmark 依赖这个数字是准的。
+    /// The base-table rows. Ids are dense and unique; the number of distinct
+    /// group keys is **exactly** group_cardinality — the first card rows cover
+    /// each key in turn, and the remaining rows fall into existing keys at
+    /// random. Random placement alone cannot guarantee every key is covered, and
+    /// the benchmark depends on this number being exact.
     ///
-    /// 前提：`base_rows >= group_cardinality`。这由 `validate`（`load` 会调用）
-    /// 强制保证——反过来（分组键比行还多）没有意义，一张 N 行的表容不下超过
-    /// N 个不同的键。调用方直接构造 `Workload`（不经过 `load`）时需自行保证
-    /// 这一前提，否则分组键数量会悄悄退化为 `base_rows`。
+    /// Precondition: `base_rows >= group_cardinality`. `validate` (which `load`
+    /// calls) enforces it — the reverse (more group keys than rows) is
+    /// meaningless, since a table of N rows cannot hold more than N distinct
+    /// keys. A caller that builds a `Workload` directly (without `load`) must
+    /// uphold it itself, or the number of group keys quietly degrades to
+    /// `base_rows`.
     pub fn rows(&self) -> impl Iterator<Item = (i64, String, i64)> + '_ {
         let mut rng = StdRng::seed_from_u64(self.seed);
         let card = self.data.group_cardinality.max(1);
@@ -198,9 +205,10 @@ impl Workload {
         })
     }
 
-    /// 一批更新。DELETE 一律命中已存在且未被删过的 id，INSERT 一律用新 id，
-    /// 因此 trace 本身永远合法，任何 runner 直接重放即可，不需要各自维护
-    /// 一份"当前还活着哪些行"的模型。
+    /// One batch of updates. Every DELETE hits an id that exists and has not
+    /// been deleted yet, and every INSERT uses a fresh id, so the trace is
+    /// always legal: any runner can replay it directly, without keeping its own
+    /// model of "which rows are still alive".
     pub fn update_trace(&self) -> Vec<TraceOp> {
         let mut rng = StdRng::seed_from_u64(self.seed ^ 0x5EED);
         let card = self.data.group_cardinality.max(1);
@@ -232,8 +240,9 @@ impl Workload {
             .collect()
     }
 
-    /// 导出成任何引擎都能加载的形式：schema.sql / views.sql / data.csv /
-    /// updates.csv。这是"workload 可移植"这条约束的实际兑现（spec §10.3 第 7 条）。
+    /// Export in a form any engine can load: schema.sql / views.sql / data.csv /
+    /// updates.csv. This is how the "workloads are portable" constraint is
+    /// actually met (spec §10.3 item 7).
     pub fn export(&self, dir: &Path) -> std::io::Result<()> {
         fs::create_dir_all(dir)?;
         fs::write(dir.join("schema.sql"), format!("{};\n", self.schema.ddl))?;
@@ -263,42 +272,44 @@ impl Workload {
         fs::write(dir.join("updates.csv"), ups)
     }
 
-    /// 把 `[matrix]` 段展开成 M0 基准矩阵测的每一个具体格子（spec §10.3
-    /// 第 7 条）：`docs/bench/m0-baseline.csv` 的 204 行就是三条基线各跑
-    /// 一遍这里返回的格子集合。这取代了此前活在
-    /// `ivmlite-bench/src/main.rs` 里的 `variant()` 加两个手写扫描循环——
-    /// 把"怎么从一份基准 workload 派生出被测矩阵"这条规则搬进
-    /// `ivmlite-workload`，任何引擎的 runner 只要加载同一份 workload 文件
-    /// 调这个方法，就能重新推导出与本仓库完全一致的格子集合，不需要各自
-    /// 重新实现两次扫描的结构、视图阈值公式，或下面的跳过规则。
+    /// Expand the `[matrix]` section into every concrete cell the M0 benchmark
+    /// matrix measures (spec §10.3 item 7): the rows of
+    /// `docs/bench/m0-baseline.csv` are the three baselines each run once over
+    /// the set of cells returned here. This moves the rule "how the measured
+    /// matrix is derived from one benchmark workload" into `ivmlite-workload`:
+    /// any engine's runner that loads the same workload file and calls this
+    /// method re-derives exactly the cells this repository measured, without
+    /// re-implementing the two-sweep structure, the view-threshold formula, or
+    /// the skip rule below.
     ///
-    /// 保留**完全一致**的两次扫描结构（不是四维全交叉，四维会是 144 格，
-    /// 过大——spec §10.1）：
-    /// - 扫描一：group 基数 × 基表规模 × 批大小，视图数固定在
-    ///   `matrix.fixed_views`。
-    /// - 扫描二：视图数 × 基表规模 × 批大小，group 基数固定在
-    ///   `matrix.fixed_cardinality`；跳过等于 `fixed_views` 的视图数，
-    ///   避免与扫描一在 `(fixed_views, fixed_cardinality)` 这个公共点上
-    ///   重复测量。
+    /// It keeps the two-sweep structure **exactly** (not a full four-way cross,
+    /// which would be 144 cells — too many, spec §10.1):
+    /// - Sweep one: group cardinality × base-table size × batch size, with the
+    ///   view count fixed at `matrix.fixed_views`.
+    /// - Sweep two: view count × base-table size × batch size, with the group
+    ///   cardinality fixed at `matrix.fixed_cardinality`; view counts equal to
+    ///   `fixed_views` are skipped, so the point `(fixed_views,
+    ///   fixed_cardinality)` shared with sweep one is not measured twice.
     ///
-    /// 跳过规则：`group_cardinality > base_rows` 的组合不被发出——N 行的表
-    /// 容不下超过 N 个不同分组键，这与 `validate()` 拒绝同一组合是**同一条
-    /// 规则**，唯一的家在 `validate()`；这里只是不生成不合法的格子，不是
-    /// 重新判断合法性。
+    /// Skip rule: combinations with `group_cardinality > base_rows` are not
+    /// emitted — a table of N rows cannot hold more than N distinct group keys.
+    /// This is **the same rule** by which `validate()` rejects the combination,
+    /// and its only home is `validate()`; here we merely avoid generating
+    /// illegal cells rather than re-deciding legality.
     ///
     /// # Panics
-    /// 如果 `self.matrix` 是 `None`（这个 workload 不是矩阵的起点），或者
-    /// 派生出的某个格子未能通过 `validate()`（说明 `[matrix]` 本身写得不
-    /// 自洽）。
+    /// If `self.matrix` is `None` (this workload is not the starting point of a
+    /// matrix), or if some derived cell fails `validate()` (meaning `[matrix]`
+    /// itself is inconsistent).
     pub fn cells(&self) -> Vec<Workload> {
         let m = self
             .matrix
             .as_ref()
-            .expect("cells() 需要 workload 里有 [matrix] 段");
+            .expect("cells() needs a [matrix] section in the workload");
 
         let mut cells = Vec::new();
 
-        // 扫描一：group 基数 × 基表规模 × 批大小，视图数固定。
+        // Sweep one: group cardinality × base-table size × batch size, fixed view count.
         for &card in &m.group_cardinalities {
             for &rows in &m.base_rows {
                 if card > rows {
@@ -310,10 +321,10 @@ impl Workload {
             }
         }
 
-        // 扫描二：视图数 × 基表规模 × 批大小，group 基数固定。
+        // Sweep two: view count × base-table size × batch size, fixed group cardinality.
         for &views in &m.view_counts {
             if views == m.fixed_views {
-                continue; // 与扫描一的公共点重复，不重复测量。
+                continue; // Already measured as sweep one's shared point.
             }
             for &rows in &m.base_rows {
                 if m.fixed_cardinality > rows {
@@ -328,13 +339,14 @@ impl Workload {
         cells
     }
 
-    /// `cells()` 的单格构造：clone 自身，改 `base_rows` /
-    /// `group_cardinality` / `batch_size` / `views` 四个维度，返回前显式
-    /// 调 `validate()`——这四个字段是 clone + 改字段构造出来的，绕过了
-    /// `load()` 里的那次 `validate()`，所以这里要重新调一次，让
-    /// `validate()` 仍然是 `group_cardinality > base_rows` 这条规则唯一的
-    /// 执行点。派生出的格子已经是矩阵求值后的具体配置，`matrix` 字段清成
-    /// `None`——它不再需要一份求值规则。
+    /// Build one cell for `cells()`: clone self, change the four dimensions
+    /// `base_rows` / `group_cardinality` / `batch_size` / `views`, and call
+    /// `validate()` explicitly before returning — building by clone + field
+    /// mutation bypasses the `validate()` inside `load()`, so it is called again
+    /// here, keeping `validate()` the only place the `group_cardinality >
+    /// base_rows` rule is enforced. A derived cell is already a concrete
+    /// configuration with the matrix evaluated, so its `matrix` field is cleared
+    /// to `None` — it needs no evaluation rules of its own.
     fn cell(
         &self,
         base_rows: usize,
@@ -350,7 +362,7 @@ impl Workload {
         w.views = m.views(views);
         w.matrix = None;
         w.validate()
-            .unwrap_or_else(|e| panic!("cells() 构造出了非法 workload: {e}"));
+            .unwrap_or_else(|e| panic!("cells() built an invalid workload: {e}"));
         w
     }
 }
@@ -412,21 +424,26 @@ mod tests {
         assert_eq!(
             regions.len(),
             7,
-            "不同分组键的数量必须精确等于 group_cardinality——这是 benchmark 的核心维度"
+            "the number of distinct group keys must be exactly group_cardinality — it is the benchmark's core dimension"
         );
     }
 
-    /// 缺口测试（M1a Phase 1 Task 1 变异审计新增）：`rows_respect_group_cardinality`
-    /// 用 500 行、7 个分组键跑纯随机分配也几乎必然覆盖全部 7 个键（`rows()`
-    /// 若把"前 card 行逐一覆盖每个键"改成"每一行都纯随机落点"，把变异真的
-    /// 跑一遍验证时，那条测试仍然是绿的——不是巧合失败，就是没抓到）。真正
-    /// 抓住这次变异的是 `base_rows_equal_to_group_cardinality_is_accepted`，
-    /// 但那条测试的名字与断言意图都是"边界值被接受"，不是"分组键覆盖精确"，
-    /// 它能抓到纯属该场景样本量小（7 个 draw 覆盖 7 个键的概率很低）的副作用。
+    /// A gap test (added by M1a Phase 1 Task 1's mutation audit):
+    /// `rows_respect_group_cardinality` runs 500 rows over 7 group keys, and
+    /// purely random assignment almost certainly covers all 7 keys too — when
+    /// the mutation that changes `rows()` from "the first card rows cover each
+    /// key in turn" to "every row is placed purely at random" was actually run,
+    /// that test stayed green. What did catch the mutation was
+    /// `base_rows_equal_to_group_cardinality_is_accepted`, but that test's name
+    /// and intent are "the boundary value is accepted", not "group-key coverage
+    /// is exact"; it caught the mutation only as a side effect of the scenario's
+    /// small sample (7 draws covering 7 keys is unlikely).
     ///
-    /// 直接把文档注释里声称的机制（"前 card 行逐一覆盖每个键"）钉成断言：
-    /// 不看最终不同值的数量，而看前 `card` 行的分组键是不是精确按
-    /// `0..card` 顺序出现。纯随机分配几乎不可能巧合出这个顺序。
+    /// This pins the mechanism the doc comment claims ("the first card rows
+    /// cover each key in turn") as an assertion: instead of counting the final
+    /// distinct values, it checks that the first `card` rows' group keys appear
+    /// exactly in `0..card` order. Purely random assignment is very unlikely to
+    /// produce that order by chance.
     #[test]
     fn first_card_rows_deterministically_cover_each_group_in_order() {
         let w = spec();
@@ -435,8 +452,9 @@ mod tests {
         let want: Vec<String> = (0..card).map(|i| format!("r{i}")).collect();
         assert_eq!(
             regions, want,
-            "前 group_cardinality 行必须逐一、按序覆盖每个分组键（spec §10.1）——\
-             这是覆盖率精确的保证机制本身，而不是让后续随机采样'大概率'凑齐"
+            "the first group_cardinality rows must cover each group key once, in order \
+             (spec §10.1) — this is the mechanism that makes coverage exact, rather than \
+             relying on later random sampling to probably fill every key"
         );
     }
 
@@ -456,10 +474,16 @@ mod tests {
         for op in w.update_trace() {
             match op {
                 TraceOp::Insert { id, .. } => {
-                    assert!(live.insert(id), "trace 不得重复插入同一个 id");
+                    assert!(
+                        live.insert(id),
+                        "the trace must not insert the same id twice"
+                    );
                 }
                 TraceOp::Delete { id } => {
-                    assert!(live.remove(&id), "trace 里的 DELETE 必须命中存在的 id");
+                    assert!(
+                        live.remove(&id),
+                        "every DELETE in the trace must hit an existing id"
+                    );
                 }
             }
         }
@@ -481,12 +505,12 @@ mod tests {
     fn shipped_workload_file_parses() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../workloads/m0-baseline.toml");
-        let w = Workload::load(&path).expect("发布的 workload 文件必须可解析");
+        let w = Workload::load(&path).expect("the shipped workload file must parse");
         assert_eq!(w.name, "m0-baseline");
         assert!(!w.views.is_empty());
         assert!(
             w.schema.ddl.contains("INTEGER PRIMARY KEY"),
-            "spec §10.3 第 5 条要求稳定主键"
+            "spec §10.3 item 5 requires a stable primary key"
         );
     }
 
@@ -499,14 +523,15 @@ mod tests {
         w.export(&dir).unwrap();
 
         for f in ["schema.sql", "views.sql", "data.csv", "updates.csv"] {
-            assert!(dir.join(f).exists(), "缺少导出产物 {f}");
+            assert!(dir.join(f).exists(), "missing export artifact {f}");
         }
         let data = std::fs::read_to_string(dir.join("data.csv")).unwrap();
-        assert_eq!(data.lines().count(), 51, "表头 + 50 行");
+        assert_eq!(data.lines().count(), 51, "header + 50 rows");
     }
 
-    /// benchmark runner 通过 clone + mutate 一份 base workload 派生每个配置变体
-    /// （见任务约束）；克隆出来的副本必须与原件独立，改一个不能动到另一个。
+    /// `cells()` derives each configuration by cloning and mutating a base
+    /// workload; the clone must be independent of the original, so changing one
+    /// cannot touch the other.
     #[test]
     fn workload_clones_independently_of_the_original() {
         let original = spec();
@@ -523,24 +548,29 @@ mod tests {
         assert_eq!(original.views.len(), 2);
     }
 
-    /// 额外一条（ruling-review #2）：`validate` 必须能在不经过 `load`
-    /// （即不落盘再解析 TOML）的情况下被直接调用——这是 `ivmlite-bench`
-    /// 的 `variant()` 能够复用它,而不必自己再维护一份同样规则的前提。
+    /// `validate` must be callable directly, without going through `load` (that
+    /// is, without writing TOML to disk and parsing it back) — the precondition
+    /// for `cells()` reusing it instead of maintaining its own copy of the same
+    /// rule.
     #[test]
     fn validate_is_directly_callable_without_going_through_load() {
         let mut w = spec();
         w.data.base_rows = 5;
         w.data.group_cardinality = 50;
-        let err = w.validate().expect_err("card > base_rows 必须被拒绝");
+        let err = w.validate().expect_err("card > base_rows must be rejected");
         let msg = err.to_string();
         assert!(msg.contains("50") && msg.contains('5'));
 
         w.data.group_cardinality = 5;
-        assert!(w.validate().is_ok(), "card == base_rows 是合法边界");
+        assert!(
+            w.validate().is_ok(),
+            "card == base_rows is a legal boundary"
+        );
     }
 
-    /// group_cardinality > base_rows 没有意义（N 行的表容不下超过 N 个分组键）；
-    /// load 必须在加载时就拒绝，而不是悄悄生成更少的分组键。
+    /// group_cardinality > base_rows is meaningless (a table of N rows cannot
+    /// hold more than N group keys); load must reject it at load time rather
+    /// than quietly generate fewer group keys.
     #[test]
     fn load_rejects_group_cardinality_exceeding_base_rows() {
         let mut w = spec();
@@ -553,14 +583,16 @@ mod tests {
         let path = dir.join("bad.toml");
         std::fs::write(&path, toml_text).unwrap();
 
-        let err = Workload::load(&path).expect_err("group_cardinality > base_rows 必须被拒绝");
+        let err =
+            Workload::load(&path).expect_err("group_cardinality > base_rows must be rejected");
         let msg = err.to_string();
         assert!(msg.contains("100"), "{msg}");
         assert!(msg.contains("10"), "{msg}");
     }
 
-    /// base_rows == group_cardinality 是合法边界（每行自成一组）；比较里的
-    /// 差一错误会把这个边界也拒掉，所以要单独断言它被接受且分组键数量精确。
+    /// base_rows == group_cardinality is a legal boundary (every row its own
+    /// group); an off-by-one in the comparison would reject this boundary too,
+    /// so assert separately that it is accepted and the group-key count is exact.
     #[test]
     fn base_rows_equal_to_group_cardinality_is_accepted() {
         let mut w = spec();
@@ -573,15 +605,18 @@ mod tests {
         let path = dir.join("boundary.toml");
         std::fs::write(&path, toml_text).unwrap();
 
-        let loaded = Workload::load(&path).expect("base_rows == group_cardinality 必须被接受");
+        let loaded =
+            Workload::load(&path).expect("base_rows == group_cardinality must be accepted");
         let regions: BTreeSet<String> = loaded.rows().map(|(_, r, _)| r).collect();
         assert_eq!(regions.len(), 7);
     }
 
-    /// `cells()` 必须是确定性的——同样的输入两次调用产出同样的输出。
-    /// 这既是"文件完全决定格子集合"（spec §10.3 第 7 条）的直接要求，也是
-    /// CSV-一致性测试能够成立的前提：如果两次调用能给出不同结果，"cells()
-    /// 产出的集合与 CSV 里的集合相等"这句话就没有意义。
+    /// `cells()` must be deterministic — the same input gives the same output on
+    /// every call. This is both a direct requirement of "the file fully
+    /// determines the set of cells" (spec §10.3 item 7) and the precondition for
+    /// the CSV-consistency test: if two calls could give different results, the
+    /// statement "the set `cells()` produces equals the set in the CSV" would
+    /// mean nothing.
     #[test]
     fn cells_is_deterministic() {
         let w = spec_with_matrix();
@@ -600,60 +635,64 @@ mod tests {
         assert_eq!(
             a.iter().map(key).collect::<Vec<_>>(),
             b.iter().map(key).collect::<Vec<_>>(),
-            "cells() 两次调用必须给出完全相同的格子序列"
+            "two calls to cells() must give exactly the same sequence of cells"
         );
     }
 
-    /// `cells()` 派生出的每一格都必须是一个合法 workload：clone + 改字段
-    /// 绕过了 `load()` 里的 `validate()`，`cell()` 内部要重新调一次——这条
-    /// 测试直接断言这个不变式成立，而不是只信任实现里的注释。
+    /// Every cell `cells()` derives must be a legal workload: clone + field
+    /// mutation bypasses the `validate()` inside `load()`, so `cell()` calls it
+    /// again — this test asserts that invariant directly rather than trusting
+    /// the comment in the implementation.
     #[test]
     fn every_cell_passes_validate() {
         let w = spec_with_matrix();
         for c in w.cells() {
             c.validate()
-                .unwrap_or_else(|e| panic!("cells() 产出了未通过 validate() 的格子: {e}"));
+                .unwrap_or_else(|e| panic!("cells() produced a cell that fails validate(): {e}"));
         }
     }
 
-    /// 跳过规则的直接断言：没有任何一个发出的格子满足
-    /// `group_cardinality > base_rows`。`matrix_spec()` 里的
-    /// `group_cardinalities` 故意包含 5000——大于所有 `base_rows` 取值——
-    /// 用来触发这条规则。
+    /// A direct assertion of the skip rule: no emitted cell has
+    /// `group_cardinality > base_rows`. `matrix_spec()`'s `group_cardinalities`
+    /// deliberately includes 5000 — larger than every `base_rows` value — to
+    /// trigger the rule.
     #[test]
     fn no_emitted_cell_has_cardinality_exceeding_base_rows() {
         let w = spec_with_matrix();
         for c in w.cells() {
             assert!(
                 c.data.group_cardinality <= c.data.base_rows,
-                "cells() 不应该发出 group_cardinality={} > base_rows={} 的格子",
+                "cells() should not emit a cell with group_cardinality={} > base_rows={}",
                 c.data.group_cardinality,
                 c.data.base_rows
             );
         }
     }
 
-    /// 跳过规则确实在起作用：把两次扫描按"不做任何跳过"直接算出的朴素笛卡尔积
-    /// 大小，与 `cells()` 实际产出的数量相比，后者必须更少。`matrix_spec()`
-    /// 里 `group_cardinalities` 含 5000（恒大于所有 `base_rows`）、
-    /// `fixed_cardinality=50` 对 `base_rows=10` 也不成立，两条路径都会触发
-    /// 跳过。
+    /// The skip rule really takes effect: compared with the size of the naive
+    /// cross product of both sweeps computed without any skipping, the number
+    /// of cells `cells()` actually produces must be smaller. In `matrix_spec()`,
+    /// `group_cardinalities` contains 5000 (always larger than every
+    /// `base_rows`), and `fixed_cardinality=50` does not fit `base_rows=10`
+    /// either, so both paths trigger a skip.
     #[test]
     fn skip_rule_emits_fewer_cells_than_naive_cross_product() {
         let w = spec_with_matrix();
         let m = w.matrix.as_ref().unwrap();
 
-        // 扫描一朴素笛卡尔积：不检查 card > rows。
+        // Sweep one's naive cross product: no card > rows check.
         let naive_scan_one = m.group_cardinalities.len() * m.base_rows.len() * m.batch_sizes.len();
-        // 扫描二朴素笛卡尔积：仍然排除与扫描一重复的 fixed_views 公共点
-        // （这是两次扫描的结构本身，不是跳过规则），但不检查 card > rows。
+        // Sweep two's naive cross product: still excludes the fixed_views point
+        // shared with sweep one (that is the two-sweep structure itself, not the
+        // skip rule), but has no card > rows check.
         let naive_scan_two = (m.view_counts.len() - 1) * m.base_rows.len() * m.batch_sizes.len();
         let naive_total = naive_scan_one + naive_scan_two;
 
         let actual = w.cells().len();
         assert!(
             actual < naive_total,
-            "跳过规则应当让 cells() 产出的数量（{actual}）少于朴素笛卡尔积（{naive_total}）"
+            "the skip rule should make cells() produce fewer cells ({actual}) than the naive \
+             cross product ({naive_total})"
         );
     }
 }

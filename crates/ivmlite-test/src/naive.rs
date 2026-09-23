@@ -4,19 +4,22 @@ use ivmlite_core::{Database, Row, Value, ZSet};
 
 use crate::{AggFn, Engine, EngineError, Predicate, ViewQuery};
 
-/// 平凡正确的参照实现：保存全量基表，每次 materialize 重算一遍。
+/// The trivially correct reference implementation: it keeps the full base tables and recomputes on every materialize.
 ///
-/// 两个用途：验证测试框架不会误报；充当 benchmark 的"朴素重跑"基线（spec §10.2）。
+/// Two uses: showing the test framework raises no false alarms, and serving as the benchmark's "naive recompute" baseline (spec §10.2).
 ///
-/// `apply` 与 `refresh` 是真正分离的两个阶段：`apply` 只把原始 `(table, Row, i64)`
-/// 追加进 `pending`，不做任何合并；`refresh` 才把 `pending` 按表 drain 进
-/// `base`。如果 `apply` 提前合并，`refresh` 就成了空操作，任何忽略 refresh
-/// 契约的引擎都不会被测出来（spec §8.2）。
+/// `apply` and `refresh` are genuinely separate phases: `apply` only appends the
+/// raw `(table, Row, i64)` to `pending`, merging nothing, and `refresh` drains
+/// `pending` into `base` table by table. If `apply` merged eagerly, `refresh`
+/// would be a no-op and no engine ignoring the refresh contract would be caught
+/// (spec §8.2).
 ///
-/// `base` 按表持有（`BTreeMap<String, ZSet>`）——多表化之后 `create_view` 收到
-/// 的初始状态本就是按表分开的。`materialize` 仍只聚合 `anchor`（`db` 里第一张
-/// 表）的状态：查询目前仍是单表聚合，join 属引擎计划（Phase 3），Task 3 的
-/// oracle 已经把这条限制写死在 `recompute_via_sqlite` 里，这里跟随保持一致。
+/// `base` is held per table (`BTreeMap<String, ZSet>`) — since the harness went
+/// multi-table, the initial state `create_view` receives is split by table
+/// anyway. `materialize` still aggregates only the `anchor`'s state (the first
+/// table in `db`): queries are still single-table aggregates, join belongs to the
+/// engine plan (Phase 3), and Task 3's oracle fixed the same restriction in
+/// `recompute_via_sqlite`, which this follows.
 #[derive(Debug, Default)]
 pub struct NaiveRecompute {
     query: Option<ViewQuery>,
@@ -36,7 +39,14 @@ fn passes(predicate: &Predicate, row: &Row) -> bool {
         Predicate::None => true,
         Predicate::IntGt { column, value } => match row.get(*column) {
             Value::Int(n) => n > value,
-            _ => false, // NULL 与非整数一律不通过，与 SQL 的三值逻辑一致
+            // NULL > n is UNKNOWN under SQL's three-valued logic, so `false` is
+            // right for NULL. For TEXT it is not: SQLite orders storage classes
+            // NULL < INTEGER/REAL < TEXT < BLOB, so `'abc' > 3` is true there.
+            // This reference implementation does not go through `lower`, which
+            // rejects IntGt over TEXT for the engine, so the arm stays
+            // unreachable here only because `enumerate` never generates IntGt
+            // on a TEXT column.
+            _ => false,
         },
         Predicate::IsNotNull { column } => row.get(*column) != &Value::Null,
     }
@@ -49,19 +59,25 @@ impl Engine for NaiveRecompute {
         query: &ViewQuery,
         initial: &BTreeMap<String, ZSet>,
     ) -> Result<(), EngineError> {
-        self.query = Some(query.clone());
-        self.anchor = db
+        // Resolve everything that can fail before touching `self`, then commit
+        // the whole new view at once. Replacing `query` first and failing on the
+        // anchor lookup would leave a new query paired with the old base state.
+        let anchor = db
             .tables()
             .first()
-            .ok_or_else(|| EngineError("database 为空".into()))?
+            .ok_or_else(|| EngineError("database has no tables".into()))?
             .table
             .clone();
+        self.query = Some(query.clone());
+        self.anchor = anchor;
         self.base = initial.clone();
+        // Deltas applied but not yet refreshed belong to the view being replaced.
+        self.pending.clear();
         Ok(())
     }
 
     fn apply(&mut self, table: &str, raw: &[(Row, i64)]) -> Result<(), EngineError> {
-        // 刻意不合并：合并是 refresh 的职责，见类型上的文档注释。
+        // Deliberately unmerged: merging is refresh's job; see the type's doc comment.
         self.pending.extend(
             raw.iter()
                 .map(|(row, w)| (table.to_string(), row.clone(), *w)),
@@ -80,11 +96,12 @@ impl Engine for NaiveRecompute {
         let query = self
             .query
             .as_ref()
-            .ok_or_else(|| EngineError("materialize 前未 create_view".into()))?;
+            .ok_or_else(|| EngineError("materialize was called before create_view".into()))?;
 
-        // 每个聚合槽位是 (累加值, 非 NULL 输入的计数)。
-        // 第二项是必须的：SUM 在非 NULL 输入为零行时返回 NULL 而非 0
-        // （spec §6.1「聚合的 NULL 语义契约」）。只维护累加值会静默输出 0。
+        // Each aggregate slot is (running sum, count of non-NULL inputs). The
+        // second is required: SUM over zero non-NULL inputs returns NULL, not 0
+        // (spec §6.1, "the NULL-semantics contract for aggregates"). Keeping only
+        // the running sum would silently output 0.
         let mut groups: BTreeMap<Vec<Value>, Vec<(i64, i64)>> = BTreeMap::new();
 
         let anchor_base = self.base.get(&self.anchor).cloned().unwrap_or_default();
@@ -109,7 +126,7 @@ impl Engine for NaiveRecompute {
                         }
                     }
                     (AggFn::Sum, None) => {
-                        return Err(EngineError("SUM 缺少列".into()));
+                        return Err(EngineError("SUM has no column".into()));
                     }
                 }
             }
@@ -120,7 +137,7 @@ impl Engine for NaiveRecompute {
             let mut values = key;
             for (agg, (total, non_null)) in query.aggs.iter().zip(acc) {
                 values.push(match agg.func {
-                    // COUNT(*) 计的是行数，与列值是否 NULL 无关
+                    // COUNT(*) counts rows, regardless of whether a column is NULL
                     AggFn::Count => Value::Int(total),
                     AggFn::Sum if non_null == 0 => Value::Null,
                     AggFn::Sum => Value::Int(total),
@@ -157,10 +174,11 @@ mod tests {
         }
     }
 
-    // 单表用例包成一张表的 `Database`，配上按表名建的初始状态——所有既有
-    // 单表测试只关心这一张 anchor 表，多表化之后仍要能这样简写。这里用的是
-    // `test_support::single_table_bases`（m4：与 buggy.rs 里字节级相同的
-    // 版本已合并到一处）。
+    // A single-table case wrapped as a one-table `Database`, with initial state
+    // keyed by table name — every existing single-table test cares only about
+    // this one anchor table, and should stay this terse after the multi-table
+    // change. This uses `test_support::single_table_bases` (m4: the
+    // byte-identical version in buggy.rs was merged into it).
 
     fn sum_by_region() -> ViewQuery {
         ViewQuery {
@@ -188,6 +206,31 @@ mod tests {
     }
 
     #[test]
+    fn recreating_a_view_discards_deltas_applied_but_not_refreshed() {
+        // A reference engine reused across `create_view` calls must not carry
+        // unrefreshed deltas into the new view. `create_view` replaces the query
+        // and the base state, so anything still pending belongs to the old view:
+        // letting it reach the next `refresh` would pollute every comparison the
+        // reference engine is then used for. `IncrementalEngine` already gets this
+        // right; this pins the reference engine to the same contract.
+        let mut e = NaiveRecompute::new();
+        let (db, bases) = single_table_case(&schema(), ZSet::new());
+        e.create_view(&db, &sum_by_region(), &bases).unwrap();
+        e.apply("orders", &[(row("stale", 99), 1)]).unwrap();
+
+        // Re-create the view from empty initial state, then refresh.
+        let (db, bases) = single_table_case(&schema(), ZSet::new());
+        e.create_view(&db, &sum_by_region(), &bases).unwrap();
+        e.refresh().unwrap();
+
+        let got = e.materialize().unwrap();
+        assert!(
+            got.is_empty(),
+            "a delta applied before the view was re-created leaked into it: {got:?}"
+        );
+    }
+
+    #[test]
     fn aggregates_initial_state() {
         let mut e = NaiveRecompute::new();
         let base = ZSet::from_rows([(row("a", 10), 1), (row("a", 5), 1), (row("b", 3), 1)]);
@@ -212,7 +255,7 @@ mod tests {
 
         let got = e.materialize().unwrap();
         assert_eq!(got.weight_of(&out(Value::Text("a".into()), 10, 1)), 1);
-        assert_eq!(got.len(), 1, "旧的 (a,15,2) 必须消失");
+        assert_eq!(got.len(), 1, "the old (a,15,2) must disappear");
     }
 
     #[test]
@@ -227,7 +270,7 @@ mod tests {
 
         assert!(
             e.materialize().unwrap().is_empty(),
-            "空 group 不得留下僵尸行"
+            "an empty group must leave no zombie row"
         );
     }
 
@@ -271,8 +314,9 @@ mod tests {
         );
     }
 
-    /// item 13（deferred minor，与 I4 同源）：`IsNotNull` 谓词此前没有任何
-    /// 行为覆盖——只有 `to_sql` 渲染，没有断言它真的把 NULL 行过滤掉。
+    /// Item 13 (a deferred minor, from the same source as I4): the `IsNotNull`
+    /// predicate used to have no behavioural coverage — only its `to_sql`
+    /// rendering, with nothing asserting it actually filters NULL rows out.
     #[test]
     fn is_not_null_predicate_filters_out_null_rows() {
         let mut e = NaiveRecompute::new();
@@ -299,12 +343,13 @@ mod tests {
         assert_eq!(
             got.len(),
             1,
-            "NULL 分组必须被 IsNotNull 过滤掉，不应出现在输出中"
+            "the NULL group must be filtered out by IsNotNull and not appear in the output"
         );
     }
 
-    /// spec §6.1 的 NULL 语义契约。注意这与"组为空"不同：
-    /// 组非空（COUNT(*) 为正），但被求和的列全是 NULL，此时 SUM 为 NULL。
+    /// Spec §6.1's NULL-semantics contract. Note this differs from "the group is
+    /// empty": the group is non-empty (COUNT(*) is positive) but the summed
+    /// column is entirely NULL, and then SUM is NULL.
     #[test]
     fn sum_over_all_null_column_is_null_not_zero() {
         let nullable_amount = Schema {
@@ -336,7 +381,7 @@ mod tests {
             ],
             predicate: Predicate::None,
         };
-        // 两条相同的行会被 ZSet 合并成权重 2
+        // The two identical rows are merged by the ZSet into weight 2
         let base = ZSet::from_rows([
             (Row::new(vec![Value::Text("a".into()), Value::Null]), 1),
             (Row::new(vec![Value::Text("a".into()), Value::Null]), 1),
@@ -354,13 +399,14 @@ mod tests {
                 Value::Int(2)
             ])),
             1,
-            "SUM 无非 NULL 输入时应为 NULL，COUNT(*) 仍为 2"
+            "SUM with no non-NULL input should be NULL, while COUNT(*) is still 2"
         );
     }
 
-    /// 与上一个测试互补：这里非 NULL 输入存在（非零），只是它们求和后恰好为 0。
-    /// 若把发射分支的判据从 `non_null == 0` 误改成 `total == 0`，这个测试会失败,
-    /// 而其余测试都不会。
+    /// Complements the previous test: here non-NULL inputs exist (and are
+    /// non-zero), they just sum to exactly 0. If the emit branch's test were
+    /// wrongly changed from `non_null == 0` to `total == 0`, this test would
+    /// fail and no other would.
     #[test]
     fn sum_that_totals_zero_is_int_zero_not_null() {
         let mut e = NaiveRecompute::new();
@@ -372,15 +418,17 @@ mod tests {
         assert_eq!(
             got.weight_of(&out(Value::Text("a".into()), 0, 2)),
             1,
-            "非 NULL 输入求和恰为 0 时应输出 Int(0)，而非 Null"
+            "non-NULL inputs summing to exactly 0 should output Int(0), not Null"
         );
     }
 
-    /// 对从未插入过的行做纯撤回（apply 一个权重 -1 的 delta），
-    /// 会把它留在 self.base 中权重为负。若 materialize 中的
-    /// `weight <= 0` 守卫被删除，这条负权重行会被当成一条真实输入行聚合进去,
-    /// 但现有测试都不会发现——两个"删除"测试都是先插入、后撤回到权重恰好为 0,
-    /// 而 ZSet 会在权重归零时直接移除该行，materialize 根本不会遍历到它。
+    /// A pure retraction of a row never inserted (applying a delta of weight -1)
+    /// leaves it in self.base with a negative weight. If materialize's
+    /// `weight <= 0` guard were deleted, that negative-weight row would be
+    /// aggregated as a real input row, and no other test would notice — both
+    /// "delete" tests insert first and then retract to exactly 0, and the ZSet
+    /// removes a row the moment its weight reaches zero, so materialize never
+    /// even visits it.
     #[test]
     fn retracting_a_row_that_was_never_inserted_is_a_noop() {
         let mut e = NaiveRecompute::new();
@@ -388,7 +436,7 @@ mod tests {
         let (db, bases) = single_table_case(&schema(), base.clone());
         e.create_view(&db, &sum_by_region(), &bases).unwrap();
 
-        // "b" 从未出现在 base 中；这条撤回让它在 self.base 里权重为 -1。
+        // "b" never appeared in base; this retraction leaves it at weight -1 in self.base.
         e.apply("orders", &[(row("b", 999), -1)]).unwrap();
         e.refresh().unwrap();
 
@@ -396,8 +444,12 @@ mod tests {
         assert_eq!(
             got.weight_of(&out(Value::Text("a".into()), 10, 1)),
             1,
-            "未受影响的组必须保持不变"
+            "an unaffected group must stay unchanged"
         );
-        assert_eq!(got.len(), 1, "负权重的幽灵行不得产生输出，也不得影响其他组");
+        assert_eq!(
+            got.len(),
+            1,
+            "a phantom negative-weight row must produce no output and not affect other groups"
+        );
     }
 }
