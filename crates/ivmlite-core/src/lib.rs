@@ -18,7 +18,7 @@ pub use engine::{EngineError, IncrementalEngine};
 pub use join::{fresh_mem_arrangement, JoinSide, JoinState};
 pub use node::Node;
 pub use plan::{lower, Plan, PlanError};
-pub use query::{Agg, AggFn, Predicate, ViewQuery};
+pub use query::{Agg, AggFn, Join, Predicate, ViewQuery};
 pub use row::Row;
 pub use schema::{Column, ColumnType, Schema};
 pub use value::Value;

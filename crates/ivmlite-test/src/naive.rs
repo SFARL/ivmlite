@@ -194,6 +194,7 @@ mod tests {
                 },
             ],
             predicate: Predicate::None,
+            join: None,
         }
     }
 
@@ -302,6 +303,7 @@ mod tests {
                 column: 1,
                 value: 4,
             },
+            join: None,
         };
         let base = ZSet::from_rows([(row("a", 10), 1), (row("a", 1), 1)]);
         let (db, bases) = single_table_case(&schema(), base.clone());
@@ -327,6 +329,7 @@ mod tests {
                 column: None,
             }],
             predicate: Predicate::IsNotNull { column: 0 },
+            join: None,
         };
         let base = ZSet::from_rows([
             (row("a", 10), 1),
@@ -380,6 +383,7 @@ mod tests {
                 },
             ],
             predicate: Predicate::None,
+            join: None,
         };
         // The two identical rows are merged by the ZSet into weight 2
         let base = ZSet::from_rows([

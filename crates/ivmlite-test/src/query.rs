@@ -60,6 +60,7 @@ pub fn enumerate(schema: &Schema) -> Vec<ViewQuery> {
                     group_by: group_by.clone(),
                     aggs: aggs.clone(),
                     predicate: predicate.clone(),
+                    join: None,
                 });
             }
         }

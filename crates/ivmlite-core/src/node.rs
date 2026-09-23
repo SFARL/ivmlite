@@ -429,8 +429,9 @@ mod tests {
                     column: 1,
                     value: 3,
                 },
+                join: None,
             },
-            &text_then_int(),
+            &crate::Database::single(text_then_int()),
         )
         .unwrap();
         let mut n = Node::build(&plan, &mut crate::fresh_mem_arrangement);
@@ -472,8 +473,9 @@ mod tests {
                     column: 1,
                     value: 3,
                 },
+                join: None,
             },
-            &text_then_int(),
+            &crate::Database::single(text_then_int()),
         )
         .unwrap();
         let mut n = Node::build(&plan, &mut crate::fresh_mem_arrangement);
@@ -537,8 +539,10 @@ mod tests {
                 column: 0,
                 value: 3,
             },
+            join: None,
         };
-        let plan = lower(&query, &ints3()).expect("a legal query must lower");
+        let plan =
+            lower(&query, &crate::Database::single(ints3())).expect("a legal query must lower");
         let Plan::Aggregate { input, .. } = plan else {
             panic!("lower's root operator must be an Aggregate");
         };

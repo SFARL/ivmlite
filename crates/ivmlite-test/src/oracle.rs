@@ -157,6 +157,7 @@ mod tests {
                 column: None,
             }],
             predicate: Predicate::None,
+            join: None,
         }
     }
 
@@ -175,6 +176,7 @@ mod tests {
                 },
             ],
             predicate: Predicate::None,
+            join: None,
         };
         let base = ZSet::from_rows([
             (row(Value::Text("a".into()), 10), 1),
@@ -205,6 +207,7 @@ mod tests {
                 column: None,
             }],
             predicate: Predicate::None,
+            join: None,
         };
         let base = ZSet::from_rows([(row(Value::Text("a".into()), 1), 3)]);
 
@@ -227,6 +230,7 @@ mod tests {
                 column: None,
             }],
             predicate: Predicate::None,
+            join: None,
         };
         let base = ZSet::from_rows([(row(Value::Text("a".into()), 1), -1)]);
 
@@ -273,6 +277,7 @@ mod tests {
                 },
             ],
             predicate: Predicate::None,
+            join: None,
         };
         let base = ZSet::from_rows([(Row::new(vec![Value::Text("a".into()), Value::Null]), 2)]);
 

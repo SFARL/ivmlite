@@ -117,6 +117,7 @@ mod tests {
                 },
             ],
             predicate: Predicate::None,
+            join: None,
         };
         assert_eq!(
             view_query_to_sql(&q, &orders()),
@@ -136,6 +137,7 @@ mod tests {
                 column: 1,
                 value: 3,
             },
+            join: None,
         };
         assert!(view_query_to_sql(&q, &orders()).contains("WHERE \"amount\" > 3"));
     }
@@ -153,6 +155,7 @@ mod tests {
                 column: None,
             }],
             predicate: Predicate::IsNotNull { column: 0 },
+            join: None,
         };
         assert!(
             view_query_to_sql(&q, &orders()).contains("WHERE \"region\" IS NOT NULL"),

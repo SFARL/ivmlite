@@ -120,17 +120,7 @@ impl IncrementalEngine {
         query: &ViewQuery,
         initial: &BTreeMap<String, ZSet>,
     ) -> Result<(), EngineError> {
-        let anchor = db
-            .tables()
-            .first()
-            // In M1b the table order comes from `__ivm_dep`, not from the
-            // query's FROM clause — choosing "the first" here is only v0's
-            // existing convention (final review Finding I): in single-table
-            // cases the anchor happens to coincide with "the table the query
-            // reads", but that is no guarantee of `db.tables()`'s order, merely
-            // something no more complex case has yet exposed.
-            .ok_or_else(|| EngineError("the Database must have at least one table".into()))?;
-        let plan = lower(query, anchor).map_err(|e| EngineError(e.0))?;
+        let plan = lower(query, db).map_err(|e| EngineError(e.0))?;
         let mut tree = CountingTree::new(Node::build(&plan, &mut fresh_mem_arrangement));
 
         // Bootstrap: push each table's initial state through as the first batch
@@ -291,6 +281,7 @@ mod tests {
                 column: None,
             }],
             predicate: Predicate::None,
+            join: None,
         }
     }
 
@@ -366,6 +357,7 @@ mod tests {
                 column: None,
             }],
             predicate: Predicate::None,
+            join: None,
         }
     }
 
@@ -578,5 +570,123 @@ mod tests {
             "the error should name the undeclared table: {}",
             err.0
         );
+    }
+
+    // --- M1a Phase 3 Task 2: the engine running join views ---
+
+    /// `(k TEXT, v INTEGER)`, the harness's two-column shape.
+    fn kv(name: &str) -> Schema {
+        Schema {
+            table: name.into(),
+            columns: vec![
+                Column {
+                    name: "k".into(),
+                    ty: ColumnType::Text,
+                    nullable: true,
+                },
+                Column {
+                    name: "v".into(),
+                    ty: ColumnType::Integer,
+                    nullable: true,
+                },
+            ],
+        }
+    }
+
+    fn kv_row(k: &str, v: i64) -> Row {
+        Row::new(vec![Value::Text(k.into()), Value::Int(v)])
+    }
+
+    /// `SELECT t0.k, COUNT(*), SUM(t1.v) FROM t0 JOIN t1 ON t0.k = t1.k GROUP BY t0.k`
+    fn join_on_k() -> ViewQuery {
+        ViewQuery {
+            group_by: vec![0],
+            aggs: vec![
+                Agg {
+                    func: AggFn::Count,
+                    column: None,
+                },
+                Agg {
+                    func: AggFn::Sum,
+                    column: Some(3),
+                },
+            ],
+            predicate: Predicate::None,
+            join: Some(crate::Join {
+                right: "t1".into(),
+                left_column: 0,
+                right_column: 0,
+            }),
+        }
+    }
+
+    fn out(k: &str, count: i64, sum: i64) -> Row {
+        Row::new(vec![
+            Value::Text(k.into()),
+            Value::Int(count),
+            Value::Int(sum),
+        ])
+    }
+
+    fn joined_engine() -> IncrementalEngine {
+        let db = Database::new(vec![kv("t0"), kv("t1")]);
+        let initial = BTreeMap::from([
+            (
+                "t0".to_string(),
+                ZSet::from_rows([(kv_row("a", 1), 1), (kv_row("b", 2), 1)]),
+            ),
+            (
+                "t1".to_string(),
+                ZSet::from_rows([(kv_row("a", 10), 1), (kv_row("a", 20), 1)]),
+            ),
+        ]);
+        let mut engine = IncrementalEngine::new();
+        engine.create_view(&db, &join_on_k(), &initial).unwrap();
+        engine
+    }
+
+    #[test]
+    fn a_join_view_bootstraps_from_both_tables() {
+        // Both tables' initial rows must reach the join: a bootstrap that
+        // absorbed only the anchor table would leave the right side empty and
+        // the view empty.
+        assert_eq!(
+            joined_engine().snapshot(),
+            ZSet::from_rows([(out("a", 2, 30), 1)])
+        );
+    }
+
+    #[test]
+    fn a_join_view_follows_changes_to_both_tables() {
+        let mut engine = joined_engine();
+        // Group "a" loses its only left row; "b" gains a right row; and key
+        // "c" arrives on both sides in the same refresh — the ΔR⋈ΔS term at
+        // the engine level.
+        engine
+            .apply("t0", &[(kv_row("a", 1), -1), (kv_row("c", 1), 1)])
+            .unwrap();
+        engine
+            .apply("t1", &[(kv_row("b", 5), 1), (kv_row("c", 7), 1)])
+            .unwrap();
+        engine.refresh().unwrap();
+        assert_eq!(
+            engine.snapshot(),
+            ZSet::from_rows([(out("b", 1, 5), 1), (out("c", 1, 7), 1)])
+        );
+    }
+
+    #[test]
+    fn create_view_rejects_a_join_on_an_unknown_table() {
+        let db = Database::new(vec![kv("t0"), kv("t1")]);
+        let mut query = join_on_k();
+        query.join.as_mut().unwrap().right = "nope".into();
+        let initial = BTreeMap::from([
+            ("t0".to_string(), ZSet::new()),
+            ("t1".to_string(), ZSet::new()),
+        ]);
+        let err = IncrementalEngine::new()
+            .create_view(&db, &query, &initial)
+            .expect_err("the right table must be declared");
+        assert!(err.0.contains("nope"), "{}", err.0);
     }
 }

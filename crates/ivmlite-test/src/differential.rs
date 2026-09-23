@@ -330,6 +330,7 @@ mod tests {
                 column: None,
             }],
             predicate: Predicate::None,
+            join: None,
         };
         let initial = crate::test_support::as_initial(&schema, rows);
         let ops = ops
@@ -458,6 +459,7 @@ mod tests {
                 column: None,
             }],
             predicate: Predicate::None,
+            join: None,
         };
         let db = Database::single(schema.clone());
         let bases = BTreeMap::from([(

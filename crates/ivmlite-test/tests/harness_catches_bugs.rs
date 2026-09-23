@@ -624,6 +624,7 @@ fn create_view_rejects_a_global_aggregate() {
             column: None,
         }],
         predicate: Predicate::None,
+        join: None,
     };
     let mut engine = IncrementalEngine::new();
     let err = engine
