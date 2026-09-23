@@ -268,6 +268,21 @@ So predicate evaluation must return a **three-valued** result rather than a bool
 
 The comparison operators v0 allows are a whitelist: `>`, `>=`, `<`, `<=`, `=`, `!=`, `IS NULL`, `IS NOT NULL`. `NOT`, `OR`, `LIKE`, `IN`, `BETWEEN` and all subqueries are not allowed — each one added means re-arguing three-valued logic, and covering SQL is not v0's purpose.
 
+#### Operand types must match (amended 2026-09-22, after external review P2-1)
+
+**`SUM` is allowed only over INTEGER columns, and a comparison between a column and a literal only when the literal's type matches the column's declared type.** Both are rejected at `ivm_create_view` otherwise. Measured against SQLite on `CREATE TABLE t(g INTEGER, v TEXT) STRICT`:
+
+```sql
+INSERT INTO t VALUES (1, '7'), (1, 'abc'), (2, '5');
+SELECT g, SUM(v) FROM t GROUP BY g;   -- 1|7.0   2|5
+SELECT v, v > 3 FROM t;               -- '7'|1  'abc'|1  '5'|1
+SELECT '0' > 3;                       -- 1
+```
+
+`SUM` over text coerces numeric-looking values and returns a **REAL** (`7.0`), a type v0 cannot represent (§5.1 excludes REAL for floating-point associativity). An ordering comparison between TEXT and INTEGER follows SQLite's storage-class order, NULL < INTEGER/REAL < TEXT < BLOB, under which **every** text value is greater than every integer regardless of content — so `'0' > 3` is true. v0's predicate evaluation says false for both. Neither is caught by the differential tests, because the v0 query enumerator never generates these shapes; the rule therefore lives at the boundary, where any hand-built view definition passes. `IS NULL` / `IS NOT NULL` are type-agnostic and stay legal on any column.
+
+Supporting cross-type comparisons later would mean implementing storage-class ordering, not a string comparison: converting the literal to text and comparing strings gives `'0' > '3'` = false, the opposite of SQLite.
+
 ### 6.2 Retraction semantics for aggregates
 
 **This is IVM's biggest source of bugs and must be followed strictly.**
@@ -873,9 +888,10 @@ TanStack DB is a browser-side JS library, with a different runtime and audience 
 5. No floating-point aggregation
 6. **Integer overflow is undefined behaviour**; the absolute value of a group's sum must be < 2^62 (§6.1)
 7. Comparison operators are limited to `>` `>=` `<` `<=` `=` `!=` `IS NULL` `IS NOT NULL`; no `NOT` / `OR` / `LIKE` / `IN` / `BETWEEN` / subqueries (§6.1)
-8. No join
-9. No MIN / MAX / DISTINCT
-10. Explicit refresh is required — a permanent API, not a temporary compromise (§8.2)
-11. Delta tables capture every column, wasting space on wide tables
-12. Every write pays the triggers' write amplification, even if the views are never read
-13. Cannot be loaded in browsers or the iOS system SQLite
+8. `SUM` only over INTEGER columns, and a column may be compared only with a literal of its own type; both are rejected at `ivm_create_view` (§6.1)
+9. No join yet: join is scheduled for M1a Phase 3 (§11), and until it lands a view reads a single base table. This list is updated with v0's actual join scope when that plan is written
+10. No MIN / MAX / DISTINCT
+11. Explicit refresh is required — a permanent API, not a temporary compromise (§8.2)
+12. Delta tables capture every column, wasting space on wide tables
+13. Every write pays the triggers' write amplification, even if the views are never read
+14. Cannot be loaded in browsers or the iOS system SQLite
