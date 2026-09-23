@@ -3,20 +3,23 @@ use std::time::Instant;
 use ivmlite_workload::{TraceOp, ViewSpec, Workload};
 use rusqlite::{Connection, Statement};
 
-/// spec §10.2 的三条 same-host 对照组。
+/// The three same-host control baselines of spec §10.2.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Baseline {
-    /// 下界：只写基表，完全不维护视图。纯写入成本。
+    /// Lower bound: write the base table and maintain no views at all. Pure write cost.
     NoMaintenance,
-    /// 怀疑者：手写 trigger 维护汇总表。spec §10.2 的判据是三级的，**不是**
-    /// "必须打赢"：**必须** `ivmlite ≪ 全量重算`；**期望** `ivmlite` 接近
-    /// 手写 trigger；**额外惊喜** 大批量 Δ 下 `ivmlite` 优于手写行级
-    /// trigger（consolidation 带来的结构性优势）。手写 trigger 本身就是
-    /// 这条查询手工编译后的最优实现之一，通用引擎要为通用性（泛化的 delta
-    /// 表示、序列化、arrangement 查找、算子分派、progress 跟踪）付费，
-    /// 打不赢它不等于没有价值。
+    /// The skeptic: hand-written triggers maintain summary tables. Spec §10.2's
+    /// bar has three tiers and is **not** "must beat this": ivmlite **must** be
+    /// far faster than full recompute; it is **expected** to come close to
+    /// hand-written triggers; and it would be a **bonus** to beat row-level
+    /// triggers on large deltas, the structural advantage consolidation brings.
+    /// A hand-written trigger is one of the best implementations of this query
+    /// compiled by hand, and a general engine pays for its generality (a
+    /// generic delta representation, serialization, arrangement lookups,
+    /// operator dispatch, progress tracking). Not beating it does not mean
+    /// having no value.
     HandWrittenTrigger,
-    /// 基线：每批 delta 之后把所有视图 SQL 重跑一遍。交叉点在这里测量。
+    /// Baseline: re-run every view's SQL after each batch of deltas. The crossover is measured against this.
     NaiveRecompute,
 }
 
@@ -30,12 +33,14 @@ impl Baseline {
     }
 }
 
-/// 建基表并灌入初始数据。不计时。
+/// Create the base table and load its initial data. Untimed.
 ///
-/// 表结构来自 workload，其中 `id INTEGER PRIMARY KEY` 是硬性要求：
-/// spec §10.3 第 5 条——按全部列的值定位行没有可用索引，`EXPLAIN QUERY PLAN`
-/// 会显示 `SCAN orders`，使删改耗时随基表规模线性增长，而"增量成本不随基表
-/// 规模增长"正是这条 benchmark 唯一要证明的东西。
+/// The table definition comes from the workload, and `id INTEGER PRIMARY KEY`
+/// is a hard requirement (spec §10.3 item 5): locating a row by the values of
+/// all its columns has no usable index, `EXPLAIN QUERY PLAN` shows
+/// `SCAN orders`, and deletes then cost time linear in the base table — while
+/// "incremental cost does not grow with the base table" is the one thing this
+/// benchmark exists to show.
 pub fn seed_base(conn: &Connection, w: &Workload) -> rusqlite::Result<()> {
     conn.execute_batch(&w.schema.ddl)?;
     let tx = conn.unchecked_transaction()?;
@@ -51,14 +56,18 @@ pub fn seed_base(conn: &Connection, w: &Workload) -> rusqlite::Result<()> {
     tx.commit()
 }
 
-/// 建汇总表 →**先全量 bootstrap**→ 再建 trigger。顺序不可颠倒。
+/// Create the summary table, **bootstrap it in full first**, then create the
+/// triggers. The order cannot be reversed.
 ///
-/// spec §10.3 第 4 条：在基表已有数据之后才创建空汇总表，得到的是一个永远
-/// 不完整的视图，其维护成本也不具代表性。而 trigger 必须在 bootstrap **之后**
-/// 创建，否则 bootstrap 那条 INSERT ... SELECT 会被 trigger 重复计入。
+/// Spec §10.3 item 4: creating an empty summary table after the base table
+/// already has data yields a view that is permanently incomplete, and whose
+/// maintenance cost is not representative. The triggers must be created
+/// **after** the bootstrap, or they would count the bootstrap's
+/// `INSERT ... SELECT` a second time.
 ///
-/// 注意汇总表的 `k` 列声明为 `TEXT` 而非 `ANY`：STRICT 表允许 `ANY` 列逐行
-/// 混存类型，`1` 与 `'1'` 会分裂成两个 group（spec §7.1）。
+/// Note the summary table's `k` column is declared `TEXT`, not `ANY`: a STRICT
+/// table lets an `ANY` column mix types row by row, and `1` and `'1'` would
+/// split into two groups (spec §7.1).
 pub fn install_trigger_view(conn: &Connection, table: &str, v: &ViewSpec) -> rusqlite::Result<()> {
     let t = v.table();
     let k = v.threshold;
@@ -189,8 +198,9 @@ mod tests {
             .unwrap()
     }
 
-    /// SQL 与 trigger 维护的 (k,s,c) 用相同的顺序编码，直接从视图 SQL 里读出
-    /// `region, SUM(amount), COUNT(*)` 再排序，与 trigger 表逐行比对。
+    /// Evaluate the view's SQL directly, reading `region, SUM(amount), COUNT(*)`
+    /// in the same (k, s, c) encoding the trigger table uses, sorted, so the two
+    /// can be compared row by row.
     fn direct_query_rows(conn: &Connection, v: &ViewSpec, table: &str) -> Vec<(String, i64, i64)> {
         let sql = format!("{} ORDER BY region", v.sql(table));
         let mut stmt = conn.prepare(&sql).unwrap();
@@ -200,25 +210,28 @@ mod tests {
             .unwrap()
     }
 
-    /// I6：此前 `ivmlite-bench` 没有任何 `#[test]`，没有东西验证手写 trigger
-    /// 维护出来的汇总表在重放完 trace 之后与直接对视图 SQL 求值逐行相等。
-    /// `docs/bench/README.md` 里每一个头条比值都以这条基线的耗时为分母——
-    /// trigger 若算错（比如 `WHEN OLD.amount > k` 的守卫、或 `c = 0` 的清理
-    /// 逻辑有误），这些数字量的就是错的工作量。
+    /// I6: `ivmlite-bench` used to have no `#[test]` at all, so nothing checked
+    /// that the summary table maintained by the hand-written triggers equals,
+    /// row for row, a direct evaluation of the view's SQL after the trace is
+    /// replayed. Every headline ratio in `docs/bench/README.md` has this
+    /// baseline's time as its denominator; if the triggers computed the wrong
+    /// thing (say the `WHEN OLD.amount > k` guard, or the `c = 0` cleanup, were
+    /// wrong), those numbers would be measuring the wrong work.
     ///
-    /// 场景刻意让基表在 `install_trigger_view` 之前就已经有数据（模拟
-    /// `main.rs::run_one` 里 `seed_base` 先于 `install_trigger_view` 的真实
-    /// 调用顺序），这样才能同时验证 bootstrap 语句本身在起作用——
-    /// spec §10.3 第 4 条：trigger 必须在 bootstrap 之后创建，而 bootstrap
-    /// 必须真的把已有数据算进去，否则汇总表会永远缺失历史数据（见下面的
-    /// `install_trigger_view_without_bootstrap_would_be_incomplete` 对比）。
+    /// The base table deliberately has data before `install_trigger_view` runs,
+    /// mirroring the real order in `main.rs::run_one`, where `seed_base` comes
+    /// first. That also exercises the bootstrap statement itself — spec §10.3
+    /// item 4: the triggers must be created after the bootstrap, and the
+    /// bootstrap must actually count the existing data, or the summary table is
+    /// permanently missing history (contrast
+    /// `install_trigger_view_without_bootstrap_would_be_incomplete` below).
     #[test]
     fn trigger_maintained_table_matches_direct_query_after_seed_and_updates() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(DDL).unwrap();
 
-        // 先灌入"已有数据"，再装 trigger——这是 install_trigger_view 的
-        // bootstrap 语句必须正确处理的场景。
+        // Load the "existing data" first, then install the triggers — the case
+        // install_trigger_view's bootstrap statement has to get right.
         let seed_rows = [
             (0i64, "a", 10i64),
             (1, "a", 20),
@@ -245,15 +258,15 @@ mod tests {
         };
         install_trigger_view(&conn, "orders", &view).unwrap();
 
-        // 重放一批既有 insert 又有 delete 的更新，一律用 baseline::apply——
-        // 与 benchmark 实际使用的路径完全一致。
+        // Replay a batch mixing inserts and deletes through baseline::apply —
+        // exactly the path the benchmark itself uses.
         let ops = vec![
             TraceOp::Insert {
                 id: 5,
                 region: "a".into(),
                 amount: 30,
             },
-            TraceOp::Delete { id: 2 }, // amount=5，本就不过 threshold
+            TraceOp::Delete { id: 2 }, // amount=5, below the threshold to begin with
             TraceOp::Insert {
                 id: 6,
                 region: "c".into(),
@@ -268,9 +281,10 @@ mod tests {
         let want = direct_query_rows(&conn, &view, "orders");
         assert_eq!(
             got, want,
-            "trigger 维护的汇总表必须与直接对视图 SQL 求值逐行相等"
+            "the trigger-maintained summary table must equal a direct evaluation of the view SQL, row for row"
         );
-        // 顺带钉死具体数字，避免两边用同一个（可能都错的）SQL 互相"印证"。
+        // Also pin the concrete numbers, so the two sides cannot "confirm" each
+        // other by sharing the same (possibly wrong) SQL.
         assert_eq!(
             got,
             vec![
@@ -281,12 +295,13 @@ mod tests {
         );
     }
 
-    /// I6 的第二部分：bootstrap 必须发生在 trigger 创建**之前**
-    /// （spec §10.3 第 4 条）。用手工拼接的 SQL 模拟"漏掉 bootstrap 语句"
-    /// 这个 mutation，证明如果真出现这个 bug，本测试组里的第一个测试会
-    /// 检测出差异——这里直接断言"没有 bootstrap 的 trigger 表"与"有
-    /// bootstrap 的 trigger 表"不同，把这条方法论约束钉成一个会变红的测试，
-    /// 而不是只靠注释自证。
+    /// The second half of I6: the bootstrap must happen **before** the triggers
+    /// are created (spec §10.3 item 4). Hand-assembled SQL simulates the mutation
+    /// "the bootstrap statement is missing", showing that if that bug appeared,
+    /// the first test in this group would see a difference. The assertion here
+    /// is direct — a trigger table without the bootstrap differs from one with
+    /// it — so the methodological constraint is pinned by a test that can go
+    /// red, not merely asserted by a comment.
     #[test]
     fn install_trigger_view_without_bootstrap_would_be_incomplete() {
         let conn = Connection::open_in_memory().unwrap();
@@ -303,7 +318,8 @@ mod tests {
             id: 0,
             threshold: 0,
         };
-        // 手工拼出"漏掉 bootstrap INSERT...SELECT"的版本：只建表 + 建 trigger。
+        // Hand-assemble the version missing the bootstrap INSERT ... SELECT:
+        // create the table and the triggers, nothing else.
         let t = view.table();
         conn.execute_batch(&format!(
             r#"
@@ -320,12 +336,12 @@ mod tests {
         let want = direct_query_rows(&conn, &view, "orders");
         assert_ne!(
             without_bootstrap, want,
-            "跳过 bootstrap 时汇总表必须缺失历史数据——如果这里相等，说明这个\
-             对比场景本身没有测到 bootstrap 缺失的效果"
+            "skipping the bootstrap must leave the summary table missing history — \
+             if these are equal, the scenario is not exercising a missing bootstrap at all"
         );
         assert!(
             without_bootstrap.is_empty(),
-            "没有 bootstrap 语句时，装 trigger 之前已存在的三行数据不会被追溯计入"
+            "without the bootstrap statement, the three rows that existed before the triggers are never counted"
         );
     }
 }
