@@ -1,66 +1,72 @@
-# M0 基线基准：结果与结论
+# M0 baseline benchmark: results and conclusions
 
-`ivmlite-bench`（`crates/ivmlite-bench`）跑三条 same-host 对照组（spec §10.2）：
+`ivmlite-bench` (`crates/ivmlite-bench`) runs three same-host baselines (spec §10.2):
 
-- `no_maintenance` —— 下界，只写基表，完全不维护任何视图。
-- `hand_written_trigger` —— 怀疑者，用手写 SQLite trigger 增量维护汇总表。
-- `naive_recompute` —— 基线，每批 delta 之后把全部视图 SQL 重跑一遍（只读，不写回）。
+- `no_maintenance` — the lower bound: write the base table and maintain no views at all.
+- `hand_written_trigger` — the skeptic: summary tables maintained incrementally by hand-written SQLite triggers.
+- `naive_recompute` — the baseline: re-run every view's SQL after each batch of deltas (read only, results not written back).
 
-M0 没有真实的 IVM 引擎（那是 M1 的工作），所以这里填的是**三条基线彼此之间**
-的关系；下表的结构现在定下来，M1 直接在同一张表上补两列增量系统的数字。
+M0 has no real IVM engine (that is M1's work), so what is filled in here is the relationship **between the three baselines**; the table's structure is fixed now, and M1 adds the incremental system's numbers to the same matrix.
 
-## 本次实际跑的矩阵
+## The matrix that was run
 
-跑的是**完整矩阵**，未缩减：
+The **full matrix**, not reduced:
 
 - `BASE_ROWS = [10_000, 100_000, 1_000_000]`
 - `BATCH_SIZES = [1, 10, 100, 1000]`
 - `VIEW_COUNTS = [1, 10, 50, 200]`
 - `GROUP_CARDINALITIES = [10, 1_000, 100_000]`
-- 两次扫描（group 基数扫描固定 `views=10`；视图数扫描固定 `cardinality=1000`），
-  各基线 32 + 36 = 68 格，三条基线共 204 行数据（`docs/bench/m0-baseline.csv`，
-  含表头 205 行）。
+- Two sweeps (the group-cardinality sweep fixes `views=10`; the view-count sweep fixes `cardinality=1000`), 32 + 36 = 68 cells per baseline, 204 rows of data across the three baselines (`docs/bench/m0-baseline.csv`, 205 lines with the header).
 
-全量 release 构建下端到端耗时约 525 秒（约 8.75 分钟），远低于 brief 给出的
-20 分钟阈值，因此**没有触发降级到缩小矩阵的分支**——不需要额外说明"跑了什么
-而非什么"。
+End to end, in a full release build, the run took 557 seconds (about 9.3 minutes).
 
-`card=100000 > base_rows=10000` 这一个组合被跳过，对应 **12 行**被省略的 CSV
-数据（3 条基线 × 4 个 batch）。这个 guard 只存在于扫描一（group 基数扫描）：
-扫描二固定 `cardinality=1000`，对矩阵里任何一个测试过的 `base_rows` 都不会
-大于它，所以扫描二永远不会触发这条跳过逻辑。
+One combination, `card=100000 > base_rows=10000`, is skipped, leaving out **12 rows** of CSV data (3 baselines × 4 batch sizes). The guard exists only in sweep one (the group-cardinality sweep): sweep two fixes `cardinality=1000`, which is not larger than any `base_rows` tested, so sweep two never triggers the skip.
 
-这不是漏跑，是语义上不存在的配置——一张 1 万行的表容不下 10 万个不同分组键。
-`ivmlite-workload::Workload::validate` 会拒绝这样的配置，而
-`Workload::cells()` 在展开矩阵时直接不产出它，所以 runner 里没有、也不该有
-第二份同规则的判断（早期版本在 runner 里另有一份跳过逻辑并为此打印 stderr；
-把格子推导收进 `ivmlite-workload` 之后两者合一，那些 stderr 行随之消失）。
+This is not a missing run but a configuration that cannot exist — a 10,000-row table cannot hold 100,000 distinct group keys. `ivmlite-workload::Workload::validate` rejects such a configuration, and `Workload::cells()` simply does not produce it when expanding the matrix, so the runner has, and should have, no second copy of the rule.
 
-**测量方法的一个局限**：每个格子只测了一次，没有热身、没有取多次中位数。
-量级结论（10x-24000x 那种差距）不受影响，但最小的格子上能看到轻微的非单调：
-`no_maintenance,10,base_rows,1,10` 的 `apply_ms` 依次是 `10,000`→0.006ms、
-`100,000`→0.005ms、`1,000,000`→0.017ms——行数更多的一档反而更便宜（第二档
-比第一档还低），这在物理上不该发生，说明这些微秒级读数里有噪声，不能把每
-一次波动都当成信号来解读。
+## What changed in this run: statement compilation is no longer timed
 
-## Step 5 smoke run 的 sanity check
+The numbers here come from a re-run after fixing how cells were timed (external review P2-3, 2026-09-22). Previously `apply` and `recompute_all` started the timer and *then* prepared their statements. Creating a trigger changes the schema and invalidates statements compiled before it, and SQLite compiles a trigger's body into the statement that fires it — so the hand-written-trigger baseline paid statement recompilation inside the timed region, and because each cell runs exactly once, that first-call cost was all a cell recorded. Statements are now prepared after every trigger exists and before the timer starts, for all three baselines.
 
-在缩小矩阵（`BASE_ROWS=[1_000,10_000]`、`VIEW_COUNTS=[1,10]`、
-`GROUP_CARDINALITIES=[10,1_000]`）下验证了关键判据：同一 `base_rows` 下，
-`naive_recompute.maintain_ms` 应几乎不随 `group_cardinality` 变化（它总要扫
-全表），而 `hand_written_trigger.apply_ms` 应随 `group_cardinality` 上升。
-`batch=1000, views=10` 处的观测：
+The effect is large exactly where it should be and nowhere else:
+
+| `hand_written_trigger.apply_ms`, median over the 17 cells at each batch size | batch=1 | batch=10 | batch=100 | batch=1000 |
+|---|---|---|---|---|
+| this run / previous run | 0.10 | 0.76 | 1.17 | 1.28 |
+
+At batch=1 the trigger's time fell to a tenth: the previous run was mostly measuring compilation there. At batch=100 and batch=1000, where compilation is negligible next to the work, the fix cannot make anything slower — yet the ratios are above 1. That is not an effect of the fix; see the next section.
+
+## Limits of the measurement
+
+**Each cell was measured once**, with no warm-up and no median over repeats. This run also gives a direct estimate of what that costs. Where the fix cannot plausibly matter, comparing this run with the previous one shows how far two runs of the same work drift apart:
+
+| Cells the fix barely affects | min | Q1 | median | Q3 | max |
+|---|---|---|---|---|---|
+| `naive_recompute`, base_rows=1M (the scan dwarfs compilation), 24 cells | 1.03 | 1.04 | 1.07 | 1.11 | 1.59 |
+| `no_maintenance`, batch=1000, 17 cells | 0.58 | 1.01 | 1.13 | 1.27 | 1.47 |
+| `hand_written_trigger`, batch=1000, 17 cells | 1.01 | 1.24 | 1.28 | 1.32 | 1.79 |
+
+The drift is not symmetric noise around 1: nearly every such cell was slower this run, so this run sat about 5–30% slower overall than the previous one — a property of the machine and session, not the code. Two consequences for reading everything below:
+
+- Comparisons **within one run** are the ones to trust; comparisons **across runs** are trustworthy only where the effect dwarfs a ~1.3x shift.
+- A difference between two cells smaller than roughly 1.3x is not a finding.
+
+The smallest cells show the noise plainly: `no_maintenance`'s `apply_ms` at `views=10, batch=1, card=10` is 0.005 ms at `base_rows=10,000`, 0.003 ms at `100,000`, and 0.006 ms at `1,000,000` — the middle, larger table cheaper than the smallest, which cannot happen physically. These microsecond readings carry noise, and not every wiggle is a signal.
+
+## Sanity check from the M0 smoke run
+
+*This section is a historical record from M0 development: a reduced matrix (`BASE_ROWS=[1_000,10_000]`, `VIEW_COUNTS=[1,10]`, `GROUP_CARDINALITIES=[10,1_000]`) run before the P2-3 fix. `base_rows=1,000` is not in the published matrix, so these numbers cannot be re-derived from the CSV.*
+
+It checked the key expectation: at a fixed `base_rows`, `naive_recompute.maintain_ms` should barely move with `group_cardinality` (it always scans the whole table), while `hand_written_trigger.apply_ms` should rise with `group_cardinality`. Observed at `batch=1000, views=10`:
 
 | base_rows | naive_recompute.maintain_ms (card=10 → 1000) | hand_written_trigger.apply_ms (card=10 → 1000) |
 |---|---|---|
-| 1,000  | 2.281 → 2.558 ms（+12%） | 9.227 → 12.610 ms（+37%） |
-| 10,000 | 16.533 → 18.956 ms（+15%） | 7.492 → 10.828 ms（+45%） |
+| 1,000  | 2.281 → 2.558 ms (+12%) | 9.227 → 12.610 ms (+37%) |
+| 10,000 | 16.533 → 18.956 ms (+15%) | 7.492 → 10.828 ms (+45%) |
 
-`naive_recompute` 几乎不动（个位数百分比，量级由 `base_rows` 决定），
-`hand_written_trigger` 明显上升（三成到四成五）——cardinality 维度确实生效，
-不是碰巧持平。
+`naive_recompute` barely moved (a single-digit-to-low-teens percentage, with its magnitude set by `base_rows`), while `hand_written_trigger` clearly rose (30–45%) — the cardinality dimension really does take effect.
 
-同时验证了主键定位不产生 `SCAN`：
+It also confirmed that locating rows by primary key does not produce a `SCAN`:
 
 ```
 $ sqlite3 :memory: "CREATE TABLE orders(id INTEGER PRIMARY KEY, region TEXT NOT NULL, amount INTEGER NOT NULL) STRICT; EXPLAIN QUERY PLAN DELETE FROM orders WHERE id = 1;"
@@ -68,113 +74,76 @@ QUERY PLAN
 `--SEARCH orders USING INTEGER PRIMARY KEY (rowid=?)
 ```
 
-不含 `SCAN`，符合预期。
+No `SCAN`, as expected.
 
-## 结论表：全量重算 vs 手写 trigger
+## Conclusion table: full recompute vs hand-written triggers
 
-固定 `views=10`、`base_rows=1,000,000`（矩阵里最大的规模，最能体现"增量成本
-不随基表规模增长"这条论点），`Δ 大小` 取 `1` 和 `1000` 两个极端：
+Fixing `views=10` and `base_rows=1,000,000` (the largest size in the matrix, which best shows "incremental cost does not grow with the base table"), with `Δ size` at its two extremes, `1` and `1000`:
 
-| group 基数 | Δ 大小 | 全量重算 / 手写 trigger 比值 | 手写 trigger 的写放大 |
+| Group cardinality | Δ size | Full recompute / hand-written trigger | Hand-written trigger's write amplification |
 |---|---|---|---|
-| 10     | 1 / 1000 | 17647.5 / 292.0 | 7.2x / 12.7x |
-| 1k     | 1 / 1000 | 20153.4 / 258.8 | 8.5x / 17.4x |
-| 100k   | 1 / 1000 | 24121.2 / 149.7 | 16.7x / 28.7x |
+| 10     | 1 / 1000 | 314,251.5 / 240.6 | 1.8x / 12.6x |
+| 1k     | 1 / 1000 | 146,665.2 / 216.7 | 4.5x / 14.9x |
+| 100k   | 1 / 1000 | 225,644.1 / 128.8 | 2.8x / 38.9x |
 
-`card > base_rows` 的格子为空——这不是数据缺失，是语义上不存在的配置（N 行的
-表不可能有多于 N 个分组键），`ivmlite-workload::Workload::load` 在加载时就会
-拒绝这种配置。矩阵里恰好受影响的只有 `base_rows=10,000` 且 `card=100,000` 的
-组合。
+The "ratio" is `naive_recompute`'s total time (apply_ms + maintain_ms) divided by `hand_written_trigger`'s total time (the trigger's whole cost is in apply_ms; its maintain_ms is always 0). "Write amplification" is `hand_written_trigger.apply_ms` as a multiple of `no_maintenance.apply_ms` — the extra write cost the triggers add to maintain the summary tables.
 
-"比值"= `naive_recompute` 总耗时（apply_ms + maintain_ms）除以
-`hand_written_trigger` 总耗时（trigger 成本全部计入 apply_ms，maintain_ms
-恒为 0）。"写放大" = `hand_written_trigger.apply_ms` 相对
-`no_maintenance.apply_ms` 的倍数——trigger 维护汇总表要多花的那部分写入成本。
+Read the Δ=1 column with the measurement limits in mind: at batch=1 the trigger's total time is on the order of hundredths of a millisecond, so those ratios divide a multi-second recompute by a denominator that single-run noise moves easily. The magnitude — five orders — is the finding; the differences between the three Δ=1 ratios are not. The previous run's Δ=1 write amplifications (7.2x / 8.5x / 16.7x) were mostly statement compilation; see "What changed in this run".
 
-## 这张面实际长什么样子（不是一个交叉点）
+## What the surface actually looks like (not a single crossover)
 
-在整个 204 行的矩阵里，`naive_recompute` 对 `hand_written_trigger` 的总耗时
-比值最低点是 **1.42**（`views=1, base_rows=10,000, batch=1000, card=1000`：
-naive 2.453ms vs trigger 1.729ms），**没有任何一格出现 `naive_recompute` 更
-快**。比值随三个维度移动：
+Across the whole 204-row matrix, the lowest total-time ratio of `naive_recompute` over `hand_written_trigger` is **1.56** (`views=200, base_rows=10,000, batch=1000, card=1000`: naive 358.150 ms vs trigger 230.045 ms), and **there is no cell where `naive_recompute` is faster**. The ratio moves along three dimensions:
 
-- **base_rows 越大，比值越夸张**：`views=10, card=10, batch=1` 处从
-  `base_rows=10,000` 的 133x 涨到 `base_rows=1,000,000` 的 17,647x——
-  `naive_recompute` 的成本随基表规模线性增长，`hand_written_trigger` 几乎
-  不变（增量成本不随基表规模增长，这正是 benchmark 要证明的东西）。
-- **batch 越大，比值越收窄**：同样 `views=10, card=10, base_rows=10,000`，
-  batch 从 1 到 1000 时比值从 133x 掉到 2.26x——trigger 每行一次的
-  `ON CONFLICT` 更新开始逼近全表扫描一次的成本。
-- **views 对比值的影响不是单调的**：`base_rows=10,000, batch=1000, card=1,000`
-  这一格，视图数 200 / 50 / 10 / 1 对应的比值是 **1.73 / 2.00 / 1.96 / 1.42**
-  ——从 200 降到 50 时先**升**，之后才降。端点确实是 1.73 → 1.42，但中间并非
-  "一路跌"。`views=1` 处的 1.42 是全矩阵最接近打平的地方（仍是
-  `hand_written_trigger` 赢，没有 `naive_recompute` 反超的格子）。
-  这条扫描只测了四个 views 取值，中间的起伏可能是单次测量的噪声（见上文
-  「测量方式的局限」），也可能是真实的非单调性——这份数据分辨不了，所以这里
-  只陈述观测值，不给方向性结论。
-- **在唯一真正隔离出 cardinality 这个维度的那条扫描上（`views=10` 固定，
-  cardinality 在 10/1,000/100,000 间变化），方向随 Δ 大小反转，不存在
-  一个不加限定就成立的方向**（逐一核对 `docs/bench/m0-baseline.csv`，
-  三个基表规模、四个 batch 值全量重算过一遍）：
-  - **大 Δ（batch=100、batch=1000）时收窄**：`base_rows=1,000,000` 处，
-    `batch=1000` 的比值从 `card=10` 的 292.0 降到 `card=1,000` 的 258.8、
-    再降到 `card=100,000` 的 149.7；`batch=100` 处同样从 2428.5 降到
-    2254.6、再降到 957.2。`base_rows=10,000`（1000: 2.3→2.0；100:
-    19.0→17.7，无 `card=100,000` 格）与 `base_rows=100,000`（1000:
-    25.1→24.0→10.0；100: 229.5→215.0→88.8）在这两个 batch 上方向一致。
-  - **Δ=1 时反而扩大，三个基表规模全部同向**：`base_rows=10,000` 从
-    133.2 涨到 167.9（无 `card=100,000` 格，`card=100,000 > base_rows`
-    被 `Workload::load` 拒绝）；`base_rows=100,000` 从 1636.6 涨到
-    1898.9、再到 2035.5；`base_rows=1,000,000` 从 17,647.5 涨到
-    20,153.4、再到 24,121.2。
-  - **batch=10 是过渡地带，方向随基表规模混合，不能归为任何一侧**：
-    `base_rows=10,000` 走高（81.2→89.9）；`base_rows=100,000` 先高后低
-    （971.3→1016.9→672.7）；`base_rows=1,000,000` 单调走低
-    （10,717.6→10,430.0→7,351.3）。
-  诚实的表述是**大 Δ 时收窄，Δ=1 时扩大**——不能像早前的文本那样只引
-  `batch=1000` 和 `batch=100` 就断言"随 cardinality 上升而收窄"是无限定
-  的方向性结论；这与"大批量 Δ + 低 group 基数"这个说法里"低基数更窄"的
-  直觉方向，仅在大 Δ 一侧相符，在 Δ=1 一侧相反。
-- 上面关于 views 的观测与"cardinality 对方向的影响随 Δ 大小反转"是**两条
-  独立的观测，不能相加**：本次矩阵是两次独立扫描（一次固定 `views=10` 扫
-  cardinality，一次固定 `cardinality=1,000` 扫 views），不是四维全交叉，
-  所以"低 views + 低 cardinality"这个组合从未被同一次测量同时覆盖过——
-  这份数据对那个角落什么都没说，既不能证实也不能证伪。
-- **单独说明，不算作 M0 的发现**：`ivmlite` 项目原本的假设是"大批量 Δ + 低
-  group 基数"会是 M1 真正的增量引擎（而非这里的手写 trigger）相对全量重算
-  优势最大的区域——因为大批量下同一个 group 内的多次修改可以在 delta 消费
-  时被合并（delta consolidation），而 trigger 没有这个机制，每行都要单独
-  走一次 `ON CONFLICT`。这是留给 M1 去验证的假设，不是这批 M0 基线数据的
-  结论；本节前面几条才是这批数据实际支持的内容。
+- **The larger `base_rows`, the more extreme the ratio**: at `views=10, card=10, batch=1` it grows from 2,680.6x at `base_rows=10,000` to 314,251.5x at `base_rows=1,000,000`. `naive_recompute`'s cost grows linearly with the base table while `hand_written_trigger`'s barely moves — incremental cost not growing with the base table is exactly what the benchmark exists to show.
+- **The larger the batch, the narrower the ratio**: at the same `views=10, card=10, base_rows=10,000`, going from batch 1 to 1000 takes the ratio from 2,680.6x down to 1.87x — the trigger's one `ON CONFLICT` update per row starts to approach the cost of one full scan.
+- **View count: no reproducible shape.** At `base_rows=10,000, batch=1000, card=1,000`, view counts 200 / 50 / 10 / 1 give ratios of **1.56 / 1.80 / 2.69 / 1.58** in this run. The previous run gave 1.73 / 2.00 / 1.96 / 1.42 for the same cells, and the earlier version of this README cautioned that its non-monotonic shape "might be single-measurement noise". A second run settles it: the shape does not reproduce, and every one of these ratios sits within a factor of two of the others at this size, well inside the drift measured above. Only the endpoints' shared fact survives both runs — at this small base table and large batch, the ratio stays under 3x for every view count.
 
-**M0 阶段没有增量引擎可测**，所以"若这张面上不存在任何区域使增量相对全量
-重算有实质优势（比值 > 2），则项目前提不成立"这条判据要等 M1 才能真正应用到
-"增量系统 vs 全量重算"这一对上。这里能照实报告的是：`hand_written_trigger`
-（手写、非通用的增量方案）在全部 204 个测试格子里稳定赢过 `naive_recompute`，
-且最窄处比值仍 > 1.4。
+### Group cardinality: what reproduces across two runs
 
-按 spec §10.2 的三级判据，`hand_written_trigger` 是**怀疑者**而不是门槛，
-**不是**"v0 必须打赢"的对象：
+The one sweep that isolates cardinality (fixed `views=10`, cardinality over 10 / 1,000 / 100,000) gives, in this run:
 
-| 级别 | 判据 | 含义 |
+| base_rows | batch | card=10 → 1,000 → 100,000 |
 |---|---|---|
-| **必须** | `ivmlite ≪ 全量重算` | 达不到则项目前提不成立 |
-| **期望** | `ivmlite` 接近手写 trigger | 通用性的代价在可接受范围内 |
-| **额外惊喜** | 大批量 Δ 下 `ivmlite` **优于**手写行级 trigger | consolidation 带来的结构性优势 |
+| 10,000 | 1 | 2,680.6 → 2,070.5 (no `card=100,000` cell) |
+| 10,000 | 10 | 146.7 → 125.8 |
+| 10,000 | 100 | 15.4 → 24.6 |
+| 10,000 | 1000 | 1.9 → 2.7 |
+| 100,000 | 1 | 18,764.0 → 41,895.3 → 22,592.4 |
+| 100,000 | 10 | 1,574.9 → 2,296.8 → 1,060.4 |
+| 100,000 | 100 | 205.2 → 211.5 → 96.1 |
+| 100,000 | 1000 | 29.6 → 21.1 → 9.5 |
+| 1,000,000 | 1 | 314,251.5 → 146,665.2 → 225,644.1 |
+| 1,000,000 | 10 | 21,899.6 → 14,974.5 → 10,006.9 |
+| 1,000,000 | 100 | 2,340.4 → 1,930.6 → 939.2 |
+| 1,000,000 | 1000 | 240.6 → 216.7 → 128.8 |
 
-`no_maintenance` 才是 spec §10.2 指派的**下界**（纯写入成本，完全不维护视图）；
-`hand_written_trigger` 是**专用上界**——针对这一条查询手工编译后的最优实现
-之一。M1 接入真实引擎后，要在同一张矩阵上验证"必须"这一级（相对
-`naive_recompute` 的实质优势），"期望"与"额外惊喜"两级是加分项，不是及格线。
+**The earlier version of this README drew a directional conclusion that this run contradicts.** From one run it concluded "narrows at large Δ, widens at Δ=1, with all three base-table sizes moving the same way at Δ=1". Here, at `base_rows=10,000`, Δ=1 *narrows* (2,680.6 → 2,070.5), Δ=100 and Δ=1000 *widen* (15.4 → 24.6, 1.9 → 2.7), and at Δ=1 the two larger tables are non-monotonic. That conclusion was an over-reading of one noisy run, and it is withdrawn.
 
-## 出图
+What **does** reproduce, in both runs, in every cell that qualifies — and it is insensitive to the P2-3 fix, since compilation is negligible at these batch sizes:
 
-`docs/bench/m0-baseline-card{10,1000,100000}.svg` 各画一张：固定
-`views=10, batch=100`，横轴 `base_rows`（对数），纵轴 `apply_ms + maintain_ms`
-总耗时，每条基线一条折线。三张图分别对应三个 group 基数——交叉点/差距随
-基数剧烈移动，混进一张图会得到一条没有意义的折线（spec §10.1）。
+- **At `base_rows ≥ 100,000` and batch ≥ 100, raising cardinality from 1,000 to 100,000 cuts the ratio roughly in half.** This run: 211.5 → 96.1, 21.1 → 9.5, 1,930.6 → 939.2, 216.7 → 128.8. Previous run: 215.0 → 88.8, 24.0 → 10.0, 2,254.6 → 957.2, 258.8 → 149.7. Every one of these eight steps is a factor of 1.7–2.4, far outside the run-to-run drift.
 
-## 原始数据
+Everything else in the table — the direction at `base_rows=10,000`, anything at Δ=1, and the 10 → 1,000 step — either changes between runs or moves by less than the drift, and supports no directional claim.
 
-`docs/bench/m0-baseline.csv`：`baseline,views,base_rows,batch_size,group_cardinality,apply_ms,maintain_ms`，204 行数据 + 表头。
+- The view-count observation and the cardinality observation above are **two independent observations and cannot be combined**: the matrix is two independent sweeps (one fixing `views=10` and sweeping cardinality, one fixing `cardinality=1,000` and sweeping views), not a full four-way cross, so the "few views + low cardinality" corner was never covered by any single measurement — this data says nothing about it either way.
+- **Noted separately, and not an M0 finding**: the `ivmlite` project's own hypothesis is that "large Δ + low group cardinality" will be where M1's real incremental engine (not the hand-written triggers here) has its largest advantage over full recomputation — because at large batches, repeated changes to the same group can be merged when the delta is consumed (delta consolidation), a mechanism triggers do not have, since every row goes through its own `ON CONFLICT`. That is a hypothesis left for M1 to test, not a conclusion of this M0 baseline data.
+
+**M0 has no incremental engine to measure**, so the criterion "if no region of this surface gives incremental maintenance a substantial advantage over full recomputation (a ratio > 2), the project's premise does not hold" can only be applied to the "incremental system vs full recompute" pair once M1 exists. What can be reported honestly here is that `hand_written_trigger` (a hand-written, non-general incremental scheme) beats `naive_recompute` in all 204 cells tested, with the ratio still above 1.5 at its narrowest.
+
+Under spec §10.2's three-tier bar, `hand_written_trigger` is the **skeptic**, not a threshold, and **not** something "v0 must beat":
+
+| Tier | Bar | Meaning |
+|---|---|---|
+| **Must** | `ivmlite ≪ full recompute` | If not met, the project's premise does not hold |
+| **Expected** | `ivmlite` close to hand-written triggers | The price of generality is acceptable |
+| **Bonus** | `ivmlite` **faster than** hand-written row-level triggers on large Δ | The structural advantage consolidation brings |
+
+`no_maintenance` is the **lower bound** spec §10.2 assigns (pure write cost, no views maintained at all); `hand_written_trigger` is the **special-purpose upper bound** — one of the best implementations of this one query, compiled by hand. Once M1 plugs in a real engine, it must prove the "must" tier on this same matrix (a substantial advantage over `naive_recompute`); the "expected" and "bonus" tiers are extra credit, not the pass mark.
+
+## Charts
+
+`docs/bench/m0-baseline-card{10,1000,100000}.svg`, one each: fixed `views=10, batch=100`, with `base_rows` on the x axis (log) and total `apply_ms + maintain_ms` on the y axis (log), one line per baseline. The three charts correspond to the three group cardinalities — the crossover and the gaps move sharply with cardinality, and mixing them on one chart would draw a meaningless line (spec §10.1).
+
+## Raw data
+
+`docs/bench/m0-baseline.csv`: `baseline,views,base_rows,batch_size,group_cardinality,apply_ms,maintain_ms`, 204 rows of data plus a header.
