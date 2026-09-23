@@ -39,12 +39,18 @@ impl NaiveRecompute {
     ///
     /// A NULL key never matches: SQL's `NULL = NULL` is UNKNOWN (measured in
     /// SQLite; `sqlite_never_matches_null_join_keys` pins it on the oracle side).
+    ///
+    /// For a join, each side's rows with weight ≤ 0 are dropped **before**
+    /// joining (spec §5.1: they do not take part in recomputation), the same
+    /// rule `materialize` applies to a single table's rows. Dropping them only
+    /// after the join would let two negative rows join into a positive one.
     fn input_rows(&self, query: &ViewQuery) -> ZSet {
         let anchor = self.base.get(&self.anchor).cloned().unwrap_or_default();
         let Some(join) = &query.join else {
             return anchor;
         };
-        let right = self.base.get(&join.right).cloned().unwrap_or_default();
+        let anchor = positive_part(&anchor);
+        let right = positive_part(&self.base.get(&join.right).cloned().unwrap_or_default());
         let mut joined = ZSet::new();
         for (l, &wl) in anchor.iter() {
             for (r, &wr) in right.iter() {
@@ -58,6 +64,15 @@ impl NaiveRecompute {
         }
         joined
     }
+}
+
+/// The rows of `z` with a positive weight.
+fn positive_part(z: &ZSet) -> ZSet {
+    ZSet::from_rows(
+        z.iter()
+            .filter(|(_, &w)| w > 0)
+            .map(|(row, &w)| (row.clone(), w)),
+    )
 }
 
 fn passes(predicate: &Predicate, row: &Row) -> bool {
@@ -271,6 +286,30 @@ mod tests {
         let mut e = NaiveRecompute::new();
         e.create_view(&db, &join_on_k(), &bases).unwrap();
         assert!(e.materialize().unwrap().is_empty());
+    }
+
+    #[test]
+    fn two_negative_rows_do_not_join_into_a_positive_one() {
+        // Spec §5.1: a row with weight ≤ 0 takes no part in recomputation. Two
+        // retractions of rows never inserted leave `("a", 2)` at -1 in t0 and
+        // `("a", 10)` at -1 in t1; their product is +1, so skipping
+        // non-positive weights only after joining would report a group "a".
+        let db = Database::new(vec![kv("t0"), kv("t1")]);
+        let r = |k: &str, v: i64| Row::new(vec![Value::Text(k.into()), Value::Int(v)]);
+        let bases = BTreeMap::from([
+            ("t0".to_string(), ZSet::from_rows([(r("a", 1), 1)])),
+            ("t1".to_string(), ZSet::new()),
+        ]);
+        let mut e = NaiveRecompute::new();
+        e.create_view(&db, &join_on_k(), &bases).unwrap();
+        e.apply("t0", &[(r("a", 2), -1)]).unwrap();
+        e.apply("t1", &[(r("a", 10), -1)]).unwrap();
+        e.refresh().unwrap();
+        let got = e.materialize().unwrap();
+        assert!(
+            got.is_empty(),
+            "t1 holds no row of positive weight, so the join is empty: {got:?}"
+        );
     }
 
     #[test]

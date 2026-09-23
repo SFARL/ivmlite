@@ -112,6 +112,10 @@ pub fn enumerate_join(left: &Schema, right: &Schema) -> Vec<ViewQuery> {
 /// Every query `gen_case` can pick for `db`: the anchor's single-table queries
 /// first, then, when `db` has at least two tables, the join queries over its
 /// first two.
+///
+/// # Panics
+/// If `db` declares no tables: the single-table queries are enumerated over
+/// `db.tables()[0]`.
 pub fn enumerate_database(db: &Database) -> Vec<ViewQuery> {
     let tables = db.tables();
     let mut out = enumerate(&tables[0]);

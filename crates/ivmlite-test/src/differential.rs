@@ -86,10 +86,7 @@ pub fn gen_case(
     op_count: usize,
     batching: Batching,
 ) -> TestCase {
-    let _ = db
-        .tables()
-        .first()
-        .expect("the database should not be empty");
+    assert!(!db.is_empty(), "the database should not be empty");
     let queries = enumerate_database(db);
     let query = queries[seed as usize % queries.len()].clone();
     gen_case_with_query(seed, db, domain, query, rows_per_table, op_count, batching)

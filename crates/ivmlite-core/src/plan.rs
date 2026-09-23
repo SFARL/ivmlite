@@ -280,8 +280,9 @@ fn resolve_join<'a>(
 ) -> Result<&'a Schema, PlanError> {
     if join.right == anchor.table {
         return Err(PlanError(format!(
-            "join: a self-join of table {} is not supported in v0 — Scan routes each \
-             delta by table name, so both inputs would receive every change to the table",
+            "join: a self-join of table {} is not supported in v0 — `Join::right` names a \
+             table, not an alias, so the join cannot be rendered to SQL (a self-join needs \
+             table aliases) and the differential oracle cannot check it",
             anchor.table
         )));
     }
@@ -925,8 +926,8 @@ mod tests {
 
     #[test]
     fn a_self_join_is_rejected() {
-        // `Node::Scan` routes deltas by table name, so both inputs of a
-        // self-join would receive every change to the table.
+        // `Join::right` names a table, not an alias, so a self-join cannot be
+        // rendered to SQL (it needs table aliases) and the oracle cannot check it.
         let err = lower(
             &jq(vec![0], vec![count()], Predicate::None, join("t0", 0, 0)),
             &two_kv(),

@@ -196,7 +196,11 @@ impl IncrementalEngine {
         // join: `JoinState::absorb` folds each side's delta into its
         // arrangement before the other side probes, so refreshing t0 then t1
         // computes `ΔR⋈S + (R+ΔR)⋈ΔS` and t1 then t0 computes
-        // `R⋈ΔS + ΔR⋈(S+ΔS)`, both equal to the full bilinear formula; and
+        // `R⋈ΔS + ΔR⋈(S+ΔS)`, both equal to the full bilinear formula. The
+        // order does change how that total is split between the two pushes,
+        // but the `Aggregate` above the join emits telescoping deltas — first
+        // `-old +mid`, then `-mid +new` — so the intermediate `mid` cancels and
+        // only the join's total output over the refresh reaches the view; and
         // `ZSet::merge` is pointwise addition. Measured: with a `HashMap` here
         // the whole suite stayed green in 12 of 12 runs, the join sweep
         // exercising both orders (item 6 of the join-landing checklist in
