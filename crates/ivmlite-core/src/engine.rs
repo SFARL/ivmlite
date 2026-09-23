@@ -338,7 +338,7 @@ mod tests {
         assert!(err.0.contains("refresh"));
     }
 
-    // --- Task 6：delta consolidation ---
+    // --- Task 6: delta consolidation ---
 
     fn db() -> Database {
         Database::new(vec![Schema {

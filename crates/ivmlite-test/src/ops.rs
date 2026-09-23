@@ -14,7 +14,7 @@ pub enum Op {
 }
 
 impl Op {
-    /// UPDATE 拆成 retract + insert——写进 delta 的内容本身已经是 Z-set（spec §8.1）。
+    /// UPDATE splits into a retract plus an insert — what is written to the delta is itself already a Z-set (spec §8.1).
     pub fn to_delta(&self) -> Vec<(Row, i64)> {
         match self {
             Op::Insert(r) => vec![(r.clone(), 1)],
@@ -24,22 +24,25 @@ impl Op {
     }
 }
 
-/// 生成有偏的、带表标签的多表更新序列。
+/// Generate a biased, table-tagged, multi-table update sequence.
 ///
-/// spec §9.2：纯随机生成器在 IVM 测试里几乎抓不到 bug——随机 DELETE 很少
-/// 命中真实存在的行。这里为 `db` 里的每张表各自维护一份 live 行集合，
-/// DELETE / UPDATE 一律从对应表的 live 集合里采样，于是"删掉刚插入的行"
-/// 和"把一个 group 删空再填回来"会自然高频发生——且不会出现用一张表的行
-/// 去删另一张表这种非法序列。
+/// Spec §9.2: a purely random generator catches almost no bugs in IVM testing —
+/// a random DELETE rarely hits a row that actually exists. Here each table in
+/// `db` keeps its own set of live rows, and every DELETE / UPDATE samples from
+/// its own table's live set, so "delete a row just inserted" and "empty a group
+/// and fill it back up" happen naturally and often — and the illegal sequence
+/// of deleting from one table with another table's row cannot occur.
 ///
-/// 每一步先均匀选表、再选操作：选表必须是均匀分布，否则 join 算子两侧
-/// `ΔR⋈S` 与 `R⋈ΔS` 的覆盖会失衡。live 集合按 `db.tables()` 的下标存成
-/// `Vec`（m3 更正：不是为了迭代顺序确定——`live` 在本函数里只按 `t_idx`
-/// 索引，从不整体迭代，把它换成 `HashMap<usize, Vec<Row>>` 一样能保证同一
-/// 个 `t_idx` 每次取到同一张表。真正保证"选表结果与 seed 确定绑定"的是
-/// `db.tables()` 本身：它返回的 `Vec<Schema>` 保留插入顺序，这条由
-/// `ivmlite-core` 的 `table_order_is_preserved`（`database.rs`）守护，
-/// 不是这里的 `Vec` 选择（spec §9.4）。
+/// Each step picks a table uniformly, then an operation. Table choice must be
+/// uniform, or the join operator's two paths `ΔR⋈S` and `R⋈ΔS` get uneven
+/// coverage. The live sets are stored as a `Vec` indexed like `db.tables()` (m3
+/// correction: not for a deterministic iteration order — `live` is only ever
+/// indexed by `t_idx` in this function and never iterated as a whole, so a
+/// `HashMap<usize, Vec<Row>>` would equally make the same `t_idx` pick the same
+/// table every time. What binds the choice of table to the seed is
+/// `db.tables()` itself: the `Vec<Schema>` it returns keeps insertion order,
+/// guarded by `table_order_is_preserved` in `ivmlite-core`'s `database.rs`, not
+/// by the `Vec` chosen here; spec §9.4).
 pub fn gen_ops(
     rng: &mut StdRng,
     db: &Database,
@@ -60,7 +63,7 @@ pub fn gen_ops(
         let schema = &tables[t_idx];
         let table_live = &mut live[t_idx];
 
-        // live 为空时只能插入。
+        // With an empty live set, only inserts are possible.
         let choice = if table_live.is_empty() {
             0
         } else {
@@ -146,22 +149,25 @@ mod tests {
         let initial_map = as_initial(&schema, initial.clone());
         let ops = gen_ops(&mut rng, &db, &domain, &initial_map, 300);
 
-        // 重放序列，验证每个 DELETE / UPDATE 命中的行当时确实存在。
+        // Replay the sequence, checking every DELETE / UPDATE hits a row that exists at that point.
         let mut live: Vec<Row> = initial.clone();
         let mut hits = 0usize;
         for (table, op) in &ops {
-            assert_eq!(table, &schema.table, "单表用例不应出现别的表名");
+            assert_eq!(
+                table, &schema.table,
+                "a single-table case should not mention another table"
+            );
             match op {
                 Op::Insert(r) => live.push(r.clone()),
                 Op::Delete(r) => {
                     let pos = live.iter().position(|x| x == r);
-                    assert!(pos.is_some(), "DELETE 必须命中存在的行");
+                    assert!(pos.is_some(), "a DELETE must hit a row that exists");
                     live.remove(pos.unwrap());
                     hits += 1;
                 }
                 Op::Update { old, new } => {
                     let pos = live.iter().position(|x| x == old);
-                    assert!(pos.is_some(), "UPDATE 必须命中存在的行");
+                    assert!(pos.is_some(), "an UPDATE must hit a row that exists");
                     live.remove(pos.unwrap());
                     live.push(new.clone());
                     hits += 1;
@@ -170,17 +176,19 @@ mod tests {
         }
         assert!(
             hits > ops.len() / 10,
-            "有偏采样必须产生足量的删改，否则测不到 retraction；实得 {hits}/{}",
+            "biased sampling must produce enough deletes and updates, or retraction goes untested; got {hits}/{}",
             ops.len()
         );
     }
 
-    /// item 12（deferred minor）：`initial` 为空时 live 集合从空开始，且
-    /// 每次 insert 只会往 live 里加，不会自然变空——真正会命中"live 为空"
-    /// 守卫的只有第一次迭代。删掉那条守卫（`gen_ops` 里的
-    /// `if live.is_empty() { 0 } else { ... }`）本该在这里 panic，但用一个
-    /// 空 `initial` 加大 `count` 只测得到第一步，之后 live 已非空——所以
-    /// 这条测试断言的是"第一步在 live 为空时必须是 Insert 且不 panic"。
+    /// Item 12 (a deferred minor): with an empty `initial` the live set starts
+    /// empty, and each insert only adds to it, so it does not become empty on
+    /// its own — only the first iteration really hits the "live is empty" guard.
+    /// Deleting that guard (`if live.is_empty() { 0 } else { ... }` in
+    /// `gen_ops`) should panic here, but an empty `initial` with a larger
+    /// `count` exercises only the first step, after which live is non-empty — so
+    /// this test asserts "with an empty live set, the first step must be an
+    /// Insert, without panicking".
     #[test]
     fn empty_live_set_only_ever_produces_an_insert_first() {
         let mut rng = rand::rngs::StdRng::seed_from_u64(123);
@@ -191,7 +199,7 @@ mod tests {
         assert_eq!(ops.len(), 20);
         assert!(
             matches!(ops[0].1, Op::Insert(_)),
-            "live 集合为空时第一步必须是 Insert，实得 {:?}",
+            "with an empty live set the first step must be an Insert, got {:?}",
             ops[0]
         );
     }
@@ -218,8 +226,9 @@ mod tests {
             assert_eq!(
                 t.arity(),
                 2,
-                "spec §9.2 第 4 条：差分 schema 固定每表 2 列——加宽到 3 列会让穷举规模涨约 8 倍，\
-                 这是「穷举优于随机」成立的前提，不是魔数"
+                "spec §9.2 item 4: the differential schema is fixed at 2 columns per table — \
+                 widening to 3 grows the enumeration about 8x; it is the precondition for \
+                 \"enumeration beats randomness\", not a magic number"
             );
         }
     }
@@ -231,29 +240,32 @@ mod tests {
         let domain = Domain::default();
         let initial = gen_initial(&mut rng, &db, &domain, 20);
         for (table, _) in gen_ops(&mut rng, &db, &domain, &initial, 200) {
-            assert!(db.get(&table).is_some(), "未知表 {table}");
+            assert!(db.get(&table).is_some(), "unknown table {table}");
         }
     }
 
     #[test]
     fn every_table_receives_some_ops() {
-        // 每张表至少拿到均匀选表下期望份额的一半——若生成器把选表概率往某张
-        // 表偏斜，join 的 ΔR⋈S 与 R⋈ΔS 两条路径的覆盖就会失衡。这个下界不
-        // 证明选表就是均匀的，只保证偏得太狠会被抓到：300 次操作、2 张表时
-        // 均匀选表下任何一张跌破这条线的概率约 2.4e-19，而 90/10 的偏斜下
-        // 少数表期望只有 30，会可靠地跌破 75 这条线。
+        // Every table gets at least half its expected share under uniform
+        // choice — if the generator skewed table choice toward one table, join's
+        // two paths ΔR⋈S and R⋈ΔS would get uneven coverage. This lower bound
+        // does not prove the choice is uniform; it only guarantees a large skew
+        // is caught: with 300 operations and 2 tables, the chance of either
+        // falling below the line under uniform choice is about 2.4e-19, while
+        // under a 90/10 skew the minority table expects only 30 and reliably
+        // falls below 75.
         let mut rng = StdRng::seed_from_u64(3);
         let db = gen_database(2);
         let domain = Domain::default();
         let initial = gen_initial(&mut rng, &db, &domain, 20);
         let count = 300;
         let ops = gen_ops(&mut rng, &db, &domain, &initial, count);
-        let floor = count / db.len() / 2; // 均匀份额的一半
+        let floor = count / db.len() / 2; // half the uniform share
         for t in db.tables() {
             let n = ops.iter().filter(|(tbl, _)| *tbl == t.table).count();
             assert!(
                 n > floor,
-                "表 {} 只收到 {n} 个操作（下界 {floor}），两侧 delta 路径覆盖不均",
+                "table {} received only {n} operations (lower bound {floor}), leaving the two delta paths unevenly covered",
                 t.table
             );
         }
@@ -261,7 +273,7 @@ mod tests {
 
     #[test]
     fn deletes_target_rows_that_exist_in_their_own_table() {
-        // 有偏采样必须按表各自维护 live 集合——用一张表的行去删另一张表是非法序列。
+        // Biased sampling must keep a live set per table — deleting from one table with another's row is an illegal sequence.
         let mut rng = StdRng::seed_from_u64(4);
         let db = gen_database(2);
         let domain = Domain::default();
@@ -270,14 +282,14 @@ mod tests {
         let mut hits = 0usize;
         let ops = gen_ops(&mut rng, &db, &domain, &initial, 300);
         for (table, op) in &ops {
-            let l = live.get_mut(table).expect("表必须存在");
+            let l = live.get_mut(table).expect("the table must exist");
             match op {
                 Op::Insert(r) => l.push(r.clone()),
                 Op::Delete(r) => {
                     let pos = l
                         .iter()
                         .position(|x| x == r)
-                        .expect("DELETE 必须命中本表存在的行");
+                        .expect("a DELETE must hit a row that exists in its own table");
                     l.swap_remove(pos);
                     hits += 1;
                 }
@@ -285,7 +297,7 @@ mod tests {
                     let pos = l
                         .iter()
                         .position(|x| x == old)
-                        .expect("UPDATE 必须命中本表存在的行");
+                        .expect("an UPDATE must hit a row that exists in its own table");
                     l.swap_remove(pos);
                     l.push(new.clone());
                     hits += 1;
@@ -294,7 +306,7 @@ mod tests {
         }
         assert!(
             hits > ops.len() / 10,
-            "有偏采样产出的删改过少：{hits}/{}",
+            "biased sampling produced too few deletes and updates: {hits}/{}",
             ops.len()
         );
     }

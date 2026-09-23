@@ -4,10 +4,11 @@ use ivmlite_core::{Database, IncrementalEngine, Row, ZSet};
 
 use crate::{Engine, EngineError, ViewQuery};
 
-/// 把 core 的引擎接进差分框架。本地 trait + 外部类型，孤儿规则允许。
+/// Plugs the core engine into the differential harness: a local trait for a foreign type, which the orphan rule allows.
 ///
-/// 只做错误类型的搬运：core 不得依赖 `ivmlite-test`（§4.2，且反向会成环），
-/// 所以两边各有一个 `EngineError`。
+/// It only carries the error type across: core must not depend on
+/// `ivmlite-test` (§4.2, and the reverse dependency would make a cycle), so each
+/// side has its own `EngineError`.
 impl Engine for IncrementalEngine {
     fn create_view(
         &mut self,

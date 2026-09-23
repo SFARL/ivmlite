@@ -1,8 +1,9 @@
-//! 把 core 的 plan IR 渲染成 SQLite 能执行的 SQL。
+//! Renders core's plan IR as SQL that SQLite can execute.
 //!
-//! 这一层刻意留在 `ivmlite-test` 而不进 `ivmlite-core`：它存在的唯一理由是
-//! 驱动 oracle（让 SQLite 自己算一遍当作权威判据）。core 拥有 IR，test 拥有
-//! 「如何把这个 IR 表达成 SQL」。
+//! This layer deliberately lives in `ivmlite-test`, not `ivmlite-core`: its only
+//! reason to exist is driving the oracle (having SQLite compute the answer
+//! itself as the authoritative judge). Core owns the IR; the test crate owns
+//! "how to express that IR as SQL".
 
 use ivmlite_core::{AggFn, ColumnType, Predicate, Schema, ViewQuery};
 
@@ -13,8 +14,9 @@ fn sql_type(ty: ColumnType) -> &'static str {
     }
 }
 
-/// 生成 STRICT 建表语句（spec §7.1：STRICT 把列类型钉死，否则 type affinity
-/// 会让一列逐行存不同类型，把一个逻辑上的 group key 拆成两个）。
+/// Generate a STRICT CREATE TABLE statement (spec §7.1: STRICT pins column
+/// types; otherwise type affinity lets a column store a different type in each
+/// row, splitting one logical group key in two).
 pub fn create_table_sql(schema: &Schema) -> String {
     let cols: Vec<String> = schema
         .columns
@@ -31,7 +33,7 @@ pub fn create_table_sql(schema: &Schema) -> String {
     )
 }
 
-/// 把 ViewQuery 渲染成 SQL。列下标按 `schema` 解析。
+/// Render a ViewQuery as SQL. Column indices are resolved against `schema`.
 pub fn view_query_to_sql(query: &ViewQuery, schema: &Schema) -> String {
     let name = |i: usize| format!("\"{}\"", schema.columns[i].name);
 
@@ -40,7 +42,7 @@ pub fn view_query_to_sql(query: &ViewQuery, schema: &Schema) -> String {
         select.push(match (agg.func, agg.column) {
             (AggFn::Count, _) => "COUNT(*)".to_string(),
             (AggFn::Sum, Some(i)) => format!("SUM({})", name(i)),
-            (AggFn::Sum, None) => panic!("SUM 必须指定列"),
+            (AggFn::Sum, None) => panic!("SUM must name a column"),
         });
     }
 
@@ -92,7 +94,10 @@ mod tests {
     #[test]
     fn create_table_sql_is_strict() {
         let sql = create_table_sql(&orders());
-        assert!(sql.contains("STRICT"), "spec §7.1 要求 STRICT table：{sql}");
+        assert!(
+            sql.contains("STRICT"),
+            "spec §7.1 requires a STRICT table: {sql}"
+        );
         assert!(sql.contains("\"region\" TEXT"));
         assert!(sql.contains("\"amount\" INTEGER NOT NULL"));
     }
@@ -135,9 +140,10 @@ mod tests {
         assert!(view_query_to_sql(&q, &orders()).contains("WHERE \"amount\" > 3"));
     }
 
-    /// item 13（deferred minor，与 I4 同源）：`IsNotNull` 此前完全没有单元
-    /// 测试覆盖——`enumerate` 里生成它的整段循环删掉之后 67 个测试照样全绿,
-    /// 正是因为连 `to_sql` 这一层都没人断言过它的输出。
+    /// Item 13 (a deferred minor, from the same source as I4): `IsNotNull`
+    /// used to have no unit-test coverage at all — deleting the whole loop in
+    /// `enumerate` that generates it left the suite green, precisely because
+    /// nobody asserted its output even at the `to_sql` level.
     #[test]
     fn to_sql_renders_is_not_null_predicate() {
         let q = ViewQuery {
