@@ -593,14 +593,16 @@ The size of the enumeration is **extremely sensitive** to the number of columns,
 | Schema | Queries | Time for the enumeration sweep |
 |---|---|---|
 | One table, 2 columns (measured in M0) | 27 | 0.21s |
-| Two tables, 2 columns each, + join | ~554 | ~10s (extrapolated) |
-| Two tables, 3 columns each, + join | ~4209 | ~80s (extrapolated) |
+| Two tables, 2 columns each, + join (measured in M1a Phase 3, 2026-09-23) | 700 | 3.36s |
+| Two tables, 3 columns each, + join | ~4209 | ~39s (extrapolated) |
 
-The baseline is measured (27 queries in 0.21 seconds → about 7.8ms each); join cases are estimated at 2.5x — **that multiplier is an estimate, not a measurement**, and must be replaced by a measurement once join lands.
+The baseline is measured (27 queries in 0.21 seconds → about 7.8ms each). The join row is now measured too: `enumerate_join(t0, t1)` on `gen_database(2)`'s two-column tables produces 700 queries, and `incremental_engine_is_green_across_the_join_space` (one case per query, debug build) ran in a median of 3.36s across 3 runs (3.34s, 3.36s, 3.37s) — about 4.8ms per case. `incremental_engine_is_green_across_the_enumerated_space` (the single-table counterpart, 50 cases) ran in a median of 0.20s across 3 runs (0.20s, 0.20s, 0.20s) — about 4.0ms per case. The measured multiplier, join per-case ÷ single-table per-case, is **1.2x**, measured 2026-09-23 in M1a Phase 3 — well below the 2.5x that had been estimated. The three-column row's time above is recomputed from this measured 1.2x multiplier against the same 7.8ms/query baseline (4209 × 7.8ms × 1.2 ≈ 39s) and remains **extrapolated**, not measured: its query count was never verified against a real three-column enumeration.
 
 At two columns the enumeration holds and its cost is negligible; at three a single test runs into minutes. It was also confirmed by measurement that the enumeration sweep is **a single isolated test**: the 50-seed detection test (0.07s) and the shrinker (0.10s) each take only one query per case and do not grow with the enumeration, so the cost does not compound.
 
 > **An open question, to be decided with measured numbers once join lands in M1**: the only shape three columns add to coverage is "three columns with three distinct roles" — sum over column A, group by column B, filter on column C. With two columns, at least two roles share one column. "The filtered column is not the aggregated column" is a plausible bug site (is the predicate evaluated against the right column index?). Whether that is worth an 8x larger enumeration cannot be judged now; **do not decide it before there is a measured multiplier**.
+>
+> The measured join multiplier now exists (M1a Phase 3, 2026-09-23: 1.2x, see above) but the three-column decision itself is still open.
 >
 > If the decision is then not to widen, there is one knob already worked out: restrict join queries' group-by to a single column, which brings the size down from 554 to 236 (10s → 4s). The cost is not testing joins "grouped by one column from each side" — and multi-column group keys that cross the boundary between two tables are exactly where joins are most likely to have bugs, so this knob should be the last one turned.
 

@@ -1,9 +1,9 @@
 use ivmlite_core::{Database, IncrementalEngine, Row, ZSet};
 use ivmlite_test::{
-    check_batch_invariance, enumerate, gen_case, gen_case_with_query, gen_database, is_legal,
-    load_regressions, recompute_via_sqlite, run, save_regression, seed_range, shrink, Agg, AggFn,
-    Batching, Column, ColumnType, Domain, Engine, NaiveRecompute, NoRetractionEngine, Predicate,
-    Schema, TransientDriftEngine, ViewQuery,
+    check_batch_invariance, enumerate, enumerate_join, gen_case, gen_case_with_query, gen_database,
+    is_legal, load_regressions, recompute_via_sqlite, run, save_regression, seed_range, shrink,
+    Agg, AggFn, Batching, Column, ColumnType, Domain, Engine, Join, NaiveRecompute,
+    NoRetractionEngine, Predicate, Schema, TransientDriftEngine, ViewQuery,
 };
 use std::collections::BTreeMap;
 
@@ -644,4 +644,124 @@ fn create_view_rejects_a_global_aggregate() {
         "the error should name group_by: {}",
         err.0
     );
+}
+
+/// The join counterpart of `incremental_engine_is_green_across_the_enumerated_space`:
+/// every query of the join space, one case each, seeded by its index.
+///
+/// Under `IVMLITE_SEED=<n>` only query `n` runs, so the replay command a
+/// `Failure` prints reproduces exactly the failing case.
+#[test]
+fn incremental_engine_is_green_across_the_join_space() {
+    let db = gen_database(2);
+    let domain = Domain::default();
+    let queries = enumerate_join(&db.tables()[0], &db.tables()[1]);
+    let replay = std::env::var("IVMLITE_SEED").is_ok();
+    let selected: Vec<u64> = if replay {
+        seed_range()
+    } else {
+        (0..queries.len() as u64).collect()
+    };
+    for seed in selected {
+        let query = queries[seed as usize % queries.len()].clone();
+        let case = gen_case_with_query(seed, &db, &domain, query, 20, 60, Batching::Chunks(4));
+        let mut engine = IncrementalEngine::new();
+        if let Err(f) = run(&mut engine, &case) {
+            panic!("the incremental engine disagrees with the oracle on join query {seed}: {f}");
+        }
+    }
+}
+
+/// A join query whose group key crosses the table boundary: group by
+/// `t0.k, t1.v`, `SUM(t0.v)`, `COUNT(*)`, joined on `k = k`.
+fn cross_boundary_join(db: &Database) -> ViewQuery {
+    ViewQuery {
+        group_by: vec![0, 3],
+        aggs: vec![
+            Agg {
+                func: AggFn::Sum,
+                column: Some(1),
+            },
+            Agg {
+                func: AggFn::Count,
+                column: None,
+            },
+        ],
+        predicate: Predicate::None,
+        join: Some(Join {
+            right: db.tables()[1].table.clone(),
+            left_column: 0,
+            right_column: 0,
+        }),
+    }
+}
+
+/// The join counterpart of `incremental_engine_matches_naive_recompute_at_every_refresh_point`.
+#[test]
+fn incremental_engine_matches_naive_recompute_on_a_join_at_every_refresh_point() {
+    let db = gen_database(2);
+    let case = gen_case_with_query(
+        11,
+        &db,
+        &Domain::default(),
+        cross_boundary_join(&db),
+        25,
+        120,
+        Batching::Chunks(5),
+    );
+    let bases: BTreeMap<String, ZSet> = case
+        .initial
+        .iter()
+        .map(|(t, rows)| {
+            (
+                t.clone(),
+                ZSet::from_rows(rows.iter().map(|r| (r.clone(), 1))),
+            )
+        })
+        .collect();
+    let mut inc = IncrementalEngine::new();
+    let mut naive = NaiveRecompute::new();
+    inc.create_view(&case.database, &case.query, &bases)
+        .unwrap();
+    naive
+        .create_view(&case.database, &case.query, &bases)
+        .unwrap();
+    assert_eq!(
+        inc.materialize().unwrap(),
+        naive.materialize().unwrap(),
+        "they already disagree at bootstrap"
+    );
+    for batch in case.batches() {
+        for (table, raw) in &batch {
+            inc.apply(table, raw).unwrap();
+            naive.apply(table, raw).unwrap();
+        }
+        inc.refresh().unwrap();
+        naive.refresh().unwrap();
+        assert_eq!(
+            inc.materialize().unwrap(),
+            naive.materialize().unwrap(),
+            "incremental maintenance and full recomputation diverge at a refresh point"
+        );
+    }
+}
+
+/// The join counterpart of `incremental_engine_satisfies_batch_invariance`:
+/// the same delta sequence, batched four ways, must end in the same state.
+#[test]
+fn incremental_engine_satisfies_batch_invariance_on_joins() {
+    let db = gen_database(2);
+    let domain = Domain::default();
+    // Spreads the 10 seeds across the join space instead of taking its first
+    // ten queries, which all share one group-by.
+    const BATCH_INVARIANCE_QUERY_STRIDE: usize = 67;
+    let queries = enumerate_join(&db.tables()[0], &db.tables()[1]);
+    for seed in seed_range().into_iter().take(10) {
+        let query =
+            queries[(seed as usize * BATCH_INVARIANCE_QUERY_STRIDE) % queries.len()].clone();
+        let case = gen_case_with_query(seed, &db, &domain, query, 25, 120, Batching::All);
+        check_batch_invariance(&case, IncrementalEngine::new).unwrap_or_else(|f| {
+            panic!("the incremental engine should not violate batch independence on a join: {f}")
+        });
+    }
 }
