@@ -5,8 +5,8 @@ use rand::rngs::StdRng;
 use rand::SeedableRng;
 
 use crate::{
-    check_invariants, enumerate, gen_initial, gen_ops, recompute_via_sqlite, view_query_to_sql,
-    Domain, Engine, Op, ViewQuery,
+    check_invariants, enumerate_database, gen_initial, gen_ops, recompute_via_sqlite,
+    view_query_to_sql, Domain, Engine, Op, ViewQuery,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -74,11 +74,10 @@ pub fn seed_range() -> Vec<u64> {
 }
 
 /// Generate a differential test case. `db` declares every base table the case
-/// involves (in a deterministic order, spec §9.4); the query is still a
-/// single-table aggregate — rendering and enumeration both use `db.tables()[0]`
-/// (the anchor table), rendering join queries belongs to the engine plan
-/// (Phase 3), and Task 3's oracle fixed the same restriction in
-/// `recompute_via_sqlite`, which this follows.
+/// involves (in a deterministic order, spec §9.4); the query is picked from
+/// `enumerate_database(db)` by `seed % len`: single-table queries over the
+/// anchor first, then — with two or more tables — the join queries over the
+/// first two.
 pub fn gen_case(
     seed: u64,
     db: &Database,
@@ -87,11 +86,11 @@ pub fn gen_case(
     op_count: usize,
     batching: Batching,
 ) -> TestCase {
-    let anchor = db
+    let _ = db
         .tables()
         .first()
         .expect("the database should not be empty");
-    let queries = enumerate(anchor);
+    let queries = enumerate_database(db);
     let query = queries[seed as usize % queries.len()].clone();
     gen_case_with_query(seed, db, domain, query, rows_per_table, op_count, batching)
 }
@@ -196,12 +195,11 @@ pub fn run<E: Engine>(engine: &mut E, case: &TestCase) -> Result<(), Failure> {
         let want = recompute_via_sqlite(&case.database, &case.query, bases)
             .map_err(|e| fail(&format!("oracle[{stage}]"), e.to_string()))?;
         if got != want {
-            let anchor = &case.database.tables()[0];
             return Err(fail(
                     &format!("diff[{stage}]"),
                     format!(
                         "the engine disagrees with the oracle\n  query: {}\n  engine: {:?}\n  oracle: {:?}",
-                        view_query_to_sql(&case.query, anchor),
+                        view_query_to_sql(&case.query, &case.database),
                         got,
                         want
                     ),
@@ -293,8 +291,8 @@ where
 mod tests {
     use super::*;
     use crate::{
-        gen_database, Agg, AggFn, Column, ColumnType, Domain, EngineError, NaiveRecompute,
-        Predicate, Schema,
+        enumerate_join, gen_database, Agg, AggFn, Column, ColumnType, Domain, EngineError,
+        NaiveRecompute, Predicate, Schema,
     };
     use ivmlite_core::Value;
 
@@ -618,26 +616,151 @@ mod tests {
     /// `check_batch_invariance` calls once per `Batching`) really goes through
     /// multi-table apply routing and the harness-side `bases` bookkeeping.
     ///
-    /// To be honest about what this test can and cannot guard: Phase 1's query
-    /// and oracle still render only the anchor table's (`db.tables()[0]`)
-    /// single-table SQL, so non-anchor state is unobservable in `materialize()`
-    /// — the same root cause as the two n/a gaps registered under I2 / §8.5. So
-    /// this test pins only "a multi-table case runs through
-    /// `check_batch_invariance` without panicking or erroring", not "non-anchor
-    /// deltas really affect the batch-independence result" — the latter can be
-    /// told apart by any assertion only once join lands and the oracle starts
-    /// rendering multi-table queries.
+    /// With a join query, the non-anchor table's deltas reach both
+    /// `materialize()` and the oracle, so this test now proves that they take
+    /// part in the batch-independence comparison — the gap registered under I4
+    /// and item 3 of the join-landing checklist.
     #[test]
     fn batch_invariance_holds_for_naive_engine_on_a_two_table_case() {
         let db = gen_database(2);
         let domain = Domain::default();
-        let case = gen_case(4343, &db, &domain, 30, 200, Batching::All);
+        let case = gen_case_with_query(
+            4343,
+            &db,
+            &domain,
+            join_on_column_0(&db),
+            30,
+            200,
+            Batching::All,
+        );
         assert_eq!(
             case.database.len(),
             2,
             "this test must be a genuine two-table case"
         );
         check_batch_invariance(&case, NaiveRecompute::new).unwrap();
+    }
+
+    /// The share of seeds whose initial state gives both tables at least one
+    /// common non-NULL key value on column 0.
+    const MIN_SEEDS_WITH_INITIAL_KEY_OVERLAP_PERCENT: usize = 90;
+    /// The share of batches in which both tables change rows that share a
+    /// non-NULL key value on column 0 — the batches that exercise ΔR⋈ΔS.
+    const MIN_BATCHES_WITH_SHARED_DELTA_KEY_PERCENT: usize = 5;
+
+    fn keys(rows: &[Row]) -> std::collections::BTreeSet<Value> {
+        rows.iter()
+            .map(|r| r.get(0).clone())
+            .filter(|v| *v != Value::Null)
+            .collect()
+    }
+
+    fn join_on_column_0(db: &Database) -> ViewQuery {
+        enumerate_join(&db.tables()[0], &db.tables()[1])
+            .into_iter()
+            .find(|q| {
+                q.join
+                    .as_ref()
+                    .is_some_and(|j| j.left_column == 0 && j.right_column == 0)
+            })
+            .expect("the join space includes the k = k join")
+    }
+
+    #[test]
+    fn join_keys_overlap_in_the_initial_state() {
+        // A join test is only as good as its matches: if the two tables drew
+        // their keys from disjoint value sets, every join would be empty and
+        // every join test trivially green.
+        let db = gen_database(2);
+        let seeds = 50;
+        let overlapping = (0..seeds)
+            .filter(|&seed| {
+                let case = gen_case_with_query(
+                    seed,
+                    &db,
+                    &Domain::default(),
+                    join_on_column_0(&db),
+                    25,
+                    0,
+                    Batching::All,
+                );
+                !keys(&case.initial["t0"]).is_disjoint(&keys(&case.initial["t1"]))
+            })
+            .count();
+        assert!(
+            overlapping * 100 >= seeds as usize * MIN_SEEDS_WITH_INITIAL_KEY_OVERLAP_PERCENT,
+            "only {overlapping} of {seeds} seeds have overlapping join keys"
+        );
+    }
+
+    #[test]
+    fn join_cases_exercise_the_delta_cross_term() {
+        // ΔR⋈ΔS is non-empty only when both tables change rows with the same
+        // key in the same batch. Without such batches, dropping that term from
+        // the join would go unnoticed by the differential harness.
+        let db = gen_database(2);
+        let (mut shared, mut total) = (0usize, 0usize);
+        for seed in 0..50 {
+            let case = gen_case_with_query(
+                seed,
+                &db,
+                &Domain::default(),
+                join_on_column_0(&db),
+                25,
+                150,
+                Batching::Chunks(5),
+            );
+            for batch in case.batches() {
+                total += 1;
+                let side = |t: &str| {
+                    let rows: Vec<Row> = batch
+                        .get(t)
+                        .map_or(Vec::new(), |d| d.iter().map(|(r, _)| r.clone()).collect());
+                    keys(&rows)
+                };
+                if !side("t0").is_disjoint(&side("t1")) {
+                    shared += 1;
+                }
+            }
+        }
+        assert!(
+            shared * 100 >= total * MIN_BATCHES_WITH_SHARED_DELTA_KEY_PERCENT,
+            "only {shared} of {total} batches change both tables on a shared key"
+        );
+    }
+
+    #[test]
+    fn gen_case_picks_join_queries_for_two_table_databases() {
+        // Checklist items 1 and 2 (non-anchor state reaching the engine and the
+        // oracle) are observable only through join queries, and the tests that
+        // observe them take their query from `gen_case`.
+        let db = gen_database(2);
+        let joins = (0..50)
+            .filter(|&seed| {
+                gen_case(seed, &db, &Domain::default(), 5, 0, Batching::All)
+                    .query
+                    .join
+                    .is_some()
+            })
+            .count();
+        assert!(joins > 0, "no seed in 0..50 picked a join query");
+    }
+
+    #[test]
+    fn naive_engine_passes_every_enumerated_join_query() {
+        let db = gen_database(2);
+        let domain = Domain::default();
+        for (i, query) in enumerate_join(&db.tables()[0], &db.tables()[1])
+            .into_iter()
+            .enumerate()
+        {
+            let case =
+                gen_case_with_query(i as u64, &db, &domain, query, 20, 60, Batching::Chunks(4));
+            let mut engine = NaiveRecompute::new();
+            run(&mut engine, &case).unwrap_or_else(|f| {
+                panic!("seed {} failed at {}: {}", f.case_seed, f.stage, f.detail)
+            });
+        }
     }
 
     #[test]

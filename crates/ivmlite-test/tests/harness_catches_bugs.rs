@@ -393,11 +393,11 @@ fn saved_regressions_still_reproduce_their_original_failure() {
 }
 
 /// This phase's deliverable: the framework can express multi-table cases. The
-/// query is still a single-table aggregate (join is in the engine plan's
-/// Phase 3), but both tables receive changes, so three code paths are genuinely
-/// executed: apply's table-name routing, `NaiveRecompute`'s per-table base /
-/// pending storage, and the oracle creating and loading every table in the
-/// `Database`.
+/// query is still a single-table aggregate (seeds 0–35 are single-table
+/// queries; seeds 36 and up are join queries), but both tables receive
+/// changes, so three code paths are genuinely executed: apply's table-name
+/// routing, `NaiveRecompute`'s per-table base / pending storage, and the
+/// oracle creating and loading every table in the `Database`.
 ///
 /// "Executed" is not "this test would catch it breaking" — only the first of
 /// the three is caught:
@@ -405,13 +405,9 @@ fn saved_regressions_still_reproduce_their_original_failure() {
 ///   passes to `apply` as `db.tables()[0].table` reddens this test at `diff[0]`
 ///   (measured by the review; see the M1a Phase 1 Task 5 row in
 ///   `docs/mutation-gates.md`).
-/// - `NaiveRecompute`'s per-table base / pending: **not caught**. Phase 1's query
-///   and oracle render only the anchor table's (`db.tables()[0]`) single-table
-///   SQL, so the non-anchor state stored there is unobservable in both
-///   `materialize()` and the oracle comparison — silently dropping it does not
-///   redden this test. It is a registered known gap: see the row "§8.5 `apply`
-///   must really keep non-anchor tables' deltas" in `docs/mutation-gates.md`,
-///   to be re-verified once join lands and the oracle renders multi-table queries.
+/// - `NaiveRecompute`'s per-table base / pending: caught once join queries are
+///   in the seed range (seeds 36 and up are join queries since M1a Phase 3);
+///   see item 1 of the join-landing checklist in `docs/mutation-gates.md`.
 /// - the oracle creating and loading every table: **not caught** here (it is
 ///   guarded separately by `oracle::tests::builds_every_table_in_the_database`).
 #[test]
@@ -460,6 +456,15 @@ fn shrink_reduces_initial_rows_in_every_table_of_a_multi_table_case() {
         case.database.len(),
         2,
         "this test must feed shrink a genuine two-table case"
+    );
+    // The "t1 should shrink to 0 rows" argument below holds only for a
+    // single-table query: with a join, t1 is observable. `gen_case` maps seeds
+    // below the single-table query count to single-table queries, so this
+    // guards against that mapping ever changing silently.
+    assert!(
+        case.query.join.is_none(),
+        "this test's reasoning needs a single-table query, got {:?}",
+        case.query
     );
     assert!(
         case.initial.keys().count() > 1,

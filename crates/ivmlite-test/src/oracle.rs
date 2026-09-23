@@ -83,12 +83,10 @@ pub fn recompute_via_sqlite(
         }
     }
 
-    // View SQL is still rendered for a single table; rendering join queries arrives in the engine plan's Phase 3.
-    let anchor = db
-        .tables()
-        .first()
-        .ok_or_else(|| EngineError("database has no tables".into()))?;
-    let sql = view_query_to_sql(query, anchor);
+    if db.is_empty() {
+        return Err(EngineError("database has no tables".into()));
+    }
+    let sql = view_query_to_sql(query, db);
 
     let mut stmt = conn.prepare(&sql).map_err(|e| EngineError(e.to_string()))?;
     let arity = query.output_arity();
@@ -109,7 +107,7 @@ pub fn recompute_via_sqlite(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::single_base;
+    use crate::test_support::{join_on_k, kv, single_base};
     use crate::{Agg, AggFn, Column, ColumnType, Predicate, Schema, ViewQuery};
 
     fn orders() -> Schema {
@@ -159,6 +157,44 @@ mod tests {
             predicate: Predicate::None,
             join: None,
         }
+    }
+
+    #[test]
+    fn a_join_query_is_computed_by_sqlite() {
+        let db = Database::new(vec![kv("t0"), kv("t1")]);
+        let r = |k: &str, v: i64| Row::new(vec![Value::Text(k.into()), Value::Int(v)]);
+        let bases = BTreeMap::from([
+            (
+                "t0".to_string(),
+                ZSet::from_rows([(r("a", 1), 1), (r("b", 2), 1)]),
+            ),
+            (
+                "t1".to_string(),
+                ZSet::from_rows([(r("a", 10), 1), (r("a", 20), 1)]),
+            ),
+        ]);
+        let got = recompute_via_sqlite(&db, &join_on_k(), &bases).unwrap();
+        assert_eq!(
+            got,
+            ZSet::from_rows([(
+                Row::new(vec![Value::Text("a".into()), Value::Int(2), Value::Int(30)]),
+                1
+            )])
+        );
+    }
+
+    #[test]
+    fn sqlite_never_matches_null_join_keys() {
+        // The semantics `JoinState` and `NaiveRecompute` copy (the plan's Ruling 4).
+        let db = Database::new(vec![kv("t0"), kv("t1")]);
+        let null_key = |v: i64| Row::new(vec![Value::Null, Value::Int(v)]);
+        let bases = BTreeMap::from([
+            ("t0".to_string(), ZSet::from_rows([(null_key(1), 1)])),
+            ("t1".to_string(), ZSet::from_rows([(null_key(10), 1)])),
+        ]);
+        assert!(recompute_via_sqlite(&db, &join_on_k(), &bases)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -303,7 +339,7 @@ mod tests {
     fn builds_every_table_in_the_database() {
         // Two tables, and the query touches only orders; customers' base state
         // must be walked too, even though the query never reads it — otherwise
-        // join queries (Phase 3) would silently be one table short on the
+        // join queries would silently be one table short on the
         // oracle side. The assertion cannot look only at the query result: the
         // query is still rendered for the anchor alone (db.tables()[0] ==
         // orders), customers never appears in the SQL, and an implementation
