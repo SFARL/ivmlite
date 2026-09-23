@@ -144,6 +144,41 @@ mod tests {
     use super::*;
     use crate::{lower, Agg, AggFn, Predicate, Value, ViewQuery, ZSet};
 
+    /// `t(k TEXT, v INTEGER)` — matches the rows these tests actually push,
+    /// whose column 0 is text and column 1 is an integer.
+    fn text_then_int() -> crate::Schema {
+        crate::Schema {
+            table: "t".into(),
+            columns: vec![
+                crate::Column {
+                    name: "k".into(),
+                    ty: crate::ColumnType::Text,
+                    nullable: true,
+                },
+                crate::Column {
+                    name: "v".into(),
+                    ty: crate::ColumnType::Integer,
+                    nullable: true,
+                },
+            ],
+        }
+    }
+
+    /// `t(c0, c1, c2)`, all INTEGER — matches the all-integer rows the
+    /// base-table-index test pushes.
+    fn ints3() -> crate::Schema {
+        crate::Schema {
+            table: "t".into(),
+            columns: (0..3)
+                .map(|i| crate::Column {
+                    name: format!("c{i}"),
+                    ty: crate::ColumnType::Integer,
+                    nullable: true,
+                })
+                .collect(),
+        }
+    }
+
     fn row(vals: Vec<Value>) -> Row {
         Row::new(vals)
     }
@@ -309,8 +344,7 @@ mod tests {
                     value: 3,
                 },
             },
-            "t",
-            2,
+            &text_then_int(),
         )
         .unwrap();
         let mut n = Node::build(&plan);
@@ -350,8 +384,7 @@ mod tests {
                     value: 3,
                 },
             },
-            "t",
-            2,
+            &text_then_int(),
         )
         .unwrap();
         let mut n = Node::build(&plan);
@@ -411,7 +444,7 @@ mod tests {
                 value: 3,
             },
         };
-        let plan = lower(&query, "t", 3).expect("合法查询必须能降下来");
+        let plan = lower(&query, &ints3()).expect("合法查询必须能降下来");
         let Plan::Aggregate { input, .. } = plan else {
             panic!("lower 的根算子必须是 Aggregate");
         };

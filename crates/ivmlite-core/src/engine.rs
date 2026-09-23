@@ -118,7 +118,7 @@ impl IncrementalEngine {
             // 单表用例下 anchor 与「查询所读的表」碰巧重合，但这不是
             // `db.tables()` 的顺序保证，只是碰巧从没被更复杂的用例拆穿过。
             .ok_or_else(|| EngineError("Database 至少要有一张表".into()))?;
-        let plan = lower(query, &anchor.table, anchor.arity()).map_err(|e| EngineError(e.0))?;
+        let plan = lower(query, anchor).map_err(|e| EngineError(e.0))?;
         let mut tree = CountingTree::new(Node::build(&plan));
 
         // bootstrap：把每张表的初始状态当成第一批 delta 推进去。

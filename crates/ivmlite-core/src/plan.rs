@@ -1,4 +1,4 @@
-use crate::{Agg, AggFn, Predicate, ViewQuery};
+use crate::{Agg, AggFn, ColumnType, Predicate, Schema, ViewQuery};
 
 /// spec §5.2 的 plan IR。
 ///
@@ -60,8 +60,13 @@ impl std::error::Error for PlanError {}
 /// `enumerate` 从不产出非法形状（`enumerate_covers_the_v0_space_and_is_nonempty`
 /// 守着这一点），但 `ViewQuery` 本身可以自由构造，所以校验必须在这里。
 ///
-/// `arity` 是基表的列数，用于下标越界检查。
-pub fn lower(query: &ViewQuery, table: &str, arity: usize) -> Result<Plan, PlanError> {
+/// `schema` is the base table the query reads. Its column count drives the
+/// out-of-range checks and its column types drive the type checks: v0 supports
+/// `SUM` and `IntGt` over INTEGER columns only, and rejects them over TEXT at
+/// this boundary rather than letting the engine silently disagree with SQLite.
+pub fn lower(query: &ViewQuery, schema: &Schema) -> Result<Plan, PlanError> {
+    let table = schema.table.as_str();
+    let arity = schema.arity();
     if query.group_by.is_empty() {
         return Err(PlanError(
             "spec §5.2：视图的根算子必须是带非空 GROUP BY 的 Aggregate；\
@@ -96,7 +101,7 @@ pub fn lower(query: &ViewQuery, table: &str, arity: usize) -> Result<Plan, PlanE
     let check = |c: usize, what: &str| -> Result<(), PlanError> {
         if c >= arity {
             Err(PlanError(format!(
-                "{what} 引用了列下标 {c}，但表 {table} 只有 {arity} 列"
+                "{what} references column index {c}, but table {table} has only {arity} columns"
             )))
         } else {
             Ok(())
@@ -115,6 +120,42 @@ pub fn lower(query: &ViewQuery, table: &str, arity: usize) -> Result<Plan, PlanE
         Predicate::IntGt { column, .. } | Predicate::IsNotNull { column } => {
             check(*column, "predicate")?
         }
+    }
+
+    // Type checks. These run after the bounds checks because they index
+    // `schema.columns`, which is only safe once every index is known valid.
+    //
+    // v0 cannot agree with SQLite on either of these over a TEXT column, so
+    // they are rejected here instead of producing a silent divergence
+    // (external review P2-1). Measured against SQLite, `STRICT` table
+    // `t(g INTEGER, v TEXT)`:
+    // - `SUM(v)` coerces numeric-looking text and returns `7.0` — a REAL — for
+    //   rows `('7')` and `('abc')`. v0's `Value` has no `Real` variant at all
+    //   (floating-point addition is not associative), and its accumulator only
+    //   sees `Value::Int`, so it would report NULL.
+    // - `v > 3` is true for every TEXT value, because SQLite orders storage
+    //   classes as NULL < INTEGER/REAL < TEXT < BLOB. v0's `passes()` returns
+    //   false for TEXT.
+    // `IS NOT NULL` is type-agnostic and stays allowed on any column.
+    let require_integer = |c: usize, what: &str| -> Result<(), PlanError> {
+        let col = &schema.columns[c];
+        if col.ty == ColumnType::Integer {
+            Ok(())
+        } else {
+            Err(PlanError(format!(
+                "{what} over column {c} (`{}`) of type {:?} is not supported: \
+                 v0 allows it over INTEGER columns only",
+                col.name, col.ty
+            )))
+        }
+    };
+    for agg in &query.aggs {
+        if let (AggFn::Sum, Some(c)) = (agg.func, agg.column) {
+            require_integer(c, "SUM")?;
+        }
+    }
+    if let Predicate::IntGt { column, .. } = &query.predicate {
+        require_integer(*column, "IntGt")?;
     }
 
     // 投影保留的列：先 group key（按原序），再各 agg 的列（按原序），去重。
@@ -175,13 +216,49 @@ pub fn lower(query: &ViewQuery, table: &str, arity: usize) -> Result<Plan, PlanE
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Agg, AggFn, Predicate, ViewQuery};
+    use crate::{Agg, AggFn, Column, ColumnType, Predicate, Schema, ViewQuery};
 
     fn q(group_by: Vec<usize>, aggs: Vec<Agg>, predicate: Predicate) -> ViewQuery {
         ViewQuery {
             group_by,
             aggs,
             predicate,
+        }
+    }
+
+    /// A table named `orders` whose columns are all INTEGER. The lowering tests
+    /// here never push rows through the plan, so an all-INTEGER schema makes
+    /// every `SUM` / `IntGt` legal without asserting anything about data.
+    fn ints(arity: usize) -> Schema {
+        Schema {
+            table: "orders".into(),
+            columns: (0..arity)
+                .map(|i| Column {
+                    name: format!("c{i}"),
+                    ty: ColumnType::Integer,
+                    nullable: true,
+                })
+                .collect(),
+        }
+    }
+
+    /// `t(g INTEGER, v TEXT)` — the shape external review P2-1 reproduced
+    /// the divergence on.
+    fn int_then_text() -> Schema {
+        Schema {
+            table: "t".into(),
+            columns: vec![
+                Column {
+                    name: "g".into(),
+                    ty: ColumnType::Integer,
+                    nullable: true,
+                },
+                Column {
+                    name: "v".into(),
+                    ty: ColumnType::Text,
+                    nullable: true,
+                },
+            ],
         }
     }
 
@@ -212,8 +289,7 @@ mod tests {
                     value: 3,
                 },
             ),
-            "orders",
-            2,
+            &ints(2),
         )
         .expect("合法查询必须能降下来");
 
@@ -255,7 +331,7 @@ mod tests {
     fn no_filter_node_when_predicate_is_none() {
         // Predicate::None 不应产生一个恒真的 Filter 节点：多一个节点就多一处
         // 每批都要走的无谓遍历，且会让「Filter 被正确跳过」这件事不可观察。
-        let plan = lower(&q(vec![0], vec![count()], Predicate::None), "orders", 2).unwrap();
+        let plan = lower(&q(vec![0], vec![count()], Predicate::None), &ints(2)).unwrap();
         let Plan::Aggregate { input, .. } = &plan else {
             panic!("{plan:?}")
         };
@@ -272,7 +348,7 @@ mod tests {
     fn projection_keeps_group_keys_and_summed_columns_in_a_stable_order() {
         // group key 是列 1，SUM 的是列 0——收窄后的顺序必须确定且可预测，
         // 否则 Aggregate 的下标重映射无从对齐（spec §9.4）。
-        let plan = lower(&q(vec![1], vec![sum(0)], Predicate::None), "orders", 2).unwrap();
+        let plan = lower(&q(vec![1], vec![sum(0)], Predicate::None), &ints(2)).unwrap();
         let Plan::Aggregate {
             input,
             group_by,
@@ -297,7 +373,7 @@ mod tests {
     fn a_column_used_as_both_group_key_and_sum_target_is_projected_once() {
         // 同一列既当 group key 又被 SUM 时不得在投影里出现两次——出现两次
         // 会让 Project 的输出行宽与 Aggregate 的预期不一致。
-        let plan = lower(&q(vec![0], vec![sum(0)], Predicate::None), "orders", 2).unwrap();
+        let plan = lower(&q(vec![0], vec![sum(0)], Predicate::None), &ints(2)).unwrap();
         let Plan::Aggregate {
             input,
             group_by,
@@ -321,12 +397,7 @@ mod tests {
         // group_by 列"——后者对这个用例完全不生效，因为列 1 根本不在
         // group_by 里，去重条件永远为真，`Project.columns` 会变成
         // `[0, 1, 1]`：3 宽投影喂给一张 2 列的表。
-        let plan = lower(
-            &q(vec![0], vec![sum(1), sum(1)], Predicate::None),
-            "orders",
-            2,
-        )
-        .unwrap();
+        let plan = lower(&q(vec![0], vec![sum(1), sum(1)], Predicate::None), &ints(2)).unwrap();
         let Plan::Aggregate {
             input,
             group_by,
@@ -350,7 +421,7 @@ mod tests {
         // 聚合返回 0 行，「组内计数归零就删行」这条规则对前者是错的。
         // 此前这条只在生成器侧成立（enumerate 从不产出这种形状）；引擎直接
         // 消费 ViewQuery 之后，边界校验必须在这里。
-        let err = lower(&q(vec![], vec![count()], Predicate::None), "orders", 2)
+        let err = lower(&q(vec![], vec![count()], Predicate::None), &ints(2))
             .expect_err("空 group_by 必须被拒绝");
         assert!(
             err.0.contains("group_by") || err.0.contains("GROUP BY"),
@@ -364,8 +435,8 @@ mod tests {
         // 根算子必须是 Aggregate；没有任何聚合的 "Aggregate" 实际是
         // Scan→Project 直接成为视图，而那正是 §5.2 判为非法的形状
         // （Z-set 权重 2 会显示成 2 行，普通 SQL 视图显示 3 行）。
-        let err = lower(&q(vec![0], vec![], Predicate::None), "orders", 2)
-            .expect_err("空 aggs 必须被拒绝");
+        let err =
+            lower(&q(vec![0], vec![], Predicate::None), &ints(2)).expect_err("空 aggs 必须被拒绝");
         assert!(
             err.0.contains("agg"),
             "错误信息应指名是 aggs 的问题：{}",
@@ -387,12 +458,8 @@ mod tests {
             func: AggFn::Sum,
             column: None,
         };
-        let err = lower(
-            &q(vec![0], vec![count(), bad], Predicate::None),
-            "orders",
-            2,
-        )
-        .expect_err("不带列的 SUM 必须被拒绝");
+        let err = lower(&q(vec![0], vec![count(), bad], Predicate::None), &ints(2))
+            .expect_err("不带列的 SUM 必须被拒绝");
         assert!(
             err.0.contains("SUM"),
             "错误信息应指名是 SUM 的问题：{}",
@@ -416,7 +483,7 @@ mod tests {
         // group_by=[7] 越界。删掉这条测试守护范围之外的另外两处 `check`
         // 中的任意一处，本测试仍然全绿——真正单独钉住它们的是下面两条新
         // 测试。
-        let err = lower(&q(vec![7], vec![count()], Predicate::None), "orders", 2)
+        let err = lower(&q(vec![7], vec![count()], Predicate::None), &ints(2))
             .expect_err("越界 group key 必须被拒绝");
         assert!(err.0.contains('7'), "错误信息应指出越界的下标：{}", err.0);
     }
@@ -434,7 +501,7 @@ mod tests {
             func: AggFn::Sum,
             column: Some(7),
         };
-        let err = lower(&q(vec![0], vec![bad], Predicate::None), "orders", 2)
+        let err = lower(&q(vec![0], vec![bad], Predicate::None), &ints(2))
             .expect_err("越界的 agg 列必须被拒绝");
         assert!(err.0.contains('7'), "错误信息应指出越界的下标：{}", err.0);
         assert!(
@@ -459,8 +526,7 @@ mod tests {
                     value: 3,
                 },
             ),
-            "orders",
-            2,
+            &ints(2),
         )
         .expect_err("越界的谓词列必须被拒绝");
         assert!(err.0.contains('7'), "错误信息应指出越界的下标：{}", err.0);
@@ -469,5 +535,54 @@ mod tests {
             "错误信息应指名是 predicate 的问题：{}",
             err.0
         );
+    }
+
+    #[test]
+    fn sum_over_a_text_column_is_rejected_at_the_boundary() {
+        // SQLite coerces numeric-looking text inside SUM and can return a REAL
+        // (measured: SUM over ('7'), ('abc') is 7.0). v0 has no Real value and
+        // its accumulator only sees Value::Int, so it would report NULL. The
+        // query must be refused at create_view, not answered differently.
+        let err = lower(&q(vec![0], vec![sum(1)], Predicate::None), &int_then_text())
+            .expect_err("SUM over a TEXT column must be rejected");
+        assert!(
+            err.0.contains("SUM") && err.0.contains("Text"),
+            "the error must name SUM and the offending column type: {}",
+            err.0
+        );
+    }
+
+    #[test]
+    fn int_gt_over_a_text_column_is_rejected_at_the_boundary() {
+        // SQLite orders storage classes NULL < INTEGER/REAL < TEXT < BLOB, so
+        // `v > 3` is true for every TEXT value; v0's `passes()` says false.
+        let err = lower(
+            &q(
+                vec![0],
+                vec![count()],
+                Predicate::IntGt {
+                    column: 1,
+                    value: 3,
+                },
+            ),
+            &int_then_text(),
+        )
+        .expect_err("IntGt over a TEXT column must be rejected");
+        assert!(
+            err.0.contains("IntGt") && err.0.contains("Text"),
+            "the error must name IntGt and the offending column type: {}",
+            err.0
+        );
+    }
+
+    #[test]
+    fn is_not_null_over_a_text_column_is_still_allowed() {
+        // Guards against over-rejecting: IS NOT NULL is type-agnostic, and the
+        // enumerated v0 space uses it on TEXT columns.
+        lower(
+            &q(vec![0], vec![count()], Predicate::IsNotNull { column: 1 }),
+            &int_then_text(),
+        )
+        .expect("IS NOT NULL over a TEXT column is legal");
     }
 }
