@@ -40,7 +40,7 @@ pub fn as_initial(schema: &Schema, rows: Vec<Row>) -> BTreeMap<String, Vec<Row>>
 }
 
 /// A `(k TEXT nullable, v INTEGER nullable)` schema, named `name` — the shape
-/// every join test fixture shares (sql.rs, oracle.rs, naive.rs).
+/// every join test fixture shares (sql.rs, oracle.rs, naive.rs, query.rs).
 pub fn kv(name: &str) -> Schema {
     Schema {
         table: name.into(),

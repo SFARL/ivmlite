@@ -124,25 +124,8 @@ pub fn enumerate_database(db: &Database) -> Vec<ViewQuery> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::kv;
     use crate::{Column, ColumnType, Schema};
-
-    fn kv(name: &str) -> Schema {
-        Schema {
-            table: name.into(),
-            columns: vec![
-                Column {
-                    name: "k".into(),
-                    ty: ColumnType::Text,
-                    nullable: true,
-                },
-                Column {
-                    name: "v".into(),
-                    ty: ColumnType::Integer,
-                    nullable: true,
-                },
-            ],
-        }
-    }
 
     #[test]
     fn enumerate_join_pairs_only_same_typed_keys() {
