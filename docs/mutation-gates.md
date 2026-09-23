@@ -118,6 +118,7 @@ M0 结束时的最终全分支评审用**变异测试**——把实现改坏、�
 | §6.1 `SUM` 无非 NULL 输入时返回 NULL 而非 0 | 发射分支改看 `total == 0` | `sum_that_totals_zero_is_int_zero_not_null` | **已验证** |
 | §6.1 三值逻辑：NULL 谓词不入结果 | `passes()` 对 NULL 返回 true | `is_not_null_predicate_filters_out_null_rows` | **已验证** |
 | §5.1 权重 ≤ 0 的行不参与重算 | 删掉 `weight <= 0` 守卫 | `retracting_a_row_that_was_never_inserted_is_a_noop` | **已验证** |
+| §8.5 A reference engine reused across `create_view` calls must not carry unrefreshed deltas into the new view (external review P2-4, 2026-09-22) | Delete `self.pending.clear()` from `NaiveRecompute::create_view` | `recreating_a_view_discards_deltas_applied_but_not_refreshed` (observed 63 passed / 1 failed) | **已验证** |
 | §9.1 oracle 须按权重展开行 | 每行只插一次 | `expands_rows_by_weight` | **已验证** |
 | §9.1 基表状态出现负权重须报错而非静默 | 改为跳过负权重行 | `rejects_negative_weights_in_base_state` | **已验证** |
 | §9.1 输出行宽须等于 `output_arity()` | 删掉宽度检查分支 | `rejects_wrong_row_width` | **已验证** |
@@ -166,7 +167,7 @@ M0 结束时的最终全分支评审用**变异测试**——把实现改坏、�
 
 ## 统计与欠账
 
-表内共 **108** 行：已验证 **92** 条、未验证 **0** 条、不适用 **16** 条
+表内共 **109** 行：已验证 **93** 条、未验证 **0** 条、不适用 **16** 条
 （`Value` 无 Real/Blob 由类型系统而非测试守护，加变体会编译失败）。
 
 这三个数字由 `scripts/count-mutation-gates.py` 从本文件数出来，不是手写的——

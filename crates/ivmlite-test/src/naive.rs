@@ -49,14 +49,20 @@ impl Engine for NaiveRecompute {
         query: &ViewQuery,
         initial: &BTreeMap<String, ZSet>,
     ) -> Result<(), EngineError> {
-        self.query = Some(query.clone());
-        self.anchor = db
+        // Resolve everything that can fail before touching `self`, then commit
+        // the whole new view at once. Replacing `query` first and failing on the
+        // anchor lookup would leave a new query paired with the old base state.
+        let anchor = db
             .tables()
             .first()
-            .ok_or_else(|| EngineError("database 为空".into()))?
+            .ok_or_else(|| EngineError("database has no tables".into()))?
             .table
             .clone();
+        self.query = Some(query.clone());
+        self.anchor = anchor;
         self.base = initial.clone();
+        // Deltas applied but not yet refreshed belong to the view being replaced.
+        self.pending.clear();
         Ok(())
     }
 
@@ -185,6 +191,31 @@ mod tests {
 
     fn out(region: Value, sum: i64, count: i64) -> Row {
         Row::new(vec![region, Value::Int(sum), Value::Int(count)])
+    }
+
+    #[test]
+    fn recreating_a_view_discards_deltas_applied_but_not_refreshed() {
+        // A reference engine reused across `create_view` calls must not carry
+        // unrefreshed deltas into the new view. `create_view` replaces the query
+        // and the base state, so anything still pending belongs to the old view:
+        // letting it reach the next `refresh` would pollute every comparison the
+        // reference engine is then used for. `IncrementalEngine` already gets this
+        // right; this pins the reference engine to the same contract.
+        let mut e = NaiveRecompute::new();
+        let (db, bases) = single_table_case(&schema(), ZSet::new());
+        e.create_view(&db, &sum_by_region(), &bases).unwrap();
+        e.apply("orders", &[(row("stale", 99), 1)]).unwrap();
+
+        // Re-create the view from empty initial state, then refresh.
+        let (db, bases) = single_table_case(&schema(), ZSet::new());
+        e.create_view(&db, &sum_by_region(), &bases).unwrap();
+        e.refresh().unwrap();
+
+        let got = e.materialize().unwrap();
+        assert!(
+            got.is_empty(),
+            "a delta applied before the view was re-created leaked into it: {got:?}"
+        );
     }
 
     #[test]
