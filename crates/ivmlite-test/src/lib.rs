@@ -15,7 +15,9 @@ mod sql;
 mod test_support;
 
 pub use buggy::{NoRetractionEngine, TransientDriftEngine};
-pub use data::{gen_database, gen_initial, gen_row, gen_rows, Domain};
+pub use data::{
+    gen_database, gen_database_with_swapped_right_table, gen_initial, gen_row, gen_rows, Domain,
+};
 pub use differential::{
     check_batch_invariance, gen_case, gen_case_with_query, run, seed_range, Batching, Failure,
     TestCase,

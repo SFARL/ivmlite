@@ -140,6 +140,22 @@ mod tests {
     }
 
     #[test]
+    fn the_swapped_database_joins_keys_at_different_positions() {
+        // Over `gen_database(2)` every key pair is (i, i); the swapped database
+        // exists so the join space also holds pairs whose positions differ.
+        let db = crate::gen_database_with_swapped_right_table();
+        let mut pairs: Vec<(usize, usize)> = enumerate_join(&db.tables()[0], &db.tables()[1])
+            .iter()
+            .map(|q| {
+                let j = q.join.as_ref().expect("every join query has a join");
+                (j.left_column, j.right_column)
+            })
+            .collect();
+        pairs.dedup();
+        assert_eq!(pairs, vec![(0, 1), (1, 0)]);
+    }
+
+    #[test]
     fn enumerate_join_groups_across_the_table_boundary() {
         // Spec §9.2: multi-column group keys that cross the boundary between
         // the two tables are exactly where joins are most likely to have bugs.

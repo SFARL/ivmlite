@@ -84,6 +84,20 @@ pub fn gen_database(table_count: usize) -> Database {
     Database::new(tables)
 }
 
+/// `gen_database(2)` with the right table's two columns swapped:
+/// `t0(k TEXT, v INTEGER)` and `t1(v INTEGER, k TEXT)`.
+///
+/// In `gen_database`'s tables every column sits at the same position in both
+/// tables, so every same-typed key pair `enumerate_join` produces joins column
+/// `i` to column `i`, and reading one side's key index for the other side goes
+/// unnoticed. Over this database the key pairs are `(0, 1)` and `(1, 0)`.
+/// Still 2 columns per table (spec §9.2 item 4).
+pub fn gen_database_with_swapped_right_table() -> Database {
+    let mut tables = gen_database(2).tables().to_vec();
+    tables[1].columns.reverse();
+    Database::new(tables)
+}
+
 /// Generate a batch of initial rows for each table the `Database` declares,
 /// keyed by table name in a `BTreeMap` — a `BTreeMap` rather than a `HashMap`,
 /// because the iteration order must be deterministic (spec §9.4).

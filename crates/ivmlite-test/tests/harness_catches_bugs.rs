@@ -1,9 +1,9 @@
 use ivmlite_core::{Database, IncrementalEngine, Row, ZSet};
 use ivmlite_test::{
     check_batch_invariance, enumerate, enumerate_join, gen_case, gen_case_with_query, gen_database,
-    is_legal, load_regressions, recompute_via_sqlite, run, save_regression, seed_range, shrink,
-    Agg, AggFn, Batching, Column, ColumnType, Domain, Engine, Join, NaiveRecompute,
-    NoRetractionEngine, Predicate, Schema, TransientDriftEngine, ViewQuery,
+    gen_database_with_swapped_right_table, is_legal, load_regressions, recompute_via_sqlite, run,
+    save_regression, seed_range, shrink, Agg, AggFn, Batching, Column, ColumnType, Domain, Engine,
+    Join, NaiveRecompute, NoRetractionEngine, Predicate, Schema, TransientDriftEngine, ViewQuery,
 };
 use std::collections::BTreeMap;
 
@@ -647,14 +647,12 @@ fn create_view_rejects_a_global_aggregate() {
     );
 }
 
-/// The join counterpart of `incremental_engine_is_green_across_the_enumerated_space`:
-/// every query of the join space, one case each, seeded by its index.
+/// Every query of `db`'s join space (its first two tables), one case each,
+/// seeded by its index, run against `IncrementalEngine`.
 ///
 /// Under `IVMLITE_SEED=<n>` only query `n` runs, so the replay command a
 /// `Failure` prints reproduces exactly the failing case.
-#[test]
-fn incremental_engine_is_green_across_the_join_space() {
-    let db = gen_database(2);
+fn incremental_engine_is_green_across_the_join_space_of(db: &Database) {
     let domain = Domain::default();
     let queries = enumerate_join(&db.tables()[0], &db.tables()[1]);
     let replay = std::env::var("IVMLITE_SEED").is_ok();
@@ -665,12 +663,27 @@ fn incremental_engine_is_green_across_the_join_space() {
     };
     for seed in selected {
         let query = queries[seed as usize % queries.len()].clone();
-        let case = gen_case_with_query(seed, &db, &domain, query, 20, 60, Batching::Chunks(4));
+        let case = gen_case_with_query(seed, db, &domain, query, 20, 60, Batching::Chunks(4));
         let mut engine = IncrementalEngine::new();
         if let Err(f) = run(&mut engine, &case) {
             panic!("the incremental engine disagrees with the oracle on join query {seed}: {f}");
         }
     }
+}
+
+/// The join counterpart of `incremental_engine_is_green_across_the_enumerated_space`.
+#[test]
+fn incremental_engine_is_green_across_the_join_space() {
+    incremental_engine_is_green_across_the_join_space_of(&gen_database(2));
+}
+
+/// The same sweep with the right table's columns swapped, so the join keys sit
+/// at different positions — `(0, 1)` and `(1, 0)` — in the two tables. Over
+/// `gen_database(2)` both keys are always at the same position, where reading
+/// one side's key index for the other goes unnoticed.
+#[test]
+fn incremental_engine_is_green_across_the_join_space_with_keys_at_different_positions() {
+    incremental_engine_is_green_across_the_join_space_of(&gen_database_with_swapped_right_table());
 }
 
 /// A join query whose group key crosses the table boundary: group by

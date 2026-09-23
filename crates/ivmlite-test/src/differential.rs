@@ -291,8 +291,8 @@ where
 mod tests {
     use super::*;
     use crate::{
-        enumerate_join, gen_database, Agg, AggFn, Column, ColumnType, Domain, EngineError,
-        NaiveRecompute, Predicate, Schema,
+        enumerate_join, gen_database, gen_database_with_swapped_right_table, Agg, AggFn, Column,
+        ColumnType, Domain, EngineError, NaiveRecompute, Predicate, Schema,
     };
     use ivmlite_core::Value;
 
@@ -750,21 +750,36 @@ mod tests {
         assert!(joins > 0, "no seed in 0..50 picked a join query");
     }
 
-    #[test]
-    fn naive_engine_passes_every_enumerated_join_query() {
-        let db = gen_database(2);
+    /// Every join query over `db`'s first two tables, one case each, seeded by
+    /// its index, run against `NaiveRecompute`.
+    fn naive_engine_passes_every_join_query_over(db: &Database) {
         let domain = Domain::default();
         for (i, query) in enumerate_join(&db.tables()[0], &db.tables()[1])
             .into_iter()
             .enumerate()
         {
             let case =
-                gen_case_with_query(i as u64, &db, &domain, query, 20, 60, Batching::Chunks(4));
+                gen_case_with_query(i as u64, db, &domain, query, 20, 60, Batching::Chunks(4));
             let mut engine = NaiveRecompute::new();
             run(&mut engine, &case).unwrap_or_else(|f| {
                 panic!("seed {} failed at {}: {}", f.case_seed, f.stage, f.detail)
             });
         }
+    }
+
+    #[test]
+    fn naive_engine_passes_every_enumerated_join_query() {
+        naive_engine_passes_every_join_query_over(&gen_database(2));
+    }
+
+    /// The same sweep with the right table's columns swapped, so the join keys
+    /// sit at different positions — `(0, 1)` and `(1, 0)` — in the two tables.
+    /// Over `gen_database(2)` both keys are always at the same position, where
+    /// `NaiveRecompute` and the oracle's `ON` clause reading the wrong side's
+    /// key index goes unnoticed.
+    #[test]
+    fn naive_engine_passes_every_join_query_with_keys_at_different_positions() {
+        naive_engine_passes_every_join_query_over(&gen_database_with_swapped_right_table());
     }
 
     #[test]

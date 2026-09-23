@@ -282,6 +282,41 @@ mod tests {
             .is_empty());
     }
 
+    /// A `(v INTEGER, k TEXT)` row: the key at column 1, not column 0.
+    fn vk(v: i64, k: &str) -> Row {
+        Row::new(vec![Value::Int(v), Value::Text(k.into())])
+    }
+
+    #[test]
+    fn each_side_reads_its_own_key_column() {
+        // Left rows `(k, v)` keyed at column 0, right rows `(v, k)` keyed at
+        // column 1. Every other test joins column 0 to column 0, where reading
+        // either side's key with the other side's index goes unnoticed. The
+        // right row `(1, "b")` would match the left row `("a", 1)` if its key
+        // were read from column 0 (`1 = 1`), so it pins that mistake too.
+        let mut j = JoinState::new(
+            0,
+            1,
+            fresh_mem_arrangement(JoinSide::Left),
+            fresh_mem_arrangement(JoinSide::Right),
+        );
+        let from_right = j.absorb(
+            &z(&[(kv(Some("a"), 1), 1)]),
+            &z(&[(vk(10, "a"), 1), (vk(1, "b"), 1)]),
+        );
+        assert_eq!(
+            from_right,
+            z(&[(joined(&kv(Some("a"), 1), &vk(10, "a")), 1)])
+        );
+        let from_left = j.absorb(&z(&[(kv(Some("b"), 2), 1)]), &ZSet::new());
+        assert_eq!(from_left, z(&[(joined(&kv(Some("b"), 2), &vk(1, "b")), 1)]));
+        let later_right = j.absorb(&ZSet::new(), &z(&[(vk(20, "b"), 1)]));
+        assert_eq!(
+            later_right,
+            z(&[(joined(&kv(Some("b"), 2), &vk(20, "b")), 1)])
+        );
+    }
+
     #[test]
     fn a_join_uses_the_arrangements_it_is_given() {
         // Ruling 2: the arrangements are passed in, so "rebuild from persisted

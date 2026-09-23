@@ -854,6 +854,52 @@ mod tests {
     }
 
     #[test]
+    fn join_keys_keep_their_own_sides_column_positions() {
+        // `t0(k TEXT, v INTEGER)` and `t1(v INTEGER, k TEXT)`: joining k = k is
+        // left column 0 against right column 1. Every other join test here
+        // joins equal positions, where swapping `left_key` and `right_key`
+        // cannot be seen.
+        let swapped = Schema {
+            table: "t1".into(),
+            columns: vec![
+                Column {
+                    name: "v".into(),
+                    ty: ColumnType::Integer,
+                    nullable: true,
+                },
+                Column {
+                    name: "k".into(),
+                    ty: ColumnType::Text,
+                    nullable: true,
+                },
+            ],
+        };
+        let db = Database::new(vec![two_kv().tables()[0].clone(), swapped]);
+        let plan = lower(
+            &jq(vec![0], vec![count()], Predicate::None, join("t1", 0, 1)),
+            &db,
+        )
+        .expect("t0.k and t1.k are both TEXT");
+        let Plan::Aggregate { input, .. } = plan else {
+            panic!("the root must be an Aggregate: {plan:?}");
+        };
+        let Plan::Project { input, .. } = *input else {
+            panic!("an Aggregate over a Project: {input:?}");
+        };
+        assert!(
+            matches!(
+                *input,
+                Plan::Join {
+                    left_key: 0,
+                    right_key: 1,
+                    ..
+                }
+            ),
+            "{input:?}"
+        );
+    }
+
+    #[test]
     fn a_column_past_the_joined_row_is_rejected() {
         let err = lower(
             &jq(vec![4], vec![count()], Predicate::None, join("t1", 0, 0)),
