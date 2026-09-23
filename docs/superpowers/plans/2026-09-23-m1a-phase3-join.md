@@ -1154,7 +1154,7 @@ If the compiler lists a `ViewQuery` literal in a file not named here, add that f
   - `enumerate_database(db: &Database) -> Vec<ViewQuery>`: the anchor's single-table queries first, then (when `db` has at least two tables) `enumerate_join(tables[0], tables[1])`
   - `gen_case` picks its query from `enumerate_database(db)` by `seed % len`
 
-> **Seed-to-query mapping.** For a single-table `Database`, `enumerate_database` equals `enumerate(anchor)`, so every single-table test keeps exactly the queries it had. For `gen_database(2)`, seeds `0..27` still map to the same 27 single-table queries, and seeds from 27 up now map to join queries. `a_two_table_case_runs_green_against_the_reference_engine` (seeds `0..50`) therefore starts running 23 join queries through `NaiveRecompute`. That is what makes the non-anchor gaps of the checklist observable in Task 5.
+> **Seed-to-query mapping.** For a single-table `Database`, `enumerate_database` equals `enumerate(anchor)`, so every single-table test keeps exactly the queries it had. For `gen_database(2)`, seeds `0..36` still map to the same 36 single-table queries (both of `gen_database`'s columns are nullable, so `enumerate` yields 3 group-bys × 3 aggregate sets × 4 predicates), and seeds from 36 up now map to join queries. `a_two_table_case_runs_green_against_the_reference_engine` (seeds `0..50`) therefore starts running 14 join queries through `NaiveRecompute`. That is what makes the non-anchor gaps of the checklist observable in Task 5.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1423,7 +1423,7 @@ In `harness_catches_bugs.rs`, in `shrink_reduces_initial_rows_in_every_table_of_
     );
 ```
 
-Update the doc comment of `a_two_table_case_runs_green_against_the_reference_engine`: its second bullet ("`NaiveRecompute`'s per-table base / pending: **not caught**…") becomes "caught once join queries are in the seed range (seeds 27 and up are join queries since M1a Phase 3); see item 1 of the join-landing checklist in `docs/mutation-gates.md`". Its first paragraph's "(join is in the engine plan's Phase 3)" becomes "(seeds 0–26 are single-table queries; seeds 27 and up are join queries)".
+Update the doc comment of `a_two_table_case_runs_green_against_the_reference_engine`: its second bullet ("`NaiveRecompute`'s per-table base / pending: **not caught**…") becomes "caught once join queries are in the seed range (seeds 36 and up are join queries since M1a Phase 3); see item 1 of the join-landing checklist in `docs/mutation-gates.md`". Its first paragraph's "(join is in the engine plan's Phase 3)" becomes "(seeds 0–35 are single-table queries; seeds 36 and up are join queries)".
 
 - [ ] **Step 2: Run them to confirm they fail**
 
@@ -1813,7 +1813,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 For each, break → confirm it compiles → run `cargo test --workspace --locked --no-fail-fast` → record every red test → restore → confirm green.
 
-1. **Item 1** — `NaiveRecompute::apply` returns `Ok(())` for `table != self.anchor`. Predicted red: `a_two_table_case_runs_green_against_the_reference_engine` (seeds 27 and up are join queries), `naive_engine_passes_every_enumerated_join_query` and `batch_invariance_holds_for_naive_engine_on_a_two_table_case`. Predicted green: `joins_on_the_key_and_aggregates_the_joined_rows`, which never calls `apply`.
+1. **Item 1** — `NaiveRecompute::apply` returns `Ok(())` for `table != self.anchor`. Predicted red: `a_two_table_case_runs_green_against_the_reference_engine` (seeds 36 and up are join queries), `naive_engine_passes_every_enumerated_join_query` and `batch_invariance_holds_for_naive_engine_on_a_two_table_case`. Predicted green: `joins_on_the_key_and_aggregates_the_joined_rows`, which never calls `apply`.
 2. **Item 2** — `run`'s `bases` bookkeeping updates only the anchor table. Predicted red: every join differential test (the engine's view is right, the oracle's `want` is computed from a stale right table). This is the "the oracle itself lies" item — it must not be skipped.
 3. **Item 3** — the row's own mutation re-run: with items 1 and 2's mutations, confirm `batch_invariance_holds_for_naive_engine_on_a_two_table_case` now goes red (through `run`'s per-batch oracle comparison inside `check_batch_invariance`).
 4. **Item 4** — `create_view`'s bootstrap loop over `db.tables().iter().take(1)`. Predicted red: `a_join_view_bootstraps_from_both_tables`, `a_join_view_follows_changes_to_both_tables`, the join sweep, and the existing `create_view_errors_when_a_declared_table_has_no_initial_state`.
