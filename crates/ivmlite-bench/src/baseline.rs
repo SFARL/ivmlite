@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use ivmlite_workload::{TraceOp, ViewSpec, Workload};
-use rusqlite::Connection;
+use rusqlite::{Connection, Statement};
 
 /// spec §10.2 的三条 same-host 对照组。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,26 +89,52 @@ pub fn install_trigger_view(conn: &Connection, table: &str, v: &ViewSpec) -> rus
     ))
 }
 
-/// 应用一批变更并返回毫秒数。计时包含 commit——提交成本是真实成本。
+/// The statements `apply` executes, compiled before the timer starts.
 ///
-/// 对 HandWrittenTrigger 基线，trigger 的开销天然计入这里，因此
-/// `apply_ms(trigger) − apply_ms(no_maintenance)` 就是 spec §10.5 要求的写放大。
-pub fn apply(conn: &Connection, table: &str, ops: &[TraceOp]) -> rusqlite::Result<f64> {
+/// They must be prepared **after every trigger exists**. Creating a trigger
+/// changes the schema, which invalidates statements compiled before it, and
+/// SQLite compiles a trigger's body into the statement that fires it. Timing a
+/// `prepare` therefore measures compilation, not maintenance — and each matrix
+/// cell runs exactly once, so that first-call cost is all a cell ever records.
+/// Measured with 10 trigger views and a one-row batch: the first call cost
+/// 0.129 ms against a 0.009 ms steady state (external review P2-3).
+pub struct ApplyStatements<'c> {
+    insert: Statement<'c>,
+    delete: Statement<'c>,
+}
+
+impl<'c> ApplyStatements<'c> {
+    pub fn prepare(conn: &'c Connection, table: &str) -> rusqlite::Result<Self> {
+        Ok(Self {
+            insert: conn.prepare(&format!(
+                "INSERT INTO \"{table}\"(id, region, amount) VALUES (?1, ?2, ?3)"
+            ))?,
+            delete: conn.prepare(&format!("DELETE FROM \"{table}\" WHERE id = ?1"))?,
+        })
+    }
+}
+
+/// Apply one batch of changes and return the elapsed milliseconds. The timed
+/// region covers execution and the commit — committing is a real cost — but
+/// not statement compilation, which `ApplyStatements::prepare` does up front.
+///
+/// For the HandWrittenTrigger baseline the trigger work lands here, so
+/// `apply_ms(trigger) - apply_ms(no_maintenance)` is the write amplification
+/// spec §10.5 asks for.
+pub fn apply(
+    conn: &Connection,
+    stmts: &mut ApplyStatements<'_>,
+    ops: &[TraceOp],
+) -> rusqlite::Result<f64> {
     let start = Instant::now();
     let tx = conn.unchecked_transaction()?;
-    {
-        let mut ins = tx.prepare_cached(&format!(
-            "INSERT INTO \"{table}\"(id, region, amount) VALUES (?1, ?2, ?3)"
-        ))?;
-        let mut del = tx.prepare_cached(&format!("DELETE FROM \"{table}\" WHERE id = ?1"))?;
-        for op in ops {
-            match op {
-                TraceOp::Insert { id, region, amount } => {
-                    ins.execute((id, region, amount))?;
-                }
-                TraceOp::Delete { id } => {
-                    del.execute((id,))?;
-                }
+    for op in ops {
+        match op {
+            TraceOp::Insert { id, region, amount } => {
+                stmts.insert.execute((id, region, amount))?;
+            }
+            TraceOp::Delete { id } => {
+                stmts.delete.execute((id,))?;
             }
         }
     }
@@ -116,14 +142,31 @@ pub fn apply(conn: &Connection, table: &str, ops: &[TraceOp]) -> rusqlite::Resul
     Ok(start.elapsed().as_secs_f64() * 1000.0)
 }
 
-/// 朴素重跑：把每个视图的 SQL 各跑一遍并耗尽结果集。
+/// One compiled statement per view, prepared before the timer starts — the
+/// same reasoning as `ApplyStatements`, applied to the naive baseline so both
+/// sides of the comparison exclude compilation. `prepare_cached` would not
+/// have been enough: rusqlite's statement cache holds 16 entries by default
+/// and a cell can have 200 views.
+pub struct RecomputeStatements<'c>(Vec<Statement<'c>>);
+
+impl<'c> RecomputeStatements<'c> {
+    pub fn prepare(conn: &'c Connection, w: &Workload) -> rusqlite::Result<Self> {
+        w.views
+            .iter()
+            .map(|v| conn.prepare(&v.sql(&w.schema.table)))
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map(Self)
+    }
+}
+
+/// Naive recompute: run every view's SQL once and drain its result set.
 ///
-/// 这里**不把结果写回表**，是刻意偏向朴素重跑的保守选择——若增量方案连
-/// "只读不写"的朴素重跑都赢不了，结论就无可辩驳。
-pub fn recompute_all(conn: &Connection, w: &Workload) -> rusqlite::Result<f64> {
+/// The results are deliberately **not** written back to a table. That biases
+/// the comparison toward naive recompute on purpose: if incremental maintenance
+/// cannot beat a recompute that only reads, the conclusion is beyond dispute.
+pub fn recompute_all(stmts: &mut RecomputeStatements<'_>) -> rusqlite::Result<f64> {
     let start = Instant::now();
-    for v in &w.views {
-        let mut stmt = conn.prepare_cached(&v.sql(&w.schema.table))?;
+    for stmt in &mut stmts.0 {
         let mut rows = stmt.query([])?;
         while rows.next()?.is_some() {}
     }
@@ -217,7 +260,9 @@ mod tests {
                 amount: 100,
             },
         ];
-        apply(&conn, "orders", &ops).unwrap();
+        let mut stmts = ApplyStatements::prepare(&conn, "orders").unwrap();
+        apply(&conn, &mut stmts, &ops).unwrap();
+        drop(stmts);
 
         let got = trigger_rows(&conn, &view);
         let want = direct_query_rows(&conn, &view, "orders");

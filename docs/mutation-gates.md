@@ -166,12 +166,13 @@ M0 结束时的最终全分支评审用**变异测试**——把实现改坏、�
 | §10.3 #4 bootstrap 须先于 trigger 创建 | 删掉 `INSERT ... SELECT` | `trigger_maintained_table_matches_direct_query_after_seed_and_updates` | **已验证** |
 | §11 基线曲线须可读 | y 轴改回线性 | `y_axis_uses_log_scale_not_linear` | **已验证** |
 | §10.3 #7 `variant` 不得绕过校验 | 去掉 `variant()` 里的 `validate()` 调用 | `variant_rejects_cardinality_exceeding_base_rows` | **已验证** |
+| §10.3 Statement compilation must not be inside a benchmark cell's timed region (external review P2-3). Creating a trigger changes the schema and invalidates statements compiled before it, SQLite compiles a trigger's body into the statement that fires it, and each cell runs exactly once — so timing a `prepare` recorded compilation as write amplification | Move the `prepare` calls back inside `apply` / `recompute_all`, after `Instant::now()` | None — **known to be unguarded by any test, by design**: it is a timing property, and a timing assertion would be flaky. Enforced structurally instead: `apply` and `recompute_all` take `ApplyStatements` / `RecomputeStatements`, which only their `prepare` constructors build, so reintroducing compilation under the timer means editing those functions, not calling them differently. Measured with a one-row batch against a 10,000-row table, median of 7: first-call / steady-state was 3.1x / 14.3x / 11.6x for 0 / 10 / 50 trigger views before the fix and 1.9x / 1.9x / 1.6x after. The residual ~1.9x is first-execution cost, not compilation; each cell still runs once, so it remains in every cell and is documented as a known simplification | 不适用 |
 
 ---
 
 ## 统计与欠账
 
-表内共 **113** 行：已验证 **96** 条、未验证 **0** 条、不适用 **17** 条
+表内共 **114** 行：已验证 **96** 条、未验证 **0** 条、不适用 **18** 条
 （`Value` 无 Real/Blob 由类型系统而非测试守护，加变体会编译失败）。
 
 这三个数字由 `scripts/count-mutation-gates.py` 从本文件数出来，不是手写的——

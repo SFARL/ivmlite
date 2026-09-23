@@ -3,7 +3,10 @@ mod plot;
 
 use std::path::Path;
 
-use baseline::{apply, install_trigger_view, recompute_all, seed_base, Baseline};
+use baseline::{
+    apply, install_trigger_view, recompute_all, seed_base, ApplyStatements, Baseline,
+    RecomputeStatements,
+};
 use ivmlite_workload::Workload;
 use rusqlite::Connection;
 
@@ -34,12 +37,20 @@ fn run_one(b: Baseline, cell: &Workload) -> rusqlite::Result<Record> {
     }
     let ops = cell.update_trace();
 
-    // ---- 计时区间 ----
-    let apply_ms = apply(&conn, &cell.schema.table, &ops)?;
-    let maintain_ms = match b {
-        // trigger 的成本已计入 apply_ms——那正是写放大
-        Baseline::NoMaintenance | Baseline::HandWrittenTrigger => 0.0,
-        Baseline::NaiveRecompute => recompute_all(&conn, cell)?,
+    // Compile every statement the timed region runs, now that all triggers
+    // exist. See `ApplyStatements` for why this must not happen under the timer.
+    let mut apply_stmts = ApplyStatements::prepare(&conn, &cell.schema.table)?;
+    let mut recompute_stmts = match b {
+        Baseline::NaiveRecompute => Some(RecomputeStatements::prepare(&conn, cell)?),
+        Baseline::NoMaintenance | Baseline::HandWrittenTrigger => None,
+    };
+
+    // ---- timed region ----
+    let apply_ms = apply(&conn, &mut apply_stmts, &ops)?;
+    let maintain_ms = match recompute_stmts.as_mut() {
+        Some(stmts) => recompute_all(stmts)?,
+        // The trigger's cost is already in apply_ms: that is the write amplification.
+        None => 0.0,
     };
 
     Ok(Record {
