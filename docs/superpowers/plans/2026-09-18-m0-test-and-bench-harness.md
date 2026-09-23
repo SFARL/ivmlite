@@ -1,31 +1,31 @@
-# M0 测试与基准骨架 Implementation Plan
+# M0 Test and Benchmark Harness Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 在写任何引擎代码之前，建立一套能够证明自己会报错的 IVM 差分测试框架，以及一套能产出基线曲线的 benchmark harness。
+**Goal:** Before writing any engine code, build an IVM differential testing harness that can prove it reports errors, and a benchmark harness that can produce baseline curves.
 
-**Architecture:** 测试框架通过一个 `Engine` trait 与被测实现解耦。M0 提供两个实现——`NaiveRecompute`（平凡正确，同时充当 benchmark 基线）与 `NoRetractionEngine`（故意植入聚合不撤回旧行的 bug）。正确性判据来自一个**独立的** oracle：把最终状态灌进内存 SQLite 跑原始 SQL。框架必须让前者全绿、后者被抓到并 shrink 成最小用例。
+**Architecture:** The testing harness is decoupled from the implementation under test through an `Engine` trait. M0 provides two implementations — `NaiveRecompute` (trivially correct, doubling as a benchmark baseline) and `NoRetractionEngine` (with a deliberately planted bug: its aggregate does not retract old rows). The correctness judge comes from an **independent** oracle: load the final state into an in-memory SQLite and run the original SQL. The harness must turn the former all green, and catch the latter and shrink it to a minimal case.
 
-**Tech Stack:** Rust 1.95+、`rusqlite`（bundled SQLite）、`rand`（`StdRng` + seed）、GitHub Actions。M0 不引入 `sqlparser-rs`、不引入 `criterion`。
+**Tech Stack:** Rust 1.95+, `rusqlite` (bundled SQLite), `rand` (`StdRng` + seed), GitHub Actions. M0 does not bring in `sqlparser-rs` or `criterion`.
 
 **Spec:** [`docs/superpowers/specs/2026-09-18-ivmlite-design.md`](../specs/2026-09-18-ivmlite-design.md)
 
 ## Global Constraints
 
-- **`ivmlite-core` 不得依赖 `rusqlite` 或 `libsqlite3-sys`**（spec §4.2）。`ivmlite-test` 可以。
-- **所有 `unsafe` 与 FFI 只允许出现在 `ivmlite-sqlite`**（spec §4.2）。M0 不创建该 crate，因此 M0 全程零 `unsafe`。
-- **v0 的 `Value` 只有 `Null` / `Int` / `Text` 三个变体**。无浮点（spec §9 浮点 SUM 不满足结合律）、无 BLOB。`Real` 与 `Blob` 留到 M4。
-- **视图的根算子必须是带非空 GROUP BY 的 `Aggregate`**（spec §5.2）。不生成无聚合的视图，也不生成全局聚合——后者在空集上返回 1 行 NULL，而分组聚合返回 0 行，两者不能共用「计数归零即删行」的规则。
-- **整数值域必须保证不溢出**（spec §6.1）：SQLite 的 `SUM` 在整数溢出时报错，且报不报错取决于扫描顺序，因此增量与全量重算会在溢出区分叉——与浮点结合律同类。默认 `Domain` 下 group 内和远小于 2^62，生成器不得放宽到可能溢出的值域。
-- **比较运算符白名单**（spec §6.1）：`>` `>=` `<` `<=` `=` `!=` `IS NULL` `IS NOT NULL`。不生成 `NOT` / `OR` / `LIKE` / `IN` / `BETWEEN` 与任何子查询。
-- **权重不变量**（spec §5.1）：最终物化状态不得有负权重；权重归零的行必须删除，不得留 `w = 0` 的僵尸行。
-- **生成器值域必须窄**（spec §9.2）：每列不同值数量默认 8，NULL 出现概率默认 0.2。
-- **所有随机走显式 seed**，失败时打印可重放的 seed（spec §9.4）。
-- **`ZSet` 内部用 `BTreeMap` 而非 `HashMap`**，保证迭代顺序确定、测试可复现。
-- **workload 必须是可移植产物**（spec §10.3 第 7 条）：schema DDL、视图 SQL、数据与更新 trace 定义在 `workloads/*.toml`，由 `ivmlite-workload` 解析并可导出为 CSV/SQL。runner 每引擎一份，workload 只有一份。
-- **绝不把其他项目公开发布的数字放进对比表**（spec §10.3 第 6 条）。要与 Turso 等系统对比，必须在同一台机器上、用同一份 workload 亲自跑。
-- **group 基数是显式 benchmark 维度，不是常量**（spec §10.1）。它比基表规模更能决定 IVM 赢不赢，只报单一基数下的数字不构成结论。
-- M0 **不创建** `ivmlite-sql` 与 `ivmlite-sqlite`——它们在 M1 才有内容可放。这是对 spec §11「crate 骨架」的一处收窄，理由是 YAGNI。
+- **`ivmlite-core` must not depend on `rusqlite` or `libsqlite3-sys`** (spec §4.2). `ivmlite-test` may.
+- **All `unsafe` and FFI may appear only in `ivmlite-sqlite`** (spec §4.2). M0 does not create that crate, so M0 has zero `unsafe` throughout.
+- **v0's `Value` has only three variants, `Null` / `Int` / `Text`**. No floating point (spec §9: floating-point SUM is not associative), no BLOB. `Real` and `Blob` wait until M4.
+- **The view's root operator must be an `Aggregate` with a non-empty GROUP BY** (spec §5.2). Views with no aggregate are not generated, and neither are global aggregates — the latter return 1 row of NULL over an empty set while grouped aggregates return 0 rows, so the two cannot share the rule "delete the row when the count reaches zero".
+- **The integer value domain must guarantee no overflow** (spec §6.1): SQLite's `SUM` errors on integer overflow, and whether it errors depends on scan order, so incremental maintenance and full recomputation diverge in the overflow zone — the same class of problem as floating-point associativity. Under the default `Domain`, per-group sums stay far below 2^62, and the generator must not widen to a domain that could overflow.
+- **The whitelist of comparison operators** (spec §6.1): `>` `>=` `<` `<=` `=` `!=` `IS NULL` `IS NOT NULL`. `NOT` / `OR` / `LIKE` / `IN` / `BETWEEN` and any subquery are not generated.
+- **The weight invariant** (spec §5.1): the final materialised state must have no negative weights; a row whose weight reaches zero must be deleted, with no `w = 0` zombie rows left.
+- **The generator's value domain must be narrow** (spec §9.2): 8 distinct values per column by default, a NULL probability of 0.2 by default.
+- **All randomness goes through an explicit seed**, and a failure prints a replayable seed (spec §9.4).
+- **`ZSet` uses a `BTreeMap` internally, not a `HashMap`**, so iteration order is deterministic and tests are reproducible.
+- **Workloads must be portable artifacts** (spec §10.3 item 7): the schema DDL, view SQL, data and update trace are defined in `workloads/*.toml`, parsed by `ivmlite-workload`, and exportable as CSV/SQL. There is one runner per engine and only one workload.
+- **Never put another project's publicly published numbers into a comparison table** (spec §10.3 item 6). Comparing with Turso or other systems means running them yourself, on the same machine, with the same workload.
+- **Group cardinality is an explicit benchmark dimension, not a constant** (spec §10.1). It decides whether IVM wins more than base-table size does; numbers reported at a single cardinality do not make a conclusion.
+- M0 **does not create** `ivmlite-sql` or `ivmlite-sqlite` — they have nothing to hold until M1. This is a narrowing of spec §11's "crate skeleton", on YAGNI grounds.
 
 ---
 
@@ -46,37 +46,37 @@ crates/
     src/lib.rs                          pub use
     src/schema.rs                       Column / ColumnType / Schema
     src/query.rs                        AggFn / Agg / Predicate / ViewQuery / enumerate
-    src/data.rs                         Domain / 初始数据生成
-    src/ops.rs                          Op / OpGenerator（有偏采样）
+    src/data.rs                         Domain / initial data generation
+    src/ops.rs                          Op / OpGenerator (biased sampling)
     src/engine.rs                       Engine trait / EngineError
     src/naive.rs                        NaiveRecompute
     src/buggy.rs                        NoRetractionEngine
     src/oracle.rs                       recompute_via_sqlite
-    src/invariants.rs                   四层断言中的不变量层
+    src/invariants.rs                   the invariant layer of the four layers of assertions
     src/differential.rs                 TestCase / Batching / run / Failure / seed_range
-    src/shrink.rs                       保持合法性的缩小器（ops → query → data）
-    src/regression.rs                   失败用例的固化与读回
-    tests/harness_catches_bugs.rs       M0 完成判定
-    tests/regressions/*.json            固化下来的历史失败用例（提交进仓库）
+    src/shrink.rs                       a legality-preserving shrinker (ops → query → data)
+    src/regression.rs                   freezing failing cases and reading them back
+    tests/harness_catches_bugs.rs       M0's completion criteria
+    tests/regressions/*.json            frozen historical failing cases (committed to the repository)
   ivmlite-workload/
     Cargo.toml
-    src/lib.rs                          Workload 定义、数据与 trace 生成、导出
+    src/lib.rs                          Workload definition, data and trace generation, export
   ivmlite-bench/
     Cargo.toml
-    src/main.rs                         矩阵驱动 + CSV 输出
-    src/baseline.rs                     不维护 / 手写 trigger / 朴素重跑
-    src/plot.rs                         基线曲线 SVG
+    src/main.rs                         matrix driver + CSV output
+    src/baseline.rs                     no maintenance / hand-written triggers / naive re-run
+    src/plot.rs                         baseline-curve SVGs
 workloads/
-  m0-baseline.toml                      可移植的 workload 定义（跨 runner 共享）
+  m0-baseline.toml                      the portable workload definition (shared across runners)
 docs/bench/
-  m0-baseline.csv                       完整矩阵结果
-  m0-baseline-card{10,1000,100000}.svg  每个 group 基数一张头条图
-  README.md                             各 group 基数下交叉点落在哪，照实写
+  m0-baseline.csv                       full matrix results
+  m0-baseline-card{10,1000,100000}.svg  one headline chart per group cardinality
+  README.md                             where the crossover falls at each group cardinality, written as measured
 ```
 
 ---
 
-## Task 1: Workspace 骨架、`Value`、`Row`、CI
+## Task 1: Workspace skeleton, `Value`, `Row`, CI
 
 **Files:**
 - Create: `Cargo.toml`, `.gitignore`, `.github/workflows/ci.yml`
@@ -84,12 +84,12 @@ docs/bench/
 - Create: `crates/ivmlite-core/src/value.rs`, `crates/ivmlite-core/src/row.rs`
 
 **Interfaces:**
-- Consumes: 无
-- Produces: `ivmlite_core::Value`（枚举，变体 `Null` / `Int(i64)` / `Text(String)`）、`ivmlite_core::Row`（newtype `Row(pub Vec<Value>)`，方法 `new(Vec<Value>) -> Row`、`get(usize) -> &Value`、`len() -> usize`）。两者均 derive `Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash`。
+- Consumes: nothing
+- Produces: `ivmlite_core::Value` (an enum with variants `Null` / `Int(i64)` / `Text(String)`), `ivmlite_core::Row` (a newtype `Row(pub Vec<Value>)`, methods `new(Vec<Value>) -> Row`, `get(usize) -> &Value`, `len() -> usize`). Both derive `Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash`.
 
-- [ ] **Step 1: 写 workspace 与 crate 清单**
+- [ ] **Step 1: Write the workspace and crate manifests**
 
-`Cargo.toml`：
+`Cargo.toml`:
 
 ```toml
 [workspace]
@@ -108,16 +108,16 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 rand = "0.10"
 ```
 
-`.gitignore`：
+`.gitignore`:
 
 ```
 /target
 Cargo.lock
 ```
 
-> Cargo.lock 忽略是因为本仓库当前只产出 library 与内部 bench bin。M1 产出 cdylib 时改为提交 lock。
+> Cargo.lock is ignored because this repository currently produces only libraries and an internal bench bin. When M1 produces a cdylib, switch to committing the lock.
 
-`crates/ivmlite-core/Cargo.toml`：
+`crates/ivmlite-core/Cargo.toml`:
 
 ```toml
 [package]
@@ -131,11 +131,11 @@ repository.workspace = true
 [dependencies]
 ```
 
-依赖表为空是**有意为之**，对应 Global Constraints 第一条。
+The empty dependency table is **deliberate**, matching the first Global Constraint.
 
-- [ ] **Step 2: 写失败的测试**
+- [ ] **Step 2: Write the failing tests**
 
-`crates/ivmlite-core/src/value.rs`：
+`crates/ivmlite-core/src/value.rs`:
 
 ```rust
 #[cfg(test)]
@@ -156,7 +156,7 @@ mod tests {
 }
 ```
 
-`crates/ivmlite-core/src/row.rs`：
+`crates/ivmlite-core/src/row.rs`:
 
 ```rust
 #[cfg(test)]
@@ -183,19 +183,19 @@ mod tests {
 }
 ```
 
-- [ ] **Step 3: 运行测试确认失败**
+- [ ] **Step 3: Run the tests to confirm they fail**
 
 Run: `cargo test -p ivmlite-core`
-Expected: 编译失败，`cannot find type Value` / `cannot find type Row`
+Expected: a compile failure, `cannot find type Value` / `cannot find type Row`
 
-- [ ] **Step 4: 写实现**
+- [ ] **Step 4: Write the implementation**
 
-`crates/ivmlite-core/src/value.rs` 顶部：
+At the top of `crates/ivmlite-core/src/value.rs`:
 
 ```rust
-/// v0 的值域。刻意不含 Real 与 Blob：
-/// Real 会让增量 SUM 与全量重算无法 bit-for-bit 相等（浮点加法不满足结合律），
-/// Blob 在 v0 的 STRICT table 限制下用不到。两者均排在 M4。
+/// v0's value domain. Real and Blob are deliberately excluded:
+/// Real would stop incremental SUM from being bit-for-bit equal to full recomputation (floating-point addition is not associative),
+/// and Blob is not needed under v0's STRICT table restrictions. Both are scheduled for M4.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Value {
     Null,
@@ -204,7 +204,7 @@ pub enum Value {
 }
 ```
 
-`crates/ivmlite-core/src/row.rs` 顶部：
+At the top of `crates/ivmlite-core/src/row.rs`:
 
 ```rust
 use crate::Value;
@@ -231,7 +231,7 @@ impl Row {
 }
 ```
 
-`crates/ivmlite-core/src/lib.rs`：
+`crates/ivmlite-core/src/lib.rs`:
 
 ```rust
 mod row;
@@ -241,14 +241,14 @@ pub use row::Row;
 pub use value::Value;
 ```
 
-- [ ] **Step 5: 运行测试确认通过**
+- [ ] **Step 5: Run the tests to confirm they pass**
 
 Run: `cargo test -p ivmlite-core`
-Expected: 全部通过（本任务新增 4 个）
+Expected: everything passes (4 new in this task)
 
-- [ ] **Step 6: 加 CI**
+- [ ] **Step 6: Add CI**
 
-`.github/workflows/ci.yml`：
+`.github/workflows/ci.yml`:
 
 ```yaml
 name: ci
@@ -270,20 +270,20 @@ jobs:
       - run: cargo test --workspace
 ```
 
-- [ ] **Step 7: 确认本地与 CI 同样的三条命令都过**
+- [ ] **Step 7: Confirm the same three commands pass locally and in CI**
 
 Run: `cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace`
-Expected: 全部通过。
+Expected: everything passes.
 
-> `members` 此刻只有 `ivmlite-core` 是正确的——`ivmlite-test`（Task 3）、
-> `ivmlite-workload`（Task 12）、`ivmlite-bench`（Task 13）各自在创建时把自己加进去。
-> 不要在这里预先列出尚不存在的 crate，那会让 `cargo` 直接拒绝加载 workspace。
+> `members` containing only `ivmlite-core` at this point is correct — `ivmlite-test` (Task 3),
+> `ivmlite-workload` (Task 12) and `ivmlite-bench` (Task 13) each add themselves when they are created.
+> Do not list crates that do not exist yet here; that makes `cargo` refuse to load the workspace outright.
 
-- [ ] **Step 8: 提交**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add Cargo.toml .gitignore .github/workflows/ci.yml crates/ivmlite-core
-git commit -m "feat(core): workspace 骨架、Value/Row 数据类型与 CI"
+git commit -m "feat(core): workspace skeleton, the Value/Row data types, and CI"
 ```
 
 ---
@@ -295,12 +295,12 @@ git commit -m "feat(core): workspace 骨架、Value/Row 数据类型与 CI"
 - Modify: `crates/ivmlite-core/src/lib.rs`
 
 **Interfaces:**
-- Consumes: `Row`（Task 1）
-- Produces: `ivmlite_core::ZSet`，方法 `new() -> ZSet`、`from_rows(impl IntoIterator<Item = (Row, i64)>) -> ZSet`、`update(&mut self, Row, i64)`、`merge(&mut self, &ZSet)`、`weight_of(&self, &Row) -> i64`、`iter(&self) -> impl Iterator<Item = (&Row, &i64)>`、`len(&self) -> usize`、`is_empty(&self) -> bool`。derive `Debug, Clone, Default, PartialEq, Eq`。
+- Consumes: `Row` (Task 1)
+- Produces: `ivmlite_core::ZSet`, methods `new() -> ZSet`, `from_rows(impl IntoIterator<Item = (Row, i64)>) -> ZSet`, `update(&mut self, Row, i64)`, `merge(&mut self, &ZSet)`, `weight_of(&self, &Row) -> i64`, `iter(&self) -> impl Iterator<Item = (&Row, &i64)>`, `len(&self) -> usize`, `is_empty(&self) -> bool`. Derives `Debug, Clone, Default, PartialEq, Eq`.
 
-- [ ] **Step 1: 写失败的测试**
+- [ ] **Step 1: Write the failing tests**
 
-`crates/ivmlite-core/src/zset.rs`：
+`crates/ivmlite-core/src/zset.rs`:
 
 ```rust
 #[cfg(test)]
@@ -326,7 +326,7 @@ mod tests {
         z.update(row(1), 1);
         z.update(row(1), -1);
         assert_eq!(z.weight_of(&row(1)), 0);
-        assert_eq!(z.len(), 0, "权重归零的行必须删除，不得留 w=0 的僵尸行");
+        assert_eq!(z.len(), 0, "a row whose weight reaches zero must be deleted, not left as a w=0 zombie row");
         assert!(z.is_empty());
     }
 
@@ -352,7 +352,7 @@ mod tests {
         assert_eq!(a.weight_of(&row(1)), 0);
         assert_eq!(a.weight_of(&row(2)), 5);
         assert_eq!(a.weight_of(&row(3)), 2);
-        assert_eq!(a.len(), 2, "row(1) 归零后应被移除");
+        assert_eq!(a.len(), 2, "row(1) should be removed after reaching zero");
     }
 
     #[test]
@@ -365,19 +365,19 @@ mod tests {
                 _ => unreachable!(),
             })
             .collect();
-        assert_eq!(seen, vec![1, 2, 3], "BTreeMap 保证顺序，HashMap 不保证");
+        assert_eq!(seen, vec![1, 2, 3], "BTreeMap guarantees order; HashMap does not");
     }
 }
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [ ] **Step 2: Run the tests to confirm they fail**
 
 Run: `cargo test -p ivmlite-core zset`
-Expected: 编译失败，`cannot find type ZSet`
+Expected: a compile failure, `cannot find type ZSet`
 
-- [ ] **Step 3: 写实现**
+- [ ] **Step 3: Write the implementation**
 
-`crates/ivmlite-core/src/zset.rs` 顶部：
+At the top of `crates/ivmlite-core/src/zset.rs`:
 
 ```rust
 use std::collections::btree_map::Entry;
@@ -385,10 +385,10 @@ use std::collections::BTreeMap;
 
 use crate::Row;
 
-/// 带权重的多重集。权重为 i64：INSERT = +1，DELETE = -1。
+/// A weighted multiset. Weights are i64: INSERT = +1, DELETE = -1.
 ///
-/// 用 BTreeMap 而非 HashMap，是为了让迭代顺序确定——差分测试的失败用例
-/// 必须能凭 seed 精确重放。
+/// BTreeMap rather than HashMap, so that iteration order is deterministic — a failing differential-testing case
+/// must replay exactly from its seed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ZSet {
     inner: BTreeMap<Row, i64>,
@@ -407,7 +407,7 @@ impl ZSet {
         z
     }
 
-    /// 把 `weight` 加到 `row` 现有的权重上。归零的行会被移除。
+    /// Add `weight` to `row`'s existing weight. A row that reaches zero is removed.
     pub fn update(&mut self, row: Row, weight: i64) {
         if weight == 0 {
             return;
@@ -451,40 +451,40 @@ impl ZSet {
 }
 ```
 
-`crates/ivmlite-core/src/lib.rs` 追加：
+Append to `crates/ivmlite-core/src/lib.rs`:
 
 ```rust
 mod zset;
 pub use zset::ZSet;
 ```
 
-- [ ] **Step 4: 运行测试确认通过**
+- [ ] **Step 4: Run the tests to confirm they pass**
 
 Run: `cargo test -p ivmlite-core`
-Expected: 全部通过（本任务新增 6 个）
+Expected: everything passes (6 new in this task)
 
-- [ ] **Step 5: 提交**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add crates/ivmlite-core/src/zset.rs crates/ivmlite-core/src/lib.rs
-git commit -m "feat(core): ZSet 与权重归零即删除的语义"
+git commit -m "feat(core): ZSet, with rows deleted when their weight reaches zero"
 ```
 
 ---
 
-## Task 3: `Schema` 与 `ivmlite-test` crate
+## Task 3: `Schema` and the `ivmlite-test` crate
 
 **Files:**
 - Create: `crates/ivmlite-test/Cargo.toml`, `crates/ivmlite-test/src/lib.rs`, `crates/ivmlite-test/src/schema.rs`
-- Modify: `Cargo.toml`（把 `ivmlite-test` 加回 members）
+- Modify: `Cargo.toml` (add `ivmlite-test` back to members)
 
 **Interfaces:**
 - Consumes: `ivmlite_core::{Row, Value, ZSet}`
-- Produces: `ColumnType`（`Integer` / `Text`）、`Column { name: String, ty: ColumnType, nullable: bool }`、`Schema { table: String, columns: Vec<Column> }`，方法 `Schema::create_table_sql(&self) -> String`、`Schema::arity(&self) -> usize`、`Schema::column_names(&self) -> Vec<&str>`。
+- Produces: `ColumnType` (`Integer` / `Text`), `Column { name: String, ty: ColumnType, nullable: bool }`, `Schema { table: String, columns: Vec<Column> }`, methods `Schema::create_table_sql(&self) -> String`, `Schema::arity(&self) -> usize`, `Schema::column_names(&self) -> Vec<&str>`.
 
-- [ ] **Step 1: 建 crate 清单**
+- [ ] **Step 1: Create the crate manifest**
 
-`crates/ivmlite-test/Cargo.toml`：
+`crates/ivmlite-test/Cargo.toml`:
 
 ```toml
 [package]
@@ -501,11 +501,11 @@ rusqlite.workspace = true
 rand.workspace = true
 ```
 
-并把 `ivmlite-test` 加回根 `Cargo.toml` 的 `members`。
+and add `ivmlite-test` back to the `members` of the root `Cargo.toml`.
 
-- [ ] **Step 2: 写失败的测试**
+- [ ] **Step 2: Write the failing tests**
 
-`crates/ivmlite-test/src/schema.rs`：
+`crates/ivmlite-test/src/schema.rs`:
 
 ```rust
 #[cfg(test)]
@@ -525,7 +525,7 @@ mod tests {
     #[test]
     fn create_table_sql_is_strict() {
         let sql = orders().create_table_sql();
-        assert!(sql.contains("STRICT"), "spec §7.1 要求 STRICT table：{sql}");
+        assert!(sql.contains("STRICT"), "spec §7.1 requires a STRICT table: {sql}");
         assert!(sql.contains("\"region\" TEXT"));
         assert!(sql.contains("\"amount\" INTEGER NOT NULL"));
     }
@@ -537,14 +537,14 @@ mod tests {
 }
 ```
 
-- [ ] **Step 3: 运行测试确认失败**
+- [ ] **Step 3: Run the tests to confirm they fail**
 
 Run: `cargo test -p ivmlite-test`
-Expected: 编译失败，`cannot find type Schema`
+Expected: a compile failure, `cannot find type Schema`
 
-- [ ] **Step 4: 写实现**
+- [ ] **Step 4: Write the implementation**
 
-`crates/ivmlite-test/src/schema.rs` 顶部：
+At the top of `crates/ivmlite-test/src/schema.rs`:
 
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -576,8 +576,8 @@ pub struct Schema {
 }
 
 impl Schema {
-    /// 生成 STRICT 建表语句。STRICT 是 v0 的硬性要求：它把列类型钉死，
-    /// 从而消灭 SQLite 的 type affinity 导致 group key 分裂的整类问题（spec §7.1）。
+    /// Generate a STRICT CREATE TABLE statement. STRICT is a hard requirement of v0: it pins column types,
+    /// eliminating the whole class of problems where SQLite's type affinity splits a group key (spec §7.1).
     pub fn create_table_sql(&self) -> String {
         let cols: Vec<String> = self
             .columns
@@ -604,7 +604,7 @@ impl Schema {
 }
 ```
 
-`crates/ivmlite-test/src/lib.rs`：
+`crates/ivmlite-test/src/lib.rs`:
 
 ```rust
 mod schema;
@@ -612,33 +612,33 @@ mod schema;
 pub use schema::{Column, ColumnType, Schema};
 ```
 
-- [ ] **Step 5: 运行测试确认通过**
+- [ ] **Step 5: Run the tests to confirm they pass**
 
 Run: `cargo test -p ivmlite-test`
-Expected: 全部通过（本任务新增 2 个）
+Expected: everything passes (2 new in this task)
 
-- [ ] **Step 6: 提交**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add Cargo.toml crates/ivmlite-test
-git commit -m "feat(test): ivmlite-test crate 与 STRICT schema"
+git commit -m "feat(test): the ivmlite-test crate and STRICT schemas"
 ```
 
 ---
 
-## Task 4: `ViewQuery` 与 query 空间穷举
+## Task 4: `ViewQuery` and exhaustive enumeration of the query space
 
 **Files:**
 - Create: `crates/ivmlite-test/src/query.rs`
 - Modify: `crates/ivmlite-test/src/lib.rs`
 
 **Interfaces:**
-- Consumes: `Schema`, `ColumnType`（Task 3）
-- Produces: `AggFn`（`Count` / `Sum`）、`Agg { func: AggFn, column: Option<usize> }`、`Predicate`（`None` / `IntGt { column, value }` / `IsNotNull { column }`）、`ViewQuery { group_by: Vec<usize>, aggs: Vec<Agg>, predicate: Predicate }`，方法 `ViewQuery::to_sql(&self, &Schema) -> String`、`ViewQuery::output_arity(&self) -> usize`；自由函数 `enumerate(&Schema) -> Vec<ViewQuery>`。
+- Consumes: `Schema`, `ColumnType` (Task 3)
+- Produces: `AggFn` (`Count` / `Sum`), `Agg { func: AggFn, column: Option<usize> }`, `Predicate` (`None` / `IntGt { column, value }` / `IsNotNull { column }`), `ViewQuery { group_by: Vec<usize>, aggs: Vec<Agg>, predicate: Predicate }`, methods `ViewQuery::to_sql(&self, &Schema) -> String`, `ViewQuery::output_arity(&self) -> usize`; the free function `enumerate(&Schema) -> Vec<ViewQuery>`.
 
-- [ ] **Step 1: 写失败的测试**
+- [ ] **Step 1: Write the failing tests**
 
-`crates/ivmlite-test/src/query.rs`：
+`crates/ivmlite-test/src/query.rs`:
 
 ```rust
 #[cfg(test)]
@@ -701,12 +701,12 @@ mod tests {
         assert!(!qs.is_empty());
         assert!(
             qs.iter().all(|q| !q.group_by.is_empty()),
-            "v0 禁止全局聚合：空表上 `SELECT SUM(v) FROM t` 返回 1 行 NULL，\
-             而 `... GROUP BY g` 返回 0 行，两者不能共用同一套删行规则（spec §5.2）"
+            "v0 forbids global aggregates: over an empty table `SELECT SUM(v) FROM t` returns 1 row of NULL, \
+             while `... GROUP BY g` returns 0 rows, so the two cannot share one row-deletion rule (spec §5.2)"
         );
         assert!(
             qs.iter().all(|q| !q.aggs.is_empty()),
-            "v0 的根算子必须是 Aggregate——否则 __w 权重会让物化表与普通 SQL 视图行数不一致（spec §5.2）"
+            "v0's root operator must be an Aggregate — otherwise the __w weights make the materialised table's row count disagree with an ordinary SQL view (spec §5.2)"
         );
         assert!(qs.iter().any(|q| matches!(q.predicate, Predicate::None)));
         assert!(qs.iter().any(|q| matches!(q.predicate, Predicate::IntGt { .. })));
@@ -718,11 +718,11 @@ mod tests {
         for q in enumerate(&schema) {
             for agg in &q.aggs {
                 if agg.func == AggFn::Sum {
-                    let idx = agg.column.expect("SUM 必须有列");
+                    let idx = agg.column.expect("SUM must have a column");
                     assert_eq!(
                         schema.columns[idx].ty,
                         ColumnType::Integer,
-                        "v0 无浮点，SUM 只能作用于 INTEGER 列"
+                        "v0 has no floating point; SUM may only apply to INTEGER columns"
                     );
                 }
             }
@@ -731,14 +731,14 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [ ] **Step 2: Run the tests to confirm they fail**
 
 Run: `cargo test -p ivmlite-test query`
-Expected: 编译失败，`cannot find type ViewQuery`
+Expected: a compile failure, `cannot find type ViewQuery`
 
-- [ ] **Step 3: 写实现**
+- [ ] **Step 3: Write the implementation**
 
-`crates/ivmlite-test/src/query.rs` 顶部：
+At the top of `crates/ivmlite-test/src/query.rs`:
 
 ```rust
 use crate::{ColumnType, Schema};
@@ -752,7 +752,7 @@ pub enum AggFn {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Agg {
     pub func: AggFn,
-    /// COUNT(*) 为 None；SUM 必须为 Some，且指向 INTEGER 列。
+    /// None for COUNT(*); SUM must be Some, pointing at an INTEGER column.
     pub column: Option<usize>,
 }
 
@@ -765,7 +765,7 @@ pub enum Predicate {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ViewQuery {
-    /// v0 只允许裸列作为 group-by 键，不允许表达式（spec §7.1）。
+    /// v0 allows only bare columns as group-by keys, not expressions (spec §7.1).
     pub group_by: Vec<usize>,
     pub aggs: Vec<Agg>,
     pub predicate: Predicate,
@@ -784,7 +784,7 @@ impl ViewQuery {
             select.push(match (agg.func, agg.column) {
                 (AggFn::Count, _) => "COUNT(*)".to_string(),
                 (AggFn::Sum, Some(i)) => format!("SUM({})", name(i)),
-                (AggFn::Sum, None) => unreachable!("SUM 必须指定列"),
+                (AggFn::Sum, None) => unreachable!("SUM must name a column"),
             });
         }
 
@@ -815,10 +815,10 @@ impl ViewQuery {
     }
 }
 
-/// 穷举 v0 的 query 空间。
+/// Exhaustively enumerate v0's query space.
 ///
-/// spec §9.2：v0 的组合数有限，穷举优于随机——可复现且覆盖完全。
-/// 随机性留给更新序列。
+/// spec §9.2: v0 has a finite number of combinations, and exhaustive beats random — reproducible and fully covering.
+/// Randomness is left to the update sequences.
 pub fn enumerate(schema: &Schema) -> Vec<ViewQuery> {
     let int_cols: Vec<usize> = (0..schema.arity())
         .filter(|i| schema.columns[*i].ty == ColumnType::Integer)
@@ -867,40 +867,40 @@ pub fn enumerate(schema: &Schema) -> Vec<ViewQuery> {
 }
 ```
 
-`crates/ivmlite-test/src/lib.rs` 追加：
+Append to `crates/ivmlite-test/src/lib.rs`:
 
 ```rust
 mod query;
 pub use query::{enumerate, Agg, AggFn, Predicate, ViewQuery};
 ```
 
-- [ ] **Step 4: 运行测试确认通过**
+- [ ] **Step 4: Run the tests to confirm they pass**
 
 Run: `cargo test -p ivmlite-test`
-Expected: 全部通过（本任务新增 5 个）
+Expected: everything passes (5 new in this task)
 
-- [ ] **Step 5: 提交**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add crates/ivmlite-test/src/query.rs crates/ivmlite-test/src/lib.rs
-git commit -m "feat(test): ViewQuery 与 v0 query 空间穷举"
+git commit -m "feat(test): ViewQuery and exhaustive enumeration of v0's query space"
 ```
 
 ---
 
-## Task 5: 数据生成器（窄值域、高 NULL 率）
+## Task 5: Data generator (narrow value domain, high NULL rate)
 
 **Files:**
 - Create: `crates/ivmlite-test/src/data.rs`
 - Modify: `crates/ivmlite-test/src/lib.rs`
 
 **Interfaces:**
-- Consumes: `Schema`, `ColumnType`（Task 3）、`ivmlite_core::{Row, Value}`
-- Produces: `Domain { distinct: usize, null_rate: f64 }`（`Default` 为 `distinct: 8, null_rate: 0.2`）、`gen_row(&mut StdRng, &Schema, &Domain) -> Row`、`gen_rows(&mut StdRng, &Schema, &Domain, usize) -> Vec<Row>`。
+- Consumes: `Schema`, `ColumnType` (Task 3), `ivmlite_core::{Row, Value}`
+- Produces: `Domain { distinct: usize, null_rate: f64 }` (`Default` is `distinct: 8, null_rate: 0.2`), `gen_row(&mut StdRng, &Schema, &Domain) -> Row`, `gen_rows(&mut StdRng, &Schema, &Domain, usize) -> Vec<Row>`.
 
-- [ ] **Step 1: 写失败的测试**
+- [ ] **Step 1: Write the failing tests**
 
-`crates/ivmlite-test/src/data.rs`：
+`crates/ivmlite-test/src/data.rs`:
 
 ```rust
 #[cfg(test)]
@@ -923,18 +923,18 @@ mod tests {
     #[test]
     fn domain_is_narrow_by_default() {
         let d = Domain::default();
-        assert_eq!(d.distinct, 8, "窄值域是抓 retraction bug 的前提（spec §9.2）");
+        assert_eq!(d.distinct, 8, "a narrow value domain is the precondition for catching retraction bugs (spec §9.2)");
     }
 
-    /// spec §6.1：SQLite 的整数 SUM 溢出时报错，且是否报错取决于扫描顺序，
-    /// 因此增量与全量重算会在溢出区分叉。生成器必须让溢出不可达。
+    /// spec §6.1: SQLite's integer SUM errors on overflow, and whether it errors depends on scan order,
+    /// so incremental maintenance and full recomputation diverge in the overflow zone. The generator must make overflow unreachable.
     #[test]
     fn domain_cannot_overflow_integer_sum() {
         let d = Domain::default();
         let worst_case_sum = (d.distinct as i128) * 1_000_000;
         assert!(
             worst_case_sum < (1i128 << 62),
-            "即使百万行全落在同一个 group，和也必须远小于 2^62"
+            "even with a million rows all in the same group, the sum must stay far below 2^62"
         );
     }
 
@@ -948,7 +948,7 @@ mod tests {
         let distinct_regions: HashSet<&Value> = rows.iter().map(|r| r.get(0)).collect();
         assert!(
             distinct_regions.len() <= domain.distinct + 1,
-            "不同值数量必须受 domain 限制（+1 容纳 NULL），实得 {}",
+            "the number of distinct values must be bounded by the domain (+1 for NULL), got {}",
             distinct_regions.len()
         );
     }
@@ -958,7 +958,7 @@ mod tests {
         let mut rng = rand::rngs::StdRng::seed_from_u64(2);
         let rows = gen_rows(&mut rng, &orders(), &Domain::default(), 500);
         let nulls = rows.iter().filter(|r| r.get(0) == &Value::Null).count();
-        assert!(nulls > 0, "NULL 在 GROUP BY 中自成一组，是经典 bug 点，必须高频出现");
+        assert!(nulls > 0, "NULL forms its own group in GROUP BY, a classic bug spot, so it must appear frequently");
     }
 
     #[test]
@@ -978,14 +978,14 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [ ] **Step 2: Run the tests to confirm they fail**
 
 Run: `cargo test -p ivmlite-test data`
-Expected: 编译失败，`cannot find type Domain`
+Expected: a compile failure, `cannot find type Domain`
 
-- [ ] **Step 3: 写实现**
+- [ ] **Step 3: Write the implementation**
 
-`crates/ivmlite-test/src/data.rs` 顶部：
+At the top of `crates/ivmlite-test/src/data.rs`:
 
 ```rust
 use ivmlite_core::{Row, Value};
@@ -994,11 +994,11 @@ use rand::RngExt;
 
 use crate::{ColumnType, Schema};
 
-/// 生成器的值域配置。
+/// The generator's value-domain configuration.
 ///
-/// `distinct` 刻意很小：若某列有上百万个不同值，每个 group 只有一行，
-/// 就永远测不到"同一个 group 反复增删"——而那正是 retraction 与僵尸行
-/// bug 的产地（spec §9.2）。
+/// `distinct` is deliberately small: if a column had a million distinct values, every group would have one row,
+/// and "the same group being inserted into and deleted from repeatedly" would never be tested — which is exactly where retraction and zombie-row
+/// bugs come from (spec §9.2).
 #[derive(Debug, Clone)]
 pub struct Domain {
     pub distinct: usize,
@@ -1034,40 +1034,40 @@ pub fn gen_rows(rng: &mut StdRng, schema: &Schema, domain: &Domain, count: usize
 }
 ```
 
-`crates/ivmlite-test/src/lib.rs` 追加：
+Append to `crates/ivmlite-test/src/lib.rs`:
 
 ```rust
 mod data;
 pub use data::{gen_row, gen_rows, Domain};
 ```
 
-- [ ] **Step 4: 运行测试确认通过**
+- [ ] **Step 4: Run the tests to confirm they pass**
 
 Run: `cargo test -p ivmlite-test`
-Expected: 全部通过（本任务新增 5 个）
+Expected: everything passes (5 new in this task)
 
-- [ ] **Step 5: 提交**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add crates/ivmlite-test/src/data.rs crates/ivmlite-test/src/lib.rs
-git commit -m "feat(test): 窄值域、高 NULL 率的数据生成器"
+git commit -m "feat(test): a data generator with a narrow value domain and a high NULL rate"
 ```
 
 ---
 
-## Task 6: 有偏更新序列生成器
+## Task 6: Biased update-sequence generator
 
 **Files:**
 - Create: `crates/ivmlite-test/src/ops.rs`
 - Modify: `crates/ivmlite-test/src/lib.rs`
 
 **Interfaces:**
-- Consumes: `Schema`, `Domain`, `gen_row`（Task 3、5）、`ivmlite_core::Row`
-- Produces: `Op`（`Insert(Row)` / `Delete(Row)` / `Update { old: Row, new: Row }`）、`Op::to_delta(&self) -> Vec<(Row, i64)>`、`gen_ops(&mut StdRng, &Schema, &Domain, &[Row], usize) -> Vec<Op>`。
+- Consumes: `Schema`, `Domain`, `gen_row` (Tasks 3, 5), `ivmlite_core::Row`
+- Produces: `Op` (`Insert(Row)` / `Delete(Row)` / `Update { old: Row, new: Row }`), `Op::to_delta(&self) -> Vec<(Row, i64)>`, `gen_ops(&mut StdRng, &Schema, &Domain, &[Row], usize) -> Vec<Op>`.
 
-- [ ] **Step 1: 写失败的测试**
+- [ ] **Step 1: Write the failing tests**
 
-`crates/ivmlite-test/src/ops.rs`：
+`crates/ivmlite-test/src/ops.rs`:
 
 ```rust
 #[cfg(test)]
@@ -1111,7 +1111,7 @@ mod tests {
         let initial = crate::gen_rows(&mut rng, &schema, &domain, 40);
         let ops = gen_ops(&mut rng, &schema, &domain, &initial, 300);
 
-        // 重放序列，验证每个 DELETE / UPDATE 命中的行当时确实存在。
+        // Replay the sequence, checking that the row every DELETE / UPDATE hits really exists at that moment.
         let mut live: Vec<Row> = initial.clone();
         let mut hits = 0usize;
         for op in &ops {
@@ -1119,13 +1119,13 @@ mod tests {
                 Op::Insert(r) => live.push(r.clone()),
                 Op::Delete(r) => {
                     let pos = live.iter().position(|x| x == r);
-                    assert!(pos.is_some(), "DELETE 必须命中存在的行");
+                    assert!(pos.is_some(), "a DELETE must hit an existing row");
                     live.remove(pos.unwrap());
                     hits += 1;
                 }
                 Op::Update { old, new } => {
                     let pos = live.iter().position(|x| x == old);
-                    assert!(pos.is_some(), "UPDATE 必须命中存在的行");
+                    assert!(pos.is_some(), "an UPDATE must hit an existing row");
                     live.remove(pos.unwrap());
                     live.push(new.clone());
                     hits += 1;
@@ -1134,7 +1134,7 @@ mod tests {
         }
         assert!(
             hits > ops.len() / 10,
-            "有偏采样必须产生足量的删改，否则测不到 retraction；实得 {hits}/{}",
+            "biased sampling must produce enough deletes/updates, or retraction goes untested; got {hits}/{}",
             ops.len()
         );
     }
@@ -1153,14 +1153,14 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [ ] **Step 2: Run the tests to confirm they fail**
 
 Run: `cargo test -p ivmlite-test ops`
-Expected: 编译失败，`cannot find type Op`
+Expected: a compile failure, `cannot find type Op`
 
-- [ ] **Step 3: 写实现**
+- [ ] **Step 3: Write the implementation**
 
-`crates/ivmlite-test/src/ops.rs` 顶部：
+At the top of `crates/ivmlite-test/src/ops.rs`:
 
 ```rust
 use ivmlite_core::Row;
@@ -1177,7 +1177,7 @@ pub enum Op {
 }
 
 impl Op {
-    /// UPDATE 拆成 retract + insert——写进 delta 的内容本身已经是 Z-set（spec §8.1）。
+    /// UPDATE splits into retract + insert — what is written into the delta is itself already a Z-set (spec §8.1).
     pub fn to_delta(&self) -> Vec<(Row, i64)> {
         match self {
             Op::Insert(r) => vec![(r.clone(), 1)],
@@ -1187,11 +1187,11 @@ impl Op {
     }
 }
 
-/// 生成有偏的更新序列。
+/// Generate a biased update sequence.
 ///
-/// spec §9.2：纯随机生成器在 IVM 测试里几乎抓不到 bug——随机 DELETE 很少
-/// 命中真实存在的行。这里维护一份 live 行集合，DELETE / UPDATE 一律从中采样，
-/// 于是"删掉刚插入的行"和"把一个 group 删空再填回来"会自然高频发生。
+/// spec §9.2: a purely random generator catches almost no bugs in IVM testing — a random DELETE rarely
+/// hits a row that really exists. This keeps a set of live rows and samples every DELETE / UPDATE from it,
+/// so "deleting a row that was just inserted" and "emptying a group and filling it back" happen naturally and often.
 pub fn gen_ops(
     rng: &mut StdRng,
     schema: &Schema,
@@ -1203,7 +1203,7 @@ pub fn gen_ops(
     let mut ops = Vec::with_capacity(count);
 
     for _ in 0..count {
-        // live 为空时只能插入。
+        // With live empty, only an insert is possible.
         let choice = if live.is_empty() { 0 } else { rng.random_range(0..10) };
         match choice {
             0..=3 => {
@@ -1229,42 +1229,42 @@ pub fn gen_ops(
 }
 ```
 
-`crates/ivmlite-test/src/lib.rs` 追加：
+Append to `crates/ivmlite-test/src/lib.rs`:
 
 ```rust
 mod ops;
 pub use ops::{gen_ops, Op};
 ```
 
-- [ ] **Step 4: 运行测试确认通过**
+- [ ] **Step 4: Run the tests to confirm they pass**
 
 Run: `cargo test -p ivmlite-test`
-Expected: 全部通过（本任务新增 4 个）
+Expected: everything passes (4 new in this task)
 
-- [ ] **Step 5: 提交**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add crates/ivmlite-test/src/ops.rs crates/ivmlite-test/src/lib.rs
-git commit -m "feat(test): 有偏采样的更新序列生成器"
+git commit -m "feat(test): an update-sequence generator with biased sampling"
 ```
 
 ---
 
-## Task 7: `Engine` trait 与 `NaiveRecompute`
+## Task 7: The `Engine` trait and `NaiveRecompute`
 
 **Files:**
 - Create: `crates/ivmlite-test/src/engine.rs`, `crates/ivmlite-test/src/naive.rs`
 - Modify: `crates/ivmlite-test/src/lib.rs`
 
 **Interfaces:**
-- Consumes: `Schema`, `ViewQuery`, `AggFn`, `Predicate`（Task 3、4）、`ivmlite_core::{Row, Value, ZSet}`
-- Produces: `EngineError`（`struct EngineError(pub String)`）、`trait Engine { fn create_view(&mut self, &Schema, &ViewQuery, &ZSet) -> Result<(), EngineError>; fn apply(&mut self, &ZSet) -> Result<(), EngineError>; fn materialize(&mut self) -> Result<ZSet, EngineError>; }`、`NaiveRecompute::new() -> NaiveRecompute`。
+- Consumes: `Schema`, `ViewQuery`, `AggFn`, `Predicate` (Tasks 3, 4), `ivmlite_core::{Row, Value, ZSet}`
+- Produces: `EngineError` (`struct EngineError(pub String)`), `trait Engine { fn create_view(&mut self, &Schema, &ViewQuery, &ZSet) -> Result<(), EngineError>; fn apply(&mut self, &ZSet) -> Result<(), EngineError>; fn materialize(&mut self) -> Result<ZSet, EngineError>; }`, `NaiveRecompute::new() -> NaiveRecompute`.
 
-> `materialize` 取 `&mut self`：真实引擎在读取时可能需要先 drain 待处理的 delta（spec §8.2）。这个签名从 M0 就要定对，否则 M1 接入时要改所有调用点。
+> `materialize` takes `&mut self`: a real engine may need to drain pending deltas before reading (spec §8.2). This signature has to be right from M0, or plugging in M1 would mean changing every call site.
 
-- [ ] **Step 1: 写失败的测试**
+- [ ] **Step 1: Write the failing tests**
 
-`crates/ivmlite-test/src/naive.rs`：
+`crates/ivmlite-test/src/naive.rs`:
 
 ```rust
 #[cfg(test)]
@@ -1324,7 +1324,7 @@ mod tests {
 
         let got = e.materialize().unwrap();
         assert_eq!(got.weight_of(&out(Value::Text("a".into()), 10, 1)), 1);
-        assert_eq!(got.len(), 1, "旧的 (a,15,2) 必须消失");
+        assert_eq!(got.len(), 1, "the old (a,15,2) must disappear");
     }
 
     #[test]
@@ -1335,7 +1335,7 @@ mod tests {
 
         e.apply(&ZSet::from_rows([(row("a", 10), -1)])).unwrap();
 
-        assert!(e.materialize().unwrap().is_empty(), "空 group 不得留下僵尸行");
+        assert!(e.materialize().unwrap().is_empty(), "an empty group must not leave a zombie row");
     }
 
     #[test]
@@ -1370,8 +1370,8 @@ mod tests {
         );
     }
 
-    /// spec §6.1 的 NULL 语义契约。注意这与"组为空"不同：
-    /// 组非空（COUNT(*) 为正），但被求和的列全是 NULL，此时 SUM 为 NULL。
+    /// spec §6.1's NULL-semantics contract. Note this differs from "the group is empty":
+    /// the group is non-empty (COUNT(*) is positive), but the summed column is all NULL, so SUM is NULL.
     #[test]
     fn sum_over_all_null_column_is_null_not_zero() {
         let nullable_amount = Schema {
@@ -1389,7 +1389,7 @@ mod tests {
             ],
             predicate: Predicate::None,
         };
-        // 两条相同的行会被 ZSet 合并成权重 2
+        // Two identical rows are merged by the ZSet into weight 2
         let base = ZSet::from_rows([
             (Row::new(vec![Value::Text("a".into()), Value::Null]), 1),
             (Row::new(vec![Value::Text("a".into()), Value::Null]), 1),
@@ -1406,23 +1406,23 @@ mod tests {
                 Value::Int(2)
             ])),
             1,
-            "SUM 无非 NULL 输入时应为 NULL，COUNT(*) 仍为 2"
+            "with no non-NULL input SUM should be NULL, while COUNT(*) is still 2"
         );
     }
 }
 ```
 
-> 这条语义契约还需要由 SQLite 本身背书，但 `recompute_via_sqlite` 要到 Task 8 才存在。
-> 与 oracle 的交叉确认放在 Task 8 Step 1，**不要在本任务里前向引用它**。
+> This semantic contract also needs SQLite's own confirmation, but `recompute_via_sqlite` does not exist until Task 8.
+> The cross-check against the oracle goes in Task 8 Step 1; **do not forward-reference it in this task**.
 
-- [ ] **Step 2: 运行测试确认失败**
+- [ ] **Step 2: Run the tests to confirm they fail**
 
 Run: `cargo test -p ivmlite-test naive`
-Expected: 编译失败，`cannot find type NaiveRecompute`
+Expected: a compile failure, `cannot find type NaiveRecompute`
 
-- [ ] **Step 3: 写 `Engine` trait**
+- [ ] **Step 3: Write the `Engine` trait**
 
-`crates/ivmlite-test/src/engine.rs`：
+`crates/ivmlite-test/src/engine.rs`:
 
 ```rust
 use ivmlite_core::ZSet;
@@ -1440,10 +1440,10 @@ impl std::fmt::Display for EngineError {
 
 impl std::error::Error for EngineError {}
 
-/// 被测实现与测试框架之间唯一的接缝。
+/// The only seam between the implementation under test and the testing harness.
 ///
-/// M0 提供 NaiveRecompute（平凡正确）与 NoRetractionEngine（故意有 bug）；
-/// M1 的真实引擎实现同一个 trait 后即可直接接入全部测试与 benchmark。
+/// M0 provides NaiveRecompute (trivially correct) and NoRetractionEngine (deliberately buggy);
+/// once M1's real engine implements the same trait it plugs straight into every test and benchmark.
 pub trait Engine {
     fn create_view(
         &mut self,
@@ -1454,14 +1454,14 @@ pub trait Engine {
 
     fn apply(&mut self, delta: &ZSet) -> Result<(), EngineError>;
 
-    /// 取 &mut self：真实引擎读取前可能需要先 drain 待处理的 delta（spec §8.2）。
+    /// Takes &mut self: a real engine may need to drain pending deltas before reading (spec §8.2).
     fn materialize(&mut self) -> Result<ZSet, EngineError>;
 }
 ```
 
-- [ ] **Step 4: 写 `NaiveRecompute`**
+- [ ] **Step 4: Write `NaiveRecompute`**
 
-`crates/ivmlite-test/src/naive.rs` 顶部：
+At the top of `crates/ivmlite-test/src/naive.rs`:
 
 ```rust
 use std::collections::BTreeMap;
@@ -1470,9 +1470,9 @@ use ivmlite_core::{Row, Value, ZSet};
 
 use crate::{AggFn, Engine, EngineError, Predicate, Schema, ViewQuery};
 
-/// 平凡正确的参照实现：保存全量基表，每次 materialize 重算一遍。
+/// A trivially correct reference implementation: keeps the full base table and recomputes on every materialize.
 ///
-/// 两个用途：验证测试框架不会误报；充当 benchmark 的"朴素重跑"基线（spec §10.2）。
+/// Two uses: verifying the testing harness does not report false positives, and serving as the benchmark's "naive re-run" baseline (spec §10.2).
 #[derive(Debug, Default)]
 pub struct NaiveRecompute {
     query: Option<ViewQuery>,
@@ -1490,7 +1490,7 @@ fn passes(predicate: &Predicate, row: &Row) -> bool {
         Predicate::None => true,
         Predicate::IntGt { column, value } => match row.get(*column) {
             Value::Int(n) => n > value,
-            _ => false, // NULL 与非整数一律不通过，与 SQL 的三值逻辑一致
+            _ => false, // NULL and non-integers never pass, consistent with SQL's three-valued logic
         },
         Predicate::IsNotNull { column } => row.get(*column) != &Value::Null,
     }
@@ -1517,11 +1517,11 @@ impl Engine for NaiveRecompute {
         let query = self
             .query
             .as_ref()
-            .ok_or_else(|| EngineError("materialize 前未 create_view".into()))?;
+            .ok_or_else(|| EngineError("materialize called before create_view".into()))?;
 
-        // 每个聚合槽位是 (累加值, 非 NULL 输入的计数)。
-        // 第二项是必须的：SUM 在非 NULL 输入为零行时返回 NULL 而非 0
-        // （spec §6.1「聚合的 NULL 语义契约」）。只维护累加值会静默输出 0。
+        // Each aggregate slot is (running sum, count of non-NULL inputs).
+        // The second item is required: SUM returns NULL rather than 0 when there are zero non-NULL input rows
+        // (spec §6.1, "the NULL-semantics contract of aggregates"). Maintaining only the running sum would silently output 0.
         let mut groups: BTreeMap<Vec<Value>, Vec<(i64, i64)>> = BTreeMap::new();
 
         for (row, weight) in self.base.iter() {
@@ -1545,7 +1545,7 @@ impl Engine for NaiveRecompute {
                         }
                     }
                     (AggFn::Sum, None) => {
-                        return Err(EngineError("SUM 缺少列".into()));
+                        return Err(EngineError("SUM is missing its column".into()));
                     }
                 }
             }
@@ -1556,7 +1556,7 @@ impl Engine for NaiveRecompute {
             let mut values = key;
             for (agg, (total, non_null)) in query.aggs.iter().zip(acc) {
                 values.push(match agg.func {
-                    // COUNT(*) 计的是行数，与列值是否 NULL 无关
+                    // COUNT(*) counts rows, regardless of whether a column value is NULL
                     AggFn::Count => Value::Int(total),
                     AggFn::Sum if non_null == 0 => Value::Null,
                     AggFn::Sum => Value::Int(total),
@@ -1569,7 +1569,7 @@ impl Engine for NaiveRecompute {
 }
 ```
 
-`crates/ivmlite-test/src/lib.rs` 追加：
+Append to `crates/ivmlite-test/src/lib.rs`:
 
 ```rust
 mod engine;
@@ -1578,16 +1578,16 @@ pub use engine::{Engine, EngineError};
 pub use naive::NaiveRecompute;
 ```
 
-- [ ] **Step 5: 运行测试确认通过**
+- [ ] **Step 5: Run the tests to confirm they pass**
 
 Run: `cargo test -p ivmlite-test`
-Expected: 全部通过（本任务新增 6 个）
+Expected: everything passes (6 new in this task)
 
-- [ ] **Step 6: 提交**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add crates/ivmlite-test/src/engine.rs crates/ivmlite-test/src/naive.rs crates/ivmlite-test/src/lib.rs
-git commit -m "feat(test): Engine trait 与 NaiveRecompute 参照实现"
+git commit -m "feat(test): the Engine trait and the NaiveRecompute reference implementation"
 ```
 
 ---
@@ -1599,14 +1599,14 @@ git commit -m "feat(test): Engine trait 与 NaiveRecompute 参照实现"
 - Modify: `crates/ivmlite-test/src/lib.rs`
 
 **Interfaces:**
-- Consumes: `Schema`, `ViewQuery`（Task 3、4）、`ivmlite_core::{Row, Value, ZSet}`
+- Consumes: `Schema`, `ViewQuery` (Tasks 3, 4), `ivmlite_core::{Row, Value, ZSet}`
 - Produces: `recompute_via_sqlite(&Schema, &ViewQuery, &ZSet) -> Result<ZSet, EngineError>`
 
-> **为什么 oracle 必须独立于 `NaiveRecompute`**：拿 `NaiveRecompute` 当 oracle 去测 `NaiveRecompute` 是循环论证。真正的判据来自 SQLite 自己执行原始 SQL——一个完全独立的实现。
+> **Why the oracle must be independent of `NaiveRecompute`**: using `NaiveRecompute` as the oracle to test `NaiveRecompute` is circular. The real judge comes from SQLite executing the original SQL itself — a completely independent implementation.
 
-- [ ] **Step 1: 写失败的测试**
+- [ ] **Step 1: Write the failing tests**
 
-`crates/ivmlite-test/src/oracle.rs`：
+`crates/ivmlite-test/src/oracle.rs`:
 
 ```rust
 #[cfg(test)]
@@ -1669,7 +1669,7 @@ mod tests {
         assert_eq!(
             got.weight_of(&Row::new(vec![Value::Text("a".into()), Value::Int(3)])),
             1,
-            "权重 3 应展开为 3 行，COUNT(*) 得 3"
+            "a weight of 3 should expand to 3 rows, giving COUNT(*) = 3"
         );
     }
 
@@ -1683,12 +1683,12 @@ mod tests {
         let base = ZSet::from_rows([(row(Value::Text("a".into()), 1), -1)]);
         assert!(
             recompute_via_sqlite(&schema(), &q, &base).is_err(),
-            "基表状态出现负权重说明上游已经错了，oracle 必须拒绝而非静默"
+            "a negative weight in the base state means something upstream is already wrong; the oracle must reject it, not stay silent"
         );
     }
 
-    /// 钉死 spec §6.1 的 NULL 语义契约，并让 NaiveRecompute 与 SQLite 对齐。
-    /// Task 7 已经单独断言过 NaiveRecompute 的行为，这里补上 SQLite 的背书。
+    /// Pins spec §6.1's NULL-semantics contract and lines NaiveRecompute up with SQLite.
+    /// Task 7 already asserted NaiveRecompute's behaviour on its own; this adds SQLite's confirmation.
     #[test]
     fn sum_over_all_null_matches_naive_recompute() {
         use crate::{Engine, NaiveRecompute};
@@ -1721,7 +1721,7 @@ mod tests {
                 Value::Int(2)
             ])),
             1,
-            "SQLite 的 SUM 在无非 NULL 输入时返回 NULL"
+            "SQLite's SUM returns NULL when there is no non-NULL input"
         );
 
         let mut e = NaiveRecompute::new();
@@ -1731,14 +1731,14 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [ ] **Step 2: Run the tests to confirm they fail**
 
 Run: `cargo test -p ivmlite-test oracle`
-Expected: 编译失败，`cannot find function recompute_via_sqlite`
+Expected: a compile failure, `cannot find function recompute_via_sqlite`
 
-- [ ] **Step 3: 写实现**
+- [ ] **Step 3: Write the implementation**
 
-`crates/ivmlite-test/src/oracle.rs` 顶部：
+At the top of `crates/ivmlite-test/src/oracle.rs`:
 
 ```rust
 use ivmlite_core::{Row, Value, ZSet};
@@ -1765,16 +1765,16 @@ fn from_sqlite(v: ValueRef<'_>) -> Result<Value, EngineError> {
         ValueRef::Integer(n) => Ok(Value::Int(n)),
         ValueRef::Text(bytes) => std::str::from_utf8(bytes)
             .map(|s| Value::Text(s.to_string()))
-            .map_err(|e| EngineError(format!("非 UTF-8 文本: {e}"))),
-        ValueRef::Real(_) => Err(EngineError("v0 不支持 REAL".into())),
-        ValueRef::Blob(_) => Err(EngineError("v0 不支持 BLOB".into())),
+            .map_err(|e| EngineError(format!("text is not valid UTF-8: {e}"))),
+        ValueRef::Real(_) => Err(EngineError("v0 does not support REAL".into())),
+        ValueRef::Blob(_) => Err(EngineError("v0 does not support BLOB".into())),
     }
 }
 
-/// 权威判据：把基表状态灌进内存 SQLite，让 SQLite 自己执行原始 SQL。
+/// The authoritative judge: load the base-table state into an in-memory SQLite and let SQLite execute the original SQL itself.
 ///
-/// 这是一个与本项目全部代码无关的独立实现，因此可以用来判定
-/// NaiveRecompute 与未来的真实引擎是否正确。
+/// This is an implementation independent of all of this project's code, so it can be used to judge whether
+/// NaiveRecompute and the future real engine are correct.
 pub fn recompute_via_sqlite(
     schema: &Schema,
     query: &ViewQuery,
@@ -1804,7 +1804,7 @@ pub fn recompute_via_sqlite(
         for (row, weight) in base.iter() {
             if *weight < 0 {
                 return Err(EngineError(format!(
-                    "基表状态含负权重 {weight}，行 {row:?}"
+                    "the base state has a negative weight {weight}, row {row:?}"
                 )));
             }
             let bound: Vec<Bound> = row.0.iter().map(Bound).collect();
@@ -1834,40 +1834,40 @@ pub fn recompute_via_sqlite(
 }
 ```
 
-`crates/ivmlite-test/src/lib.rs` 追加：
+Append to `crates/ivmlite-test/src/lib.rs`:
 
 ```rust
 mod oracle;
 pub use oracle::recompute_via_sqlite;
 ```
 
-- [ ] **Step 4: 运行测试确认通过**
+- [ ] **Step 4: Run the tests to confirm they pass**
 
 Run: `cargo test -p ivmlite-test`
-Expected: 全部通过（本任务新增 4 个）
+Expected: everything passes (4 new in this task)
 
-- [ ] **Step 5: 提交**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add crates/ivmlite-test/src/oracle.rs crates/ivmlite-test/src/lib.rs
-git commit -m "feat(test): 独立的 SQLite oracle"
+git commit -m "feat(test): an independent SQLite oracle"
 ```
 
 ---
 
-## Task 9: 不变量断言
+## Task 9: Invariant assertions
 
 **Files:**
 - Create: `crates/ivmlite-test/src/invariants.rs`
 - Modify: `crates/ivmlite-test/src/lib.rs`
 
 **Interfaces:**
-- Consumes: `ViewQuery`（Task 4）、`ivmlite_core::{Row, Value, ZSet}`
+- Consumes: `ViewQuery` (Task 4), `ivmlite_core::{Row, Value, ZSet}`
 - Produces: `check_invariants(&ZSet, &ViewQuery) -> Result<(), String>`
 
-- [ ] **Step 1: 写失败的测试**
+- [ ] **Step 1: Write the failing tests**
 
-`crates/ivmlite-test/src/invariants.rs`：
+`crates/ivmlite-test/src/invariants.rs`:
 
 ```rust
 #[cfg(test)]
@@ -1897,36 +1897,36 @@ mod tests {
     fn rejects_negative_weights() {
         let z = ZSet::from_rows([(out("a", 1), -1)]);
         let err = check_invariants(&z, &q()).unwrap_err();
-        assert!(err.contains("负权重"), "实得: {err}");
+        assert!(err.contains("negative weight"), "got: {err}");
     }
 
     #[test]
     fn rejects_duplicate_group_keys() {
-        // 同一个 group key "a" 出现了两行不同的聚合结果
+        // The same group key "a" appears in two rows with different aggregate results
         let z = ZSet::from_rows([(out("a", 1), 1), (out("a", 2), 1)]);
         let err = check_invariants(&z, &q()).unwrap_err();
-        assert!(err.contains("group key"), "实得: {err}");
+        assert!(err.contains("group key"), "got: {err}");
     }
 
     #[test]
     fn rejects_weight_greater_than_one_for_aggregate_views() {
         let z = ZSet::from_rows([(out("a", 1), 2)]);
         let err = check_invariants(&z, &q()).unwrap_err();
-        assert!(err.contains("权重"), "实得: {err}");
+        assert!(err.contains("weight"), "got: {err}");
     }
 }
 ```
 
-> `ZSet` 已经保证不会留 `w = 0` 的行（Task 2），因此不变量层不再重复检查僵尸行——那条性质由 `ZSet::update` 的单测覆盖。
+> `ZSet` already guarantees no `w = 0` rows remain (Task 2), so the invariant layer does not check for zombie rows again — that property is covered by `ZSet::update`'s unit tests.
 
-- [ ] **Step 2: 运行测试确认失败**
+- [ ] **Step 2: Run the tests to confirm they fail**
 
 Run: `cargo test -p ivmlite-test invariants`
-Expected: 编译失败，`cannot find function check_invariants`
+Expected: a compile failure, `cannot find function check_invariants`
 
-- [ ] **Step 3: 写实现**
+- [ ] **Step 3: Write the implementation**
 
-`crates/ivmlite-test/src/invariants.rs` 顶部：
+At the top of `crates/ivmlite-test/src/invariants.rs`:
 
 ```rust
 use std::collections::BTreeSet;
@@ -1935,71 +1935,71 @@ use ivmlite_core::{Row, Value, ZSet};
 
 use crate::ViewQuery;
 
-/// 不需要 oracle 就能检查的性质（spec §9.1 第一层）。
-/// 跑得极快，因此在每一批 delta 之后都检查，而不是只在最后检查。
+/// Properties that can be checked without an oracle (the first layer of spec §9.1).
+/// They run very fast, so they are checked after every batch of deltas rather than only at the end.
 pub fn check_invariants(state: &ZSet, query: &ViewQuery) -> Result<(), String> {
     let key_arity = query.group_by.len();
     let mut seen: BTreeSet<Vec<Value>> = BTreeSet::new();
 
     for (row, weight) in state.iter() {
         if *weight < 0 {
-            return Err(format!("最终状态出现负权重 {weight}，行 {row:?}"));
+            return Err(format!("negative weight {weight} in the final state, row {row:?}"));
         }
         if *weight != 1 {
             return Err(format!(
-                "聚合视图的每个 group 应恰好一行、权重为 1，实得权重 {weight}，行 {row:?}"
+                "each group of an aggregate view should be exactly one row with weight 1; got weight {weight}, row {row:?}"
             ));
         }
         if row.len() != query.output_arity() {
             return Err(format!(
-                "输出行宽度 {} 与视图的 {} 不符，行 {row:?}",
+                "output row width {} does not match the view's {}, row {row:?}",
                 row.len(),
                 query.output_arity()
             ));
         }
         let key: Vec<Value> = (0..key_arity).map(|i| row.get(i).clone()).collect();
         if !seen.insert(key.clone()) {
-            return Err(format!("group key {key:?} 在输出中出现多次"));
+            return Err(format!("group key {key:?} appears more than once in the output"));
         }
     }
     Ok(())
 }
 ```
 
-`crates/ivmlite-test/src/lib.rs` 追加：
+Append to `crates/ivmlite-test/src/lib.rs`:
 
 ```rust
 mod invariants;
 pub use invariants::check_invariants;
 ```
 
-- [ ] **Step 4: 运行测试确认通过**
+- [ ] **Step 4: Run the tests to confirm they pass**
 
 Run: `cargo test -p ivmlite-test`
-Expected: 全部通过（本任务新增 4 个）
+Expected: everything passes (4 new in this task)
 
-- [ ] **Step 5: 提交**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add crates/ivmlite-test/src/invariants.rs crates/ivmlite-test/src/lib.rs
-git commit -m "feat(test): 不变量断言层"
+git commit -m "feat(test): the invariant assertion layer"
 ```
 
 ---
 
-## Task 10: 差分测试驱动与批次无关性
+## Task 10: The differential-testing driver and batch independence
 
 **Files:**
 - Create: `crates/ivmlite-test/src/differential.rs`
 - Modify: `crates/ivmlite-test/src/lib.rs`
 
 **Interfaces:**
-- Consumes: 前面全部
-- Produces: `Batching`（`All` / `One` / `Chunks(usize)`）、`TestCase { seed: u64, schema: Schema, query: ViewQuery, initial: Vec<Row>, ops: Vec<Op>, batching: Batching }`、`Failure { case_seed: u64, stage: String, detail: String }`、`run<E: Engine>(&mut E, &TestCase) -> Result<(), Failure>`、`gen_case(u64, &Schema, &Domain, usize, usize, Batching) -> TestCase`、`check_batch_invariance<E, F>(&TestCase, F) -> Result<(), Failure> where F: Fn() -> E`、`seed_range() -> Vec<u64>`（读 `IVMLITE_SEED` 环境变量，未设置时返回 `0..50`）。
+- Consumes: everything so far
+- Produces: `Batching` (`All` / `One` / `Chunks(usize)`), `TestCase { seed: u64, schema: Schema, query: ViewQuery, initial: Vec<Row>, ops: Vec<Op>, batching: Batching }`, `Failure { case_seed: u64, stage: String, detail: String }`, `run<E: Engine>(&mut E, &TestCase) -> Result<(), Failure>`, `gen_case(u64, &Schema, &Domain, usize, usize, Batching) -> TestCase`, `check_batch_invariance<E, F>(&TestCase, F) -> Result<(), Failure> where F: Fn() -> E`, `seed_range() -> Vec<u64>` (reads the `IVMLITE_SEED` environment variable; returns `0..50` when it is unset).
 
-- [ ] **Step 1: 写失败的测试**
+- [ ] **Step 1: Write the failing tests**
 
-`crates/ivmlite-test/src/differential.rs`：
+`crates/ivmlite-test/src/differential.rs`:
 
 ```rust
 #[cfg(test)]
@@ -2026,7 +2026,7 @@ mod tests {
             case.query = query;
             let mut engine = NaiveRecompute::new();
             run(&mut engine, &case).unwrap_or_else(|f| {
-                panic!("seed {} 失败于 {}: {}", f.case_seed, f.stage, f.detail)
+                panic!("seed {} failed at {}: {}", f.case_seed, f.stage, f.detail)
             });
         }
     }
@@ -2051,14 +2051,14 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [ ] **Step 2: Run the tests to confirm they fail**
 
 Run: `cargo test -p ivmlite-test differential`
-Expected: 编译失败，`cannot find function gen_case`
+Expected: a compile failure, `cannot find function gen_case`
 
-- [ ] **Step 3: 写实现**
+- [ ] **Step 3: Write the implementation**
 
-`crates/ivmlite-test/src/differential.rs` 顶部：
+At the top of `crates/ivmlite-test/src/differential.rs`:
 
 ```rust
 use ivmlite_core::{Row, ZSet};
@@ -2072,11 +2072,11 @@ use crate::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Batching {
-    /// 全部 delta 一次性应用
+    /// Apply all deltas at once
     All,
-    /// 每条 delta 单独应用
+    /// Apply each delta on its own
     One,
-    /// 每 n 条一批
+    /// One batch per n deltas
     Chunks(usize),
 }
 
@@ -2102,7 +2102,7 @@ impl std::fmt::Display for Failure {
         write!(
             f,
             "[seed={seed}] {stage}: {detail}\n\
-             重放本用例: IVMLITE_SEED={seed} cargo test -p ivmlite-test --test harness_catches_bugs -- --nocapture",
+             replay this case: IVMLITE_SEED={seed} cargo test -p ivmlite-test --test harness_catches_bugs -- --nocapture",
             seed = self.case_seed,
             stage = self.stage,
             detail = self.detail
@@ -2110,13 +2110,13 @@ impl std::fmt::Display for Failure {
     }
 }
 
-/// 集成测试遍历的 seed 范围。设置 `IVMLITE_SEED` 时只跑那一个 seed——
-/// 这就是 Failure 里那行重放命令生效的机制（spec §9.4）。
+/// The range of seeds the integration tests walk. With `IVMLITE_SEED` set, only that one seed runs —
+/// this is the mechanism that makes the replay command in a Failure work (spec §9.4).
 pub fn seed_range() -> Vec<u64> {
     match std::env::var("IVMLITE_SEED") {
         Ok(s) => match s.parse::<u64>() {
             Ok(seed) => vec![seed],
-            Err(_) => panic!("IVMLITE_SEED 必须是 u64，实得 {s:?}"),
+            Err(_) => panic!("IVMLITE_SEED must be a u64, got {s:?}"),
         },
         Err(_) => (0..50).collect(),
     }
@@ -2168,15 +2168,15 @@ fn initial_zset(initial: &[Row]) -> ZSet {
     ZSet::from_rows(initial.iter().cloned().map(|r| (r, 1)))
 }
 
-/// 跑完一个用例：逐批应用 delta，**每一个可观察的 refresh 点**都检查不变量
-/// 并与 oracle 严格比对。
+/// Run one case: apply deltas batch by batch, checking invariants at **every observable refresh point**
+/// and comparing strictly against the oracle.
 ///
-/// 为什么不能只比最终状态（spec §9.1）：一个"中途算错、形式上仍合法、后续
-/// 又自行恢复"的实现可以完全通过末尾比对——而这正是状态漂移类 bug 的典型
-/// 形态。不变量层拦不住它，因为错误的值同样满足"权重为 1、group key 唯一"。
+/// Why comparing only the final state is not enough (spec §9.1): an implementation that "goes wrong midway, stays formally legal, and later
+/// heals itself" can pass an end-of-run comparison completely — and that is the typical shape of state-drift bugs.
+/// The invariant layer cannot stop it, because the wrong values also satisfy "weight 1, unique group key".
 ///
-/// 代价是复杂度从 O(n) 变成 O(n × 基表规模)，因此差分测试的用例规模必须
-/// 保持很小（默认 25 行初始数据、150 步操作）。大规模场景交给 benchmark。
+/// The cost is that complexity goes from O(n) to O(n × base-table size), so differential cases must
+/// stay small (by default 25 rows of initial data and 150 operations). Large-scale scenarios are left to the benchmark.
 pub fn run<E: Engine>(engine: &mut E, case: &TestCase) -> Result<(), Failure> {
     let fail = |stage: &str, detail: String| Failure {
         case_seed: case.seed,
@@ -2196,7 +2196,7 @@ pub fn run<E: Engine>(engine: &mut E, case: &TestCase) -> Result<(), Failure> {
             return Err(fail(
                 &format!("diff[{stage}]"),
                 format!(
-                    "引擎与 oracle 不一致\n  query: {}\n  引擎: {:?}\n  oracle: {:?}",
+                    "the engine disagrees with the oracle\n  query: {}\n  engine: {:?}\n  oracle: {:?}",
                     case.query.to_sql(&case.schema),
                     got,
                     want
@@ -2211,7 +2211,7 @@ pub fn run<E: Engine>(engine: &mut E, case: &TestCase) -> Result<(), Failure> {
         .create_view(&case.schema, &case.query, &base)
         .map_err(|e| fail("create_view", e.to_string()))?;
 
-    // bootstrap 之后立刻比对一次——空 ops 的用例也因此被真正检查到。
+    // Compare once right after bootstrap — so a case with no ops is genuinely checked too.
     compare(engine, &base, "bootstrap")?;
 
     for (i, delta) in batches(&case.ops, case.batching).into_iter().enumerate() {
@@ -2224,8 +2224,8 @@ pub fn run<E: Engine>(engine: &mut E, case: &TestCase) -> Result<(), Failure> {
     Ok(())
 }
 
-/// spec §9.1 第二层：同一串 delta 无论怎么分批，最终状态必须一致。
-/// 自动维护模式下无法测试这条性质，这是 v0 选择显式 refresh 的收益之一。
+/// The second layer of spec §9.1: however the same sequence of deltas is batched, the final state must be the same.
+/// This property cannot be tested in automatic-maintenance mode, which is one of the benefits of v0 choosing explicit refresh.
 pub fn check_batch_invariance<E, F>(case: &TestCase, make: F) -> Result<(), Failure>
 where
     E: Engine,
@@ -2252,7 +2252,7 @@ where
                         case_seed: case.seed,
                         stage: "batch_invariance".into(),
                         detail: format!(
-                            "{ref_mode:?} 与 {mode:?} 的最终状态不同\n  {ref_state:?}\n  {state:?}"
+                            "the final states of {ref_mode:?} and {mode:?} differ\n  {ref_state:?}\n  {state:?}"
                         ),
                     });
                 }
@@ -2263,7 +2263,7 @@ where
 }
 ```
 
-`crates/ivmlite-test/src/lib.rs` 追加：
+Append to `crates/ivmlite-test/src/lib.rs`:
 
 ```rust
 mod differential;
@@ -2272,49 +2272,49 @@ pub use differential::{
 };
 ```
 
-- [ ] **Step 4: 运行测试确认通过**
+- [ ] **Step 4: Run the tests to confirm they pass**
 
 Run: `cargo test -p ivmlite-test`
-Expected: 全部通过（本任务新增 3 个）
+Expected: everything passes (3 new in this task)
 
-- [ ] **Step 5: 提交**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add crates/ivmlite-test/src/differential.rs crates/ivmlite-test/src/lib.rs
-git commit -m "feat(test): 差分测试驱动与批次无关性检查"
+git commit -m "feat(test): the differential-testing driver and a batch-independence check"
 ```
 
 ---
 
-## Task 11: 植入 bug 的引擎 + shrinker + M0 完成判定
+## Task 11: The bug-planted engine + shrinker + M0 completion criteria
 
 **Files:**
 - Create: `crates/ivmlite-test/src/buggy.rs`, `crates/ivmlite-test/src/shrink.rs`, `crates/ivmlite-test/src/regression.rs`
 - Create: `crates/ivmlite-test/tests/harness_catches_bugs.rs`
 - Modify: `crates/ivmlite-test/src/lib.rs`
-- Modify: `crates/ivmlite-test/Cargo.toml`（加 serde / serde_json，并为 `ivmlite-core` 打开 serde feature）
-- Modify: `crates/ivmlite-core/Cargo.toml`（新增**可选**的 serde feature）
-- Modify: `crates/ivmlite-core/src/value.rs`, `crates/ivmlite-core/src/row.rs`（加 `cfg_attr` derive）
+- Modify: `crates/ivmlite-test/Cargo.toml` (add serde / serde_json, and turn on the serde feature for `ivmlite-core`)
+- Modify: `crates/ivmlite-core/Cargo.toml` (add an **optional** serde feature)
+- Modify: `crates/ivmlite-core/src/value.rs`, `crates/ivmlite-core/src/row.rs` (add `cfg_attr` derives)
 
 **Interfaces:**
-- Consumes: 前面全部
-- Produces: `NoRetractionEngine::new() -> NoRetractionEngine`、`TransientDriftEngine::new(drift_at: usize) -> TransientDriftEngine`（两者均实现 `Engine`）、`shrink<E, F>(&TestCase, F) -> TestCase where E: Engine, F: Fn() -> E`、`save_regression(&Path, &TestCase) -> std::io::Result<PathBuf>`、`load_regressions(&Path) -> std::io::Result<Vec<TestCase>>`；并使 `ivmlite-core` 获得可选的 `serde` feature
+- Consumes: everything so far
+- Produces: `NoRetractionEngine::new() -> NoRetractionEngine`, `TransientDriftEngine::new(drift_at: usize) -> TransientDriftEngine` (both implement `Engine`), `shrink<E, F>(&TestCase, F) -> TestCase where E: Engine, F: Fn() -> E`, `save_regression(&Path, &TestCase) -> std::io::Result<PathBuf>`, `load_regressions(&Path) -> std::io::Result<Vec<TestCase>>`; and gives `ivmlite-core` an optional `serde` feature
 
-> **这是 M0 的完成判定。** 不验证"测试框架真的会红"，后续拿到的绿全是假绿。
+> **These are M0's completion criteria.** Without verifying that "the testing harness really goes red", every green obtained afterwards is a false green.
 
-- [ ] **Step 1: 写植入 bug 的引擎**
+- [ ] **Step 1: Write the bug-planted engine**
 
-`crates/ivmlite-test/src/buggy.rs`：
+`crates/ivmlite-test/src/buggy.rs`:
 
 ```rust
 use ivmlite_core::ZSet;
 
 use crate::{Engine, EngineError, NaiveRecompute, Schema, ViewQuery};
 
-/// 故意植入 bug 的引擎：聚合结果变化时**只发出新行、不撤回旧行**。
+/// An engine with a deliberately planted bug: when an aggregate result changes it **only emits the new row and never retracts the old one**.
 ///
-/// 这正是 spec §6.2 所说的 IVM 头号 bug 来源。它的存在不是为了被修好，
-/// 而是为了证明测试框架抓得住它。
+/// This is exactly what spec §6.2 calls IVM's number-one source of bugs. It exists not to be fixed,
+/// but to prove the testing harness catches it.
 #[derive(Debug, Default)]
 pub struct NoRetractionEngine {
     inner: NaiveRecompute,
@@ -2341,7 +2341,7 @@ impl Engine for NoRetractionEngine {
 
     fn apply(&mut self, delta: &ZSet) -> Result<(), EngineError> {
         self.inner.apply(delta)?;
-        // BUG（有意为之）：把新的聚合结果并进来，却从不撤回上一次发出的行。
+        // BUG (deliberate): merge in the new aggregate result, but never retract the previously emitted row.
         let fresh = self.inner.materialize()?;
         for (row, weight) in fresh.iter() {
             self.accumulated.update(row.clone(), *weight);
@@ -2354,15 +2354,15 @@ impl Engine for NoRetractionEngine {
     }
 }
 
-/// 在第 `drift_at` 次 `materialize` 返回一个被污染、但**形式合法**的状态，
-/// 之后恢复正确。
+/// On the `drift_at`-th `materialize` call, return a corrupted but **formally legal** state,
+/// and be correct again afterwards.
 ///
-/// 它只为证明一件事：逐批比对 oracle 抓得到「中途算错、形式合法、之后自愈」
-/// 的实现，而只比最终状态抓不到。这是 spec §9.1 为逐批比对付出
-/// O(n × 基表规模) 代价的**唯一证据**——没有这个反例，那笔开销就没有依据。
+/// It exists to prove one thing only: per-batch oracle comparison catches an implementation that "goes wrong midway, stays formally legal, and later heals itself",
+/// while comparing only the final state does not. This is the **only evidence** for the O(n × base-table size) cost spec §9.1
+/// pays for per-batch comparison — without this counterexample that cost has no justification.
 ///
-/// 污染方式刻意保持全部不变量成立：权重仍为 1、行宽不变、group key（前缀列）
-/// 不变，所以 `check_invariants` 会放行。只有 oracle 比对能抓到它。
+/// The corruption deliberately keeps every invariant true: the weight is still 1, the row width is unchanged, and the group key (the prefix columns)
+/// is unchanged, so `check_invariants` lets it through. Only the oracle comparison can catch it.
 #[derive(Debug)]
 pub struct TransientDriftEngine {
     inner: NaiveRecompute,
@@ -2371,8 +2371,8 @@ pub struct TransientDriftEngine {
 }
 
 impl TransientDriftEngine {
-    /// `drift_at` 按 `materialize` 的调用序数计，从 1 开始。
-    /// 在 `run` 中第 1 次是 bootstrap，第 2 次是第一批之后。
+    /// `drift_at` counts `materialize` calls, starting at 1.
+    /// In `run`, call 1 is the bootstrap and call 2 comes after the first batch.
     pub fn new(drift_at: usize) -> Self {
         Self { inner: NaiveRecompute::new(), calls: 0, drift_at }
     }
@@ -2398,14 +2398,14 @@ impl Engine for TransientDriftEngine {
         if self.calls != self.drift_at {
             return Ok(truth);
         }
-        // 只把第一行最后一个聚合列 +1：行宽、group key、权重全部不变。
+        // Add 1 to only the last aggregate column of the first row: row width, group key and weight all unchanged.
         let mut drifted = ZSet::new();
         for (i, (row, weight)) in truth.iter().enumerate() {
             let mut values = row.0.clone();
             if i == 0 {
                 if let Some(Value::Int(n)) = values.last() {
                     let bumped = *n + 1;
-                    *values.last_mut().expect("刚判断过非空") = Value::Int(bumped);
+                    *values.last_mut().expect("just checked it is non-empty") = Value::Int(bumped);
                 }
             }
             drifted.update(Row::new(values), *weight);
@@ -2415,7 +2415,7 @@ impl Engine for TransientDriftEngine {
 }
 ```
 
-`buggy.rs` 顶部的 `use` 需要相应扩展：
+The `use` at the top of `buggy.rs` needs to grow accordingly:
 
 ```rust
 use ivmlite_core::{Row, Value, ZSet};
@@ -2423,9 +2423,9 @@ use ivmlite_core::{Row, Value, ZSet};
 use crate::{Engine, EngineError, NaiveRecompute, Schema, ViewQuery};
 ```
 
-- [ ] **Step 2: 写 shrinker**
+- [ ] **Step 2: Write the shrinker**
 
-`crates/ivmlite-test/src/shrink.rs`：
+`crates/ivmlite-test/src/shrink.rs`:
 
 ```rust
 use ivmlite_core::Row;
@@ -2441,11 +2441,11 @@ where
     run(&mut engine, case).is_err()
 }
 
-/// 序列的合法性：每个 DELETE / UPDATE 必须命中当时存在的行。
+/// Legality of a sequence: every DELETE / UPDATE must hit a row that exists at that moment.
 ///
-/// 这是自研 shrinker 而非直接用 proptest 的原因——朴素的缩小会删掉某个
-/// INSERT，让后续针对该行的 DELETE 悬空，产出一个引擎本就不该处理的非法
-/// 序列，于是"失败"变得毫无意义（spec §9.3）。
+/// This is why the shrinker is home-grown rather than proptest used directly — naive shrinking deletes some
+/// INSERT, leaving a later DELETE aimed at that row dangling, and produces an illegal sequence the engine was never obliged
+/// to handle, so the "failure" becomes meaningless (spec §9.3).
 fn is_legal(initial: &[Row], ops: &[Op]) -> bool {
     let mut live: Vec<Row> = initial.to_vec();
     for op in ops {
@@ -2469,8 +2469,8 @@ fn is_legal(initial: &[Row], ops: &[Op]) -> bool {
     true
 }
 
-/// 把失败用例缩到最小。顺序遵循 spec §9.3：**先缩更新序列，再缩 query，
-/// 最后缩数据**。每一步都要求缩小后的用例**仍然合法且仍然失败**。
+/// Shrink a failing case to a minimum. The order follows spec §9.3: **shrink the update sequence first, then the query,
+/// and the data last**. Every step requires the shrunk case to be **still legal and still failing**.
 pub fn shrink<E, F>(case: &TestCase, make: F) -> TestCase
 where
     E: Engine,
@@ -2478,7 +2478,7 @@ where
 {
     let mut best = case.clone();
 
-    // 阶段一：按 delta-debugging 的粒度递减删除 op 区间。
+    // Phase one: delete op ranges at decreasing delta-debugging granularity.
     let mut granularity = best.ops.len().max(1);
     while granularity >= 1 {
         let mut improved = true;
@@ -2496,7 +2496,7 @@ where
                     if still_fails(&candidate, &make) {
                         best = candidate;
                         improved = true;
-                        continue; // 不推进 start，同一位置继续尝试
+                        continue; // do not advance start; keep trying at the same position
                     }
                 }
                 start = end;
@@ -2508,12 +2508,12 @@ where
         granularity /= 2;
     }
 
-    // 阶段二：缩小 query。缩 query 不影响序列合法性（合法性只关乎行，不关乎查询），
-    // 所以这里不需要 is_legal 门禁。
+    // Phase two: shrink the query. Shrinking the query does not affect the sequence's legality (legality concerns rows, not the query),
+    // so no is_legal gate is needed here.
     loop {
         let mut improved = false;
 
-        // 去掉一个聚合，至少保留一个
+        // Remove one aggregate, keeping at least one
         if best.query.aggs.len() > 1 {
             for i in 0..best.query.aggs.len() {
                 let mut query = best.query.clone();
@@ -2527,7 +2527,7 @@ where
             }
         }
 
-        // 去掉一个 group-by 列，至少保留一个
+        // Remove one group-by column, keeping at least one
         if !improved && best.query.group_by.len() > 1 {
             for i in 0..best.query.group_by.len() {
                 let mut query = best.query.clone();
@@ -2541,7 +2541,7 @@ where
             }
         }
 
-        // 谓词退化成 None
+        // Degrade the predicate to None
         if !improved && best.query.predicate != Predicate::None {
             let mut query = best.query.clone();
             query.predicate = Predicate::None;
@@ -2557,7 +2557,7 @@ where
         }
     }
 
-    // 阶段三：逐条删除初始行。
+    // Phase three: delete initial rows one by one.
     let mut i = 0;
     while i < best.initial.len() {
         let mut initial = best.initial.clone();
@@ -2566,7 +2566,7 @@ where
             let candidate = TestCase { initial, ..best.clone() };
             if still_fails(&candidate, &make) {
                 best = candidate;
-                continue; // 不推进 i
+                continue; // do not advance i
             }
         }
         i += 1;
@@ -2576,13 +2576,13 @@ where
 }
 ```
 
-- [ ] **Step 3: 让用例可序列化，写回归固化机制**
+- [ ] **Step 3: Make cases serialisable, and write the regression-freezing mechanism**
 
-`ivmlite-core` 加一个**可选**的 serde feature——默认构建仍然零依赖，只有
-`ivmlite-test` 启用它。这样 Global Constraints 里"core 不依赖 rusqlite"的
-约束和"core 默认无依赖"的取向都不被破坏。
+Give `ivmlite-core` an **optional** serde feature — the default build still has zero dependencies, and only
+`ivmlite-test` enables it. That way neither the Global Constraint "core does not depend on rusqlite"
+nor the preference "core has no dependencies by default" is broken.
 
-`crates/ivmlite-core/Cargo.toml`：
+`crates/ivmlite-core/Cargo.toml`:
 
 ```toml
 [dependencies]
@@ -2592,14 +2592,14 @@ serde = { version = "1", features = ["derive"], optional = true }
 serde = ["dep:serde"]
 ```
 
-给 `Value`（value.rs）与 `Row`（row.rs）的 derive 行前各加一行：
+Add one line before the derive line of each of `Value` (value.rs) and `Row` (row.rs):
 
 ```rust
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 ```
 
-`crates/ivmlite-test/Cargo.toml` 改依赖（`ivmlite-core` 已是普通依赖，
-集成测试 `tests/` 同样可用，无需额外 dev-dependency）：
+Change the dependencies of `crates/ivmlite-test/Cargo.toml` (`ivmlite-core` is already a normal dependency,
+available to the integration tests in `tests/` too, with no extra dev-dependency needed):
 
 ```toml
 ivmlite-core = { workspace = true, features = ["serde"] }
@@ -2609,11 +2609,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ```
 
-给 `ColumnType` / `Column` / `Schema`（schema.rs）、`AggFn` / `Agg` /
-`Predicate` / `ViewQuery`（query.rs）、`Op`（ops.rs）、`Batching` /
-`TestCase`（differential.rs）的 derive 列表各加 `serde::Serialize, serde::Deserialize`。
+Add `serde::Serialize, serde::Deserialize` to the derive lists of `ColumnType` / `Column` / `Schema` (schema.rs), `AggFn` / `Agg` /
+`Predicate` / `ViewQuery` (query.rs), `Op` (ops.rs), and `Batching` /
+`TestCase` (differential.rs).
 
-`crates/ivmlite-test/src/regression.rs`：
+`crates/ivmlite-test/src/regression.rs`:
 
 ```rust
 use std::fs;
@@ -2621,8 +2621,8 @@ use std::path::{Path, PathBuf};
 
 use crate::TestCase;
 
-/// 把一个最小失败用例写进回归目录。文件名用 seed + 操作数，重复运行会覆盖
-/// 同一个文件而不是堆积——同一个 seed 缩出来的最小用例应当是确定的。
+/// Write a minimal failing case into the regressions directory. The file name uses seed + op count, so repeated runs overwrite
+/// the same file rather than piling up — the minimal case shrunk from the same seed should be deterministic.
 pub fn save_regression(dir: &Path, case: &TestCase) -> std::io::Result<PathBuf> {
     fs::create_dir_all(dir)?;
     let path = dir.join(format!("seed{}-ops{}.json", case.seed, case.ops.len()));
@@ -2632,8 +2632,8 @@ pub fn save_regression(dir: &Path, case: &TestCase) -> std::io::Result<PathBuf> 
     Ok(path)
 }
 
-/// 读出回归目录下的全部用例。目录不存在时返回空 vec——首次运行尚未固化
-/// 任何用例是正常状态，不是错误。
+/// Read every case in the regressions directory. A missing directory returns an empty vec — not having frozen
+/// any case yet on a first run is a normal state, not an error.
 pub fn load_regressions(dir: &Path) -> std::io::Result<Vec<TestCase>> {
     if !dir.exists() {
         return Ok(Vec::new());
@@ -2643,7 +2643,7 @@ pub fn load_regressions(dir: &Path) -> std::io::Result<Vec<TestCase>> {
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.extension().is_some_and(|x| x == "json"))
         .collect();
-    paths.sort(); // 顺序确定，便于复现
+    paths.sort(); // deterministic order, for reproducibility
 
     for path in paths {
         let text = fs::read_to_string(&path)?;
@@ -2659,7 +2659,7 @@ pub fn load_regressions(dir: &Path) -> std::io::Result<Vec<TestCase>> {
 }
 ```
 
-`crates/ivmlite-test/src/lib.rs` 追加：
+Append to `crates/ivmlite-test/src/lib.rs`:
 
 ```rust
 mod buggy;
@@ -2670,9 +2670,9 @@ pub use regression::{load_regressions, save_regression};
 pub use shrink::shrink;
 ```
 
-- [ ] **Step 4: 写 M0 完成判定的集成测试**
+- [ ] **Step 4: Write the integration tests for M0's completion criteria**
 
-`crates/ivmlite-test/tests/harness_catches_bugs.rs`：
+`crates/ivmlite-test/tests/harness_catches_bugs.rs`:
 
 ```rust
 use ivmlite_core::ZSet;
@@ -2682,8 +2682,8 @@ use ivmlite_test::{
     NoRetractionEngine, Schema, TransientDriftEngine,
 };
 
-/// `amount` 刻意可空：否则"SUM 的非 NULL 输入为零行"这条路径在随机测试里
-/// 永远走不到，spec §6.1 的 NULL 语义契约就只有单元测试覆盖，没有差分覆盖。
+/// `amount` is deliberately nullable: otherwise the "SUM over zero non-NULL inputs" path is never reached by random testing,
+/// and spec §6.1's NULL-semantics contract has unit-test coverage only, no differential coverage.
 fn schema() -> Schema {
     Schema {
         table: "orders".into(),
@@ -2701,7 +2701,7 @@ fn naive_engine_is_green_across_many_seeds() {
     for seed in seed_range() {
         let case = gen_case(seed, &schema, &domain, 25, 150, Batching::Chunks(5));
         let mut engine = NaiveRecompute::new();
-        run(&mut engine, &case).unwrap_or_else(|f| panic!("参照实现不应失败: {f}"));
+        run(&mut engine, &case).unwrap_or_else(|f| panic!("the reference implementation should not fail: {f}"));
     }
 }
 
@@ -2712,47 +2712,47 @@ fn naive_engine_satisfies_batch_invariance() {
     for seed in seed_range().into_iter().take(10) {
         let case = gen_case(seed, &schema, &domain, 25, 120, Batching::All);
         check_batch_invariance(&case, NaiveRecompute::new)
-            .unwrap_or_else(|f| panic!("参照实现不应违反批次无关性: {f}"));
+            .unwrap_or_else(|f| panic!("the reference implementation should not violate batch independence: {f}"));
     }
 }
 
-/// 固化下来的历史失败用例必须始终通过。M0 里参照实现平凡正确，因此这个测试
-/// 的作用是把机制建起来；它真正开始拦 bug 是在 M1 接入真实引擎之后。
+/// Frozen historical failing cases must always pass. In M0 the reference implementation is trivially correct, so this test's
+/// role is to build the mechanism; it really starts catching bugs once M1 plugs in the real engine.
 #[test]
 fn saved_regressions_still_pass() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/regressions");
-    for case in load_regressions(&dir).expect("读取回归用例目录失败") {
+    for case in load_regressions(&dir).expect("failed to read the regressions directory") {
         let mut engine = NaiveRecompute::new();
-        run(&mut engine, &case).unwrap_or_else(|f| panic!("回归用例失败: {f}"));
+        run(&mut engine, &case).unwrap_or_else(|f| panic!("a regression case failed: {f}"));
     }
 }
 
-/// 证明逐批比对 oracle 有独立价值：抓到「中途算错、形式合法、之后自愈」的实现。
+/// Shows that per-batch oracle comparison has independent value: it catches an implementation that "goes wrong midway, stays formally legal, and later heals itself".
 ///
-/// 这是 spec §9.1 为逐批比对付出 O(n × 基表规模) 代价的唯一证据。
-/// 断言分两半：run 必须在**非 bootstrap 的某个中间点**失败；而同一个引擎
-/// 手工重放到底之后，最终状态与 oracle **一致**——「末尾正确 + run 失败」
-/// 正说明只比最终状态会漏掉它。
+/// This is the only evidence for the O(n × base-table size) cost spec §9.1 pays for per-batch comparison.
+/// The assertion has two halves: run must fail at **some intermediate point other than bootstrap**, while the same engine
+/// replayed to the end by hand reaches a final state that **agrees** with the oracle — "correct at the end + run fails"
+/// is exactly why comparing only the final state would miss it.
 #[test]
 fn per_batch_oracle_comparison_catches_transient_drift() {
     let schema = schema();
     let domain = Domain::default();
     let case = gen_case(3, &schema, &domain, 25, 150, Batching::Chunks(5));
 
-    // drift_at = 2：第 1 次 materialize 是 bootstrap，第 2 次是第一批之后
+    // drift_at = 2: the first materialize is the bootstrap, the second comes after the first batch
     let mut engine = TransientDriftEngine::new(2);
-    let failure = run(&mut engine, &case).expect_err("逐批比对必须抓到中途漂移");
+    let failure = run(&mut engine, &case).expect_err("per-batch comparison must catch the midway drift");
     assert!(
         failure.stage.starts_with("diff["),
-        "应当在 oracle 比对处失败，实得 stage={}",
+        "it should fail at the oracle comparison, got stage={}",
         failure.stage
     );
     assert_ne!(
         failure.stage, "diff[bootstrap]",
-        "漂移设定在第一批之后，不应在 bootstrap 处报出"
+        "the drift is set after the first batch and should not be reported at bootstrap"
     );
 
-    // 手工重放到底：证明这个引擎的最终状态是正确的
+    // Replay to the end by hand, showing this engine's final state is correct
     let mut settled = TransientDriftEngine::new(2);
     let mut base = ZSet::from_rows(case.initial.iter().cloned().map(|r| (r, 1)));
     settled.create_view(&case.schema, &case.query, &base).unwrap();
@@ -2766,17 +2766,17 @@ fn per_batch_oracle_comparison_catches_transient_drift() {
         }
     }
     settled.apply(&all).unwrap();
-    let _ = settled.materialize().unwrap(); // call 2: 被污染的那次
-    let settled_state = settled.materialize().unwrap(); // call 3: 已恢复
+    let _ = settled.materialize().unwrap(); // call 2: the corrupted one
+    let settled_state = settled.materialize().unwrap(); // call 3: recovered
 
     let want = recompute_via_sqlite(&case.schema, &case.query, &base).unwrap();
     assert_eq!(
         settled_state, want,
-        "末尾状态必须正确——这正是只比最终状态会漏掉这个 bug 的原因"
+        "the final state must be correct — which is exactly why comparing only the final state misses this bug"
     );
 }
 
-/// M0 完成判定其一：框架必须抓到植入的 bug。
+/// M0's first acceptance criterion: the framework must catch the planted bug.
 #[test]
 fn harness_catches_the_missing_retraction_bug() {
     let schema = schema();
@@ -2793,12 +2793,12 @@ fn harness_catches_the_missing_retraction_bug() {
     }
     assert!(
         caught * 10 >= total * 9,
-        "{total} 个 seed 中只抓到 {caught} 个——生成器的 bug 检出率过低，\
-         说明值域或有偏采样的参数需要调整；不要放宽本断言"
+        "only {caught} of {total} seeds caught the bug — the generator's detection rate is too low, \
+         so the value domain or the biased-sampling parameters need adjusting; do not relax this assertion"
     );
 }
 
-/// M0 完成判定其二：失败用例必须能缩到 10 步以内，并被固化成回归用例。
+/// M0's second acceptance criterion: a failing case must shrink to 10 steps or fewer and be frozen as a regression case.
 #[test]
 fn failing_case_shrinks_to_under_ten_ops() {
     let schema = schema();
@@ -2811,33 +2811,33 @@ fn failing_case_shrinks_to_under_ten_ops() {
             let mut engine = NoRetractionEngine::new();
             run(&mut engine, c).is_err()
         })
-        .expect("应当至少有一个失败用例");
+        .expect("there should be at least one failing case");
 
     let minimal = shrink(&case, NoRetractionEngine::new);
 
     let mut engine = NoRetractionEngine::new();
-    assert!(run(&mut engine, &minimal).is_err(), "缩小后必须仍然失败");
+    assert!(run(&mut engine, &minimal).is_err(), "the shrunk case must still fail");
     assert!(
         minimal.ops.len() <= 10,
-        "spec §11 M0 要求缩到 10 步以内，实得 {} 步",
+        "spec §11's M0 requires shrinking to 10 steps or fewer, got {} steps",
         minimal.ops.len()
     );
 
-    // 固化：写进 tests/regressions/，此后由 saved_regressions_still_pass 守着。
+    // Freeze: write into tests/regressions/, guarded from then on by saved_regressions_still_pass.
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/regressions");
-    let path = save_regression(&dir, &minimal).expect("固化回归用例失败");
-    eprintln!("已固化最小用例: {}", path.display());
+    let path = save_regression(&dir, &minimal).expect("failed to freeze the regression case");
+    eprintln!("froze the minimal case: {}", path.display());
 }
 ```
 
-- [ ] **Step 5: 运行测试**
+- [ ] **Step 5: Run the tests**
 
 Run: `cargo test -p ivmlite-test --test harness_catches_bugs -- --nocapture`
-Expected: 6 passed（本任务的集成测试文件共 6 个）
+Expected: 6 passed (this task's integration test file has 6 in total)
 
-若 `harness_catches_the_missing_retraction_bug` 的检出率不足，**不要放宽断言**——调 `Domain::distinct`（更小）或 `gen_ops` 的删改比例（更高）。检出率低说明生成器没有制造出足够的 group 复用，这正是 spec §9.2 警告的失败模式。
+If `harness_catches_the_missing_retraction_bug`'s detection rate falls short, **do not relax the assertion** — tune `Domain::distinct` (smaller) or `gen_ops`'s delete/update ratio (higher). A low detection rate means the generator is not producing enough group reuse, exactly the failure mode spec §9.2 warns about.
 
-- [ ] **Step 6: 跑全量并提交**
+- [ ] **Step 6: Run everything and commit**
 
 Run: `cargo fmt --all && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace`
 
@@ -2845,33 +2845,33 @@ Run: `cargo fmt --all && cargo clippy --workspace --all-targets -- -D warnings &
 git add crates/ivmlite-core/Cargo.toml crates/ivmlite-core/src \
         crates/ivmlite-test/Cargo.toml crates/ivmlite-test/src \
         crates/ivmlite-test/tests
-git commit -m "feat(test): 植入 bug 的引擎、shrinker、回归固化与 M0 完成判定"
+git commit -m "feat(test): the bug-planted engine, shrinker, regression freezing, and M0's completion criteria"
 ```
 
-> `tests/regressions/*.json` 要一并提交——它们是永久回归资产，不是临时产物。
+> `tests/regressions/*.json` must be committed too — they are permanent regression assets, not temporary artifacts.
 
 ---
 
-## Task 12: 可移植 workload 定义
+## Task 12: A portable workload definition
 
 **Files:**
 - Create: `crates/ivmlite-workload/Cargo.toml`, `crates/ivmlite-workload/src/lib.rs`
 - Create: `workloads/m0-baseline.toml`
-- Modify: `Cargo.toml`（members 加 `crates/ivmlite-workload`）
+- Modify: `Cargo.toml` (add `crates/ivmlite-workload` to members)
 
 **Interfaces:**
-- Consumes: 无（独立 crate，不依赖本项目其他 crate）
-- Produces: `Workload { name: String, seed: u64, schema: WorkloadSchema, data: DataSpec, updates: UpdateSpec, views: Vec<ViewSpec> }`、`Workload::load(&Path) -> Result<Workload, WorkloadError>`、`Workload::rows(&self) -> impl Iterator<Item = (i64, String, i64)>`、`Workload::update_trace(&self) -> Vec<TraceOp>`、`Workload::export(&self, &Path) -> std::io::Result<()>`、`ViewSpec::sql(&self, table: &str) -> String`、`ViewSpec::table(&self) -> String`、`TraceOp`（`Insert { id: i64, region: String, amount: i64 }` / `Delete { id: i64 }`）。`Workload` 与其全部字段类型 derive `Clone`。
+- Consumes: nothing (a standalone crate that depends on no other crate in this project)
+- Produces: `Workload { name: String, seed: u64, schema: WorkloadSchema, data: DataSpec, updates: UpdateSpec, views: Vec<ViewSpec> }`, `Workload::load(&Path) -> Result<Workload, WorkloadError>`, `Workload::rows(&self) -> impl Iterator<Item = (i64, String, i64)>`, `Workload::update_trace(&self) -> Vec<TraceOp>`, `Workload::export(&self, &Path) -> std::io::Result<()>`, `ViewSpec::sql(&self, table: &str) -> String`, `ViewSpec::table(&self) -> String`, `TraceOp` (`Insert { id: i64, region: String, amount: i64 }` / `Delete { id: i64 }`). `Workload` and all its field types derive `Clone`.
 
-> **为什么单独一个 crate**：spec §10.3 第 7 条要求 workload 是可移植产物。
-> runner 每引擎一份（M0 是 SQLite，M2 会加 Turso），**workload 只有一份**。
-> 写死在 bench 里的话，每接一个对比系统都要重新设计一次 benchmark，而重新
-> 设计过的 benchmark 之间不可比。该 crate 刻意不依赖 `ivmlite-core`——未来的
-> 外部 runner 不该为了读 workload 而拖进整个引擎。
+> **Why a separate crate**: spec §10.3 item 7 requires workloads to be portable artifacts.
+> There is one runner per engine (M0 is SQLite; M2 adds Turso) and **only one workload**.
+> If it were hard-coded into the bench, every new comparison system would mean redesigning the benchmark, and redesigned
+> benchmarks are not comparable with each other. The crate deliberately does not depend on `ivmlite-core` — a future
+> external runner should not drag in the whole engine just to read a workload.
 
-- [ ] **Step 1: 建 crate 与 workload 文件**
+- [ ] **Step 1: Create the crate and the workload file**
 
-`crates/ivmlite-workload/Cargo.toml`：
+`crates/ivmlite-workload/Cargo.toml`:
 
 ```toml
 [package]
@@ -2888,9 +2888,9 @@ toml = "1"
 rand.workspace = true
 ```
 
-根 `Cargo.toml` 的 `members` 加入 `"crates/ivmlite-workload"`。
+Add `"crates/ivmlite-workload"` to the `members` of the root `Cargo.toml`.
 
-`workloads/m0-baseline.toml`：
+`workloads/m0-baseline.toml`:
 
 ```toml
 name = "m0-baseline"
@@ -2907,20 +2907,20 @@ CREATE TABLE orders(
 
 [data]
 base_rows = 100000
-# group 基数：决定 IVM 赢不赢的首要参数（spec §10.1）
+# group cardinality: the primary parameter deciding whether IVM wins (spec §10.1)
 group_cardinality = 1000
 amount_max = 200
-# M0 固定均匀分布；Zipf 排在 M2（spec §10.6）
+# M0 is fixed at a uniform distribution; Zipf is scheduled for M2 (spec §10.6)
 distribution = "uniform"
 
 [updates]
 batch_size = 100
 delete_ratio = 0.33
-# M0 固定无局部性；热点更新排在 M2（spec §10.6）
+# M0 is fixed at no locality; hot-spot updates are scheduled for M2 (spec §10.6)
 locality = "uniform"
 
-# 视图形状受限于表达能力最弱的对照组——手写 trigger（spec §10.3 第 3 条）。
-# 阈值是让各视图彼此不同的手段，trigger 侧用 WHEN 子句表达同一谓词。
+# The view shape is limited by the least expressive control group — hand-written triggers (spec §10.3 item 3).
+# The threshold is what keeps the views distinct; the trigger side expresses the same predicate with a WHEN clause.
 [[views]]
 id = 0
 threshold = 0
@@ -2930,9 +2930,9 @@ id = 1
 threshold = 7
 ```
 
-- [ ] **Step 2: 写失败的测试**
+- [ ] **Step 2: Write the failing tests**
 
-`crates/ivmlite-workload/src/lib.rs`：
+`crates/ivmlite-workload/src/lib.rs`:
 
 ```rust
 #[cfg(test)]
@@ -2972,7 +2972,7 @@ mod tests {
         assert_eq!(
             regions.len(),
             7,
-            "不同分组键的数量必须精确等于 group_cardinality——这是 benchmark 的核心维度"
+            "the number of distinct group keys must be exactly group_cardinality — it is the benchmark's core dimension"
         );
     }
 
@@ -2992,10 +2992,10 @@ mod tests {
         for op in w.update_trace() {
             match op {
                 TraceOp::Insert { id, .. } => {
-                    assert!(live.insert(id), "trace 不得重复插入同一个 id");
+                    assert!(live.insert(id), "the trace must not insert the same id twice");
                 }
                 TraceOp::Delete { id } => {
-                    assert!(live.remove(&id), "trace 里的 DELETE 必须命中存在的 id");
+                    assert!(live.remove(&id), "every DELETE in the trace must hit an existing id");
                 }
             }
         }
@@ -3017,22 +3017,22 @@ mod tests {
     fn shipped_workload_file_parses() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../workloads/m0-baseline.toml");
-        let w = Workload::load(&path).expect("发布的 workload 文件必须可解析");
+        let w = Workload::load(&path).expect("the shipped workload file must parse");
         assert_eq!(w.name, "m0-baseline");
         assert!(!w.views.is_empty());
-        assert!(w.schema.ddl.contains("INTEGER PRIMARY KEY"), "spec §10.3 第 5 条要求稳定主键");
+        assert!(w.schema.ddl.contains("INTEGER PRIMARY KEY"), "spec §10.3 item 5 requires a stable primary key");
     }
 }
 ```
 
-- [ ] **Step 3: 运行测试确认失败**
+- [ ] **Step 3: Run the tests to confirm they fail**
 
 Run: `cargo test -p ivmlite-workload`
-Expected: 编译失败，`cannot find type Workload`
+Expected: a compile failure, `cannot find type Workload`
 
-- [ ] **Step 4: 写实现**
+- [ ] **Step 4: Write the implementation**
 
-`crates/ivmlite-workload/src/lib.rs` 顶部：
+At the top of `crates/ivmlite-workload/src/lib.rs`:
 
 ```rust
 use std::fs;
@@ -3042,15 +3042,15 @@ use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 use serde::{Deserialize, Serialize};
 
-/// M0 只有 Uniform。这个枚举现在就存在，是为了 M2 加 Zipf 时
-/// 不必改动 workload 文件格式（spec §10.6）。
+/// M0 has only Uniform. The enum exists already so that adding Zipf in M2
+/// does not change the workload file format (spec §10.6).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Distribution {
     Uniform,
 }
 
-/// 同上：M2 会加 Hot（更新集中打热 group）。
+/// Likewise: M2 adds Hot (updates concentrated on hot groups).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Locality {
@@ -3124,7 +3124,7 @@ impl std::fmt::Display for WorkloadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             WorkloadError::Io(e) => write!(f, "{e}"),
-            WorkloadError::Parse(e) => write!(f, "解析 workload 失败: {e}"),
+            WorkloadError::Parse(e) => write!(f, "failed to parse the workload: {e}"),
         }
     }
 }
@@ -3137,9 +3137,9 @@ impl Workload {
         toml::from_str(&text).map_err(|e| WorkloadError::Parse(e.to_string()))
     }
 
-    /// 基表行。id 稠密且唯一；分组键的不同值数量**精确**等于 group_cardinality
-    /// ——前 card 行逐一覆盖每个键，其余行随机落入已有的键。随机落点无法保证
-    /// 覆盖全部键，而 benchmark 依赖这个数字是准的。
+    /// The base-table rows. Ids are dense and unique; the number of distinct group keys is **exactly** group_cardinality
+    /// — the first card rows cover each key in turn, and the remaining rows fall into existing keys at random. Random placement alone cannot guarantee
+    /// every key is covered, and the benchmark depends on this number being exact.
     pub fn rows(&self) -> impl Iterator<Item = (i64, String, i64)> + '_ {
         let mut rng = StdRng::seed_from_u64(self.seed);
         let card = self.data.group_cardinality.max(1);
@@ -3150,9 +3150,9 @@ impl Workload {
         })
     }
 
-    /// 一批更新。DELETE 一律命中已存在且未被删过的 id，INSERT 一律用新 id，
-    /// 因此 trace 本身永远合法，任何 runner 直接重放即可，不需要各自维护
-    /// 一份"当前还活着哪些行"的模型。
+    /// One batch of updates. Every DELETE hits an id that exists and has not been deleted yet, and every INSERT uses a fresh id,
+    /// so the trace is always legal: any runner can replay it directly, without keeping its own
+    /// model of "which rows are still alive".
     pub fn update_trace(&self) -> Vec<TraceOp> {
         let mut rng = StdRng::seed_from_u64(self.seed ^ 0x5EED);
         let card = self.data.group_cardinality.max(1);
@@ -3184,8 +3184,8 @@ impl Workload {
             .collect()
     }
 
-    /// 导出成任何引擎都能加载的形式：schema.sql / views.sql / data.csv /
-    /// updates.csv。这是"workload 可移植"这条约束的实际兑现（spec §10.3 第 7 条）。
+    /// Export in a form any engine can load: schema.sql / views.sql / data.csv /
+    /// updates.csv. This is how the "workloads are portable" constraint is actually met (spec §10.3 item 7).
     pub fn export(&self, dir: &Path) -> std::io::Result<()> {
         fs::create_dir_all(dir)?;
         fs::write(dir.join("schema.sql"), format!("{};\n", self.schema.ddl))?;
@@ -3217,16 +3217,16 @@ impl Workload {
 }
 ```
 
-- [ ] **Step 5: 运行测试确认通过**
+- [ ] **Step 5: Run the tests to confirm they pass**
 
 Run: `cargo test -p ivmlite-workload`
-Expected: 全部通过（本任务新增 6 个）
+Expected: everything passes (6 new in this task)
 
-- [ ] **Step 6: 确认导出真的可被外部消费**
+- [ ] **Step 6: Confirm the export can really be consumed externally**
 
 Run: `cargo run -q -p ivmlite-workload --example export 2>/dev/null || true`
 
-不写 example，直接用一个临时测试验证导出产物可被 `sqlite3` 吃下：
+Instead of writing an example, verify with a temporary test that `sqlite3` can take the exported artifacts:
 
 ```rust
 #[test]
@@ -3238,38 +3238,38 @@ fn exported_artifacts_load_into_sqlite() {
     w.export(&dir).unwrap();
 
     for f in ["schema.sql", "views.sql", "data.csv", "updates.csv"] {
-        assert!(dir.join(f).exists(), "缺少导出产物 {f}");
+        assert!(dir.join(f).exists(), "missing export artifact {f}");
     }
     let data = std::fs::read_to_string(dir.join("data.csv")).unwrap();
-    assert_eq!(data.lines().count(), 51, "表头 + 50 行");
+    assert_eq!(data.lines().count(), 51, "header + 50 rows");
 }
 ```
 
 Run: `cargo test -p ivmlite-workload`
-Expected: 全部通过（含新增的这一个）
+Expected: everything passes (including this new one)
 
-- [ ] **Step 7: 提交**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add Cargo.toml crates/ivmlite-workload workloads
-git commit -m "feat(workload): 可移植的 workload 定义、trace 生成与导出"
+git commit -m "feat(workload): a portable workload definition, trace generation, and export"
 ```
 
 ---
 
-## Task 13: Benchmark harness、三条 same-host 基线与基线曲线
+## Task 13: Benchmark harness, three same-host baselines, and baseline curves
 
 **Files:**
 - Create: `crates/ivmlite-bench/Cargo.toml`, `crates/ivmlite-bench/src/main.rs`, `crates/ivmlite-bench/src/baseline.rs`, `crates/ivmlite-bench/src/plot.rs`
-- Modify: `Cargo.toml`（把 `ivmlite-bench` 加回 members）
+- Modify: `Cargo.toml` (add `ivmlite-bench` back to members)
 
 **Interfaces:**
-- Consumes: `ivmlite-workload` 的 `Workload` / `ViewSpec` / `TraceOp`（Task 12）
-- Produces: 可执行文件 `ivmlite-bench`，向 stdout 输出 CSV：`baseline,views,base_rows,batch_size,group_cardinality,apply_ms,maintain_ms`；向 `docs/bench/` 写出每个 group 基数一张的 SVG
+- Consumes: `ivmlite-workload`'s `Workload` / `ViewSpec` / `TraceOp` (Task 12)
+- Produces: the executable `ivmlite-bench`, writing CSV to stdout: `baseline,views,base_rows,batch_size,group_cardinality,apply_ms,maintain_ms`; and writing one SVG per group cardinality to `docs/bench/`
 
-- [ ] **Step 1: 建 crate 清单**
+- [ ] **Step 1: Create the crate manifest**
 
-`crates/ivmlite-bench/Cargo.toml`：
+`crates/ivmlite-bench/Cargo.toml`:
 
 ```toml
 [package]
@@ -3285,21 +3285,21 @@ ivmlite-workload = { path = "../ivmlite-workload" }
 rusqlite.workspace = true
 ```
 
-并把 `ivmlite-bench` 加回根 `Cargo.toml` 的 `members`。
+and add `ivmlite-bench` back to the `members` of the root `Cargo.toml`.
 
-> **bench 不依赖 `ivmlite-test` 或 `ivmlite-core`。** 表结构、视图定义、数据与
-> 更新 trace 全部来自 `ivmlite-workload`（带 `id INTEGER PRIMARY KEY`）。正确性
-> 测试的类型刻意不带主键——那里要的是"按值定位行"的语义；benchmark 要的是
-> "按主键定位行"的性能。硬把两者统一起来，只会让其中一边将就。M1 接入真实引擎
-> 时，bench 会新增一条依赖 `ivmlite-sqlite` 的基线，届时 `ivmlite-core` 才进来。
+> **The bench does not depend on `ivmlite-test` or `ivmlite-core`.** The table structure, view definitions, data and
+> update trace all come from `ivmlite-workload` (with `id INTEGER PRIMARY KEY`). The correctness
+> tests' types deliberately have no primary key — they want "locate a row by value" semantics; the benchmark wants
+> "locate a row by primary key" performance. Forcing the two into one would only make one side compromise. When M1 plugs in the real engine,
+> the bench gains a baseline that depends on `ivmlite-sqlite`, and only then does `ivmlite-core` come in.
 >
-> bench 自己也不再持有 `rand`——随机性全部由 workload 的 seed 决定，这样
-> **同一份 workload 在任何 runner 上产出完全相同的数据与 trace**，跨引擎对比
-> 才成立（spec §10.3 第 7 条）。
+> The bench itself no longer holds `rand` either — all randomness is decided by the workload's seed, so
+> **the same workload produces exactly the same data and trace on any runner**, which is what makes cross-engine comparison
+> hold (spec §10.3 item 7).
 
-- [ ] **Step 2: 写三条基线**
+- [ ] **Step 2: Write the three baselines**
 
-`crates/ivmlite-bench/src/baseline.rs`：
+`crates/ivmlite-bench/src/baseline.rs`:
 
 ```rust
 use std::time::Instant;
@@ -3307,14 +3307,14 @@ use std::time::Instant;
 use ivmlite_workload::{TraceOp, ViewSpec, Workload};
 use rusqlite::Connection;
 
-/// spec §10.2 的三条 same-host 对照组。
+/// spec §10.2's three same-host control groups.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Baseline {
-    /// 下界：只写基表，完全不维护视图。纯写入成本。
+    /// The lower bound: write only the base table, maintain no view at all. Pure write cost.
     NoMaintenance,
-    /// 怀疑者：手写 trigger 维护汇总表。v0 引擎必须打赢它，否则没有故事。
+    /// The skeptic: hand-written triggers maintain summary tables. The v0 engine must beat it, or there is no story.
     HandWrittenTrigger,
-    /// 基线：每批 delta 之后把所有视图 SQL 重跑一遍。交叉点在这里测量。
+    /// The baseline: after every batch of deltas, re-run every view's SQL. The crossover is measured here.
     NaiveRecompute,
 }
 
@@ -3328,12 +3328,12 @@ impl Baseline {
     }
 }
 
-/// 建基表并灌入初始数据。不计时。
+/// Create the base table and load the initial data. Not timed.
 ///
-/// 表结构来自 workload，其中 `id INTEGER PRIMARY KEY` 是硬性要求：
-/// spec §10.3 第 5 条——按全部列的值定位行没有可用索引，`EXPLAIN QUERY PLAN`
-/// 会显示 `SCAN orders`，使删改耗时随基表规模线性增长，而"增量成本不随基表
-/// 规模增长"正是这条 benchmark 唯一要证明的东西。
+/// The table structure comes from the workload, in which `id INTEGER PRIMARY KEY` is a hard requirement:
+/// spec §10.3 item 5 — locating a row by the values of all its columns has no usable index, `EXPLAIN QUERY PLAN`
+/// shows `SCAN orders`, and delete/update time grows linearly with base-table size, whereas "the incremental cost does not grow with
+/// base-table size" is the only thing this benchmark sets out to prove.
 pub fn seed_base(conn: &Connection, w: &Workload) -> rusqlite::Result<()> {
     conn.execute_batch(&w.schema.ddl)?;
     let tx = conn.unchecked_transaction()?;
@@ -3349,14 +3349,14 @@ pub fn seed_base(conn: &Connection, w: &Workload) -> rusqlite::Result<()> {
     tx.commit()
 }
 
-/// 建汇总表 →**先全量 bootstrap**→ 再建 trigger。顺序不可颠倒。
+/// Create the summary table → **bootstrap in full first** → then create the triggers. The order cannot be reversed.
 ///
-/// spec §10.3 第 4 条：在基表已有数据之后才创建空汇总表，得到的是一个永远
-/// 不完整的视图，其维护成本也不具代表性。而 trigger 必须在 bootstrap **之后**
-/// 创建，否则 bootstrap 那条 INSERT ... SELECT 会被 trigger 重复计入。
+/// spec §10.3 item 4: creating an empty summary table after the base table already has data gives a view that is forever
+/// incomplete, whose maintenance cost is not representative either. And the triggers must be created **after** the bootstrap,
+/// or the bootstrap's INSERT ... SELECT would be counted again by the triggers.
 ///
-/// 注意汇总表的 `k` 列声明为 `TEXT` 而非 `ANY`：STRICT 表允许 `ANY` 列逐行
-/// 混存类型，`1` 与 `'1'` 会分裂成两个 group（spec §7.1）。
+/// Note the summary table's `k` column is declared `TEXT` rather than `ANY`: a STRICT table lets an `ANY` column
+/// mix types row by row, and `1` and `'1'` would split into two groups (spec §7.1).
 pub fn install_trigger_view(conn: &Connection, table: &str, v: &ViewSpec) -> rusqlite::Result<()> {
     let t = v.table();
     let k = v.threshold;
@@ -3387,10 +3387,10 @@ pub fn install_trigger_view(conn: &Connection, table: &str, v: &ViewSpec) -> rus
     ))
 }
 
-/// 应用一批变更并返回毫秒数。计时包含 commit——提交成本是真实成本。
+/// Apply one batch of changes and return the milliseconds. The timing includes the commit — commit cost is real cost.
 ///
-/// 对 HandWrittenTrigger 基线，trigger 的开销天然计入这里，因此
-/// `apply_ms(trigger) − apply_ms(no_maintenance)` 就是 spec §10.5 要求的写放大。
+/// For the HandWrittenTrigger baseline the triggers' overhead is naturally counted here, so
+/// `apply_ms(trigger) − apply_ms(no_maintenance)` is the write amplification spec §10.5 asks for.
 pub fn apply(conn: &Connection, table: &str, ops: &[TraceOp]) -> rusqlite::Result<f64> {
     let start = Instant::now();
     let tx = conn.unchecked_transaction()?;
@@ -3414,10 +3414,10 @@ pub fn apply(conn: &Connection, table: &str, ops: &[TraceOp]) -> rusqlite::Resul
     Ok(start.elapsed().as_secs_f64() * 1000.0)
 }
 
-/// 朴素重跑：把每个视图的 SQL 各跑一遍并耗尽结果集。
+/// Naive re-run: run each view's SQL once and drain the result set.
 ///
-/// 这里**不把结果写回表**，是刻意偏向朴素重跑的保守选择——若增量方案连
-/// "只读不写"的朴素重跑都赢不了，结论就无可辩驳。
+/// The results are **not written back to a table** here, a deliberately conservative choice in naive re-run's favour — if the incremental approach
+/// cannot even beat a "read-only, no write" naive re-run, the conclusion is beyond dispute.
 pub fn recompute_all(conn: &Connection, w: &Workload) -> rusqlite::Result<f64> {
     let start = Instant::now();
     for v in &w.views {
@@ -3429,9 +3429,9 @@ pub fn recompute_all(conn: &Connection, w: &Workload) -> rusqlite::Result<f64> {
 }
 ```
 
-- [ ] **Step 3: 写出图**
+- [ ] **Step 3: Write the charts**
 
-`crates/ivmlite-bench/src/plot.rs`：
+`crates/ivmlite-bench/src/plot.rs`:
 
 ```rust
 use std::collections::BTreeMap;
@@ -3445,11 +3445,11 @@ const H: f64 = 420.0;
 const PAD: f64 = 64.0;
 const COLORS: [&str; 3] = ["#888888", "#1f77b4", "#d62728"];
 
-/// 画头条图：固定 views / batch / group 基数，横轴基表规模（对数），纵轴
-/// 总耗时，每条基线一条折线。交叉点就是两条线相交的地方（spec §10.4）。
+/// Draw a headline chart: fix views / batch / group cardinality, with base-table size on the x axis (log) and
+/// total time on the y axis, one line per baseline. The crossover is where two lines meet (spec §10.4).
 ///
-/// group 基数必须固定并标在图上——交叉点随它剧烈移动，把不同基数的点混进
-/// 同一张图会画出一条毫无意义的折线（spec §10.1）。
+/// The group cardinality must be fixed and labelled on the chart — the crossover moves sharply with it, and mixing points of different cardinalities into
+/// one chart would draw a meaningless line (spec §10.1).
 pub fn write_svg(
     path: &Path,
     records: &[Record],
@@ -3475,7 +3475,7 @@ pub fn write_svg(
     if xs.is_empty() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            format!("没有 views={fixed_views} batch={fixed_batch} card={fixed_card} 的数据点"),
+            format!("no data points for views={fixed_views} batch={fixed_batch} card={fixed_card}"),
         ));
     }
     let (x0, x1) = (xs.iter().cloned().fold(f64::MAX, f64::min), xs.iter().cloned().fold(f64::MIN, f64::max));
@@ -3524,9 +3524,9 @@ pub fn write_svg(
 }
 ```
 
-- [ ] **Step 4: 写矩阵驱动**
+- [ ] **Step 4: Write the matrix driver**
 
-`crates/ivmlite-bench/src/main.rs`：
+`crates/ivmlite-bench/src/main.rs`:
 
 ```rust
 mod baseline;
@@ -3543,11 +3543,11 @@ const BATCH_SIZES: [usize; 4] = [1, 10, 100, 1000];
 const VIEW_COUNTS: [usize; 4] = [1, 10, 50, 200];
 const GROUP_CARDINALITIES: [usize; 3] = [10, 1_000, 100_000];
 
-/// 扫 group 基数时固定的视图数，扫视图数时固定的 group 基数。
+/// The view count fixed while sweeping group cardinality, and the group cardinality fixed while sweeping view count.
 ///
-/// 四维全交叉是 144 个配置，过大。spec §10.1 约定这两个固定值，于是两次扫描
-/// 各 36 个配置，且都穿过同一个共同点 (views=10, cardinality=1k)，两组图可以
-/// 对齐着读。
+/// A full four-way cross is 144 configurations, too many. Spec §10.1 settles these two fixed values, so the two sweeps
+/// have 36 configurations each, and both pass through the same shared point (views=10, cardinality=1k), so the two sets of charts can
+/// be read side by side.
 const FIXED_VIEWS: usize = 10;
 const FIXED_CARDINALITY: usize = 1_000;
 
@@ -3562,10 +3562,10 @@ pub struct Record {
     pub maintain_ms: f64,
 }
 
-/// 从基准 workload 派生出一个具体配置。
+/// Derive one concrete configuration from the benchmark workload.
 ///
-/// 视图形状受限于表达能力最弱的对照组——手写 trigger（spec §10.3 第 3 条），
-/// 因此这里只改视图**数量**与阈值，不改形状；三条基线拿到的是同一批视图。
+/// The view shape is limited by the least expressive control group — hand-written triggers (spec §10.3 item 3),
+/// so only the view **count** and thresholds change here, not the shape; all three baselines get the same set of views.
 fn variant(base: &Workload, base_rows: usize, cardinality: usize, views: usize) -> Workload {
     let mut w = base.clone();
     w.data.base_rows = base_rows;
@@ -3589,7 +3589,7 @@ fn run_one(
 
     let conn = Connection::open_in_memory()?;
 
-    // ---- 以下全部不计时：建立初始状态 ----
+    // ---- None of the following is timed: building the initial state ----
     seed_base(&conn, &w)?;
     if b == Baseline::HandWrittenTrigger {
         for v in &w.views {
@@ -3598,10 +3598,10 @@ fn run_one(
     }
     let ops = w.update_trace();
 
-    // ---- 计时区间 ----
+    // ---- The timed section ----
     let apply_ms = apply(&conn, &w.schema.table, &ops)?;
     let maintain_ms = match b {
-        // trigger 的成本已计入 apply_ms——那正是写放大
+        // The triggers' cost is already counted in apply_ms — that is exactly the write amplification
         Baseline::NoMaintenance | Baseline::HandWrittenTrigger => 0.0,
         Baseline::NaiveRecompute => recompute_all(&conn, &w)?,
     };
@@ -3627,16 +3627,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Baseline::NaiveRecompute,
     ];
 
-    // 扫描一：group 基数 × 基表规模 × 批大小，视图数固定
+    // Sweep one: group cardinality × base-table size × batch size, fixed view count
     for b in baselines {
         for card in GROUP_CARDINALITIES {
             for rows in BASE_ROWS {
-                // group 基数大于行数在语义上无意义——N 行的表不可能有多于 N 个
-                // 不同的分组键。ivmlite-workload 在加载时就会拒绝这种配置，
-                // 所以这里跳过而不是让它报错。被跳过的格子在 stderr 记一行，
-                // 免得读 CSV 的人以为是漏跑了。
+                // A group cardinality larger than the row count is semantically meaningless — a table of N rows cannot have more than N
+                // distinct group keys. ivmlite-workload rejects such a configuration at load time,
+                // so skip it here rather than let it error. Each skipped cell gets a line on stderr,
+                // so a reader of the CSV does not think it was missed.
                 if card > rows {
-                    eprintln!("跳过无意义格子: card={card} > base_rows={rows}");
+                    eprintln!("skipping a meaningless cell: card={card} > base_rows={rows}");
                     continue;
                 }
                 for batch in BATCH_SIZES {
@@ -3646,11 +3646,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // 扫描二：视图数 × 基表规模 × 批大小，group 基数固定
+    // Sweep two: view count × base-table size × batch size, fixed group cardinality
     for b in baselines {
         for views in VIEW_COUNTS {
             if views == FIXED_VIEWS {
-                continue; // 与扫描一的共同点重复
+                continue; // duplicates sweep one's shared point
             }
             for rows in BASE_ROWS {
                 for batch in BATCH_SIZES {
@@ -3668,15 +3668,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    // 每个 group 基数各出一张图——交叉点随该参数剧烈移动，只出一张等于
-    // 自己挑了个好看的点（spec §10.1）。
+    // One chart per group cardinality — the crossover moves sharply with this parameter, and producing only one
+    // would amount to picking a flattering point yourself (spec §10.1).
     for card in GROUP_CARDINALITIES {
         let path = format!("docs/bench/m0-baseline-card{card}.svg");
         match plot::write_svg(Path::new(&path), &records, FIXED_VIEWS, 100, card) {
-            Ok(()) => eprintln!("图已写入 {path}"),
-            // 某个 group 基数在所有基表规模下都被跳过时没有数据点，
-            // 这不是错误——照实说明并继续。
-            Err(e) => eprintln!("跳过 card={card} 的出图: {e}"),
+            Ok(()) => eprintln!("chart written to {path}"),
+            // A group cardinality skipped at every base-table size has no data points;
+            // that is not an error — say so and carry on.
+            Err(e) => eprintln!("skipping the chart for card={card}: {e}"),
         }
     }
 
@@ -3684,118 +3684,118 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-- [ ] **Step 5: 先跑缩小规模的 smoke run**
+- [ ] **Step 5: First do a reduced-scale smoke run**
 
-把 `BASE_ROWS` 临时改成 `[1_000, 10_000]`、`VIEW_COUNTS` 改成 `[1, 10]`、
-`GROUP_CARDINALITIES` 改成 `[10, 1_000]` 跑通：
+Temporarily change `BASE_ROWS` to `[1_000, 10_000]`, `VIEW_COUNTS` to `[1, 10]`, and
+`GROUP_CARDINALITIES` to `[10, 1_000]`, and run it through:
 
 Run: `cargo run -p ivmlite-bench --release 2>/dev/null | head -20`
 
-Expected：CSV 表头含 `group_cardinality` 列；`no_maintenance` 的 `maintain_ms`
-恒为 0；`naive_recompute` 的 `maintain_ms` 随 `base_rows` 明显增长；
-`hand_written_trigger` 的 `apply_ms` 明显高于 `no_maintenance`（差值即写放大）。
+Expected: the CSV header contains a `group_cardinality` column; `no_maintenance`'s `maintain_ms`
+is always 0; `naive_recompute`'s `maintain_ms` grows clearly with `base_rows`;
+`hand_written_trigger`'s `apply_ms` is clearly higher than `no_maintenance`'s (the difference is the write amplification).
 
-**最关键的一条 sanity check**：同一 `base_rows` 下，`naive_recompute` 的
-`maintain_ms` 应当**几乎不随 `group_cardinality` 变化**（它总要扫全表），而
-`hand_written_trigger` 的 `apply_ms` 应当**随 `group_cardinality` 上升**
-（分组键越分散，汇总表越大、`ON CONFLICT` 走的 B-tree 越深）。若观察不到这个
-差异，说明 cardinality 维度没有真正生效——先去查 `Workload::rows`，不要继续跑。
+**The most important sanity check**: at the same `base_rows`, `naive_recompute`'s
+`maintain_ms` should **barely change with `group_cardinality`** (it always scans the whole table), while
+`hand_written_trigger`'s `apply_ms` should **rise with `group_cardinality`**
+(the more spread out the group keys, the larger the summary table and the deeper the B-tree `ON CONFLICT` walks). If this
+difference is not observed, the cardinality dimension is not really in effect — check `Workload::rows` first; do not keep running.
 
-同时验证主键确实生效，不该出现 `SCAN`：
+Also verify the primary key really takes effect; no `SCAN` should appear:
 
 Run: `sqlite3 :memory: "CREATE TABLE orders(id INTEGER PRIMARY KEY, region TEXT NOT NULL, amount INTEGER NOT NULL) STRICT; EXPLAIN QUERY PLAN DELETE FROM orders WHERE id = 1;"`
-Expected: 输出包含 `SEARCH orders USING INTEGER PRIMARY KEY`，不含 `SCAN`。
+Expected: the output contains `SEARCH orders USING INTEGER PRIMARY KEY` and no `SCAN`.
 
-- [ ] **Step 6: 跑完整矩阵并留档**
+- [ ] **Step 6: Run the full matrix and archive it**
 
-改回完整常量后：
+After changing back to the full constants:
 
 Run: `cargo run -p ivmlite-bench --release > docs/bench/m0-baseline.csv`
-Expected: CSV 落盘；`docs/bench/m0-baseline-card10.svg`、`-card1000.svg`、
-`-card100000.svg` 三张图生成。
+Expected: the CSV is written; the three charts `docs/bench/m0-baseline-card10.svg`, `-card1000.svg`,
+and `-card100000.svg` are generated.
 
-在 `docs/bench/README.md` 写下结论，**每个 group 基数各一行交叉点**：
+Write the conclusions in `docs/bench/README.md`, **one crossover row per group cardinality**:
 
 ```markdown
-| group 基数 | Δ 大小 | 全量重算 / 手写 trigger 比值 | 手写 trigger 的写放大 |
+| group cardinality | Δ size | full recompute / hand-written trigger ratio | hand-written trigger's write amplification |
 |---|---|---|---|
 | 10     | 1 / 1000 | ... | ... |
 | 1k     | 1 / 1000 | ... | ... |
 | 100k   | 1 / 1000 | ... | ... |
 ```
 
-表里 `card > base_rows` 的格子是空的——那不是漏跑，是语义上不存在的配置
-（N 行的表不可能有多于 N 个分组键），`ivmlite-workload` 在加载时就会拒绝。
-在 README 里写明这一点，不要让读者以为是数据缺失。
+The cells with `card > base_rows` in the table are empty — not missed runs, but configurations that semantically do not exist
+(a table of N rows cannot have more than N group keys), which `ivmlite-workload` rejects at load time.
+Say so in the README, so readers do not think data is missing.
 
-**不要报告"一个交叉点"。** spec §10.4 已删除"交叉点 > 100 万行即无意义"那条
-拍脑袋的阈值——同一套实现在「10 个 group + 大批量 Δ」和「10 万个 group +
-单行 Δ」下是两个完全不同的结论，不存在单一交叉点。要报告的是一张面。
+**Do not report "one crossover".** Spec §10.4 has deleted the off-the-cuff threshold "a crossover above 1 million rows is meaningless"
+— the same implementation under "10 groups + large Δ batches" and "100,000 groups +
+single-row Δ" gives two completely different conclusions; there is no single crossover. What should be reported is a surface.
 
-证伪判据换成了形状：**若这张面上不存在任何区域使增量相对全量重算有实质优势
-（比值 > 2），则项目前提不成立。** 若优势区域存在，照实写它落在哪里，包括
-"只在极窄的一角成立"。
+The falsification criterion becomes a shape: **if no region of this surface gives incremental maintenance a substantial advantage over full recomputation
+(ratio > 2), the project's premise does not hold.** If an advantage region exists, write down honestly where it falls, including
+"it holds only in a very narrow corner".
 
-**M0 阶段填的是三条基线之间的关系**（增量那两列要等 M1 才有数），但表格结构
-现在定下来，M1 直接填。注意其中最值得盯的一格是**大批量 Δ + 低 group 基数**
-——那是 spec §10.2 三级判据里"额外惊喜"唯一可能出现的地方。
+**What M0 fills in is the relationship between the three baselines** (the two incremental columns wait until M1 for numbers), but the table structure
+is settled now, and M1 fills it in directly. Note the cell most worth watching is **large Δ batches + low group cardinality**
+— the only place the "extra surprise" of spec §10.2's three-tier criterion could possibly appear.
 
-- [ ] **Step 7: 提交**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add Cargo.toml crates/ivmlite-bench docs/bench
-git commit -m "feat(bench): benchmark 矩阵、三条 same-host 基线与基线曲线"
+git commit -m "feat(bench): the benchmark matrix, three same-host baselines, and baseline curves"
 ```
 
 ---
 
 ## Self-Review
 
-**1. Spec 覆盖**
+**1. Spec coverage**
 
-| Spec 要求 | 落点 |
+| Spec requirement | Where it lands |
 |---|---|
-| §4.2 core 不依赖 rusqlite | Task 1 Step 1（空依赖表）+ Global Constraints |
-| §5.1 权重不变量 | Task 2（`ZSet` 归零即删）、Task 9（负权重、重复 group key） |
-| §5.1 Value 无浮点 | Task 1（枚举只有三个变体）、Task 4（SUM 只作用于 INTEGER） |
-| §6.2 retraction 语义 | Task 11（`NoRetractionEngine` 就是它的反面教材） |
-| §7.1 STRICT table | Task 3（`create_table_sql` 断言 STRICT） |
-| §7.1 裸列 group-by key | Task 4（`group_by: Vec<usize>` 只能是列下标） |
-| §8.1 UPDATE = retract + insert | Task 6（`Op::to_delta`） |
-| §6.1 聚合的 NULL 语义契约 | Task 7（`(累加值, 非 NULL 计数)` 槽位 + 单测）、Task 8（与 SQLite 交叉确认） |
-| §9.1 四层验证 | 不变量→Task 9；批次无关性→Task 10；**逐批** oracle 比对→Task 10 的 `compare` 闭包；交叉验证→M2（spec 已规定不在 M0） |
-| §9.2 窄值域 / 高 NULL / 有偏采样 / query 穷举 | Task 5、Task 6、Task 4 |
-| §9.3 保持合法性的 shrinking，顺序为 ops → query → data | Task 11（`is_legal` 门禁 + 三个阶段） |
-| §9.4 seed 可复现 | Task 5、6、10 各有一条 reproducibility 测试；`IVMLITE_SEED` + `seed_range()` 提供一条命令重放 |
-| §9.4 失败用例固化 | Task 11 Step 3（`save_regression` / `load_regressions`）+ Step 4 的 `saved_regressions_still_pass` |
-| §10.2 三条 same-host 对照组 | Task 13 |
-| §10.3 第 3 条 同一视图集合 | Task 13（`views(n)` 对三条基线一致，形状受限于 trigger 的表达能力） |
-| §10.3 第 4 条 计时前完成 bootstrap | Task 13（`install_trigger_view`：建表 → `INSERT ... SELECT` → 建 trigger） |
-| §10.3 第 5 条 稳定主键 | Task 13（`id INTEGER PRIMARY KEY`，Step 5 用 `EXPLAIN QUERY PLAN` 验证无 `SCAN`） |
-| §10.1 group 基数作为显式维度 | Task 13（`GROUP_CARDINALITIES`；扫描时视图数固定为 10；每个基数各出一张图） |
-| §10.3 第 6 条 不引用他人发布的数字 | Global Constraints；M0 无跨系统对比 |
-| §10.3 第 7 条 workload 可移植 | Task 12（`ivmlite-workload` + `workloads/m0-baseline.toml` + `Workload::export`） |
-| §10.5 写放大 | Task 13（trigger 成本计入 `apply_ms`，与 `no_maintenance` 相减即得） |
-| §11 M0 完成判定（抓到植入 bug + 缩到 10 步） | Task 11 Step 4 的两个测试 |
-| §11 M0 三条基线"出图" | Task 13 Step 3（`plot::write_svg`）+ Step 6 |
+| §4.2 core does not depend on rusqlite | Task 1 Step 1 (empty dependency table) + Global Constraints |
+| §5.1 the weight invariant | Task 2 (`ZSet` deletes on reaching zero), Task 9 (negative weights, duplicate group keys) |
+| §5.1 Value has no floating point | Task 1 (the enum has only three variants), Task 4 (SUM applies only to INTEGER) |
+| §6.2 retraction semantics | Task 11 (`NoRetractionEngine` is its cautionary counterexample) |
+| §7.1 STRICT table | Task 3 (`create_table_sql` asserts STRICT) |
+| §7.1 bare-column group-by keys | Task 4 (`group_by: Vec<usize>` can only be column indices) |
+| §8.1 UPDATE = retract + insert | Task 6 (`Op::to_delta`) |
+| §6.1 the NULL-semantics contract of aggregates | Task 7 (the `(running sum, non-NULL count)` slot + unit tests), Task 8 (cross-checked with SQLite) |
+| §9.1 four layers of verification | invariants → Task 9; batch independence → Task 10; **per-batch** oracle comparison → Task 10's `compare` closure; cross-validation → M2 (the spec already rules it out of M0) |
+| §9.2 narrow value domain / high NULL rate / biased sampling / exhaustive queries | Task 5, Task 6, Task 4 |
+| §9.3 legality-preserving shrinking, in the order ops → query → data | Task 11 (the `is_legal` gate + three phases) |
+| §9.4 seed reproducibility | Tasks 5, 6 and 10 each have a reproducibility test; `IVMLITE_SEED` + `seed_range()` give a one-command replay |
+| §9.4 freezing failing cases | Task 11 Step 3 (`save_regression` / `load_regressions`) + Step 4's `saved_regressions_still_pass` |
+| §10.2 three same-host control groups | Task 13 |
+| §10.3 item 3, the same set of views | Task 13 (`views(n)` is the same for all three baselines; the shape is limited by what triggers can express) |
+| §10.3 item 4, bootstrap finished before timing | Task 13 (`install_trigger_view`: create table → `INSERT ... SELECT` → create triggers) |
+| §10.3 item 5, a stable primary key | Task 13 (`id INTEGER PRIMARY KEY`; Step 5 verifies with `EXPLAIN QUERY PLAN` that there is no `SCAN`) |
+| §10.1 group cardinality as an explicit dimension | Task 13 (`GROUP_CARDINALITIES`; the view count fixed at 10 while sweeping; one chart per cardinality) |
+| §10.3 item 6, no citing of others' published numbers | Global Constraints; M0 has no cross-system comparison |
+| §10.3 item 7, portable workloads | Task 12 (`ivmlite-workload` + `workloads/m0-baseline.toml` + `Workload::export`) |
+| §10.5 write amplification | Task 13 (trigger cost counted in `apply_ms`; subtract `no_maintenance` to get it) |
+| §11 M0 completion criteria (catch the planted bug + shrink to 10 steps) | the two tests of Task 11 Step 4 |
+| §11 M0's three baselines "charted" | Task 13 Step 3 (`plot::write_svg`) + Step 6 |
 
-**已知缺口（有意为之，非遗漏）：**
-- **§7.1 拒绝 `ANY` 列与 collation 检查**属于 `ivm_create_view` 的职责，而该函数在 M1 才存在。M0 的 `ColumnType` 只有 `Integer` / `Text`，生成器永远不产 `ANY`，因此 M0 无从触发该问题。**M1 必须实现这两条拒绝**。
-- **§10.6 的三条已知简化**（均匀分布、无更新局部性、跑不了标准基准查询）在 M0 全部保留。`Distribution` 与 `Locality` 枚举各只有 `Uniform` 一个变体，是刻意的占位——M2 加 `Zipf` / `Hot` 时不需要改 workload 文件格式。
-- **§10.7 Nexmark** 属于 M2：v0 没有 join，跑不了 Nexmark 的任何查询。
-- **空间放大与 bootstrap 耗时**（spec §10.5）未在 M0 度量——两者都需要真实引擎才有意义，M1 补。
-- **`criterion` 微基准**（spec §10）未引入——M0 的主 benchmark 是端到端矩阵，微基准等 core 有算子可测时再加。
-- **`ivmlite-sql` / `ivmlite-sqlite` crate** 未创建，见 Global Constraints 末条。
+**Known gaps (intentional, not omissions):**
+- **§7.1 rejecting `ANY` columns and checking collations** is the job of `ivm_create_view`, which does not exist until M1. M0's `ColumnType` has only `Integer` / `Text`, and the generator never produces `ANY`, so M0 cannot trigger the problem. **M1 must implement both rejections**.
+- **§10.6's three known simplifications** (uniform distribution, no update locality, no standard benchmark queries) all remain in M0. The `Distribution` and `Locality` enums each have only a `Uniform` variant, as deliberate placeholders — adding `Zipf` / `Hot` in M2 does not require changing the workload file format.
+- **§10.7 Nexmark** belongs to M2: v0 has no join and cannot run any Nexmark query.
+- **Space amplification and bootstrap time** (spec §10.5) are not measured in M0 — both are only meaningful with a real engine; M1 adds them.
+- **`criterion` micro-benchmarks** (spec §10) are not brought in — M0's main benchmark is the end-to-end matrix, and micro-benchmarks wait until core has operators to measure.
+- **The `ivmlite-sql` / `ivmlite-sqlite` crates** are not created; see the last Global Constraint.
 
-**已知成本（明知而接受）：**
-- 逐批比对 oracle 使差分测试复杂度变成 O(批次数 × 基表规模)。默认用例规模（25 行 / 150 步 / 每批 5 条 ≈ 30 批）下每个用例要重建 30 次小表，可接受。**若日后放大用例规模，必须先把这条改成可配置，而不是直接改小比对频率。**
+**Known costs (accepted knowingly):**
+- Per-batch oracle comparison makes differential testing's complexity O(batch count × base-table size). At the default case size (25 rows / 150 steps / 5 per batch ≈ 30 batches) each case rebuilds a small table 30 times, which is acceptable. **If the case size is ever enlarged, first make this configurable, rather than directly lowering the comparison frequency.**
 
-**2. Placeholder 扫描**：无 TBD / TODO；每个代码步骤都给了可直接粘贴的完整实现；Task 间未出现未定义的类型或函数。
+**2. Placeholder scan**: no TBD / TODO; every code step gives a complete implementation ready to paste; no undefined type or function appears between tasks.
 
-**3. 类型一致性核对**：`Engine::materialize` 全程为 `&mut self`（engine.rs / naive.rs / buggy.rs / differential.rs 一致）；`Domain` 字段 `distinct` / `null_rate` 在 data.rs、differential.rs、main.rs 中拼写一致；`Op::to_delta` 返回 `Vec<(Row, i64)>`，在 differential.rs 与 baseline.rs 中按此消费；`Failure` 三字段 `case_seed` / `stage` / `detail` 在构造与 `Display` 中一致。
+**3. Type consistency check**: `Engine::materialize` is `&mut self` throughout (consistent across engine.rs / naive.rs / buggy.rs / differential.rs); the `Domain` fields `distinct` / `null_rate` are spelled consistently in data.rs, differential.rs and main.rs; `Op::to_delta` returns `Vec<(Row, i64)>`, consumed that way in differential.rs and baseline.rs; `Failure`'s three fields `case_seed` / `stage` / `detail` are consistent in construction and in `Display`.
 
 ---
 
-## 执行顺序说明
+## Notes on execution order
 
-Task 1 → 13 有严格依赖，不可并行乱序。Task 11 是 M0 的验收关口——它红着，M0 就没完成，**不允许放宽该测试的断言来让它变绿**（spec §11 明确了这一点的理由）。
+Tasks 1 → 13 depend strictly on each other and cannot be run in parallel or out of order. Task 11 is M0's acceptance gate — while it is red, M0 is not complete, and **relaxing that test's assertions to make it green is not allowed** (spec §11 states the reasons).
