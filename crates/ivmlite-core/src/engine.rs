@@ -192,10 +192,15 @@ impl IncrementalEngine {
         // before it reaches the operators. Merge per table — the same row value
         // appearing in two tables must not cancel across them. A `BTreeMap`
         // rather than a `HashMap` keeps the advance order deterministic
-        // (§9.4), although it does not reach the output today: `ZSet::merge`
-        // is pointwise addition, independent of call order. It becomes
-        // observable once join lands and `ΔR⋈ΔS` reads both sides' current
-        // state — item 6 of the join-landing checklist in docs/mutation-gates.md.
+        // (§9.4), although the order does not reach the output, even for a
+        // join: `JoinState::absorb` folds each side's delta into its
+        // arrangement before the other side probes, so refreshing t0 then t1
+        // computes `ΔR⋈S + (R+ΔR)⋈ΔS` and t1 then t0 computes
+        // `R⋈ΔS + ΔR⋈(S+ΔS)`, both equal to the full bilinear formula; and
+        // `ZSet::merge` is pointwise addition. Measured: with a `HashMap` here
+        // the whole suite stayed green in 12 of 12 runs, the join sweep
+        // exercising both orders (item 6 of the join-landing checklist in
+        // docs/mutation-gates.md).
         let mut by_table: BTreeMap<String, ZSet> = BTreeMap::new();
         for (table, row, w) in std::mem::take(&mut self.pending) {
             by_table.entry(table).or_default().update(row, w);
@@ -448,7 +453,7 @@ mod tests {
     fn deltas_for_different_tables_are_consolidated_separately() {
         // The same row value in two tables must not be merged across them —
         // that would let one table's change cancel another's. With one table
-        // the shape does not exist; once join lands it is the norm.
+        // the shape does not exist; with a join it is the norm.
         let two = Database::new(vec![
             Schema {
                 table: "t".into(),

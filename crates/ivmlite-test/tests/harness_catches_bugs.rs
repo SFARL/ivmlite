@@ -392,24 +392,25 @@ fn saved_regressions_still_reproduce_their_original_failure() {
     }
 }
 
-/// This phase's deliverable: the framework can express multi-table cases. The
-/// query is still a single-table aggregate (seeds 0–35 are single-table
-/// queries; seeds 36 and up are join queries), but both tables receive
-/// changes, so three code paths are genuinely executed: apply's table-name
-/// routing, `NaiveRecompute`'s per-table base / pending storage, and the
-/// oracle creating and loading every table in the `Database`.
+/// A two-table `Database` through `run` against the reference engine. Seeds
+/// 0–35 draw single-table queries and seeds 36 and up draw join queries, and
+/// both tables receive changes, so the non-anchor table reaches both
+/// `materialize()` and the oracle. Each of these mutations, measured, reddens
+/// this test (see `docs/mutation-gates.md`):
+/// - apply's table-name routing: hard-coding the table name `run` passes to
+///   `apply` as `db.tables()[0].table` (the M1a Phase 1 Task 5 row).
+/// - `NaiveRecompute`'s per-table base / pending: `apply` dropping every
+///   non-anchor delta goes red at seed 36 (item 1 of the join-landing checklist).
+/// - `run`'s own `bases` bookkeeping: skipping non-anchor tables goes red at
+///   seed 36 (item 2).
+/// - the oracle creating and loading every table: restricting its table loop
+///   to `db.tables()[0]` (also guarded by
+///   `oracle::tests::builds_every_table_in_the_database`).
 ///
-/// "Executed" is not "this test would catch it breaking" — only the first of
-/// the three is caught:
-/// - apply's table-name routing: **caught**. Hard-coding the table name `run`
-///   passes to `apply` as `db.tables()[0].table` reddens this test at `diff[0]`
-///   (measured by the review; see the M1a Phase 1 Task 5 row in
-///   `docs/mutation-gates.md`).
-/// - `NaiveRecompute`'s per-table base / pending: caught once join queries are
-///   in the seed range (seeds 36 and up are join queries since M1a Phase 3);
-///   see item 1 of the join-landing checklist in `docs/mutation-gates.md`.
-/// - the oracle creating and loading every table: **not caught** here (it is
-///   guarded separately by `oracle::tests::builds_every_table_in_the_database`).
+/// It does **not** catch the second and third together: when `NaiveRecompute`
+/// and `bases` both drop non-anchor deltas, the engine and the oracle read the
+/// same stale right table and agree. That combination is caught only by the
+/// tests that run `IncrementalEngine`, which keeps its own state.
 #[test]
 fn a_two_table_case_runs_green_against_the_reference_engine() {
     let db = gen_database(2);
@@ -428,9 +429,9 @@ fn a_two_table_case_runs_green_against_the_reference_engine() {
 /// both tables' initial row counts were really reduced, not just the one table
 /// the loop happens to meet first.
 ///
-/// The query in this case still reads only the anchor table (`t0`) — query
-/// rendering always uses the anchor, an existing Phase 1 limitation — so `t1` is
-/// completely unobservable to the oracle comparison, and a correct shrink should
+/// The query in this case reads only the anchor table (`t0`) — the first
+/// failing seed draws a single-table query, which the test asserts below — so
+/// `t1` is completely unobservable to the oracle comparison, and a correct shrink should
 /// reduce it to 0 rows. That is the signal this test uses to tell "phase 3
 /// processed every table" from "phase 3 processed only the first table": if the
 /// loop handled only the first table (or never reached `t1`), `t1` would keep

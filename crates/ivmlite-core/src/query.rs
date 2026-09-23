@@ -52,8 +52,10 @@ pub struct ViewQuery {
     pub group_by: Vec<usize>,
     pub aggs: Vec<Agg>,
     pub predicate: Predicate,
-    /// `None` for a single-table view. `serde(default)` keeps the frozen
-    /// regression fixtures, written before joins existed, loadable.
+    /// `None` for a single-table view. The frozen regression fixtures, written
+    /// before joins existed, carry no `join` key; a missing key deserializes to
+    /// `None` anyway, through serde's missing-field handling for `Option`, and
+    /// `serde(default)` states that intent explicitly.
     #[cfg_attr(feature = "serde", serde(default))]
     pub join: Option<Join>,
 }

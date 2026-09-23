@@ -413,7 +413,7 @@ mod tests {
     }
 
     /// Guard 2: the table name must reach the engine as it is — the precondition
-    /// for join (M1a Phase 3), which needs several base tables.
+    /// for join, which reads several base tables.
     ///
     /// How to break it: in `run`, replace `apply`'s table-name argument with a
     /// hard-coded constant or an empty string — this test must go red.
@@ -617,9 +617,13 @@ mod tests {
     /// multi-table apply routing and the harness-side `bases` bookkeeping.
     ///
     /// With a join query, the non-anchor table's deltas reach both
-    /// `materialize()` and the oracle, so this test now proves that they take
-    /// part in the batch-independence comparison — the gap registered under I4
-    /// and item 3 of the join-landing checklist.
+    /// `materialize()` and the oracle. Measured (item 3 of the join-landing
+    /// record in `docs/mutation-gates.md`): `NaiveRecompute::apply` dropping
+    /// non-anchor deltas, or `run`'s `bases` skipping non-anchor tables, each
+    /// reddens this test at `diff[0]` — through `run`'s per-batch oracle
+    /// comparison, before the batch-independence comparison is reached. With
+    /// both mutations at once it stays green: the engine and the oracle then
+    /// read the same stale right table.
     #[test]
     fn batch_invariance_holds_for_naive_engine_on_a_two_table_case() {
         let db = gen_database(2);

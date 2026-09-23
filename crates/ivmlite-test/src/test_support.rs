@@ -7,8 +7,7 @@
 //! byte-identical `single_table_case` in `naive.rs` and `buggy.rs` (building
 //! `(Database, BTreeMap<String, ZSet>)`), `ops.rs`'s `single_table_db` +
 //! `as_initial`, and `oracle.rs`'s `single_base`. They are gathered in this one
-//! file so that when Phase 3 first builds genuine two-table cases, it edits one
-//! place rather than five.
+//! file so that multi-table cases are built in one place rather than five.
 
 use std::collections::BTreeMap;
 
