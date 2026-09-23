@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::{lower, Database, Node, Row, ViewQuery, ZSet};
+use crate::{fresh_mem_arrangement, lower, Database, Node, Row, ViewQuery, ZSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EngineError(pub String);
@@ -131,7 +131,7 @@ impl IncrementalEngine {
             // something no more complex case has yet exposed.
             .ok_or_else(|| EngineError("the Database must have at least one table".into()))?;
         let plan = lower(query, anchor).map_err(|e| EngineError(e.0))?;
-        let mut tree = CountingTree::new(Node::build(&plan));
+        let mut tree = CountingTree::new(Node::build(&plan, &mut fresh_mem_arrangement));
 
         // Bootstrap: push each table's initial state through as the first batch
         // of deltas. A declared table with no initial state is an error, not an

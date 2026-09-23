@@ -1,4 +1,4 @@
-use crate::{Plan, Predicate, Row, Value, ZSet};
+use crate::{Arrangement, JoinSide, JoinState, Plan, Predicate, Row, Value, ZSet};
 
 /// The stateful operator tree. Built from a `Plan`, after which `delta` is called repeatedly.
 ///
@@ -10,6 +10,11 @@ use crate::{Plan, Predicate, Row, Value, ZSet};
 pub enum Node {
     Scan {
         table: String,
+    },
+    Join {
+        left: Box<Node>,
+        right: Box<Node>,
+        state: JoinState,
     },
     Filter {
         input: Box<Node>,
@@ -36,17 +41,42 @@ impl Node {
     /// rebuilding a node from the SQLite side), the compiler will point
     /// mechanically at every call site that must handle the new `Err`, so adding
     /// it back is a local change.
-    pub fn build(plan: &Plan) -> Node {
+    ///
+    /// `arrangements` supplies each join input's arrangement (M1a Phase 3,
+    /// Ruling 2); the engine passes `fresh_mem_arrangement`.
+    pub fn build(
+        plan: &Plan,
+        arrangements: &mut dyn FnMut(JoinSide) -> Box<dyn Arrangement>,
+    ) -> Node {
         match plan {
             Plan::Scan { table, .. } => Node::Scan {
                 table: table.clone(),
             },
+            Plan::Join {
+                left,
+                right,
+                left_key,
+                right_key,
+            } => {
+                let left = Node::build(left, arrangements);
+                let right = Node::build(right, arrangements);
+                Node::Join {
+                    left: Box::new(left),
+                    right: Box::new(right),
+                    state: JoinState::new(
+                        *left_key,
+                        *right_key,
+                        arrangements(JoinSide::Left),
+                        arrangements(JoinSide::Right),
+                    ),
+                }
+            }
             Plan::Filter { input, predicate } => Node::Filter {
-                input: Box::new(Node::build(input)),
+                input: Box::new(Node::build(input, arrangements)),
                 predicate: predicate.clone(),
             },
             Plan::Project { input, columns } => Node::Project {
-                input: Box::new(Node::build(input)),
+                input: Box::new(Node::build(input, arrangements)),
                 columns: columns.clone(),
             },
             Plan::Aggregate {
@@ -54,7 +84,7 @@ impl Node {
                 group_by,
                 aggs,
             } => Node::Aggregate {
-                input: Box::new(Node::build(input)),
+                input: Box::new(Node::build(input, arrangements)),
                 state: crate::AggState::new(group_by.clone(), aggs.clone()),
             },
         }
@@ -72,6 +102,14 @@ impl Node {
                 } else {
                     ZSet::new()
                 }
+            }
+            Node::Join { left, right, state } => {
+                // Each child is a `Scan` routing by table name, so for one
+                // table's delta at most one of these is non-empty (v0 rejects
+                // self-joins in `lower`); `JoinState::absorb` is correct either way.
+                let left_delta = left.delta(table, input);
+                let right_delta = right.delta(table, input);
+                state.absorb(&left_delta, &right_delta)
             }
             Node::Filter {
                 input: child,
@@ -199,12 +237,15 @@ mod tests {
     #[test]
     fn scan_only_absorbs_its_own_table() {
         // With one table this looks redundant, but it is the mechanism by which
-        // each side of a join absorbs only its own table's deltas (Phase 3 needs
-        // no change to Scan).
-        let mut n = Node::build(&Plan::Scan {
-            table: "orders".into(),
-            columns: vec![0, 1],
-        });
+        // each side of a join absorbs only its own table's deltas — this is
+        // what `Node::Join` relies on.
+        let mut n = Node::build(
+            &Plan::Scan {
+                table: "orders".into(),
+                columns: vec![0, 1],
+            },
+            &mut crate::fresh_mem_arrangement,
+        );
         let d = ZSet::from_rows([(row(vec![int(1), int(2)]), 1)]);
         assert_eq!(
             n.delta("orders", &d),
@@ -224,32 +265,38 @@ mod tests {
         // through, with no state. Weights must be preserved as they are,
         // including negative ones (retracting a row that satisfies the
         // predicate must pass through too).
-        let mut n = Node::build(&Plan::Filter {
-            input: Box::new(Plan::Scan {
-                table: "t".into(),
-                columns: vec![0],
-            }),
-            predicate: Predicate::IntGt {
-                column: 0,
-                value: 3,
+        let mut n = Node::build(
+            &Plan::Filter {
+                input: Box::new(Plan::Scan {
+                    table: "t".into(),
+                    columns: vec![0],
+                }),
+                predicate: Predicate::IntGt {
+                    column: 0,
+                    value: 3,
+                },
             },
-        });
+            &mut crate::fresh_mem_arrangement,
+        );
         let d = ZSet::from_rows([(row(vec![int(5)]), 1), (row(vec![int(9)]), -2)]);
         assert_eq!(n.delta("t", &d), d);
     }
 
     #[test]
     fn filter_drops_rows_that_fail_the_predicate() {
-        let mut n = Node::build(&Plan::Filter {
-            input: Box::new(Plan::Scan {
-                table: "t".into(),
-                columns: vec![0],
-            }),
-            predicate: Predicate::IntGt {
-                column: 0,
-                value: 3,
+        let mut n = Node::build(
+            &Plan::Filter {
+                input: Box::new(Plan::Scan {
+                    table: "t".into(),
+                    columns: vec![0],
+                }),
+                predicate: Predicate::IntGt {
+                    column: 0,
+                    value: 3,
+                },
             },
-        });
+            &mut crate::fresh_mem_arrangement,
+        );
         let d = ZSet::from_rows([(row(vec![int(1)]), 1), (row(vec![int(5)]), 1)]);
         assert_eq!(n.delta("t", &d), ZSet::from_rows([(row(vec![int(5)]), 1)]));
     }
@@ -260,16 +307,19 @@ mod tests {
         // 1 row and `NOT (v > 3)` also matches only 1 — together 2, not 3. This
         // test pins that the NULL row enters neither side, not that "NULL is
         // equivalent to false".
-        let mut n = Node::build(&Plan::Filter {
-            input: Box::new(Plan::Scan {
-                table: "t".into(),
-                columns: vec![0],
-            }),
-            predicate: Predicate::IntGt {
-                column: 0,
-                value: 3,
+        let mut n = Node::build(
+            &Plan::Filter {
+                input: Box::new(Plan::Scan {
+                    table: "t".into(),
+                    columns: vec![0],
+                }),
+                predicate: Predicate::IntGt {
+                    column: 0,
+                    value: 3,
+                },
             },
-        });
+            &mut crate::fresh_mem_arrangement,
+        );
         let d = ZSet::from_rows([
             (row(vec![int(1)]), 1),
             (row(vec![Value::Null]), 1),
@@ -286,26 +336,32 @@ mod tests {
 
     #[test]
     fn is_not_null_predicate_filters_null_rows() {
-        let mut n = Node::build(&Plan::Filter {
-            input: Box::new(Plan::Scan {
-                table: "t".into(),
-                columns: vec![0],
-            }),
-            predicate: Predicate::IsNotNull { column: 0 },
-        });
+        let mut n = Node::build(
+            &Plan::Filter {
+                input: Box::new(Plan::Scan {
+                    table: "t".into(),
+                    columns: vec![0],
+                }),
+                predicate: Predicate::IsNotNull { column: 0 },
+            },
+            &mut crate::fresh_mem_arrangement,
+        );
         let d = ZSet::from_rows([(row(vec![Value::Null]), 1), (row(vec![int(5)]), 1)]);
         assert_eq!(n.delta("t", &d), ZSet::from_rows([(row(vec![int(5)]), 1)]));
     }
 
     #[test]
     fn project_narrows_columns_and_preserves_weights() {
-        let mut n = Node::build(&Plan::Project {
-            input: Box::new(Plan::Scan {
-                table: "t".into(),
-                columns: vec![0, 1, 2],
-            }),
-            columns: vec![2, 0],
-        });
+        let mut n = Node::build(
+            &Plan::Project {
+                input: Box::new(Plan::Scan {
+                    table: "t".into(),
+                    columns: vec![0, 1, 2],
+                }),
+                columns: vec![2, 0],
+            },
+            &mut crate::fresh_mem_arrangement,
+        );
         let d = ZSet::from_rows([(row(vec![int(1), int(2), int(3)]), 4)]);
         assert_eq!(
             n.delta("t", &d),
@@ -319,13 +375,16 @@ mod tests {
         // When two rows become the same row after narrowing, their weights must
         // add rather than the later overwriting the earlier — Z-set semantics,
         // and the one non-trivial thing Project does.
-        let mut n = Node::build(&Plan::Project {
-            input: Box::new(Plan::Scan {
-                table: "t".into(),
-                columns: vec![0, 1],
-            }),
-            columns: vec![0],
-        });
+        let mut n = Node::build(
+            &Plan::Project {
+                input: Box::new(Plan::Scan {
+                    table: "t".into(),
+                    columns: vec![0, 1],
+                }),
+                columns: vec![0],
+            },
+            &mut crate::fresh_mem_arrangement,
+        );
         let d = ZSet::from_rows([
             (row(vec![int(7), int(1)]), 2),
             (row(vec![int(7), int(2)]), 3),
@@ -336,13 +395,16 @@ mod tests {
     #[test]
     fn project_drops_rows_whose_weights_cancel_after_narrowing() {
         // A row whose weights cancel to 0 after narrowing must disappear (spec §5.1), not stay as a weight-0 entry.
-        let mut n = Node::build(&Plan::Project {
-            input: Box::new(Plan::Scan {
-                table: "t".into(),
-                columns: vec![0, 1],
-            }),
-            columns: vec![0],
-        });
+        let mut n = Node::build(
+            &Plan::Project {
+                input: Box::new(Plan::Scan {
+                    table: "t".into(),
+                    columns: vec![0, 1],
+                }),
+                columns: vec![0],
+            },
+            &mut crate::fresh_mem_arrangement,
+        );
         let d = ZSet::from_rows([
             (row(vec![int(7), int(1)]), 2),
             (row(vec![int(7), int(2)]), -2),
@@ -371,7 +433,7 @@ mod tests {
             &text_then_int(),
         )
         .unwrap();
-        let mut n = Node::build(&plan);
+        let mut n = Node::build(&plan, &mut crate::fresh_mem_arrangement);
         let d = ZSet::from_rows([
             (row(vec![Value::Text("a".into()), int(9)]), 1),
             (row(vec![Value::Text("a".into()), int(1)]), 1), // stopped by the Filter
@@ -414,7 +476,7 @@ mod tests {
             &text_then_int(),
         )
         .unwrap();
-        let mut n = Node::build(&plan);
+        let mut n = Node::build(&plan, &mut crate::fresh_mem_arrangement);
 
         let first = n.delta(
             "t",
@@ -483,7 +545,7 @@ mod tests {
         // Task 3 had no Aggregate node yet (Task 4 added it), so the Node is
         // built from the Aggregate's input — the real Filter/Project subtree
         // lower() produces — rather than a hand-written tree of similar shape.
-        let mut n = Node::build(&input);
+        let mut n = Node::build(&input, &mut crate::fresh_mem_arrangement);
 
         // Column 0 = the predicate's column (narrowed away), column 1 = the SUM column, column 2 = the group key.
         let d = ZSet::from_rows([
@@ -500,5 +562,53 @@ mod tests {
              fail the first, giving {{Row([200, 5]): 1}} instead of \
              {{Row([1, 5]): 1}} — a wrong answer, not an out-of-bounds panic"
         );
+    }
+
+    fn join_plan() -> Plan {
+        Plan::Join {
+            left: Box::new(Plan::Scan {
+                table: "t0".into(),
+                columns: vec![0, 1],
+            }),
+            right: Box::new(Plan::Scan {
+                table: "t1".into(),
+                columns: vec![0, 1],
+            }),
+            left_key: 0,
+            right_key: 0,
+        }
+    }
+
+    #[test]
+    fn a_join_tree_routes_each_tables_delta_to_its_own_side() {
+        let mut n = Node::build(&join_plan(), &mut crate::fresh_mem_arrangement);
+        let right_row = Row::new(vec![Value::Text("a".into()), Value::Int(10)]);
+        let left_row = Row::new(vec![Value::Text("a".into()), Value::Int(1)]);
+        assert!(n.delta("t1", &ZSet::from_rows([(right_row, 1)])).is_empty());
+        let out = n.delta("t0", &ZSet::from_rows([(left_row, 1)]));
+        assert_eq!(
+            out,
+            ZSet::from_rows([(
+                Row::new(vec![
+                    Value::Text("a".into()),
+                    Value::Int(1),
+                    Value::Text("a".into()),
+                    Value::Int(10),
+                ]),
+                1
+            )])
+        );
+    }
+
+    #[test]
+    fn build_asks_for_one_arrangement_per_side() {
+        // Ruling 2: a future persisted-state provider tells the two inputs
+        // apart only through the `JoinSide` it is asked for.
+        let mut asked = Vec::new();
+        let _ = Node::build(&join_plan(), &mut |side| {
+            asked.push(side);
+            crate::fresh_mem_arrangement(side)
+        });
+        assert_eq!(asked, vec![crate::JoinSide::Left, crate::JoinSide::Right]);
     }
 }

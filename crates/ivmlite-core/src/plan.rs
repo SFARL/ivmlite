@@ -2,10 +2,9 @@ use crate::{Agg, AggFn, ColumnType, Predicate, Schema, ViewQuery};
 
 /// Spec §5.2's plan IR.
 ///
-/// v0's legal shape is always `Scan → Filter? → Project → Aggregate`, which
-/// `lower` guarantees. The `Join` variant is left for Phase 3, to arrive with the
-/// join operator: adding now a variant that every match arm can only answer with
-/// `unreachable!()` would leave, at every match, code no test can reach.
+/// v0's legal shapes are `Scan → Filter? → Project → Aggregate` and, with a
+/// join, `Join(Scan, Scan) → Filter? → Project → Aggregate`; `lower` guarantees
+/// that nothing else is produced.
 ///
 /// Spec §5.2 writes the expressions inside nodes as `Expr`; this implementation
 /// uses `Vec<usize>` (column indices) and `Predicate` instead. v0's group-by keys
@@ -29,6 +28,20 @@ pub enum Plan {
         /// rather than reading all of them unconditionally. Until then it is a
         /// statement of intent, not any constraint currently in force.
         columns: Vec<usize>,
+    },
+    /// Spec §5.2 / §6.1: a two-table inner equi-join (M1a Phase 3). Its output
+    /// row is the left child's row followed by the right child's row, so every
+    /// operator above it indexes that concatenation: the left child's columns
+    /// first, then the right child's.
+    ///
+    /// The keys are column indices into each child's output rather than spec
+    /// §5.2's `Vec<(Expr, Expr)>`: v0 joins on exactly one pair of bare columns
+    /// (the same reasoning as the doc comment on `Plan` about `Expr`).
+    Join {
+        left: Box<Plan>,
+        right: Box<Plan>,
+        left_key: usize,
+        right_key: usize,
     },
     Filter {
         input: Box<Plan>,
