@@ -143,6 +143,8 @@ The cost is speed. But v0's goals are correctness and architecture, and this has
 > This is not a redesign: `Group` can be represented as `(key, val, w=1)` (`emitted` is a pure function of `rows` and `accs`). But it is **real rework**, and §6.3's rule that "no design decision may force rework when join is added" was written about join — the state ownership described in this section is the first hard constraint M1b will hit. M1b's plan must answer first: is aggregate state wired onto shadow tables, or is replaying all base tables on every connection open accepted?
 >
 > **A signature issue is recorded here as well:** all three methods of §6.3's `Arrangement` are infallible (`update` returns `()`). An implementation backed by SQLite tables can fail on IO or a constraint violation, and would then have only `panic!` available. **It is not changed to `Result` now** — no caller can handle an error today, so the change would only sprout `.unwrap()` everywhere, which is worse than the panic it replaces. This is to be decided when M1b writes the shadow-table implementation and its failure modes are known, the same treatment §8.5 received when it was amended in M1a Phase 1.
+>
+> **Join (amended 2026-09-23, M1a Phase 3):** the join is built on `Arrangement` from the start. Its two arrangements are passed in through `Node::build`'s provider (`&mut dyn FnMut(JoinSide) -> Box<dyn Arrangement>`, with `JoinSide` telling the two inputs apart), rather than created inside the operator, so rebuilding a join from persisted state is a provider that returns non-empty arrangements, with no interface change. Moving `Aggregate`'s state onto `Arrangement` is deliberately **not** part of Phase 3: it is a separate step after it, before M1b or as the M1b plan's first task, so that a join bug stays bisectable from that refactor.
 
 ---
 
@@ -171,6 +173,8 @@ enum Plan {
     Join      { left: Box<Plan>, right: Box<Plan>, on: Vec<(Expr, Expr)> },  // M1a
 }
 ```
+
+v0's `Join` carries one pair of column indices (`left_key`, `right_key`) rather than `Vec<(Expr, Expr)>`, for the same reason `Expr` is not introduced elsewhere: v0 joins on exactly one pair of bare columns, so `Expr` would be an empty shell with a single `Column` variant, and introducing it once a feature genuinely needs expressions is a local change.
 
 M0 implements no operators (M0 has no engine). M1a implements all five: first `Scan` / `Filter` / `Project` / `Aggregate` (the checkpoint: single-table differential tests green), then `Join`.
 
@@ -282,6 +286,19 @@ SELECT '0' > 3;                       -- 1
 `SUM` over text coerces numeric-looking values and returns a **REAL** (`7.0`), a type v0 cannot represent (§5.1 excludes REAL for floating-point associativity). An ordering comparison between TEXT and INTEGER follows SQLite's storage-class order, NULL < INTEGER/REAL < TEXT < BLOB, under which **every** text value is greater than every integer regardless of content — so `'0' > 3` is true. v0's predicate evaluation says false for both. Neither is caught by the differential tests, because the v0 query enumerator never generates these shapes; the rule therefore lives at the boundary, where any hand-built view definition passes. `IS NULL` / `IS NOT NULL` are type-agnostic and stay legal on any column.
 
 Supporting cross-type comparisons later would mean implementing storage-class ordering, not a string comparison: converting the literal to text and comparing strings gives `'0' > '3'` = false, the opposite of SQLite.
+
+#### Join keys (amended 2026-09-23, M1a Phase 3)
+
+**A join's two key columns must have the same declared type**; a join on keys of different types is rejected at `ivm_create_view`. **A row whose key is NULL matches nothing**, not even another NULL. Both rules follow SQLite, measured on `STRICT` tables `t0(k TEXT, v INTEGER)` / `t1(k TEXT, v INTEGER)`:
+
+```sql
+INSERT INTO t0 VALUES ('7',1),('v7',2);  INSERT INTO t1 VALUES ('x',7);
+SELECT t0.k, t1.v FROM t0 JOIN t1 ON t0.k = t1.v;   -- 7|7   (TEXT '7' = INTEGER 7 is true)
+-- with NULL keys on both sides:
+SELECT COUNT(*) FROM t0 JOIN t1 ON t0.k = t1.k WHERE t0.k IS NULL;   -- 0
+```
+
+SQLite compares an INTEGER column with a TEXT column under numeric affinity, so `'7' = 7` is true there, while v0 compares values exactly — the same class of problem as the operand-type rule above, and settled the same way, at the boundary. `NULL = NULL` is UNKNOWN (the three-valued logic of this section), so the join neither stores nor probes a row whose key is NULL.
 
 ### 6.2 Retraction semantics for aggregates
 
@@ -604,7 +621,7 @@ At two columns the enumeration holds and its cost is negligible; at three a sing
 >
 > The measured join multiplier now exists (M1a Phase 3, 2026-09-23: 1.2x, see above) but the three-column decision itself is still open.
 >
-> If the decision is then not to widen, there is one knob already worked out: restrict join queries' group-by to a single column, which brings the size down from 554 to 236 (10s → 4s). The cost is not testing joins "grouped by one column from each side" — and multi-column group keys that cross the boundary between two tables are exactly where joins are most likely to have bugs, so this knob should be the last one turned.
+> If the decision is then not to widen, there is one knob already worked out: restrict join queries' group-by to a single column, which brings the join space down from 700 queries to 280 (2 key pairs × 4 single-column group-bys × 5 aggregate sets × 7 predicates) — about 1.3s instead of the measured 3.36s, a figure **computed** from the measured 3.36s / 700 queries, not measured. The cost is not testing joins "grouped by one column from each side" — and multi-column group keys that cross the boundary between two tables are exactly where joins are most likely to have bugs, so this knob should be the last one turned.
 
 ### 9.3 Shrinking
 
@@ -891,7 +908,7 @@ TanStack DB is a browser-side JS library, with a different runtime and audience 
 6. **Integer overflow is undefined behaviour**; the absolute value of a group's sum must be < 2^62 (§6.1)
 7. Comparison operators are limited to `>` `>=` `<` `<=` `=` `!=` `IS NULL` `IS NOT NULL`; no `NOT` / `OR` / `LIKE` / `IN` / `BETWEEN` / subqueries (§6.1)
 8. `SUM` only over INTEGER columns, and a column may be compared only with a literal of its own type; both are rejected at `ivm_create_view` (§6.1)
-9. No join yet: join is scheduled for M1a Phase 3 (§11), and until it lands a view reads a single base table. This list is updated with v0's actual join scope when that plan is written
+9. Joins are limited to a two-table inner equi-join on one pair of columns of the same type (M1a Phase 3). No outer joins, no self-joins, no more than two tables, no multi-column keys. A NULL key matches nothing. Filters are evaluated after the join.
 10. No MIN / MAX / DISTINCT
 11. Explicit refresh is required — a permanent API, not a temporary compromise (§8.2)
 12. Delta tables capture every column, wasting space on wide tables
