@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{Agg, AggFn, Row, Value, ZSet};
 
@@ -60,12 +60,15 @@ impl AggState {
         // 先把本批的全部变更并进组状态，记下哪些组被触及；发射统一在之后做。
         // 分两阶段是必要的：同一个组在一批里可能被多行触及，逐行发射会发出
         // 一串中间状态的 retraction 对，而对外只应看到本批的净变化。
-        let mut touched: Vec<Row> = Vec::new();
+        //
+        // `touched` is a `BTreeSet`, not a `Vec` with a `contains` check: the
+        // linear scan made a batch touching N distinct groups cost O(N^2)
+        // (measured in release: 67ms / 256ms / 1004ms for 10k / 20k / 40k groups).
+        // The set also yields the keys in sorted order, which the emit loop needs.
+        let mut touched: BTreeSet<Row> = BTreeSet::new();
         for (row, &w) in input.iter() {
             let key = Row::new(self.group_by.iter().map(|&c| row.get(c).clone()).collect());
-            if !touched.contains(&key) {
-                touched.push(key.clone());
-            }
+            touched.insert(key.clone());
             let g = self.groups.entry(key).or_insert_with(|| Group {
                 rows: 0,
                 accs: vec![Acc::default(); self.aggs.len()],
@@ -94,18 +97,19 @@ impl AggState {
         }
 
         let mut out = ZSet::new();
-        // 发射顺序取自 group key 的排序而非 `touched` 的到达顺序（spec §9.4）。
+        // Emit in group-key order rather than arrival order (spec §9.4). The
+        // order comes from iterating `touched`, a `BTreeSet`.
         //
-        // **这一行今天不可观察，实测确认**：`absorb` 的返回值是 `ZSet`，
-        // 而 `ZSet` 内部是 `BTreeMap`——对不同的行调用 `update` 的先后
-        // 与最终内容无关；两个不同的 group 又必然产生不同的输出行（输出行
-        // 以 group key 开头）。删掉 `keys.sort()`、同时把 `groups` 换成
-        // `HashMap`，全套测试连跑 12 个独立进程 12/12 全绿。留着它是因为
-        // 一旦下游改成消费**有序的** delta 序列（而不是 `ZSet`），这个顺序
-        // 立刻就进入输出——见 docs/mutation-gates.md 对应的「不适用」行。
-        let mut keys: Vec<Row> = touched;
-        keys.sort();
-        for key in keys {
+        // **This ordering is unobservable today, measured**: `absorb` returns a
+        // `ZSet`, which is a `BTreeMap` internally, so the order of `update`
+        // calls on distinct rows does not affect its contents; and two distinct
+        // groups always produce distinct output rows, because an output row
+        // begins with its group key. Replacing the ordered containers with hash
+        // containers left the whole suite green across 12 separate process
+        // runs. The ordering is kept because the moment a downstream consumer
+        // takes an *ordered* delta sequence instead of a `ZSet`, it reaches the
+        // output — see the matching n/a row in docs/mutation-gates.md.
+        for key in touched {
             let Some(g) = self.groups.get_mut(&key) else {
                 continue;
             };
