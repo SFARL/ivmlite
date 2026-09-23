@@ -1,28 +1,33 @@
 use crate::{Agg, AggFn, ColumnType, Predicate, Schema, ViewQuery};
 
-/// spec §5.2 的 plan IR。
+/// Spec §5.2's plan IR.
 ///
-/// v0 的合法形状恒为 `Scan → Filter? → Project → Aggregate`，由 `lower` 保证。
-/// `Join` 变体留到 Phase 3 与 join 算子一起加——现在加一个所有 match 分支都
-/// 只能写 `unreachable!()` 的变体，等于在每处匹配上留一段没有测试能到达的代码。
+/// v0's legal shape is always `Scan → Filter? → Project → Aggregate`, which
+/// `lower` guarantees. The `Join` variant is left for Phase 3, to arrive with the
+/// join operator: adding now a variant that every match arm can only answer with
+/// `unreachable!()` would leave, at every match, code no test can reach.
 ///
-/// spec §5.2 把节点内的表达式写作 `Expr`，本实现用 `Vec<usize>`（列下标）与
-/// `Predicate` 代替：v0 的 group-by key 只能是裸列（§5.2），谓词白名单（§6.1）
-/// 也没有任何需要表达式树的形式，于是 `Expr` 在 v0 会是只有 `Column(usize)`
-/// 一个变体的空壳。第一个真需要表达式的特性出现时再引入它是局部改动。
+/// Spec §5.2 writes the expressions inside nodes as `Expr`; this implementation
+/// uses `Vec<usize>` (column indices) and `Predicate` instead. v0's group-by keys
+/// can only be bare columns (§5.2), and nothing in the predicate whitelist
+/// (§6.1) needs an expression tree, so in v0 `Expr` would be an empty shell with
+/// a single `Column(usize)` variant. Introducing it once the first feature
+/// genuinely needs expressions is a local change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Plan {
     Scan {
         table: String,
-        /// **目前只写不读**（最终评审 Finding G）：`node.rs` 的 `Node::build`
-        /// 用 `Plan::Scan { table, .. }` 解构，`columns` 被 `..` 直接丢弃，
-        /// `Node::Scan` 根本不持有这个字段。它落地于 Task 1，当时 `Plan`
-        /// 还没有任何消费者，`lowers_to_scan_filter_project_aggregate` 那条
-        /// 直接断言这个字段本身的结构测试是它唯一的读者；Task 3 给 `Plan`
-        /// 加了第一个真消费者（`Node::build`）之后，这个字段就成了死数据。
-        /// **不要删**：M1b 的 delta-table reader 是这个字段合理的第一个
-        /// 消费者——它需要知道该对基表 `SELECT` 哪些列，而不是无条件读全部
-        /// 列。在那之前，它只是一份意图声明，不代表任何当前生效的约束。
+        /// **Currently written but never read** (final review Finding G):
+        /// `node.rs`'s `Node::build` destructures `Plan::Scan { table, .. }`,
+        /// discarding `columns` through `..`, and `Node::Scan` does not hold it
+        /// at all. It landed in Task 1, when `Plan` had no consumer and the
+        /// structural test `lowers_to_scan_filter_project_aggregate`, asserting
+        /// on the field itself, was its only reader; once Task 3 gave `Plan` its
+        /// first real consumer (`Node::build`), the field became dead data.
+        /// **Do not delete it**: M1b's delta-table reader is its plausible first
+        /// consumer — it needs to know which base-table columns to `SELECT`
+        /// rather than reading all of them unconditionally. Until then it is a
+        /// statement of intent, not any constraint currently in force.
         columns: Vec<usize>,
     },
     Filter {
@@ -31,14 +36,14 @@ pub enum Plan {
     },
     Project {
         input: Box<Plan>,
-        /// 要保留的**输入**列下标，按输出顺序排列。
+        /// The **input** column indices to keep, in output order.
         columns: Vec<usize>,
     },
     Aggregate {
         input: Box<Plan>,
-        /// 下标相对于 `Project` 的**输出**，不是基表。
+        /// Indices are relative to `Project`'s **output**, not the base table.
         group_by: Vec<usize>,
-        /// 各 `Agg::column` 同样已重映射到 `Project` 的输出位置。
+        /// Each `Agg::column` is likewise already remapped to `Project`'s output positions.
         aggs: Vec<Agg>,
     },
 }
@@ -54,11 +59,12 @@ impl std::fmt::Display for PlanError {
 
 impl std::error::Error for PlanError {}
 
-/// 把 harness 的扁平 `ViewQuery` 降成算子树，并在边界上执行 §5.2 的合法性校验。
+/// Lower the harness's flat `ViewQuery` into an operator tree, enforcing §5.2's legality checks at the boundary.
 ///
-/// 这是 `ViewQuery` 第一次跨越到 `enumerate` 之外的入口——引擎直接消费它。
-/// `enumerate` 从不产出非法形状（`enumerate_covers_the_v0_space_and_is_nonempty`
-/// 守着这一点），但 `ViewQuery` 本身可以自由构造，所以校验必须在这里。
+/// This is the first place a `ViewQuery` crosses outside `enumerate`: the
+/// engine consumes it directly. `enumerate` never produces an illegal shape
+/// (`enumerate_covers_the_v0_space_and_is_nonempty` guards that), but a
+/// `ViewQuery` can be constructed freely, so the checks must live here.
 ///
 /// `schema` is the base table the query reads. Its column count drives the
 /// out-of-range checks and its column types drive the type checks: v0 supports
@@ -69,31 +75,35 @@ pub fn lower(query: &ViewQuery, schema: &Schema) -> Result<Plan, PlanError> {
     let arity = schema.arity();
     if query.group_by.is_empty() {
         return Err(PlanError(
-            "spec §5.2：视图的根算子必须是带非空 GROUP BY 的 Aggregate；\
-             禁止全局聚合（空表时它返回 1 行而分组聚合返回 0 行，\
-             「组内计数归零就删行」这条规则对前者是错的）"
+            "spec §5.2: a view's root operator must be an Aggregate with a \
+             non-empty GROUP BY; global aggregates are forbidden (over an empty \
+             table one returns 1 row where a grouped aggregate returns 0, so the \
+             rule \"delete the row when its group's count reaches zero\" is wrong \
+             for it)"
                 .into(),
         ));
     }
     if query.aggs.is_empty() {
         return Err(PlanError(
-            "spec §5.2：没有任何 agg 的查询实际是 Scan→Project 直接成为视图，\
-             而 Z-set 权重与 SQL 行数在该形状下语义不一致"
+            "spec §5.2: a query with no aggs is really Scan→Project made \
+             directly into a view, a shape in which Z-set weights and SQL row \
+             counts disagree"
                 .into(),
         ));
     }
 
-    // `SUM` 必须带列。这条校验**不是**冗余的：`Agg` 的 `column` 是
-    // `Option<usize>`（`COUNT(*)` 为 `None`），类型系统拦不住
-    // `Agg { func: Sum, column: None }`，而 `AggState::absorb` 对 SUM 的列
-    // 只能 `expect`——少了这道门，一个合法构造出来的 `ViewQuery` 会一路
-    // 通过 `lower` 与 `Node::build`，直到第一批 delta 才 panic。
-    // `out_of_range_column_is_rejected` 那条的理由在这里原样适用：
-    // 引擎在 create_view 之后不应再有可预见的 panic 路径。
+    // `SUM` must carry a column. This check is **not** redundant: `Agg::column`
+    // is an `Option<usize>` (`None` for `COUNT(*)`), so the type system cannot
+    // stop `Agg { func: Sum, column: None }`, and `AggState::absorb` can only
+    // `expect` SUM's column — without this gate a legally constructed
+    // `ViewQuery` would pass through `lower` and `Node::build` and panic only on
+    // the first batch of deltas. The reasoning of `out_of_range_column_is_rejected`
+    // applies unchanged: the engine should have no foreseeable panic path after
+    // create_view.
     for (i, agg) in query.aggs.iter().enumerate() {
         if agg.func == AggFn::Sum && agg.column.is_none() {
             return Err(PlanError(format!(
-                "spec §5.2：第 {i} 个 agg 是 SUM 但没有指定列；只有 COUNT(*) 允许不带列"
+                "spec §5.2: agg {i} is SUM but names no column; only COUNT(*) may omit one"
             )));
         }
     }
@@ -158,8 +168,10 @@ pub fn lower(query: &ViewQuery, schema: &Schema) -> Result<Plan, PlanError> {
         require_integer(*column, "IntGt")?;
     }
 
-    // 投影保留的列：先 group key（按原序），再各 agg 的列（按原序），去重。
-    // 顺序必须确定，否则 Aggregate 的下标重映射无从对齐（spec §9.4）。
+    // The columns the projection keeps: group keys first (in their original
+    // order), then each agg's column (in order), deduplicated. The order must be
+    // deterministic, or Aggregate's index remapping has nothing to line up
+    // against (spec §9.4).
     let mut keep: Vec<usize> = Vec::new();
     for &c in &query.group_by {
         if !keep.contains(&c) {
@@ -173,18 +185,21 @@ pub fn lower(query: &ViewQuery, schema: &Schema) -> Result<Plan, PlanError> {
             }
         }
     }
-    // `keep` 总是先放 group_by 的列、按原序、且（此刻）已去重，所以只要
-    // group_by 自身无重复，remap(group_by[i]) 可证恒等于 i——group_by 的
-    // 重映射永远是平凡恒等，不可能因为重映射逻辑错了而出错。真正可能出错、
-    // 也是这段逻辑唯一值得测的部分，是 agg 列的重映射（它们落在 `keep` 里
-    // group_by 之后的位置，具体是第几位取决于去重与顺序，不是平凡的）。
+    // `keep` always starts with the group_by columns, in their original order
+    // and (at this point) deduplicated, so as long as group_by itself has no
+    // duplicates, remap(group_by[i]) is provably always i — the group_by
+    // remapping is always the trivial identity and cannot go wrong through a
+    // remapping bug. The part that can go wrong, and the only part of this logic
+    // worth testing, is the agg-column remapping (those columns land after the
+    // group_by ones in `keep`, at positions that depend on dedup and order, not
+    // trivially).
     let remap = |c: usize| {
         keep.iter()
             .position(|&k| k == c)
-            .expect("keep 由 group_by 与 agg 列构造，必然包含它们")
+            .expect("keep is built from the group_by and agg columns, so it contains them")
     };
 
-    // Scan 取全部列：Filter 的谓词按**基表**下标求值，收窄发生在 Filter 之后。
+    // Scan takes every column: Filter's predicate is evaluated against **base-table** indices, and narrowing happens after Filter.
     let mut node = Plan::Scan {
         table: table.to_string(),
         columns: (0..arity).collect(),
@@ -278,8 +293,9 @@ mod tests {
 
     #[test]
     fn lowers_to_scan_filter_project_aggregate() {
-        // predicate 用列 1，聚合只要列 0——Project 必须把 2 列收窄成 1 列，
-        // 且 Aggregate 的 group_by 下标必须重映射到收窄后的位置。
+        // The predicate uses column 1 and the aggregate needs only column 0 —
+        // Project must narrow 2 columns to 1, and Aggregate's group_by indices
+        // must be remapped to the narrowed positions.
         let plan = lower(
             &q(
                 vec![0],
@@ -291,7 +307,7 @@ mod tests {
             ),
             &ints(2),
         )
-        .expect("合法查询必须能降下来");
+        .expect("a legal query must lower");
 
         let Plan::Aggregate {
             input,
@@ -299,18 +315,22 @@ mod tests {
             aggs,
         } = &plan
         else {
-            panic!("根算子必须是 Aggregate（spec §5.2）：{plan:?}");
+            panic!("the root operator must be an Aggregate (spec §5.2): {plan:?}");
         };
-        assert_eq!(group_by, &vec![0], "收窄后 group key 落在位置 0");
+        assert_eq!(
+            group_by,
+            &vec![0],
+            "after narrowing, the group key lands at position 0"
+        );
         assert_eq!(aggs.len(), 1);
 
         let Plan::Project { input, columns } = &**input else {
-            panic!("Aggregate 之下必须是 Project：{input:?}");
+            panic!("a Project must sit below the Aggregate: {input:?}");
         };
-        assert_eq!(columns, &vec![0], "只有列 0 被聚合用到");
+        assert_eq!(columns, &vec![0], "only column 0 is used by the aggregate");
 
         let Plan::Filter { input, predicate } = &**input else {
-            panic!("Project 之下必须是 Filter：{input:?}");
+            panic!("a Filter must sit below the Project: {input:?}");
         };
         assert_eq!(
             predicate,
@@ -321,16 +341,21 @@ mod tests {
         );
 
         let Plan::Scan { table, columns } = &**input else {
-            panic!("最底层必须是 Scan：{input:?}");
+            panic!("the bottom node must be a Scan: {input:?}");
         };
         assert_eq!(table, "orders");
-        assert_eq!(columns, &vec![0, 1], "Scan 取全部列——Filter 按原始下标求值");
+        assert_eq!(
+            columns,
+            &vec![0, 1],
+            "Scan takes every column — Filter evaluates against the original indices"
+        );
     }
 
     #[test]
     fn no_filter_node_when_predicate_is_none() {
-        // Predicate::None 不应产生一个恒真的 Filter 节点：多一个节点就多一处
-        // 每批都要走的无谓遍历，且会让「Filter 被正确跳过」这件事不可观察。
+        // Predicate::None should not produce an always-true Filter node: an
+        // extra node is a pointless traversal on every batch, and it makes
+        // "Filter is correctly skipped" unobservable.
         let plan = lower(&q(vec![0], vec![count()], Predicate::None), &ints(2)).unwrap();
         let Plan::Aggregate { input, .. } = &plan else {
             panic!("{plan:?}")
@@ -340,14 +365,15 @@ mod tests {
         };
         assert!(
             matches!(&**input, Plan::Scan { .. }),
-            "Predicate::None 之下应直接是 Scan，不得插入恒真 Filter：{input:?}"
+            "under Predicate::None the Scan should come directly, with no always-true Filter inserted: {input:?}"
         );
     }
 
     #[test]
     fn projection_keeps_group_keys_and_summed_columns_in_a_stable_order() {
-        // group key 是列 1，SUM 的是列 0——收窄后的顺序必须确定且可预测，
-        // 否则 Aggregate 的下标重映射无从对齐（spec §9.4）。
+        // The group key is column 1 and SUM is over column 0 — the order after
+        // narrowing must be deterministic and predictable, or Aggregate's index
+        // remapping has nothing to line up against (spec §9.4).
         let plan = lower(&q(vec![1], vec![sum(0)], Predicate::None), &ints(2)).unwrap();
         let Plan::Aggregate {
             input,
@@ -363,16 +389,25 @@ mod tests {
         assert_eq!(
             columns,
             &vec![1, 0],
-            "先 group key（按原序），再各 agg 的列（按原序）"
+            "group keys first (in original order), then each agg's column (in order)"
         );
-        assert_eq!(group_by, &vec![0], "group key 重映射到收窄后的位置 0");
-        assert_eq!(aggs[0].column, Some(1), "SUM 的列重映射到收窄后的位置 1");
+        assert_eq!(
+            group_by,
+            &vec![0],
+            "the group key is remapped to narrowed position 0"
+        );
+        assert_eq!(
+            aggs[0].column,
+            Some(1),
+            "SUM's column is remapped to narrowed position 1"
+        );
     }
 
     #[test]
     fn a_column_used_as_both_group_key_and_sum_target_is_projected_once() {
-        // 同一列既当 group key 又被 SUM 时不得在投影里出现两次——出现两次
-        // 会让 Project 的输出行宽与 Aggregate 的预期不一致。
+        // A column that is both a group key and a SUM target must not appear in
+        // the projection twice — twice would make Project's output width
+        // disagree with what Aggregate expects.
         let plan = lower(&q(vec![0], vec![sum(0)], Predicate::None), &ints(2)).unwrap();
         let Plan::Aggregate {
             input,
@@ -385,18 +420,19 @@ mod tests {
         let Plan::Project { columns, .. } = &**input else {
             panic!("{input:?}")
         };
-        assert_eq!(columns, &vec![0], "去重后只投影一次");
+        assert_eq!(columns, &vec![0], "projected once after dedup");
         assert_eq!(group_by, &vec![0]);
         assert_eq!(aggs[0].column, Some(0));
     }
 
     #[test]
     fn two_aggs_sharing_a_non_group_by_column_are_projected_once() {
-        // 两个 agg 共用同一个非 group-by 列（此处都是 SUM(1)）时，去重必须
-        // 看的是"这一列是否已经在 keep 里"，而不是"这一列是否等于某个
-        // group_by 列"——后者对这个用例完全不生效，因为列 1 根本不在
-        // group_by 里，去重条件永远为真，`Project.columns` 会变成
-        // `[0, 1, 1]`：3 宽投影喂给一张 2 列的表。
+        // When two aggs share one non-group-by column (here both SUM(1)), the
+        // dedup must ask "is this column already in keep", not "does this column
+        // equal some group_by column" — the latter does nothing for this case,
+        // since column 1 is not in group_by at all, so the dedup condition is
+        // always true and `Project.columns` becomes `[0, 1, 1]`: a 3-wide
+        // projection over a 2-column table.
         let plan = lower(&q(vec![0], vec![sum(1), sum(1)], Predicate::None), &ints(2)).unwrap();
         let Plan::Aggregate {
             input,
@@ -409,114 +445,141 @@ mod tests {
         let Plan::Project { columns, .. } = &**input else {
             panic!("{input:?}")
         };
-        assert_eq!(columns, &vec![0, 1], "两个 agg 共用的列只投影一次");
+        assert_eq!(
+            columns,
+            &vec![0, 1],
+            "a column shared by two aggs is projected once"
+        );
         assert_eq!(group_by, &vec![0]);
-        assert_eq!(aggs[0].column, Some(1), "第一个 SUM 重映射到收窄后的位置 1");
-        assert_eq!(aggs[1].column, Some(1), "第二个 SUM 同样重映射到位置 1");
+        assert_eq!(
+            aggs[0].column,
+            Some(1),
+            "the first SUM is remapped to narrowed position 1"
+        );
+        assert_eq!(
+            aggs[1].column,
+            Some(1),
+            "the second SUM is remapped to position 1 too"
+        );
     }
 
     #[test]
     fn empty_group_by_is_rejected_at_the_boundary() {
-        // spec §5.2：禁止全局聚合——空表时它返回 1 行（值为 NULL），而分组
-        // 聚合返回 0 行，「组内计数归零就删行」这条规则对前者是错的。
-        // 此前这条只在生成器侧成立（enumerate 从不产出这种形状）；引擎直接
-        // 消费 ViewQuery 之后，边界校验必须在这里。
+        // Spec §5.2: global aggregates are forbidden — over an empty table one
+        // returns 1 row (with value NULL) where a grouped aggregate returns 0,
+        // so "delete the row when its group's count reaches zero" is wrong for
+        // it. This used to hold only generator-side (enumerate never produces
+        // the shape); now that the engine consumes ViewQuery directly, the
+        // boundary check must live here.
         let err = lower(&q(vec![], vec![count()], Predicate::None), &ints(2))
-            .expect_err("空 group_by 必须被拒绝");
+            .expect_err("an empty group_by must be rejected");
         assert!(
             err.0.contains("group_by") || err.0.contains("GROUP BY"),
-            "错误信息应指名是 group_by 的问题：{}",
+            "the error should name group_by as the problem: {}",
             err.0
         );
     }
 
     #[test]
     fn empty_aggs_is_rejected_at_the_boundary() {
-        // 根算子必须是 Aggregate；没有任何聚合的 "Aggregate" 实际是
-        // Scan→Project 直接成为视图，而那正是 §5.2 判为非法的形状
-        // （Z-set 权重 2 会显示成 2 行，普通 SQL 视图显示 3 行）。
-        let err =
-            lower(&q(vec![0], vec![], Predicate::None), &ints(2)).expect_err("空 aggs 必须被拒绝");
+        // The root operator must be an Aggregate; an "Aggregate" with no aggs is
+        // really Scan→Project made directly into a view, exactly the shape §5.2
+        // rules illegal (a Z-set weight of 2 would show as 2 rows where a plain
+        // SQL view shows 3).
+        let err = lower(&q(vec![0], vec![], Predicate::None), &ints(2))
+            .expect_err("empty aggs must be rejected");
         assert!(
             err.0.contains("agg"),
-            "错误信息应指名是 aggs 的问题：{}",
+            "the error should name aggs as the problem: {}",
             err.0
         );
     }
 
     #[test]
     fn sum_without_a_column_is_rejected_at_the_boundary() {
-        // `Agg::column` 是 `Option<usize>`（`COUNT(*)` 为 `None`），所以
-        // `Agg { func: Sum, column: None }` 是一个类型系统拦不住的合法构造。
-        // 没有这道校验时它会一路通过 `lower` 与 `Node::build`，直到
-        // `AggState::absorb` 第一次处理这个 agg 才 panic——正是
-        // `out_of_range_column_is_rejected` 明写要避免的那类
-        // 「create_view 之后仍存在的可预见 panic 路径」。
-        // 唯一的生产者 `enumerate` 从不产出这种形状，但 `ViewQuery` 可以在
-        // `enumerate` 之外自由构造（M1b 的 create-view 路径就会）。
+        // `Agg::column` is an `Option<usize>` (`None` for `COUNT(*)`), so
+        // `Agg { func: Sum, column: None }` is a legal construction the type
+        // system cannot stop. Without this check it passes through `lower` and
+        // `Node::build` and panics only when `AggState::absorb` first processes
+        // the agg — exactly the "foreseeable panic path after create_view" that
+        // `out_of_range_column_is_rejected` says must be avoided. The only
+        // producer, `enumerate`, never produces the shape, but a `ViewQuery` can
+        // be constructed freely outside `enumerate` (M1b's create-view path will).
         let bad = Agg {
             func: AggFn::Sum,
             column: None,
         };
         let err = lower(&q(vec![0], vec![count(), bad], Predicate::None), &ints(2))
-            .expect_err("不带列的 SUM 必须被拒绝");
+            .expect_err("a SUM without a column must be rejected");
         assert!(
             err.0.contains("SUM"),
-            "错误信息应指名是 SUM 的问题：{}",
+            "the error should name SUM as the problem: {}",
             err.0
         );
         assert!(
             err.0.contains('1'),
-            "错误信息应指出是第几个 agg（这里是下标 1）：{}",
+            "the error should say which agg it is (index 1 here): {}",
             err.0
         );
     }
 
     #[test]
     fn out_of_range_column_is_rejected() {
-        // 下标越界必须在降的时候就报错，而不是等到 refresh 时 panic——
-        // 引擎在 create_view 之后不应再有可预见的 panic 路径。
+        // An out-of-range index must fail while lowering, not panic at refresh
+        // — the engine should have no foreseeable panic path after create_view.
         //
-        // **这条只钉死了 group_by 那一支的越界检查**（最终评审 Finding C）：
-        // `lower` 里一共有三处独立的 `check(...)` 调用（group_by / agg 列 /
-        // predicate 列），而这个用例的 aggs、predicate 全部在范围内，只有
-        // group_by=[7] 越界。删掉这条测试守护范围之外的另外两处 `check`
-        // 中的任意一处，本测试仍然全绿——真正单独钉住它们的是下面两条新
-        // 测试。
+        // **This pins only the group_by branch of the bounds check** (final
+        // review Finding C): `lower` has three independent `check(...)` calls
+        // (group_by / agg column / predicate column), and this case keeps the
+        // aggs and the predicate in range, with only group_by=[7] out of range.
+        // Deleting either of the other two `check`s leaves this test green —
+        // the two tests below are what pin them individually.
         let err = lower(&q(vec![7], vec![count()], Predicate::None), &ints(2))
-            .expect_err("越界 group key 必须被拒绝");
-        assert!(err.0.contains('7'), "错误信息应指出越界的下标：{}", err.0);
+            .expect_err("an out-of-range group key must be rejected");
+        assert!(
+            err.0.contains('7'),
+            "the error should name the out-of-range index: {}",
+            err.0
+        );
     }
 
     #[test]
     fn out_of_range_agg_column_is_rejected() {
-        // 最终评审 Finding C：`out_of_range_column_is_rejected` 只覆盖了
-        // group_by 越界这一支。用手术刀式变异实测过：单独删掉 agg 列那处
-        // `check(c, "agg")?`（保留另外两处），`out_of_range_column_is_rejected`
-        // 依然全绿，`create_view` 会成功，直到第一批非空 delta 才在
-        // `Row::get` 里 panic——这正是 `plan.rs:87` 那条注释声称已经堵死
-        // 的"create_view 之后仍存在的可预见 panic 路径"。这里让 group_by
-        // 与 predicate 都合法，只让 agg 列（列 7）越界，单独钉住这一处。
+        // Final review Finding C: `out_of_range_column_is_rejected` covers only
+        // the group_by branch. Measured with a surgical mutation: deleting only
+        // the agg-column `check(c, "agg")?` (keeping the other two) leaves
+        // `out_of_range_column_is_rejected` green, `create_view` succeeds, and
+        // the first non-empty delta panics inside `Row::get` — exactly the
+        // "foreseeable panic path after create_view" that the comment on the
+        // SUM-column check in `lower` says is closed. Here group_by and the
+        // predicate are legal and only the agg column (column 7) is out of
+        // range, pinning this branch on its own.
         let bad = Agg {
             func: AggFn::Sum,
             column: Some(7),
         };
         let err = lower(&q(vec![0], vec![bad], Predicate::None), &ints(2))
-            .expect_err("越界的 agg 列必须被拒绝");
-        assert!(err.0.contains('7'), "错误信息应指出越界的下标：{}", err.0);
+            .expect_err("an out-of-range agg column must be rejected");
+        assert!(
+            err.0.contains('7'),
+            "the error should name the out-of-range index: {}",
+            err.0
+        );
         assert!(
             err.0.contains("agg"),
-            "错误信息应指名是 agg 的问题：{}",
+            "the error should name the agg as the problem: {}",
             err.0
         );
     }
 
     #[test]
     fn out_of_range_predicate_column_is_rejected() {
-        // 与上一条同一次复审发现：单独删掉 predicate 列那处
-        // `check(*column, "predicate")?`（保留另外两处），
-        // `out_of_range_column_is_rejected` 同样依然全绿。这里让 group_by
-        // 与 agg 列都合法，只让谓词引用的列（列 7）越界，单独钉住这一处。
+        // Found in the same review as the previous test: deleting only the
+        // predicate-column `check(*column, "predicate")?` (keeping the other
+        // two) likewise leaves `out_of_range_column_is_rejected` green. Here
+        // group_by and the agg column are legal and only the column the
+        // predicate references (column 7) is out of range, pinning this branch
+        // on its own.
         let err = lower(
             &q(
                 vec![0],
@@ -528,11 +591,15 @@ mod tests {
             ),
             &ints(2),
         )
-        .expect_err("越界的谓词列必须被拒绝");
-        assert!(err.0.contains('7'), "错误信息应指出越界的下标：{}", err.0);
+        .expect_err("an out-of-range predicate column must be rejected");
+        assert!(
+            err.0.contains('7'),
+            "the error should name the out-of-range index: {}",
+            err.0
+        );
         assert!(
             err.0.contains("predicate"),
-            "错误信息应指名是 predicate 的问题：{}",
+            "the error should name the predicate as the problem: {}",
             err.0
         );
     }

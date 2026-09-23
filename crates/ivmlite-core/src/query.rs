@@ -9,7 +9,7 @@ pub enum AggFn {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Agg {
     pub func: AggFn,
-    /// COUNT(*) 为 None；SUM 必须为 Some，且指向 INTEGER 列。
+    /// `None` for COUNT(*); for SUM it must be `Some`, pointing at an INTEGER column.
     pub column: Option<usize>,
 }
 
@@ -24,7 +24,7 @@ pub enum Predicate {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ViewQuery {
-    /// v0 只允许裸列作为 group-by 键，不允许表达式（spec §7.1）。
+    /// v0 allows only bare columns as group-by keys, not expressions (spec §7.1).
     pub group_by: Vec<usize>,
     pub aggs: Vec<Agg>,
     pub predicate: Predicate,

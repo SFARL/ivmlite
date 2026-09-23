@@ -2,43 +2,48 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{Agg, AggFn, Row, Value, ZSet};
 
-/// 一个 agg 的累加器。
+/// One agg's accumulator.
 ///
-/// `Sum` 必须同时维护 `sum` 与 `non_null`：spec §6.1 明写，只维护累加值的
-/// 实现会在「组非空但该列全为 NULL」时输出 `0`，而 SQLite 输出 `NULL`，
-/// 且这个不一致是静默的。
+/// `Sum` must keep both `sum` and `non_null`: spec §6.1 states that an
+/// implementation keeping only the running sum outputs `0` when "the group is
+/// non-empty but the column is entirely NULL", where SQLite outputs `NULL` — and
+/// that the disagreement is silent.
 #[derive(Debug, Clone, Default)]
 struct Acc {
     sum: i64,
     non_null: i64,
 }
 
-/// 一个 group 的状态。
+/// One group's state.
 #[derive(Debug, Clone)]
 struct Group {
-    /// 组内行的权重和。`COUNT(*)` 的输出即此值；归零时该组从输出中消失。
+    /// The total weight of the group's rows. `COUNT(*)` outputs exactly this; at zero the group leaves the output.
     rows: i64,
     accs: Vec<Acc>,
-    /// 本组上一次对外发出过的行。spec §6.2：聚合必须记住自己发过什么
-    /// 才能撤回它——这是聚合需要状态的真正原因。
+    /// The row this group last emitted. Spec §6.2: an aggregate must remember
+    /// what it emitted in order to retract it — the real reason aggregation
+    /// needs state.
     emitted: Option<Row>,
 }
 
-/// spec §6.2 的聚合算子状态。
+/// Spec §6.2's aggregate operator state.
 ///
-/// **本类型必须在两批之间存活**：`emitted` 记的是「上一次对外发过什么」，
-/// 只有跨批保留它，第二批才撤得回第一批发出的那行。每批新建一个 `AggState`
-/// （或在 `Node::delta` 里对它取一份临时拷贝）会让每批都只发 `+1`、永不撤回，
-/// 而这正是 §6.2 说的那个最大 bug 源。由 `node.rs` 的
-/// `aggregate_retracts_across_two_batches_through_the_same_node` 钉住。
+/// **This type must survive between batches**: `emitted` records "what was
+/// last emitted", and only by keeping it across batches can the second batch
+/// retract the row the first one emitted. Creating a fresh `AggState` per batch
+/// (or taking a temporary copy of it in `Node::delta`) would emit only `+1` per
+/// batch and never retract — the biggest source of bugs §6.2 speaks of. Pinned
+/// by `aggregate_retracts_across_two_batches_through_the_same_node` in `node.rs`.
 ///
-/// `groups` 用 `BTreeMap` 而非 `HashMap`：**不是**因为遍历顺序会进入 delta 流
-/// ——实测它今天进不去（`absorb` 返回 `ZSet`，本身就是 `BTreeMap`；`groups`
-/// 也从不被迭代，只有按 key 的 `entry`/`get_mut`/`remove`）。换成 `HashMap`
-/// 并删掉发射前的 `keys.sort()`，全套测试连跑 12 个独立进程 12/12 全绿。
-/// 留着它是为了 spec §9.4 在下游改成消费**有序的** delta 序列（而不是 `ZSet`）
-/// 之后仍然成立——见 `absorb` 里 `keys.sort()` 处的注释与
-/// docs/mutation-gates.md 对应的「不适用」行。
+/// `groups` is a `BTreeMap` rather than a `HashMap`, but **not** because its
+/// iteration order reaches the delta stream — measured, today it does not:
+/// `absorb` returns a `ZSet`, itself a `BTreeMap`, and `groups` is never
+/// iterated, only accessed by key through `entry` / `get_mut` / `remove`.
+/// Replacing it (and `absorb`'s `touched` set) with hash containers leaves the
+/// whole suite green. The ordered containers are kept so spec §9.4 still holds
+/// once a downstream consumer takes an **ordered** delta sequence instead of a
+/// `ZSet` — see the comment at `absorb`'s emit loop and the matching n/a row in
+/// docs/mutation-gates.md.
 #[derive(Debug)]
 pub struct AggState {
     group_by: Vec<usize>,
@@ -55,11 +60,14 @@ impl AggState {
         }
     }
 
-    /// 吸收一批输入 delta，返回本算子**对外**发出的 delta。
+    /// Absorb one batch of input deltas, returning the delta this operator **emits**.
     pub fn absorb(&mut self, input: &ZSet) -> ZSet {
-        // 先把本批的全部变更并进组状态，记下哪些组被触及；发射统一在之后做。
-        // 分两阶段是必要的：同一个组在一批里可能被多行触及，逐行发射会发出
-        // 一串中间状态的 retraction 对，而对外只应看到本批的净变化。
+        // First merge all of this batch's changes into the group state,
+        // recording which groups were touched; emit everything afterwards. The
+        // two phases are necessary: several rows in one batch can touch the same
+        // group, and emitting per row would send out a string of retraction
+        // pairs for intermediate states, when only the batch's net change should
+        // be visible.
         //
         // `touched` is a `BTreeSet`, not a `Vec` with a `contains` check: the
         // linear scan made a batch touching N distinct groups cost O(N^2)
@@ -79,20 +87,22 @@ impl AggState {
                 if agg.func != AggFn::Sum {
                     continue;
                 }
-                // `lower` 会拒绝不带列的 SUM（`sum_without_a_column_is_
-                // rejected_at_the_boundary`），所以经由 `Node::build` 建出来的
-                // 树走不到这个 `expect`。`AggState::new` 是公开的，绕过 `lower`
-                // 直接构造时仍会 panic——那是调用方跳过边界校验的后果，不是
-                // 引擎在 create_view 之后残留的 panic 路径。
+                // `lower` rejects a SUM without a column
+                // (`sum_without_a_column_is_rejected_at_the_boundary`), so a
+                // tree built through `Node::build` never reaches this `expect`.
+                // `AggState::new` is public, and constructing one directly while
+                // bypassing `lower` can still panic here — but that is the
+                // caller skipping the boundary check, not a panic path the
+                // engine leaves open after create_view.
                 let col = agg
                     .column
-                    .expect("SUM 必须带列；经 lower 建出的树已在边界上校验过");
+                    .expect("SUM must have a column; a tree built through lower was checked at the boundary");
                 if let Value::Int(v) = row.get(col) {
                     g.accs[i].sum += v * w;
                     g.accs[i].non_null += w;
                 }
-                // NULL 输入既不进 sum 也不进 non_null——这正是「全为 NULL 时
-                // 输出 NULL」那条契约在状态层面的落点。
+                // A NULL input goes into neither sum nor non_null — this is
+                // where the "all NULL outputs NULL" contract lands in the state.
             }
         }
 
@@ -105,8 +115,9 @@ impl AggState {
         // calls on distinct rows does not affect its contents; and two distinct
         // groups always produce distinct output rows, because an output row
         // begins with its group key. Replacing the ordered containers with hash
-        // containers left the whole suite green across 12 separate process
-        // runs. The ordering is kept because the moment a downstream consumer
+        // containers leaves the whole suite green across repeated separate
+        // process runs (the counts are in the gate row). The ordering is kept
+        // because the moment a downstream consumer
         // takes an *ordered* delta sequence instead of a `ZSet`, it reaches the
         // output — see the matching n/a row in docs/mutation-gates.md.
         for key in touched {
@@ -132,17 +143,20 @@ impl AggState {
                 None
             };
 
-            // `new_out == g.emitted` 时什么都不发。
+            // Emit nothing when `new_out == g.emitted`.
             //
-            // **这个判断今天也不可观察，实测确认**：把它改成恒真之后全套
-            // 仍然全绿（实测 152/152）。原因是输出未变时撤回与重发的是**同一行**，
-            // `ZSet::update` 把 `-1` 与 `+1` 精确相消并删掉条目，多发的这一对
-            // 在返回值里一点痕迹都不留。所以在当前形状下它是一处优化
-            // （省掉两次 `BTreeMap` 操作），不是可证伪的语义——
-            // 见 docs/mutation-gates.md 对应的「不适用」行。
-            // 漏发（该发却不发）则完全是另一回事，由 `if let Some(old)`
-            // 那条撤回守着，删掉它会让六个测试变红（实测；其中一个是 node.rs 的
-            // aggregate_retracts_across_two_batches_through_the_same_node）。
+            // **This test is unobservable today too, measured**: making it
+            // always true leaves the whole suite green. When the output did not
+            // change, the row retracted and the row re-emitted are **the same
+            // row**, and `ZSet::update` cancels the `-1` and `+1` exactly and
+            // removes the entry, so the extra pair leaves no trace in the return
+            // value. In the current shape it is an optimization (it saves two
+            // `BTreeMap` operations), not falsifiable semantics — see the
+            // matching n/a row in docs/mutation-gates.md. Failing to emit when
+            // something *should* be emitted is another matter entirely: that is
+            // guarded by the `if let Some(old)` retraction below, whose removal
+            // reddens several tests, among them node.rs's
+            // `aggregate_retracts_across_two_batches_through_the_same_node`.
             if new_out != g.emitted {
                 if let Some(old) = &g.emitted {
                     out.update(old.clone(), -1);
@@ -153,7 +167,7 @@ impl AggState {
                 g.emitted = new_out;
             }
 
-            // spec §5.1：组彻底空掉后不留僵尸状态。
+            // Spec §5.1: leave no zombie state once a group is completely empty.
             if g.rows == 0 && g.emitted.is_none() {
                 self.groups.remove(&key);
             }
@@ -180,7 +194,7 @@ mod tests {
     }
 
     fn sum_state() -> AggState {
-        // group key 是列 0，SUM 的是列 1
+        // The group key is column 0; SUM is over column 1.
         AggState::new(
             vec![0],
             vec![Agg {
@@ -202,8 +216,9 @@ mod tests {
 
     #[test]
     fn a_changed_sum_emits_a_retraction_pair_not_a_bare_insert() {
-        // spec §6.2：SUM 从 100 变 150 时发的是 (key,100) w=-1 与 (key,150) w=+1，
-        // 不是单独一行 +1。这是 IVM 最大的 bug 来源。
+        // Spec §6.2: when SUM goes from 100 to 150 the emitted delta is
+        // (key,100) w=-1 and (key,150) w=+1, not a single +1 row. This is IVM's
+        // biggest source of bugs.
         let mut s = sum_state();
         let first = s.absorb(&ZSet::from_rows([(row(vec![txt("a"), int(100)]), 1)]));
         assert_eq!(first, ZSet::from_rows([(row(vec![txt("a"), int(100)]), 1)]));
@@ -215,55 +230,65 @@ mod tests {
                 (row(vec![txt("a"), int(100)]), -1),
                 (row(vec![txt("a"), int(150)]), 1),
             ]),
-            "必须撤回旧输出行并发出新行"
+            "the old output row must be retracted and the new one emitted"
         );
     }
 
     #[test]
     fn an_unchanged_group_emits_nothing() {
-        // 组被触及、但它的**输出**没变时，一对 (-1,+1) 也不该发。
+        // A group that is touched but whose **output** did not change should
+        // not emit a (-1, +1) pair either.
         //
-        // 输入必须是两条**不同的**行（一进一出），不能是同一行的 +1/-1：
-        // 后者在 `ZSet::from_rows` 里就相消成空集了，`absorb` 根本不会看到
-        // 任何输入，于是 `touched` 为空、发射循环一次都不执行——测试会通过，
-        // 但通过的理由与它声称守护的东西无关。
+        // The input must be two **different** rows (one in, one out), not the
+        // same row's +1/-1: the latter cancels to an empty set inside
+        // `ZSet::from_rows`, so `absorb` would see no input at all, `touched`
+        // would be empty and the emit loop would never run — the test would
+        // pass, for a reason unrelated to what it claims to guard.
         //
-        // **这条测试守的不是 `new_out != emitted` 那个判断**（实测：把它改成
-        // 恒真，本测试仍然绿——撤回与重发的是同一行，`ZSet::update` 精确相消）。
-        // 它真正钉住的是 `COUNT(*)` 必须等于组内权重和：把 `g.rows += w` 改成
-        // `g.rows += 1` 之后这批的行数会从 2 变成 4，输出随之改变，本测试变红。
-        // 见 docs/mutation-gates.md 对应的两行。
+        // **This test does not guard the `new_out != emitted` check** (measured:
+        // with that check always true this test stays green — the row retracted
+        // and the row re-emitted are the same, and `ZSet::update` cancels them
+        // exactly). What it really pins is that `COUNT(*)` equals the group's
+        // total weight: with `g.rows += w` changed to `g.rows += 1` this batch's
+        // row count goes from 2 to 4, the output changes, and this test goes
+        // red. See the two matching rows in docs/mutation-gates.md.
         let mut s = count_state();
         s.absorb(&ZSet::from_rows([
             (row(vec![txt("a"), int(1)]), 1),
             (row(vec![txt("a"), int(2)]), 1),
         ]));
-        // 换掉组内一行：行变了，但组的行数没变，于是 COUNT 的输出不变。
+        // Swap one of the group's rows: the rows change but their count does not, so COUNT's output does not change.
         let d = s.absorb(&ZSet::from_rows([
             (row(vec![txt("a"), int(3)]), 1),
             (row(vec![txt("a"), int(1)]), -1),
         ]));
-        assert!(d.is_empty(), "组被触及但输出未变时不得发射：{d:?}");
+        assert!(
+            d.is_empty(),
+            "a group touched but with an unchanged output must not emit: {d:?}"
+        );
     }
 
     #[test]
     fn a_group_that_empties_is_retracted_and_not_replaced() {
-        // spec §5.2：分组聚合在空表时返回 0 行（与全局聚合不同）。
-        // 组内计数归零时只发撤回，不发任何新行。
+        // Spec §5.2: a grouped aggregate returns 0 rows over an empty table
+        // (unlike a global aggregate). When a group's count reaches zero, only
+        // the retraction is emitted, with no new row.
         let mut s = count_state();
         s.absorb(&ZSet::from_rows([(row(vec![txt("a"), int(1)]), 1)]));
         let d = s.absorb(&ZSet::from_rows([(row(vec![txt("a"), int(1)]), -1)]));
         assert_eq!(
             d,
             ZSet::from_rows([(row(vec![txt("a"), int(1)]), -1)]),
-            "只撤回，不发新行"
+            "retract only, emit no new row"
         );
     }
 
     #[test]
     fn sum_over_only_null_inputs_is_null_not_zero() {
-        // spec §6.1（已实测）：组非空但该列全为 NULL 时，组出现、COUNT(*) 为正、
-        // 而 SUM 为 NULL。只维护累加值的实现会输出 0，与 SQLite 静默不一致。
+        // Spec §6.1 (measured): when the group is non-empty but the column is
+        // entirely NULL, the group appears, COUNT(*) is positive, and SUM is
+        // NULL. An implementation keeping only the running sum outputs 0 and
+        // silently disagrees with SQLite.
         let mut s = sum_state();
         let d = s.absorb(&ZSet::from_rows([
             (row(vec![txt("a"), Value::Null]), 1),
@@ -272,14 +297,15 @@ mod tests {
         assert_eq!(
             d,
             ZSet::from_rows([(row(vec![txt("a"), Value::Null]), 1)]),
-            "SUM 必须是 NULL 而不是 Int(0)"
+            "SUM must be NULL, not Int(0)"
         );
     }
 
     #[test]
     fn sum_that_genuinely_totals_zero_is_int_zero_not_null() {
-        // 与上一条相对：有非 NULL 输入、其和恰为 0 时必须是 Int(0)。
-        // 只看「和是否为 0」的实现会在这里输出 NULL。
+        // The counterpart to the previous test: with non-NULL inputs that sum to
+        // exactly 0 it must be Int(0). An implementation that only asks "is the
+        // sum 0" outputs NULL here.
         let mut s = sum_state();
         let d = s.absorb(&ZSet::from_rows([
             (row(vec![txt("a"), int(5)]), 1),
@@ -290,8 +316,9 @@ mod tests {
 
     #[test]
     fn a_group_whose_last_non_null_input_leaves_falls_back_to_null() {
-        // 非 NULL 输入被删光、但组仍非空时，SUM 必须从 Int 变回 NULL——
-        // 这条路径只有同时维护 sum 与 non_null 计数才走得对。
+        // When every non-NULL input is deleted but the group is still non-empty,
+        // SUM must go from an Int back to NULL — a path only an implementation
+        // keeping both sum and the non_null count gets right.
         let mut s = sum_state();
         s.absorb(&ZSet::from_rows([
             (row(vec![txt("a"), int(5)]), 1),
@@ -304,26 +331,29 @@ mod tests {
                 (row(vec![txt("a"), int(5)]), -1),
                 (row(vec![txt("a"), Value::Null]), 1),
             ]),
-            "组还在（那行 NULL 仍在），但 SUM 退回 NULL"
+            "the group remains (its NULL row is still there), but SUM falls back to NULL"
         );
     }
 
     #[test]
     fn sum_scales_each_input_by_its_weight() {
-        // SUM 必须按 `v * w` 累加，而不是忽略权重直接 `+= v`。
+        // SUM must accumulate `v * w`, not ignore the weight with `+= v`.
         //
-        // 上面所有 SUM 测试的输入权重都是 ±1，`v * w` 与 `v` 在那里要么相等、
-        // 要么被「non_null 归零 → 输出 NULL」这条规则掩盖掉，于是「忽略权重」
-        // 这个变异在它们下面全部是绿的（实测：把 `+= v * w` 改成 `+= v`，
-        // 全套 148/148 全绿）。这条测试专门补上那个缺口：权重 3 的一行必须
-        // 贡献 15，撤回其中 1 份后必须降回 10——两步都在非 NULL 输入仍然存在
-        // 的情况下发生，所以 NULL 那条规则掩盖不住。
+        // Every SUM test above uses input weights of ±1, where `v * w` either
+        // equals `v` or is masked by the "non_null reaches zero → output NULL"
+        // rule, so the "ignore the weight" mutation left all of them green
+        // (measured: with `+= v * w` changed to `+= v`, the whole suite stayed
+        // green). This test closes that gap: one row of weight 3 must contribute
+        // 15, and retracting one share of it must bring the sum back to 10 —
+        // both steps happen while a non-NULL input is still present, so the NULL
+        // rule cannot mask them. Weights above ±1 are reachable in practice:
+        // consolidation merges duplicate rows within a batch.
         let mut s = sum_state();
         let first = s.absorb(&ZSet::from_rows([(row(vec![txt("a"), int(5)]), 3)]));
         assert_eq!(
             first,
             ZSet::from_rows([(row(vec![txt("a"), int(15)]), 1)]),
-            "权重 3 的一行贡献 5*3=15，不是 5"
+            "a row of weight 3 contributes 5*3=15, not 5"
         );
 
         let second = s.absorb(&ZSet::from_rows([(row(vec![txt("a"), int(5)]), -1)]));
@@ -333,21 +363,24 @@ mod tests {
                 (row(vec![txt("a"), int(15)]), -1),
                 (row(vec![txt("a"), int(10)]), 1),
             ]),
-            "撤回 1 份后和从 15 降到 10；忽略权重的实现会升到 20"
+            "retracting one share takes the sum from 15 to 10; an implementation ignoring weights would reach 20"
         );
     }
 
     #[test]
     fn each_agg_reads_its_own_accumulator() {
-        // aggs 的顺序刻意写成 `[Count, Sum]`，于是 SUM 落在下标 1 而不是 0。
+        // The aggs are deliberately ordered `[Count, Sum]`, so SUM sits at index
+        // 1, not 0.
         //
-        // 上面每一条测试都只有一个 agg，在它们下面 `g.accs[i]` 与 `g.accs[0]`
-        // 完全等价——实测：只把**读**侧的 `g.accs[i]` 改成 `g.accs[0]`，全套
-        // 仍然全绿。差分层也堵不住这个洞：`crates/ivmlite-test/src/query.rs`
-        // 的 `enumerate` 只产出 `[Sum(i)]` 或 `[Sum(i), Count]`，SUM 恒在下标 0。
-        // 但 `lower` 接受 `[Count, Sum]`，`AggState::new` 也是公开的，于是
-        // 「累加器下标必须与 agg 下标对齐」这条今天只有这一条测试守着。
-        // 读错下标的后果是 SUM 静默变成 NULL——正是 §6.1 点名的那一类。
+        // Every test above has a single agg, under which `g.accs[i]` and
+        // `g.accs[0]` are identical — measured: changing only the **read** side's
+        // `g.accs[i]` to `g.accs[0]` left the whole suite green. The
+        // differential layer cannot close the hole either: `enumerate` in
+        // `crates/ivmlite-test/src/query.rs` produces only `[Sum(i)]` or
+        // `[Sum(i), Count]`, with SUM always at index 0. But `lower` accepts
+        // `[Count, Sum]` and `AggState::new` is public, so "accumulator indices
+        // line up with agg indices" is guarded by this test alone. Reading the
+        // wrong index makes SUM silently NULL — exactly the class §6.1 names.
         let mut s = AggState::new(
             vec![0],
             vec![
@@ -368,7 +401,7 @@ mod tests {
         assert_eq!(
             d,
             ZSet::from_rows([(row(vec![txt("a"), int(2), int(12)]), 1)]),
-            "COUNT=2、SUM=12；读错累加器下标会让 SUM 静默变成 NULL"
+            "COUNT=2, SUM=12; reading the wrong accumulator index would make SUM silently NULL"
         );
     }
 
@@ -386,14 +419,15 @@ mod tests {
                 (row(vec![txt("a"), int(1)]), -1),
                 (row(vec![txt("a"), int(2)]), 1),
             ]),
-            "只有 a 组受影响，b 组不得出现在 delta 里"
+            "only group a is affected; group b must not appear in the delta"
         );
     }
 
     #[test]
     fn a_null_group_key_is_a_group_like_any_other() {
-        // NULL 作为 group key 在 SQL GROUP BY 里自成一组（与 WHERE 的三值
-        // 逻辑不同）。差分测试的值域 NULL 高频，这条路径一定会被走到。
+        // NULL as a group key forms a group of its own under SQL's GROUP BY
+        // (unlike WHERE's three-valued logic). NULL is frequent in the
+        // differential tests' value domain, so this path is certain to be hit.
         let mut s = count_state();
         let d = s.absorb(&ZSet::from_rows([(row(vec![Value::Null, int(1)]), 1)]));
         assert_eq!(d, ZSet::from_rows([(row(vec![Value::Null, int(1)]), 1)]));
@@ -401,14 +435,15 @@ mod tests {
 
     #[test]
     fn emitted_output_weight_is_always_one() {
-        // spec §5.2：group key → 恰好一个输出行，__w 在最终输出中恒为 1。
-        // 权重只出现在内部 delta 与算子状态里。
+        // Spec §5.2: a group key maps to exactly one output row, and __w is
+        // always 1 in the final output. Weights appear only in internal deltas
+        // and operator state.
         let mut s = count_state();
         let d = s.absorb(&ZSet::from_rows([(row(vec![txt("a"), int(1)]), 5)]));
         assert_eq!(
             d,
             ZSet::from_rows([(row(vec![txt("a"), int(5)]), 1)]),
-            "输入权重 5 变成 COUNT=5 的一行，输出权重是 1 而不是 5"
+            "an input weight of 5 becomes one row with COUNT=5, emitted with weight 1, not 5"
         );
     }
 }

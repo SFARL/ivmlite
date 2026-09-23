@@ -13,36 +13,41 @@ impl std::fmt::Display for EngineError {
 
 impl std::error::Error for EngineError {}
 
-/// 包住 `Node`，把「一次调用推进了多少行」变成算子树自己记的账，而不是
-/// 调用方在调用前另外算出来的数字。
+/// Wraps `Node` so that "how many rows a call pushed" is bookkeeping the
+/// operator tree keeps itself, not a number the caller computes separately
+/// before the call.
 ///
-/// 最终评审 Finding B：`refresh` 曾经这样写——`rows_processed` 由推进前的
-/// `delta.len()` 单独算出来，`tree.delta(table, delta)` 是紧挨着的下一行、
-/// 但在语法上与前者毫无关联。把 `refresh` 改成对 `delta` 里每一行各调一次
-/// `tree.delta`（而不是整批调一次）之后，两处都能各自独立编译通过、语义
-/// 也不变（因为 delta 已经在 `by_table` 那一步合并过），但「consolidation
-/// 让算子树少被推进几次」这件事——spec §8.2/§8.5 唯一在意的性能故事——
-/// 就从这个计数器身上彻底测不出来了。
+/// Final review Finding B: `refresh` used to compute `rows_processed` on its
+/// own, from the pre-push `delta.len()`, with `tree.delta(table, delta)` on the
+/// very next line but syntactically unrelated to it. Changing `refresh` to call
+/// `tree.delta` once per row of `delta` (instead of once for the whole batch)
+/// still compiled and kept the same semantics (the delta was already merged in
+/// the `by_table` step), and "consolidation pushes the operator tree fewer
+/// times" — the one performance story spec §8.2/§8.5 cares about — became
+/// completely untestable through that counter.
 ///
-/// 于是 `pushes`/`rows_fed` 不是「猜」出来的，是 `Node::delta` **真的被
-/// 调用时**自己记的——调用方无论把同一批 delta 拆成多少次调用喂进来，
-/// 这两个数字都会如实反映。
+/// So `pushes` / `rows_fed` are not guessed: they are recorded when
+/// `Node::delta` is **actually called**, and however many calls the caller
+/// splits one batch into, the two numbers reflect it faithfully.
 ///
-/// 但**不要把 `node` 字段的私有当成结构性保证**：Rust 的字段私有是
-/// 模块级的，而 `CountingTree` 与 `IncrementalEngine` 同在本文件里，
-/// `refresh` 完全可以写 `tree.node.delta(...)` 绕过计数——终审复审实测
-/// 过，那样改能编译。今天绕过去会被抓到（计数停在 0，四个测试变红），
-/// 但那是因为现有测试断言的是确切的非零值，不是因为类型挡住了它。
-/// 若日后本文件里新增了别的持有 `CountingTree` 的代码，这一点要重新想。
+/// But **do not treat the `node` field's privacy as a structural guarantee**:
+/// Rust field privacy is module-level, and `CountingTree` and
+/// `IncrementalEngine` share this file, so `refresh` could perfectly well write
+/// `tree.node.delta(...)` and bypass the counting — the final re-review measured
+/// that it compiles. Such a bypass is caught today (the counters stay at 0 and
+/// the counter tests go red), but because the existing tests assert exact
+/// non-zero values, not because the type prevents it. Revisit this if other
+/// code holding a `CountingTree` is ever added to this file.
 #[derive(Debug)]
 struct CountingTree {
     node: Node,
-    /// 本次 `refresh` 里 `Node::delta`（顶层入口）被调用的次数。
-    /// consolidation 生效时，同一张表在一次 `refresh` 里应当恰好被推进
-    /// 一次，不管合并后剩几行。
+    /// How many times `Node::delta` (the top-level entry) was called in this
+    /// `refresh`. With consolidation in effect, each table should be pushed
+    /// exactly once per `refresh`, however many rows remain after merging.
     pushes: usize,
-    /// 本次 `refresh` 里累计喂给 `Node::delta` 的行数——从调用本身的实参
-    /// 观察到，不是从推进前的 `ZSet` 独立算出来的。
+    /// The total rows fed to `Node::delta` in this `refresh` — observed from
+    /// the calls' own arguments, not computed separately from the pre-push
+    /// `ZSet`.
     rows_fed: usize,
 }
 
@@ -67,35 +72,40 @@ impl CountingTree {
     }
 }
 
-/// v0 的增量引擎。
+/// v0's incremental engine.
 ///
-/// `apply` 只堆 pending，`refresh` 才推进算子树——spec §8.5 要求两者分离，
-/// 且 §8.2 规定显式 refresh 是永久 API 而非 v0 的临时妥协。
+/// `apply` only accumulates pending deltas; `refresh` is what pushes them
+/// through the operator tree — spec §8.5 requires the two to be separate, and
+/// §8.2 makes explicit refresh a permanent API rather than a temporary v0
+/// compromise.
 #[derive(Debug, Default)]
 pub struct IncrementalEngine {
     tree: Option<CountingTree>,
-    /// `create_view` 声明过的全部表名——`apply` 用它拒绝未声明的表
-    /// （最终评审 Finding L）。引擎本身不持有 `Database`，这是唯一的
-    /// 记录方式。
+    /// Every table name `create_view` declared — `apply` uses it to reject
+    /// undeclared tables (final review Finding L). The engine does not hold the
+    /// `Database` itself, so this is the only record.
     tables: BTreeSet<String>,
-    /// 视图的当前物化结果。算子发出的 delta 并进这里。
+    /// The view's current materialized result. The deltas the operators emit are merged into it.
     view: ZSet,
-    /// 已摄入但未维护的原始 Δ，**未合并**（§8.5）。
-    /// 用 `Vec` 而非按表的 map：本批内的到达顺序要保留到 `refresh`，
-    /// 合并与否是 `refresh` 的决定（Task 6）。
+    /// Raw Δ ingested but not yet maintained, **unconsolidated** (§8.5). A
+    /// `Vec` rather than a per-table map: arrival order within the batch is kept
+    /// until `refresh`, and whether to merge is `refresh`'s decision (Task 6).
     pending: Vec<(String, Row, i64)>,
-    /// 上一次 `refresh` 实际推进算子树的行数。
+    /// The rows the last `refresh` actually pushed through the operator tree.
     ///
-    /// consolidation 不改变结果、只改变工作量，于是它无法由「输出对不对」
-    /// 观察到——spec §8.5 把这种情形称作结构性不可见。这个计数器是它唯一的
-    /// 可观测足迹，也是 §11 要求的「写放大有明确数字」的来源。
+    /// Consolidation changes the amount of work, not the result, so it cannot
+    /// be observed through "is the output right" — the situation spec §8.5
+    /// calls structurally invisible. This counter is its only observable
+    /// footprint, and the source of §11's "write amplification has a concrete
+    /// number".
     ///
-    /// 最终评审 Finding B 之后：这个数字来自 `CountingTree::rows_fed`，
-    /// 也就是 `Node::delta` 实际被调用时收到的行数总和，而不是 `refresh`
-    /// 在调用之前自己另算的 `delta.len()`。
+    /// Since final review Finding B the number comes from
+    /// `CountingTree::rows_fed` — the total rows `Node::delta` received when it
+    /// was actually called — not a `delta.len()` that `refresh` computes on its
+    /// own before the call.
     rows_processed: usize,
-    /// 上一次 `refresh` 里 `Node::delta`（顶层入口）被调用的次数——见
-    /// `CountingTree` 的文档注释。
+    /// How many times `Node::delta` (the top-level entry) was called in the
+    /// last `refresh` — see `CountingTree`'s doc comment.
     tree_pushes: usize,
 }
 
@@ -113,34 +123,43 @@ impl IncrementalEngine {
         let anchor = db
             .tables()
             .first()
-            // M1b 里表的顺序来自 `__ivm_dep`，不是查询的 FROM 子句——
-            // 这里选「第一张」只是 v0 的既有约定（最终评审 Finding I）：
-            // 单表用例下 anchor 与「查询所读的表」碰巧重合，但这不是
-            // `db.tables()` 的顺序保证，只是碰巧从没被更复杂的用例拆穿过。
-            .ok_or_else(|| EngineError("Database 至少要有一张表".into()))?;
+            // In M1b the table order comes from `__ivm_dep`, not from the
+            // query's FROM clause — choosing "the first" here is only v0's
+            // existing convention (final review Finding I): in single-table
+            // cases the anchor happens to coincide with "the table the query
+            // reads", but that is no guarantee of `db.tables()`'s order, merely
+            // something no more complex case has yet exposed.
+            .ok_or_else(|| EngineError("the Database must have at least one table".into()))?;
         let plan = lower(query, anchor).map_err(|e| EngineError(e.0))?;
         let mut tree = CountingTree::new(Node::build(&plan));
 
-        // bootstrap：把每张表的初始状态当成第一批 delta 推进去。
-        // 声明了表却没给初始状态是错误，不是空表——与 oracle 的
-        // `missing_base_state_for_a_declared_table_is_an_error` 同一条约定，
-        // 这里由 `create_view_errors_when_a_declared_table_has_no_initial_state`
-        // 直接钉住（M1a Phase 2 Task 5 复审 Finding 2；差分 harness 的
-        // `gen_initial` 总是给每张表填数据，走不到这条路径，所以补一条
-        // 不依赖 harness 用例分布的单元测试）。
+        // Bootstrap: push each table's initial state through as the first batch
+        // of deltas. A declared table with no initial state is an error, not an
+        // empty table — the same convention as the oracle's
+        // `missing_base_state_for_a_declared_table_is_an_error`, pinned here
+        // directly by `create_view_errors_when_a_declared_table_has_no_initial_state`
+        // (M1a Phase 2 Task 5 re-review Finding 2; the differential harness's
+        // `gen_initial` always fills every table and never reaches this path,
+        // hence a unit test that does not depend on the harness's case
+        // distribution).
         //
-        // 最终评审 Finding A：bootstrap 循环建在局部变量 `view` 上，只有
-        // 整个循环都成功之后才把 `self.view`/`self.tree`/`self.tables`
-        // 一起提交。此前 `self.view = ZSet::new()` 在循环之前就直接写进
-        // `self` ——循环中途因为某张表缺初始状态而 `?` 提前返回时，
-        // `self.view` 已经变成一个只吸收了部分表的半成品，而 `self.tree`
-        // 还停在上一次成功的 `create_view` 建的那棵树上——两者从此永久
-        // 不一致，且此后任何 `apply`/`refresh` 都不会再报错，只会安静地
-        // 算出错误答案。
+        // Final review Finding A: the bootstrap loop builds into a local `view`,
+        // and only once the whole loop has succeeded are `self.view` /
+        // `self.tree` / `self.tables` committed together. Previously
+        // `self.view = ZSet::new()` was written into `self` before the loop, so
+        // when the loop returned early through `?` for a table with no initial
+        // state, `self.view` was left a half-built view that had absorbed only
+        // some tables while `self.tree` still held the tree built by the last
+        // successful `create_view` — permanently inconsistent, with no later
+        // `apply` / `refresh` raising an error, only quietly computing wrong
+        // answers.
         let mut view = ZSet::new();
         for schema in db.tables() {
             let base = initial.get(&schema.table).ok_or_else(|| {
-                EngineError(format!("表 {} 被声明但没有给出初始状态", schema.table))
+                EngineError(format!(
+                    "table {} is declared but has no initial state",
+                    schema.table
+                ))
             })?;
             view.merge(&tree.delta(&schema.table, base));
         }
@@ -153,17 +172,18 @@ impl IncrementalEngine {
 
     pub fn apply(&mut self, table: &str, raw: &[(Row, i64)]) -> Result<(), EngineError> {
         if self.tree.is_none() {
-            return Err(EngineError("apply 在 create_view 之前被调用".into()));
+            return Err(EngineError("apply was called before create_view".into()));
         }
-        // 最终评审 Finding L：引擎不持有 `Database`，此前对未声明的表名
-        // 来者不拒——直接堆进 `pending`，`refresh` 时喂给 `Node::Scan`，
-        // 而 `Scan` 只按表名路由（见 `node.rs`），不认识的表名会被它自己
-        // 悄悄吃成一个空 delta，`apply` 因此看起来"成功"了，视图却完全
-        // 没被这次调用影响到——M1b 里这类表名来自 shadow-table 的接缝，
-        // 一旦对不上，这里必须报错而不是产出一个"过期但看着合理"的视图。
+        // Final review Finding L: the engine does not hold the `Database`, and
+        // used to accept any table name — piling it into `pending` and feeding
+        // it to `Node::Scan` at `refresh`, where `Scan`, routing only by table
+        // name (see `node.rs`), quietly swallowed an unknown name as an empty
+        // delta. `apply` "succeeded" while the view was not affected at all. In
+        // M1b these names come across the shadow-table seam, and a mismatch must
+        // be an error here, not a stale-but-plausible view.
         if !self.tables.contains(table) {
             return Err(EngineError(format!(
-                "apply 收到未声明的表 {table}；create_view 声明的表是 {:?}",
+                "apply received the undeclared table {table}; create_view declared {:?}",
                 self.tables
             )));
         }
@@ -176,11 +196,16 @@ impl IncrementalEngine {
         let tree = self
             .tree
             .as_mut()
-            .ok_or_else(|| EngineError("refresh 在 create_view 之前被调用".into()))?;
+            .ok_or_else(|| EngineError("refresh was called before create_view".into()))?;
 
-        // spec §8.2：raw Δ 先按 Z-set 合并同一行的权重，再进算子。
-        // 按表分别合并——同样的行值出现在两张表里时跨表相消是错的。
-        // `BTreeMap` 而非 `HashMap`：推进顺序进入 delta 流（§9.4）。
+        // Spec §8.2: merge the raw Δ by Z-set, adding up each row's weights,
+        // before it reaches the operators. Merge per table — the same row value
+        // appearing in two tables must not cancel across them. A `BTreeMap`
+        // rather than a `HashMap` keeps the advance order deterministic
+        // (§9.4), although it does not reach the output today: `ZSet::merge`
+        // is pointwise addition, independent of call order. It becomes
+        // observable once join lands and `ΔR⋈ΔS` reads both sides' current
+        // state — item 6 of the join-landing checklist in docs/mutation-gates.md.
         let mut by_table: BTreeMap<String, ZSet> = BTreeMap::new();
         for (table, row, w) in std::mem::take(&mut self.pending) {
             by_table.entry(table).or_default().update(row, w);
@@ -188,9 +213,10 @@ impl IncrementalEngine {
 
         tree.reset_counts();
         for (table, delta) in &by_table {
-            // 合并后净权重为 0 的行已被 `ZSet::update` 删掉（§5.1），
-            // 于是它们根本不会出现在这里；空 delta 的表干脆不推进算子树，
-            // 这本身也是 `tree_pushes` 该反映出来的一部分。
+            // Rows whose net weight is 0 after merging were already removed by
+            // `ZSet::update` (§5.1), so they never appear here; a table whose
+            // delta is empty does not push the operator tree at all, which is
+            // itself part of what `tree_pushes` should reflect.
             if delta.is_empty() {
                 continue;
             }
@@ -201,36 +227,41 @@ impl IncrementalEngine {
         Ok(())
     }
 
-    /// 上一次 `refresh` 实际推进算子树的行数。
+    /// The rows the last `refresh` actually pushed through the operator tree.
     ///
-    /// 合并生效时，同一行在一批里出现 5 次只会被推进 1 次；`+1` 与 `-1`
-    /// 相消的行会被推进 0 次。这两个数字是 consolidation 唯一的可观测足迹。
-    /// 读的是 `CountingTree::rows_fed`——`Node::delta` 真正收到的行数总和。
+    /// With merging in effect, a row appearing 5 times in one batch is pushed
+    /// once, and a row whose `+1` and `-1` cancel is pushed zero times. Those
+    /// two numbers are consolidation's only observable footprint. It reads
+    /// `CountingTree::rows_fed` — the total rows `Node::delta` really received.
     pub fn rows_processed_last_refresh(&self) -> usize {
         self.rows_processed
     }
 
-    /// 上一次 `refresh` 里算子树的顶层入口（`Node::delta`）被调用的次数。
+    /// How many times the operator tree's top-level entry (`Node::delta`) was
+    /// called in the last `refresh`.
     ///
-    /// consolidation 生效时，一张表在一次 `refresh` 里无论合并前有多少条
-    /// 原始 raw Δ、合并后剩几行，都应当恰好触发一次调用——这是「少推进
-    /// 几次」这个性能故事在调用次数这个维度上的直接证据，`rows_processed`
-    /// 只从行数维度证明，两者合起来才堵住「按行逐条推进」这类重构
-    /// （最终评审 Finding B）。
+    /// With consolidation in effect, each table should trigger exactly one
+    /// call per `refresh`, however many raw Δ it had before merging and however
+    /// many rows remain after — the direct evidence, in the call-count
+    /// dimension, of the "push fewer times" performance story. `rows_processed`
+    /// proves it only in the row-count dimension; together they rule out
+    /// refactors like pushing row by row (final review Finding B).
     pub fn tree_pushes_last_refresh(&self) -> usize {
         self.tree_pushes
     }
 
-    /// 取视图的当前物化结果。
+    /// The view's current materialized result.
     ///
-    /// 命名为 `snapshot` 而不是 `materialize`：固有方法在方法解析里总是
-    /// 优先于同名的 trait 方法（`crate::Engine::materialize`），若两者同名，
-    /// 任何持有具体 `IncrementalEngine` 类型（而非 `impl Engine` 泛型）的
-    /// 调用点——比如 M1b 里 `ivmlite-sqlite` 直接消费这个类型——都会悄悄
-    /// 调到这一个而不是 trait 那个，且没有任何编译期信号提醒。M1a Phase 2
-    /// Task 5 复审 Finding 1：这个遮蔽当时已经真实发生过一次，逼着
-    /// `harness_catches_bugs.rs` 用 UFCS（`Engine::materialize(&mut inc)`）
-    /// 绕开；这里把根因（重名）设计掉，而不是在每个调用点绕。
+    /// Named `snapshot` rather than `materialize`: an inherent method always
+    /// wins method resolution over a trait method of the same name (such as
+    /// `ivmlite_test::Engine::materialize`), so with the same name any call site
+    /// holding a concrete `IncrementalEngine` (rather than an `impl Engine`
+    /// generic) — as `ivmlite-sqlite` will in M1b — would silently call this
+    /// one instead of the trait's, with no compile-time signal. M1a Phase 2
+    /// Task 5 re-review Finding 1: the shadowing had already happened once,
+    /// forcing `harness_catches_bugs.rs` to work around it with UFCS
+    /// (`Engine::materialize(&mut inc)`). The root cause — the name clash — is
+    /// designed away here instead of worked around at every call site.
     pub fn snapshot(&self) -> ZSet {
         self.view.clone()
     }
@@ -263,23 +294,27 @@ mod tests {
         }
     }
 
-    /// 复审 Finding 2（M1a Phase 2 Task 5）：`create_view` 声明了一张表却没
-    /// 在 `initial` 里给出它的状态时必须报错，而不是悄悄把它当空表处理。
-    /// harness 生成的用例走不到这条路径——`gen_initial` 总是给 `db.tables()`
-    /// 里每一张表都填数据——但 M1b 里手工构造 `initial` 的调用点（比如
-    /// SQLite 侧只想为部分表重建视图）会真的踩上它，所以在 `engine.rs`
-    /// 自己的单元测试里直接钉住，不依赖差分 harness 的用例分布。
+    /// Re-review Finding 2 (M1a Phase 2 Task 5): when `create_view` declares a
+    /// table but `initial` gives no state for it, it must fail rather than
+    /// quietly treat the table as empty. Harness-generated cases never reach
+    /// this path — `gen_initial` always fills every table in `db.tables()` —
+    /// but M1b call sites that build `initial` by hand (say, the SQLite side
+    /// rebuilding a view for only some tables) will hit it, so it is pinned
+    /// directly in `engine.rs`'s own unit tests, independent of the
+    /// differential harness's case distribution.
     #[test]
     fn create_view_errors_when_a_declared_table_has_no_initial_state() {
         let db = Database::new(vec![table("t0"), table("t1")]);
-        let initial = BTreeMap::from([("t0".to_string(), ZSet::new())]); // t1 缺失
+        let initial = BTreeMap::from([("t0".to_string(), ZSet::new())]); // t1 is missing
         let mut engine = IncrementalEngine::new();
         let err = engine
             .create_view(&db, &count_query(), &initial)
-            .expect_err("t1 没有给出初始状态，必须报错而不是当空表处理");
+            .expect_err(
+                "t1 has no initial state; this must fail, not be treated as an empty table",
+            );
         assert!(
             err.0.contains("t1"),
-            "错误信息必须指名缺失初始状态的那张表：{}",
+            "the error must name the table missing its initial state: {}",
             err.0
         );
     }
@@ -290,7 +325,7 @@ mod tests {
         let row = Row::new(vec![Value::Int(1)]);
         let err = engine
             .apply("t0", &[(row, 1)])
-            .expect_err("create_view 之前调用 apply 必须报错");
+            .expect_err("calling apply before create_view must fail");
         assert!(err.0.contains("apply"));
     }
 
@@ -299,7 +334,7 @@ mod tests {
         let mut engine = IncrementalEngine::new();
         let err = engine
             .refresh()
-            .expect_err("create_view 之前调用 refresh 必须报错");
+            .expect_err("calling refresh before create_view must fail");
         assert!(err.0.contains("refresh"));
     }
 
@@ -351,8 +386,9 @@ mod tests {
 
     #[test]
     fn duplicate_rows_in_one_batch_are_merged_before_reaching_the_operators() {
-        // spec §8.2/§8.5：同一行在一批里出现 5 次，合并后只推进 1 次。
-        // 这是 consolidation 唯一的可观测足迹——它不改变结果，只改变工作量。
+        // Spec §8.2/§8.5: a row appearing 5 times in one batch is pushed once
+        // after merging. This is consolidation's only observable footprint — it
+        // changes the amount of work, not the result.
         let mut e = engine();
         let raw: Vec<(Row, i64)> = (0..5).map(|_| (row("a", 1), 1)).collect();
         e.apply("t", &raw).unwrap();
@@ -360,35 +396,39 @@ mod tests {
         assert_eq!(
             e.rows_processed_last_refresh(),
             1,
-            "5 条相同的 raw Δ 必须先合并成 1 条再进算子"
+            "5 identical raw Δ must be merged into 1 before reaching the operators"
         );
         assert_eq!(
             e.tree_pushes_last_refresh(),
             1,
-            "合并后只剩一行，算子树本来就只该被推进一次"
+            "one row remains after merging, so the operator tree must be pushed exactly once"
         );
         assert_eq!(
             e.snapshot()
                 .weight_of(&Row::new(vec![Value::Text("a".into()), Value::Int(5)])),
             1,
-            "合并不得改变结果：COUNT 仍是 5"
+            "merging must not change the result: COUNT is still 5"
         );
     }
 
     #[test]
     fn rows_that_cancel_within_a_batch_never_reach_the_operators() {
-        // 同一批里插入又删除同一行，合并后净权重为 0，根本不该进算子。
+        // Inserting and deleting the same row in one batch nets a weight of 0 after merging, so it should never reach the operators.
         let mut e = engine();
         e.apply("t", &[(row("a", 1), 1), (row("a", 1), -1)])
             .unwrap();
         e.refresh().unwrap();
-        assert_eq!(e.rows_processed_last_refresh(), 0, "相消的行不得进算子");
+        assert_eq!(
+            e.rows_processed_last_refresh(),
+            0,
+            "rows that cancel must not reach the operators"
+        );
         assert!(e.snapshot().is_empty());
     }
 
     #[test]
     fn distinct_rows_are_not_over_merged() {
-        // 反向守护：合并不得把不同的行并成一条。
+        // The reverse guard: merging must not fold distinct rows into one.
         let mut e = engine();
         e.apply("t", &[(row("a", 1), 1), (row("b", 1), 1), (row("a", 2), 1)])
             .unwrap();
@@ -396,24 +436,27 @@ mod tests {
         assert_eq!(
             e.rows_processed_last_refresh(),
             3,
-            "三行互不相同，一条都不该被并掉"
+            "the three rows are all distinct, so none may be merged away"
         );
-        // 最终评审 Finding B：这三行同属一张表、同一次 refresh，consolidation
-        // 的意义正是把它们合并后**整批**一次性推进算子树——不是合并后逐行
-        // 各推一次。`rows_processed_last_refresh` 只能证明「进了算子的行数
-        // 对不对」，证明不了「进算子的次数对不对」；后者只有靠一个真正在
-        // `Node::delta` 调用点上计数的值才能钉住（见 `CountingTree`）。
+        // Final review Finding B: these three rows belong to one table and one
+        // refresh, and the point of consolidation is to push them through the
+        // operator tree as **one batch** after merging — not once per row.
+        // `rows_processed_last_refresh` can prove only "was the number of rows
+        // that reached the operators right", not "was the number of calls
+        // right"; the latter can be pinned only by a value counted at the
+        // `Node::delta` call itself (see `CountingTree`).
         assert_eq!(
             e.tree_pushes_last_refresh(),
             1,
-            "三行分属同一张表、同一次 refresh，只应向算子树推进一次，不是逐行 push"
+            "three rows of the same table in the same refresh must push the operator tree once, not once per row"
         );
     }
 
     #[test]
     fn deltas_for_different_tables_are_consolidated_separately() {
-        // 同样的行值出现在两张表里时不得跨表合并——那会让一张表的变更
-        // 消掉另一张表的变更。单表时这个形态不存在，join 落地后是常态。
+        // The same row value in two tables must not be merged across them —
+        // that would let one table's change cancel another's. With one table
+        // the shape does not exist; once join lands it is the norm.
         let two = Database::new(vec![
             Schema {
                 table: "t".into(),
@@ -440,12 +483,12 @@ mod tests {
         assert_eq!(
             e.rows_processed_last_refresh(),
             2,
-            "两张表各自一条，不得跨表相消"
+            "one row in each of two tables must not cancel across them"
         );
         assert_eq!(
             e.tree_pushes_last_refresh(),
             2,
-            "两张表各自需要一次独立的 push——Scan 按表名路由，一次调用只能带一个表名"
+            "each of the two tables needs its own push — Scan routes by table name, and one call carries one table name"
         );
     }
 
@@ -459,15 +502,15 @@ mod tests {
         assert_eq!(
             e.rows_processed_last_refresh(),
             1,
-            "计数是「上一次 refresh」而非累计"
+            "the count is for the last refresh, not cumulative"
         );
     }
 
-    // --- 最终评审 Finding A：create_view 失败不得污染既有状态 ---
+    // --- Final review Finding A: a failed create_view must not corrupt existing state ---
 
     #[test]
     fn a_failed_create_view_does_not_corrupt_existing_state() {
-        // 第一次 create_view 成功并推进过一批数据，建立一个正确的基线。
+        // The first create_view succeeds and a batch is pushed through, establishing a correct baseline.
         let mut e = engine();
         e.apply("t", &[(row("a", 1), 1)]).unwrap();
         e.refresh().unwrap();
@@ -475,62 +518,64 @@ mod tests {
         assert_eq!(
             before.weight_of(&Row::new(vec![Value::Text("a".into()), Value::Int(1)])),
             1,
-            "基线本身必须正确：COUNT(a)=1"
+            "the baseline itself must be correct: COUNT(a)=1"
         );
 
-        // 第二次 create_view 声明了 t0/t1 两张表，但 initial 只给了 t0 的
-        // 状态——bootstrap 循环处理到 t1 时必然报错。此前的实现会在报错
-        // 之前就已经把 self.view 重置成空 ZSet，而 self.tree 还停在第一次
-        // create_view 建的那棵树上，两者从此永久不一致（Finding A 的探针：
-        // 真实场景下 truth 是 {(a,2),(b,1)}，引擎会报告 {(a,1),(b,1)} 且
-        // 永不恢复）。
+        // The second create_view declares tables t0 and t1 but gives initial
+        // state only for t0, so the bootstrap loop must fail at t1. The previous
+        // implementation had already reset self.view to an empty ZSet before
+        // failing, while self.tree still held the first create_view's tree —
+        // permanently inconsistent from then on (Finding A's probe: in a real
+        // sequence the truth was {(a,2),(b,1)} and the engine reported
+        // {(a,1),(b,1)}, never recovering).
         let two = Database::new(vec![table("t0"), table("t1")]);
         let err = e
             .create_view(
                 &two,
                 &count_query(),
-                &BTreeMap::from([("t0".to_string(), ZSet::new())]), // t1 缺失
+                &BTreeMap::from([("t0".to_string(), ZSet::new())]), // t1 is missing
             )
-            .expect_err("t1 没有给出初始状态，第二次 create_view 必须报错");
+            .expect_err("t1 has no initial state, so the second create_view must fail");
         assert!(err.0.contains("t1"));
 
-        // 失败的第二次 create_view 不得动到既有状态——快照必须与失败前
-        // 逐点相等，而不只是"大致差不多"。
+        // The failed second create_view must not touch the existing state — the
+        // snapshot must equal the pre-failure one exactly, not "roughly".
         assert_eq!(
             e.snapshot(),
             before,
-            "失败的第二次 create_view 不得污染既有视图状态"
+            "a failed second create_view must not corrupt the existing view state"
         );
 
-        // 且引擎必须仍然是第一次 create_view 建立的那个可用状态：后续
-        // apply + refresh 应当继续在旧视图基础上正确前进，而不是在一棵
-        // 悬空的树上算出垃圾、或者直接 panic。
+        // And the engine must still be in the usable state the first
+        // create_view built: a later apply + refresh should keep advancing
+        // correctly from the old view, not compute garbage on a dangling tree or
+        // panic.
         e.apply("t", &[(row("b", 1), 1)]).unwrap();
         e.refresh().unwrap();
         let after = e.snapshot();
         assert_eq!(
             after.weight_of(&Row::new(vec![Value::Text("a".into()), Value::Int(1)])),
             1,
-            "旧状态里 a 的计数不应被失败的 create_view 或之后的操作破坏"
+            "a's count in the old state must not be damaged by the failed create_view or anything after it"
         );
         assert_eq!(
             after.weight_of(&Row::new(vec![Value::Text("b".into()), Value::Int(1)])),
             1,
-            "失败之后引擎必须仍能在旧视图上正确前进"
+            "after the failure the engine must still advance correctly on the old view"
         );
     }
 
-    // --- 最终评审 Finding L：apply 必须拒绝未声明的表 ---
+    // --- Final review Finding L: apply must reject undeclared tables ---
 
     #[test]
     fn apply_rejects_an_unknown_table() {
-        let mut e = engine(); // 只声明了表 "t"
+        let mut e = engine(); // declares only table "t"
         let err = e
             .apply("nope", &[(row("a", 1), 1)])
-            .expect_err("apply 收到 create_view 未声明过的表名必须报错");
+            .expect_err("apply receiving a table name create_view never declared must fail");
         assert!(
             err.0.contains("nope"),
-            "错误信息应指名是哪个未声明的表：{}",
+            "the error should name the undeclared table: {}",
             err.0
         );
     }
