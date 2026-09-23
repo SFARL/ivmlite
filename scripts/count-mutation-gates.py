@@ -1,18 +1,28 @@
 #!/usr/bin/env python3
-"""数出 docs/mutation-gates.md 的行数与验证状态，并核对文末的统计段。
+"""Count the rows and verification statuses in docs/mutation-gates.md, and check
+them against the totals sentence at the end of the document.
 
-门禁表的全部价值在于"声称"可以被机械核对。统计数字如果是手写的，
-它自己就是一处未被核对的声称——第一版正是这样写错的（12/26）。
+The gate table's whole value is that its claims can be checked mechanically. A
+hand-written total is itself an unchecked claim — the first version was exactly
+that, and it was wrong (12/26).
 
-用法：scripts/count-mutation-gates.py        # 核对，不一致则非零退出
-      scripts/count-mutation-gates.py --fix  # 按实际数字改写统计段
+Usage: scripts/count-mutation-gates.py        # check; non-zero exit on mismatch
+       scripts/count-mutation-gates.py --fix  # rewrite the totals from the actual counts
 """
 import re
 import sys
 from pathlib import Path
 
 DOC = Path(__file__).resolve().parent.parent / "docs" / "mutation-gates.md"
-SENTENCE = "表内共 **{total}** 行：已验证 **{verified}** 条、未验证 **{unverified}** 条、不适用 **{na}** 条"
+SENTENCE = (
+    "The table has **{total}** rows: **{verified}** verified, "
+    "**{unverified}** unverified, **{na}** n/a."
+)
+SENTENCE_RE = re.compile(
+    r"The table has \*\*\d+\*\* rows: \*\*\d+\*\* verified, "
+    r"\*\*\d+\*\* unverified, \*\*\d+\*\* n/a\."
+)
+HEADER_FIRST_CELL = "Spec requirement"
 
 
 def count(text):
@@ -21,25 +31,27 @@ def count(text):
         if not line.startswith("|"):
             continue
         cells = [c.strip() for c in line.strip().strip("|").split("|")]
-        if len(cells) != 4 or cells[0] in ("spec 要求",) or set(cells[0]) <= set("-: "):
+        if len(cells) != 4 or cells[0] == HEADER_FIRST_CELL or set(cells[0]) <= set("-: "):
             continue
         total += 1
-        # 状态必须由单元格的**开头**决定，不能用子串包含判断。
-        # 子串判断有一个真实的坑：一条「不适用」的行在解释自己时完全可能写出
-        # 「此前标成已验证是错的」，于是被算进已验证——在一份以可机械核对为
-        # 全部意义的文档里静默错分。M1a Phase 2 Task 2 的实现者撞上过，
-        # 当时是靠改措辞绕开的；绕开不是修好。
+        # The status is decided by how the cell *begins*, never by substring
+        # containment. Containment has a real trap: an n/a row explaining itself
+        # can perfectly well say "this was previously marked verified in error",
+        # and would then be counted as verified — a silent misclassification in a
+        # document whose whole point is being mechanically checkable. The
+        # implementer of M1a Phase 2 Task 2 hit exactly this and worked around it
+        # by rewording; working around it is not fixing it.
         status = cells[3].strip().lstrip("*").strip()
-        if status.startswith("已验证"):
+        if status.startswith("verified"):
             verified += 1
-        elif status.startswith("未验证"):
+        elif status.startswith("unverified"):
             unverified += 1
-        elif status.startswith("不适用"):
+        elif status.startswith("n/a"):
             na += 1
         else:
             raise ValueError(
-                f"第 {total} 行的状态格无法识别：{cells[3]!r}\n"
-                "必须以「已验证」「未验证」「不适用」之一开头。"
+                f"cannot classify the status cell of row {total}: {cells[3]!r}\n"
+                'it must begin with "verified", "unverified" or "n/a".'
             )
     return dict(total=total, verified=verified, unverified=unverified, na=na)
 
@@ -48,18 +60,21 @@ def main():
     text = DOC.read_text()
     actual = count(text)
     want = SENTENCE.format(**actual)
-    found = re.search(r"表内共 \*\*\d+\*\* 行：已验证 \*\*\d+\*\* 条、未验证 \*\*\d+\*\* 条、"r"不适用 \*\*\d+\*\* 条", text)
+    found = SENTENCE_RE.search(text)
     if not found:
-        print("统计段落不见了——它是本表可被核对的唯一入口", file=sys.stderr)
+        print(
+            "the totals sentence is missing — it is the table's only checkable entry point",
+            file=sys.stderr,
+        )
         return 1
     if found.group(0) == want:
-        print(f"一致：{want}")
+        print(f"consistent: {want}")
         return 0
     if "--fix" in sys.argv:
         DOC.write_text(text[: found.start()] + want + text[found.end() :])
-        print(f"已改写为：{want}")
+        print(f"rewrote to: {want}")
         return 0
-    print(f"不一致\n  文中：{found.group(0)}\n  实际：{want}", file=sys.stderr)
+    print(f"mismatch\n  document: {found.group(0)}\n  actual:   {want}", file=sys.stderr)
     return 1
 
 
