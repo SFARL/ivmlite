@@ -23,7 +23,7 @@
 **Out of scope** (listed so they are not mistaken for omissions):
 - LEFT / RIGHT / FULL OUTER joins: the retraction semantics of the NULL-padded side are much harder, and are a separate plan.
 - Chains of more than two tables, and multi-column join keys.
-- Self-joins: `Node::Scan` routes deltas by table name, so both inputs of a self-join would receive every change to that table. v0 rejects self-joins in `lower`.
+- Self-joins: `Join::right` names a table, not an alias, so a self-join cannot be rendered to SQL (it needs table aliases) and the differential oracle cannot check it. v0 rejects self-joins in `lower`.
 - Filter push-down below the join: correct but not needed; `Filter` stays above the `Join`.
 - Moving `Aggregate`'s state onto `Arrangement` (spec §4.4's state-ownership gap). This refactor changes no semantics, and the existing differential tests guard it fully, but doing it here would break the premise that a join bug can be bisected on its own. **It is a separate small step after this plan and before M1b, or the first task of the M1b plan.**
 - Widening the differential schema to 3 columns. Spec §9.2 says to decide this with a measured join multiplier. This plan **measures and records** that multiplier (Task 4). The decision itself is not made here.
@@ -48,6 +48,7 @@ Both rules follow SQLite, measured on `STRICT` tables `t0(k TEXT, v INTEGER)` / 
 INSERT INTO t0 VALUES ('7',1),('v7',2);  INSERT INTO t1 VALUES ('x',7);
 SELECT t0.k, t1.v FROM t0 JOIN t1 ON t0.k = t1.v;   -- 7|7   (TEXT '7' = INTEGER 7 is true)
 -- with NULL keys on both sides:
+INSERT INTO t0 VALUES (NULL,3);  INSERT INTO t1 VALUES (NULL,4);
 SELECT COUNT(*) FROM t0 JOIN t1 ON t0.k = t1.k WHERE t0.k IS NULL;   -- 0
 ```
 
