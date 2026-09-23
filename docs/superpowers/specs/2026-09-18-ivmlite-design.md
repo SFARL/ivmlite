@@ -1,164 +1,164 @@
-# ivmlite 设计文档
+# ivmlite design
 
-- **日期**: 2026-09-18
-- **状态**: 已批准，待实施
-- **名称**: `ivmlite`（沿用 SQLite 的 `Lite` 拼写；crates.io 上未被占用）
+- **Date**: 2026-09-18
+- **Status**: approved, being implemented
+- **Name**: `ivmlite` (following SQLite's `Lite` spelling; not taken on crates.io)
 
 ---
 
-## 1. 这是什么
+## 1. What this is
 
-ivmlite 是一个 SQLite 扩展，为 SQLite 提供**增量物化视图**（Incremental View Maintenance）。视图的维护成本与变更量 `Δ` 成正比，而不是与基表规模成正比。
+ivmlite is a SQLite extension that gives SQLite **incremental materialized views** (Incremental View Maintenance). The cost of maintaining a view is proportional to the size of the change `Δ`, not to the size of the base tables.
 
-以 Rust 编写，数据模型采用 DBSP 的 Z-set（带权重的多重集）。
+It is written in Rust, and its data model is DBSP's Z-set (a multiset with weights).
 
-### 1.1 目标
+### 1.1 Goals
 
-1. **学习 Rust 与数据库内部机制**——自己实现算子与状态管理，而不是生成 SQL 交给宿主执行。
-2. **建立一套可信的 IVM 正确性验证体系**——截至目前**未找到可复用的、跨 IVM 实现的 property-based differential testing harness**。（不宣称"无人做过"：那是无法证明的命题。）
-3. **得出一个诚实的性能结论**，包括"不值得做"这个结论。
+1. **Learn Rust and database internals** — implement the operators and state management ourselves, rather than generating SQL for the host to execute.
+2. **Build a trustworthy correctness-verification system for IVM** — so far **no reusable, cross-implementation property-based differential testing harness for IVM has been found**. (This does not claim "nobody has ever done it": that is not a provable proposition.)
+3. **Reach an honest performance conclusion**, including the conclusion "not worth doing".
 
-### 1.2 非目标
+### 1.2 Non-goals
 
-- **算法创新**。DBSP 已给出完整理论框架，本项目是工程实现，不试图发明新的增量算法。
-- **生产可用性**（M2 之前明确不是）。
-- **与 Turso 竞争采纳度**。
+- **Algorithmic novelty.** DBSP already provides a complete theoretical framework; this project is an engineering implementation and does not try to invent new incremental algorithms.
+- **Production readiness** (explicitly not a goal before M2).
+- **Competing with Turso for adoption.**
 
-### 1.3 为什么在已有实现的情况下仍然做
+### 1.3 Why build it when implementations already exist
 
-已知同类实现：
+Known implementations of the same kind:
 
-| 项目 | 宿主 | 语言 | 架构 | 状态 |
+| Project | Host | Language | Architecture | Status |
 |---|---|---|---|---|
-| Turso | SQLite 兼容（Rust 重写） | Rust | DBSP circuit | experimental，on-disk 格式未稳定 |
+| Turso | SQLite-compatible (a Rust rewrite) | Rust | DBSP circuit | experimental; on-disk format not stable |
 | duckDBSP | DuckDB | C++ | DBSP | experimental |
-| OpenIVM | DuckDB | C++ | SQL-to-SQL 编译 | 研究原型（SIGMOD 2024） |
-| Feldera | 独立引擎 | Rust | DBSP，SQL→Rust 代码生成 | 相对成熟，MIT（enterprise 部分除外） |
+| OpenIVM | DuckDB | C++ | SQL-to-SQL compilation | research prototype (SIGMOD 2024) |
+| Feldera | standalone engine | Rust | DBSP, SQL→Rust code generation | relatively mature, MIT (except the enterprise parts) |
 
-本项目不假设自己会胜出。价值在于三点：
+This project does not assume it will win. Its value rests on three points:
 
-1. **学习价值**不因别人做过而降低。
-2. **这四个实现全部标注 experimental 且语义未稳定**。一套跨实现的差分测试目前无人做，能同时对四个项目产出价值，是干净的 upstream 贡献入口。
-3. **Turso 是同宿主、同理论的实现，天然可以当作交叉验证 oracle。**
+1. **The learning value** is not reduced by someone else having done it.
+2. **All four implementations are labelled experimental, and their semantics are not stable.** Nobody currently runs a cross-implementation differential test suite; one would produce value for all four projects at once, which makes it a clean entry point for upstream contributions.
+3. **Turso is an implementation on the same host and from the same theory, so it is a natural cross-validation oracle.**
 
 ---
 
-## 2. 为什么目标是 SQLite 而不是 DuckDB
+## 2. Why SQLite and not DuckDB
 
-IVM 要回本，四个前提须同时成立：
+For IVM to pay for itself, four premises must hold at once:
 
-| 前提 | DuckDB | SQLite |
+| Premise | DuckDB | SQLite |
 |---|---|---|
-| 进程长期存活（状态才有地方待、才能摊销） | 经常不成立——开进程、扫 Parquet、查一次、退出 | 成立：app 进程 / 浏览器 tab / agent session |
-| 数据在进程存活期间变化 | 经常不成立——Parquet 多为静态快照 | 成立，持续变化（OLTP 的定义） |
-| 同一个 query 被反复问 | AI 时代反而更弱：agent 生成的是 ad-hoc query，无法预先声明视图 | 强成立：UI 每次渲染 / 每次 sync 重跑同一批 query |
-| 重算相对预算够贵 | 数据大，但 DuckDB 本身极快 | 数据小，但预算是一帧 16ms |
+| The process lives long (so the state has somewhere to live and its cost can be amortized) | Often false — start a process, scan Parquet, query once, exit | True: app process / browser tab / agent session |
+| The data changes while the process lives | Often false — Parquet is mostly a static snapshot | True, and continuous (the definition of OLTP) |
+| The same query is asked again and again | Weaker still in the AI era: agents generate ad-hoc queries, and views cannot be declared in advance | Strongly true: every UI render / every sync re-runs the same set of queries |
+| Recomputation is expensive relative to the budget | The data is large, but DuckDB itself is extremely fast | The data is small, but the budget is a 16ms frame |
 
-结论：**DuckDB 更热，但 SQLite 是 IVM 真正有活干的地方。** 佐证是 local-first 生态（LiveStore、TanStack DB）正在自行实现增量计算——TanStack DB 甚至用 JS 手写了 differential dataflow。
+Conclusion: **DuckDB is hotter, but SQLite is where IVM actually has work to do.** The corroborating evidence is the local-first ecosystem (LiveStore, TanStack DB) implementing incremental computation on its own — TanStack DB even hand-wrote differential dataflow in JS.
 
-此外 SQLite 在工程上更适合本项目：C API 稳定且小，从 Rust 绑定是成熟路径（`rusqlite` / `libsqlite3-sys`），没有 DuckDB 那样的 C++ ABI 与 FFI 阻抗问题——后者会把"学 Rust"这个目标直接架空。
-
----
-
-## 3. 交付形态
-
-**v0 形态：SQLite loadable extension（Rust cdylib）。**
-
-覆盖 server / 桌面 / CLI。明确不覆盖浏览器与 iOS 系统 SQLite（两者都无法加载扩展）。
-
-被否决的替代形态见 §12.2。
+SQLite is also a better engineering fit for this project: its C API is small and stable, binding to it from Rust is a mature path (`rusqlite` / `libsqlite3-sys`), and there is none of DuckDB's C++ ABI and FFI impedance — which would undercut the "learn Rust" goal outright.
 
 ---
 
-## 4. 架构
+## 3. Deliverable
 
-### 4.1 Crate 划分
+**v0 form: a SQLite loadable extension (a Rust cdylib).**
+
+It covers server / desktop / CLI. It explicitly does not cover browsers or the iOS system SQLite (neither can load extensions).
+
+The rejected alternative forms are in §12.2.
+
+---
+
+## 4. Architecture
+
+### 4.1 Crates
 
 ```
 ivmlite/
 ├── crates/
-│   ├── ivmlite-core/     纯 Rust，不依赖 rusqlite / libsqlite3
-│   ├── ivmlite-sql/      SQL → plan IR（SQLite dialect + SQLite 语义）
-│   ├── ivmlite-sqlite/   cdylib：扩展入口、trigger、shadow table、vtab
-│   ├── ivmlite-test/     差分测试框架（lib + bin，进 CI）
-│   ├── ivmlite-workload/ 可移植 benchmark workload（不依赖本项目其他 crate）
-│   └── ivmlite-bench/    benchmark runner 与基线
+│   ├── ivmlite-core/     pure Rust, no rusqlite / libsqlite3
+│   ├── ivmlite-sql/      SQL → plan IR (SQLite dialect + SQLite semantics)
+│   ├── ivmlite-sqlite/   cdylib: extension entry point, triggers, shadow tables, vtab
+│   ├── ivmlite-test/     differential testing harness (lib + bin, runs in CI)
+│   ├── ivmlite-workload/ portable benchmark workloads (no dependency on the other crates)
+│   └── ivmlite-bench/    benchmark runner and baselines
 ├── workloads/
 └── docs/
 ```
 
-依赖方向单向：`ivmlite-sqlite` → `ivmlite-sql` → `ivmlite-core`。
+Dependencies run one way: `ivmlite-sqlite` → `ivmlite-sql` → `ivmlite-core`.
 
-### 4.2 硬约束
+### 4.2 Hard constraints
 
-> **`ivmlite-core` 不得依赖 `rusqlite` 或 `libsqlite3-sys`。**
+> **`ivmlite-core` must not depend on `rusqlite` or `libsqlite3-sys`.**
 
-这条约束保证 core 可以在完全没有 SQLite 的情况下单元测试（喂 delta 进去、拿 delta 出来），算子正确性测试不需要起数据库。副产品是以后若要做"SQLite 旁边的库"形态不需要返工，但**不为此提前抽象**。
+This keeps the core unit-testable with no SQLite at all (feed deltas in, take deltas out), so operator-correctness tests never need to start a database. A side benefit is that a future "library next to SQLite" form would need no rework — but **no abstraction is added ahead of time for it**.
 
-> **所有 `unsafe` 与 FFI 只允许出现在 `ivmlite-sqlite` 中。**
+> **All `unsafe` and FFI is allowed only in `ivmlite-sqlite`.**
 
-### 4.3 各 crate 职责
+### 4.3 Crate responsibilities
 
 **`ivmlite-core`**
-- `Value` / `Row` / `ZSet`（带 i64 权重）
-- plan IR
-- 算子 trait 与实现
-- `Arrangement` trait——按 key 索引的状态抽象，形状按 join 需求定义
-- 增量化：plan → dataflow
+- `Value` / `Row` / `ZSet` (with i64 weights)
+- the plan IR
+- the operator trait and its implementations
+- the `Arrangement` trait — a key-indexed state abstraction whose shape is defined by what join needs
+- incrementalization: plan → dataflow
 
 **`ivmlite-sql`**
-- `sqlparser-rs`（SQLite dialect）→ plan IR
-- 对着 `Catalog` trait 做名字解析与类型推导（trait 化以便测试中伪造，无需真库）
-- **子集外的 query 一律硬报错**，不做静默全量回退（见 §12.5）
+- `sqlparser-rs` (SQLite dialect) → plan IR
+- name resolution and type inference against a `Catalog` trait (a trait so tests can fake it without a real database)
+- **any query outside the subset is a hard error**, with no silent fallback to full recomputation (see §12.5)
 
 **`ivmlite-sqlite`**
-- `sqlite3_ivmlite_init` 扩展入口
-- 控制面：`CREATE VIRTUAL TABLE ... USING ivm(...)` 的 vtab 模块与 `INSERT INTO v(v)` 命令通道（§8.3 已由 M-1 定稿；**不是**标量函数——方案 A 已被实测排除）
-- trigger 与 delta 表的 DDL 生成
-- shadow table 读写、`Arrangement` 的 SQLite 实现
-- `Catalog` 的 `PRAGMA table_info` 实现
-- bootstrap（在已有数据的表上建视图时的首次全量计算）
+- the `sqlite3_ivmlite_init` extension entry point
+- the control surface: the vtab module for `CREATE VIRTUAL TABLE ... USING ivm(...)` and the `INSERT INTO v(v)` command channel (§8.3, settled by M-1; **not** scalar functions — design A was ruled out by measurement)
+- DDL generation for triggers and delta tables
+- reading and writing shadow tables; the SQLite implementation of `Arrangement`
+- the `PRAGMA table_info` implementation of `Catalog`
+- bootstrap (the initial full computation when a view is created on a table that already has data)
 
 **`ivmlite-test`**
-- schema / 数据 / 更新序列 / query 生成器
-- oracle 执行器（全量重算、本引擎、Turso）
-- 保持序列合法性的 shrinking
-- seed 重放
+- generators for schemas / data / update sequences / queries
+- oracle executors (full recomputation, this engine, Turso)
+- shrinking that preserves sequence legality
+- seed replay
 
-### 4.4 状态归属
+### 4.4 State ownership
 
-**v0：算子状态直接存在 SQLite 表中，不做内存缓存。**
+**v0: operator state lives directly in SQLite tables, with no in-memory cache.**
 
-换来的：持久化、崩溃恢复、事务一致性、多连接安全——全部由 SQLite 自身的 WAL 与锁免费提供，一行不用写。状态是可直接 `SELECT` 的普通表，调试完全透明。
+What that buys: persistence, crash recovery, transactional consistency, and multi-connection safety — all provided for free by SQLite's own WAL and locking, without writing a line. State is a plain table you can `SELECT` from, so debugging is fully transparent.
 
-代价是慢。但 v0 目标是正确性与架构，且这样做有额外好处：**内存 arrangement 缓存变成 M4 的一个可测量优化**，有 M1 的基线数字能证明它值不值，而不是一开始就假设它值。
+The cost is speed. But v0's goals are correctness and architecture, and this has an extra benefit: **an in-memory arrangement cache becomes a measurable optimization in M4**, with M1's baseline numbers to prove whether it is worth it, rather than assuming from the start that it is.
 
-> **M1a 落地后的修订（2026-09-22）：本节与 M1a 的实现之间存在一处尚未弥合的缝隙，记在这里以免 M1b 才发现。**
+> **Amendment after M1a landed (2026-09-22): there is a gap between this section and M1a's implementation that has not been closed. It is recorded here so M1b does not discover it on its own.**
 >
-> M1a 建出了 §6.3 的 `Arrangement`（`(key, val, w)` 形状，与 §7 的 `__ivm_state_<view>_<op>` 表结构一一对应），但 M1a 唯一的有状态算子 `Aggregate` **没有**建立在它之上——它用的是一个私有的 `BTreeMap<Row, Group>`，而 `Group` 里的 `emitted` 是「上一次对外发过什么」。于是：
+> M1a built §6.3's `Arrangement` (a `(key, val, w)` shape that maps one-to-one onto §7's `__ivm_state_<view>_<op>` table), but M1a's only stateful operator, `Aggregate`, is **not** built on it. It uses a private `BTreeMap<Row, Group>`, where `Group`'s `emitted` records "what this group last emitted". As a result:
 >
-> 1. **没有从持久状态重建算子的路径。** `AggState` 只有 `new(group_by, aggs)` 一个构造器，拿到一个活的聚合状态的唯一办法是 `create_view` 重放全部基表——每次连接打开都是 O(基表规模)，而这正是本节与 §7.3 的 `__ivm_progress` 水位设计要避免的开销。
-> 2. `IncrementalEngine` 把整个物化输出放在内存里的一个 `ZSet`，而 M1b 里它是磁盘上的 `__ivm_out_<view>` 普通表。
+> 1. **There is no path to rebuild an operator from persisted state.** `AggState` has a single constructor, `new(group_by, aggs)`, so the only way to obtain a live aggregate state is for `create_view` to replay every base table — O(base-table size) on every connection open, which is exactly the cost this section and §7.3's `__ivm_progress` watermark were designed to avoid.
+> 2. `IncrementalEngine` keeps the whole materialized output in an in-memory `ZSet`, whereas in M1b it is the on-disk plain table `__ivm_out_<view>`.
 >
-> 这不是重新设计：`Group` 可以表示成 `(key, val, w=1)`（`emitted` 是 `rows` 与 `accs` 的纯函数）。但它是**真实的返工**，而 §6.3 那条「不允许做出任何会导致加入 join 时返工的设计决定」写的是 join——本节说的状态归属才是 M1b 撞上的第一个硬约束。M1b 的计划必须先回答：聚合状态是接到 shadow table 上，还是接受每次打开连接重放全量基表。
+> This is not a redesign: `Group` can be represented as `(key, val, w=1)` (`emitted` is a pure function of `rows` and `accs`). But it is **real rework**, and §6.3's rule that "no design decision may force rework when join is added" was written about join — the state ownership described in this section is the first hard constraint M1b will hit. M1b's plan must answer first: is aggregate state wired onto shadow tables, or is replaying all base tables on every connection open accepted?
 >
-> **同时记一条签名问题：** §6.3 的 `Arrangement` 三个方法都不可失败（`update` 返回 `()`）。走 SQLite 表的实现会因 IO 或约束冲突失败，届时只剩 `panic!` 可用。**不在此刻改成 `Result`**——现在没有任何调用方能处理错误，改了只会在各处长出 `.unwrap()`，比它要替换掉的 panic 更糟。这条要在 M1b 写 shadow table 实现、其失败模式已知时一并定，与 §8.5 在 M1a Phase 1 被修订是同一种处理。
+> **A signature issue is recorded here as well:** all three methods of §6.3's `Arrangement` are infallible (`update` returns `()`). An implementation backed by SQLite tables can fail on IO or a constraint violation, and would then have only `panic!` available. **It is not changed to `Result` now** — no caller can handle an error today, so the change would only sprout `.unwrap()` everywhere, which is worse than the panic it replaces. This is to be decided when M1b writes the shadow-table implementation and its failure modes are known, the same treatment §8.5 received when it was amended in M1a Phase 1.
 
 ---
 
-## 5. 数据模型与 plan IR
+## 5. Data model and plan IR
 
-### 5.1 Z-set
+### 5.1 Z-sets
 
-一行的权重是 `i64`。INSERT = `+1`，DELETE = `-1`，UPDATE = `-1`(OLD) 与 `+1`(NEW) 两条。
+A row's weight is an `i64`. INSERT = `+1`, DELETE = `-1`, UPDATE = two rows, `-1` (OLD) and `+1` (NEW).
 
-状态更新是 Z-set 加法（同一行的权重相加）。
+A state update is Z-set addition (the weights of the same row are added).
 
-**权重不变量**（在差分测试中断言）：
+**Weight invariants** (asserted in the differential tests):
 
-- 中间 delta 出现负权重是正常的。
-- **最终物化状态中不允许出现负权重**——出现即为 bug。
-- **权重归零的行必须从状态中删除**，不得留 `w = 0` 的僵尸行，否则 `COUNT(*)` 与内存占用都会漂移。
+- Negative weights in intermediate deltas are normal.
+- **Negative weights are not allowed in the final materialized state** — one appearing is a bug.
+- **A row whose weight reaches zero must be removed from the state**; no zombie `w = 0` rows may remain, or `COUNT(*)` and memory use both drift.
 
 ### 5.2 Plan IR
 
@@ -172,62 +172,62 @@ enum Plan {
 }
 ```
 
-M0 未实现任何算子（M0 没有引擎）。M1a 实现全部五个：先 `Scan`/`Filter`/`Project`/`Aggregate`（检查点：单表差分跑绿），再 `Join`。
+M0 implements no operators (M0 has no engine). M1a implements all five: first `Scan` / `Filter` / `Project` / `Aggregate` (the checkpoint: single-table differential tests green), then `Join`.
 
-#### v0 的根算子必须是带非空 GROUP BY 的 Aggregate
+#### v0's root operator must be an Aggregate with a non-empty GROUP BY
 
-这条约束堵住一个隐蔽的语义漏洞。物化输出表带 `__w` 权重列，但**权重是内部表示，SQL 表没有权重概念**：
-
-```sql
--- 若允许 Scan → Filter → Project 直接成为视图
-原始数据: apple, apple, banana
-Z-set 表示: (apple, w=2), (banana, w=1)     -- 2 行
-用户 SELECT: 应当看到 3 行
-```
-
-物化表会显示 2 行而普通 SQL 视图显示 3 行——两者语义不一致，而"物化视图就是一张普通 SQL 表"正是本项目的卖点。
-
-**规定：视图的根算子必须是 `Aggregate`，且 `group_by` 非空。** 于是 group key → 恰好一个输出行，`__w` 在最终输出中恒为 1，Z-set 权重只出现在内部 delta 与算子状态中。
-
-合法：`Scan → Filter → Project → Aggregate`
-非法：`Scan → Filter → Project` 直接作为视图
-
-**同时禁止无 GROUP BY 的全局聚合**，因为它与分组聚合的空集行为不同（已实测）：
+This constraint closes a subtle semantic hole. The materialized output table carries a `__w` weight column, but **weights are an internal representation — SQL tables have no notion of weight**:
 
 ```sql
-SELECT SUM(v) FROM t;            -- 空表 → 1 行（值为 NULL）
-SELECT g, SUM(v) FROM t GROUP BY g;  -- 空表 → 0 行
+-- if Scan → Filter → Project were allowed to be a view
+source data:   apple, apple, banana
+Z-set form:    (apple, w=2), (banana, w=1)     -- 2 rows
+user SELECT:   should see 3 rows
 ```
 
-"组内计数归零就删掉该行"这条简单规则对前者是错的。与其为一个特例引入第二套规则，不如在 v0 直接拒绝全局聚合。
+The materialized table would show 2 rows where a plain SQL view shows 3 — inconsistent semantics, when "a materialized view is just an ordinary SQL table" is this project's selling point.
 
-这两条合起来使 v0 的定位变得精确：**自动维护的聚合**（automatically maintained aggregates），而不是泛化的物化视图。
+**Rule: a view's root operator must be `Aggregate`, with a non-empty `group_by`.** Then each group key maps to exactly one output row, `__w` is always 1 in the final output, and Z-set weights appear only in internal deltas and operator state.
 
-### 5.3 视图定义的持久化
+Legal: `Scan → Filter → Project → Aggregate`
+Illegal: `Scan → Filter → Project` directly as a view
 
-**存 SQL 原文，不存序列化的 IR。** 重连时重新 parse。
+**Global aggregates without GROUP BY are forbidden too**, because their empty-set behaviour differs from grouped aggregation (measured):
 
-这样 IR 可以自由演进而无需数据迁移。Turso 目前正卡在"on-disk 格式不稳定、旧版本的视图读不了"这个问题上，是现成的教训。
+```sql
+SELECT SUM(v) FROM t;                -- empty table → 1 row (value NULL)
+SELECT g, SUM(v) FROM t GROUP BY g;  -- empty table → 0 rows
+```
+
+The simple rule "delete the row when its group's count reaches zero" is wrong for the former. Rather than introduce a second set of rules for one special case, v0 simply rejects global aggregates.
+
+Together these make v0's positioning precise: **automatically maintained aggregates**, not general materialized views.
+
+### 5.3 Persisting view definitions
+
+**Store the SQL text, not a serialized IR.** Re-parse it on reconnect.
+
+That lets the IR evolve freely with no data migration. Turso is currently stuck on exactly this — "the on-disk format is unstable, and views from an older version cannot be read" — which is a ready-made lesson.
 
 ---
 
-## 6. 算子与增量化
+## 6. Operators and incrementalization
 
-### 6.1 三类算子
+### 6.1 Three classes of operator
 
-| 类别 | 算子 | delta 规则 | 需要状态 |
+| Class | Operators | Delta rule | Needs state |
 |---|---|---|---|
-| **线性** | Filter, Project | `Δ(f(R)) = f(ΔR)` | 否 |
-| **双线性** | Join | `Δ(R⋈S) = ΔR⋈S + R⋈ΔS + ΔR⋈ΔS` | 是，两侧各一个 |
-| **聚合** | SUM, COUNT | 组内可增量维护 | 是 |
+| **Linear** | Filter, Project | `Δ(f(R)) = f(ΔR)` | No |
+| **Bilinear** | Join | `Δ(R⋈S) = ΔR⋈S + R⋈ΔS + ΔR⋈ΔS` | Yes, one per side |
+| **Aggregate** | SUM, COUNT | Incrementally maintainable per group | Yes |
 
-线性算子是白送的——delta 直接穿过，无状态。**v0 的全部难度集中在聚合。**
+Linear operators come for free — deltas pass straight through, with no state. **All of v0's difficulty is concentrated in aggregation.**
 
-MIN/MAX 不属于上述任何一类：删除当前最小值时需要知道次小值，必须另配数据结构。因此排在 M4。
+MIN / MAX belong to none of these classes: deleting the current minimum requires knowing the next-smallest value, which needs a separate data structure. They are therefore scheduled for M4.
 
-#### 聚合的 NULL 语义契约
+#### The NULL-semantics contract for aggregates
 
-**`SUM` 在非 NULL 输入为零行时返回 `NULL`，不是 `0`。** 已实测确认：
+**`SUM` over zero non-NULL inputs returns `NULL`, not `0`.** Confirmed by measurement:
 
 ```sql
 CREATE TABLE u(g TEXT, v INTEGER) STRICT;
@@ -235,53 +235,53 @@ INSERT INTO u VALUES ('a', NULL), ('a', NULL);
 SELECT g, typeof(SUM(v)), COUNT(*) FROM u GROUP BY g;   -- a|null|2
 ```
 
-注意这与"组为空"是两种不同情形：组为空时该组根本不出现在输出里；组非空但**该列全为 NULL** 时，组出现，`COUNT(*)` 为正，而 `SUM` 为 `NULL`。
+Note that this differs from an empty group. An empty group does not appear in the output at all; a non-empty group whose **column is entirely NULL** does appear, with a positive `COUNT(*)` and a `SUM` of `NULL`.
 
-因此 `SUM` 的算子状态必须同时维护 **累加值** 与 **非 NULL 输入的计数**，输出时按后者是否为零决定发 `Int` 还是 `Null`。只维护累加值的实现会在该情形下输出 `0`，与 SQLite 静默不一致。
+So `SUM`'s operator state must keep both **the running sum** and **the count of non-NULL inputs**, and choose between emitting `Int` and `Null` by whether the latter is zero. An implementation that keeps only the running sum emits `0` in this case and silently disagrees with SQLite.
 
-`COUNT(*)` 不受影响——它计的是行数，与列值是否为 NULL 无关。
+`COUNT(*)` is unaffected — it counts rows, regardless of whether a column is NULL.
 
-#### 整数溢出：与浮点结合律同类的问题
+#### Integer overflow: the same class of problem as floating-point associativity
 
-**SQLite 的 `SUM` 在整数溢出时报错，而且报不报错取决于扫描顺序。** 已实测：
+**SQLite's `SUM` raises an error on integer overflow, and whether it does depends on scan order.** Measured:
 
 ```sql
 INSERT INTO o VALUES (9223372036854775807), (9223372036854775807), (-9223372036854775807);
 SELECT SUM(v) FROM o;   -- Error: integer overflow
 ```
 
-真实和等于 `i64::MAX`，装得下；但 SQLite 按顺序累加，第二步就溢出了。
+The true sum is `i64::MAX`, which fits; but SQLite accumulates in order and overflows on the second step.
 
-增量维护的累加顺序**必然**与全量重算的扫描顺序不同，因此"增量成功、重算报错"或反之是可达状态——这与浮点加法不满足结合律是**同一类问题**，只是发生在整数上。
+Incremental maintenance accumulates in an order that **necessarily** differs from a full recomputation's scan order, so "incremental succeeds, recompute errors" (or the reverse) is a reachable state. This is **the same class of problem** as floating-point addition not being associative, just on integers.
 
-> **v0 的对策：把值域夹到不可能溢出，并把溢出明确列为不支持。**
+> **v0's answer: clamp the value domain so overflow is impossible, and declare overflow explicitly unsupported.**
 >
-> 具体约束：`|group 内所有值之和| < 2^62`。差分测试的生成器必须保证这一点（窄值域下自然满足）；`ivm_create_view` 不做静态检查（做不到），溢出时的行为**未定义**，文档如实声明。
+> Concretely: `|the sum of all values in a group| < 2^62`. The differential-test generators must guarantee this (a narrow value domain satisfies it naturally); `ivm_create_view` does not check it statically (it cannot), behaviour on overflow is **undefined**, and the documentation says so.
 
-这条与浮点的处理并列写在此处，是为了避免"只防了浮点"这个我已经犯过一次的错误。
+This is written next to the floating-point treatment deliberately, to avoid the mistake — already made once — of "guarding only against floating point".
 
-#### 谓词的三值逻辑
+#### Three-valued predicate logic
 
-`WHERE` 对 `NULL` 求值为 UNKNOWN，该行**不进入结果**；而 `WHERE NOT (...)` 同样不进入。已实测：`v` 取 `{1, NULL, 5}` 时，`WHERE v > 3` 命中 1 行，`WHERE NOT (v > 3)` 也只命中 1 行——两者加起来是 2 而不是 3。
+`WHERE` evaluates to UNKNOWN on `NULL`, and the row is **excluded from the result**; `WHERE NOT (...)` excludes it too. Measured: with `v` in `{1, NULL, 5}`, `WHERE v > 3` matches 1 row and `WHERE NOT (v > 3)` also matches only 1 row — the two add up to 2, not 3.
 
-因此谓词求值必须返回**三值**而非布尔，且"不通过"与"未知"在筛选语义上合并为同一种处理（都不进入结果）。v0 的实现把二者合并是正确的，但**不得据此认为 `NOT p` 等价于 `!p`**。
+So predicate evaluation must return a **three-valued** result rather than a boolean, with "false" and "unknown" merged into a single treatment for filtering (both are excluded). v0's implementation is right to merge them, but **must not conclude from this that `NOT p` is equivalent to `!p`**.
 
-v0 允许的比较运算符白名单：`>`、`>=`、`<`、`<=`、`=`、`!=`、`IS NULL`、`IS NOT NULL`。不允许 `NOT`、`OR`、`LIKE`、`IN`、`BETWEEN` 与任何子查询——每多一个都要重新论证一次三值逻辑，而 v0 的目的不是覆盖 SQL。
+The comparison operators v0 allows are a whitelist: `>`, `>=`, `<`, `<=`, `=`, `!=`, `IS NULL`, `IS NOT NULL`. `NOT`, `OR`, `LIKE`, `IN`, `BETWEEN` and all subqueries are not allowed — each one added means re-arguing three-valued logic, and covering SQL is not v0's purpose.
 
-### 6.2 聚合的 retraction 语义
+### 6.2 Retraction semantics for aggregates
 
-**这是 IVM 最大的 bug 来源，必须严格遵守。**
+**This is IVM's biggest source of bugs and must be followed strictly.**
 
-某个 group 的 `SUM` 从 100 变为 150 时，输出的 delta **不是** `+1 行 (region, 150)`，而是：
+When a group's `SUM` changes from 100 to 150, the output delta is **not** `+1 row (region, 150)`, but:
 
 ```
-(region, 100)  weight −1     ← 撤回旧的输出行
-(region, 150)  weight +1     ← 发出新的输出行
+(region, 100)  weight −1     ← retract the old output row
+(region, 150)  weight +1     ← emit the new output row
 ```
 
-聚合算子必须记住**自己上一次对外发出过什么**，才能撤回它。这是聚合需要状态的真正原因。因此 `Aggregate` 的状态中既包含累积量 `(sum, count)`，也包含**当前对外的输出行**。
+An aggregate operator must remember **what it last emitted** in order to retract it. That is the real reason aggregation needs state. So `Aggregate`'s state holds both the accumulators `(sum, count)` and **the output row currently emitted**.
 
-### 6.3 Arrangement trait
+### 6.3 The Arrangement trait
 
 ```rust
 trait Arrangement {
@@ -291,39 +291,39 @@ trait Arrangement {
 }
 ```
 
-**`get` 返回的是多个值而非 `Option`。** v0 的 group-by 每个 key 只存一个值，用不上多值；但 join 的每一侧都是 key → 多行。
+**`get` returns many values, not an `Option`.** v0's group-by stores one value per key and does not need many; but each side of a join is key → many rows.
 
-> **实现注记**：此处刻意使用 `Box<dyn Iterator>` 而非 RPITIT（`-> impl Iterator`）。`ivmlite-core` 的算子需要持有由 `ivmlite-sqlite` 提供的 `Arrangement` 实现，若用 RPITIT 则该 trait 不是 object-safe，无法 `dyn Arrangement`，会迫使类型参数在整个算子树上传播。装箱的迭代器在 v0（状态本就走 SQLite 表、每次访问都有 IO）中开销可忽略。若 M4 引入内存 arrangement 后测出装箱成为瓶颈，再改为泛型参数化——届时算子树已稳定，改动可控。
+> **Implementation note**: `Box<dyn Iterator>` is used here deliberately instead of RPITIT (`-> impl Iterator`). `ivmlite-core`'s operators must hold an `Arrangement` implementation supplied by `ivmlite-sqlite`; with RPITIT the trait is not object-safe, `dyn Arrangement` is impossible, and type parameters are forced to propagate through the whole operator tree. The boxed iterator's overhead is negligible in v0, where state lives in SQLite tables and every access does IO anyway. If M4's in-memory arrangement shows the boxing to be a bottleneck, switch to generic parameters then — by that point the operator tree is stable and the change is contained.
 
-> **约束：M0 不允许做出任何会导致加入 join 时返工的设计决定。** `Arrangement` 的 key → 多值形状是这条约束的主要落点。（join 原排在 M2，现已提前到 M1a——这条约束当初就是为它写的，提前只是让它更早兑现。）
+> **Constraint: M0 must not make any design decision that would force rework when join is added.** `Arrangement`'s key → many-values shape is where this constraint mainly lands. (Join was originally scheduled for M2 and has since moved up to M1a — the constraint was written for it in the first place, and moving join earlier only means it pays off sooner.)
 
-trait 定义在 `ivmlite-core`，实现由 `ivmlite-sqlite` 提供（v0 = shadow table）。
+The trait is defined in `ivmlite-core`; its implementation is supplied by `ivmlite-sqlite` (v0 = shadow tables).
 
 ---
 
-## 7. 状态表示（shadow table schema）
+## 7. State representation (shadow table schema)
 
 ```sql
-__ivm_view(name TEXT PRIMARY KEY, sql TEXT)              -- 视图定义，存 SQL 原文
-__ivm_dep(view TEXT, tbl TEXT, PRIMARY KEY(view, tbl))   -- 视图依赖哪些基表
+__ivm_view(name TEXT PRIMARY KEY, sql TEXT)              -- view definitions, stored as SQL text
+__ivm_dep(view TEXT, tbl TEXT, PRIMARY KEY(view, tbl))   -- which base tables each view depends on
 __ivm_delta_<table>(seq INTEGER PRIMARY KEY AUTOINCREMENT,
-                    w INTEGER, <表的所有列...>)            -- CDC，w 即 Z-set 权重
+                    w INTEGER, <all of the table's columns...>)   -- CDC; w is the Z-set weight
 __ivm_state_<view>_<op>(key BLOB, val BLOB, w INTEGER,
                         PRIMARY KEY(key, val))            -- arrangement
-__ivm_out_<view>(<输出列...>, __w INTEGER)                -- 物化输出，普通表
+__ivm_out_<view>(<output columns...>, __w INTEGER)        -- materialized output, a plain table
 __ivm_progress(view TEXT, tbl TEXT, applied_seq INTEGER,
-               PRIMARY KEY(view, tbl))                    -- 水位
+               PRIMARY KEY(view, tbl))                    -- watermarks
 ```
 
-`__ivm_out_<view>` 是**普通表**，不加载扩展也能 `SELECT`。
+`__ivm_out_<view>` is a **plain table**, readable with `SELECT` even without the extension loaded.
 
-### 7.1 Row 编码的两个语义陷阱
+### 7.1 Two semantic traps in row encoding
 
-**陷阱一：SQLite 中 `1 = 1.0` 为真，但 INTEGER 与 REAL 是不同的存储类。** 若编码为不同 BLOB，同一个 SQL 意义上的 group key 会分裂成两组。
+**Trap one: in SQLite `1 = 1.0` is true, but INTEGER and REAL are different storage classes.** If they encode to different BLOBs, a group key that is one value in SQL terms splits into two groups.
 
-> **对策：要求 STRICT table，并且额外显式拒绝 `ANY` 列；且 v0 只允许裸列作为 group-by key，不允许表达式**（表达式仍可能产出混合类型）。
+> **Answer: require STRICT tables, and additionally reject `ANY` columns explicitly; and v0 allows only bare columns as group-by keys, not expressions** (an expression can still produce mixed types).
 >
-> **STRICT 本身不足以钉死列类型**——STRICT 表允许 `ANY` 列，该列按原样存储、逐行类型可不同。已实测确认：
+> **STRICT alone does not pin a column's type** — STRICT tables allow `ANY` columns, which store values as given and may differ in type from row to row. Confirmed by measurement:
 >
 > ```sql
 > CREATE TABLE t(a ANY) STRICT;
@@ -331,30 +331,30 @@ __ivm_progress(view TEXT, tbl TEXT, applied_seq INTEGER,
 > SELECT count(*) FROM (SELECT a FROM t GROUP BY a);  -- 2
 > ```
 >
-> 因此 `ivm_create_view` 必须遍历 `PRAGMA table_info` 的 `type` 字段，遇到 `ANY` 直接拒绝。v0 接受的列类型白名单为 `INTEGER` 与 `TEXT`（`REAL` 因浮点结合律排除，`BLOB` 排在 M4）。
+> So `ivm_create_view` must walk `PRAGMA table_info`'s `type` field and reject `ANY` outright. The column-type whitelist v0 accepts is `INTEGER` and `TEXT` (`REAL` is excluded because of floating-point associativity; `BLOB` is scheduled for M4).
 
-**陷阱二：Collation。** `GROUP BY name` 若列上有 `COLLATE NOCASE`，编码不遵守就会与 SQLite 的分组结果不一致。
+**Trap two: collation.** If `GROUP BY name` runs over a column with `COLLATE NOCASE`, an encoding that ignores it will disagree with SQLite's grouping.
 
-> **对策：v0 只支持 BINARY collation，其余一律在 `ivm_create_view` 时拒绝。**
+> **Answer: v0 supports only the BINARY collation and rejects everything else in `ivm_create_view`.**
 >
-> **`PRAGMA table_info` 读不到 collation**——它只返回 `cid, name, type, notnull, dflt_value, pk`，没有 collation 字段（已实测确认）。列的声明 collation 只能从 DDL 本身获得。因此检测办法是：
+> **`PRAGMA table_info` cannot see collation** — it returns only `cid, name, type, notnull, dflt_value, pk`, with no collation field (confirmed by measurement). A column's declared collation can be obtained only from the DDL itself. So the check is:
 >
 > ```sql
 > SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?;
 > ```
 >
-> 取回建表语句，若其中出现 `COLLATE`（大小写不敏感匹配）则拒绝该表。这是保守的过度拒绝——`COLLATE` 可能出现在与 group-by 列无关的位置——但 v0 宁可误拒也不能误纳：漏掉一个 NOCASE 列会让物化结果与 SQLite 静默不一致，而差分测试未必覆盖得到用户的真实 collation 配置。精确到列的判断排在 M3。
+> Fetch the table's CREATE statement and reject the table if `COLLATE` appears anywhere in it (case-insensitive match). This over-rejects conservatively — `COLLATE` may appear somewhere unrelated to the group-by columns — but v0 would rather wrongly reject than wrongly accept: missing one NOCASE column makes the materialized result silently disagree with SQLite, and the differential tests will not necessarily cover a user's real collation configuration. Column-precise checking is scheduled for M3.
 
-编码必须是**规范的**：同一逻辑行必须始终编码为完全相同的字节序列。
+The encoding must be **canonical**: the same logical row must always encode to exactly the same byte sequence.
 
-### 7.2 delta 表的 GC
+### 7.2 Garbage-collecting delta tables
 
-纯 SQL trigger 的设计让未加载扩展的连接也能被捕获（§8.1），代价是 **delta 表会无限增长**。没有 GC 的设计在 benchmark 里看不出问题，一上真实 workload 立刻爆——delta 表涨到千万、上亿行。
+The pure-SQL trigger design means even connections that never loaded the extension are captured (§8.1). The cost is that **delta tables grow without bound**. A design without GC looks fine in a benchmark and blows up the moment it meets a real workload — delta tables grow to tens or hundreds of millions of rows.
 
-GC 水位由**依赖该基表的所有视图中最落后的那个**决定：
+The GC watermark is set by **the most lagging of all views that depend on the base table**:
 
 ```sql
--- 对每张基表
+-- for each base table
 gc_watermark(tbl) = (SELECT MIN(p.applied_seq)
                      FROM __ivm_progress p
                      JOIN __ivm_dep d ON d.view = p.view AND d.tbl = p.tbl
@@ -363,29 +363,29 @@ gc_watermark(tbl) = (SELECT MIN(p.applied_seq)
 DELETE FROM __ivm_delta_<tbl> WHERE seq <= gc_watermark(tbl);
 ```
 
-`__ivm_dep` 存在的唯一理由就是这个查询：没有它就不知道"还有谁没消费完"。
+This query is the sole reason `__ivm_dep` exists: without it there is no way to know "who has not finished consuming yet".
 
-**没有任何视图依赖某张被跟踪的表时**（最后一个视图被 DROP），该表的 trigger 与 delta 表一并删除，而不是让 delta 永久累积。
+**When no view depends on a tracked table any more** (the last view was dropped), that table's triggers and delta table are dropped with it, rather than letting deltas accumulate forever.
 
-### 7.3 bootstrap 必须与 delta 水位原子
+### 7.3 Bootstrap must be atomic with the delta watermark
 
-在已有数据的表上创建视图时，顺序错了会丢更新或重复应用：
+When a view is created on a table that already has data, getting the order wrong loses updates or applies them twice:
 
 ```
-1. 读 delta 表的高水位 H
-2. 全量扫描基表，算出初始状态
-3. 置 progress = H
+1. Read the delta table's high watermark H
+2. Scan the base table in full and compute the initial state
+3. Set progress = H
 ```
 
-**第 1、2 步必须在同一个读事务内**，否则两步之间发生的并发写会：progress 记为 H 但基表快照里没有它（丢更新），或者基表快照里有了却又会被 seq > H 的 delta 再应用一次（重复）。
+**Steps 1 and 2 must happen in the same read transaction.** Otherwise a concurrent write between them either gets recorded under progress H but is absent from the base-table snapshot (a lost update), or is present in the snapshot and then applied again by a delta with seq > H (a duplicate).
 
-SQLite 的读事务提供一致快照，因此把 `BEGIN` 包住这两步即可。这条必须写进实现而不只是写进文档——它属于"benchmark 看不见、真实 workload 立刻爆"的那一类。
+SQLite read transactions provide a consistent snapshot, so wrapping the two steps in a `BEGIN` is enough. This must be written into the implementation, not just the documentation — it belongs to the class of "invisible in a benchmark, blows up immediately under a real workload".
 
 ---
 
-## 8. CDC 与维护时机
+## 8. CDC and when maintenance happens
 
-### 8.1 Trigger（纯 SQL，不调 UDF）
+### 8.1 Triggers (pure SQL, no UDFs)
 
 ```sql
 CREATE TRIGGER __ivm_orders_ins AFTER INSERT ON orders BEGIN
@@ -402,32 +402,32 @@ CREATE TRIGGER __ivm_orders_upd AFTER UPDATE ON orders BEGIN
 END;
 ```
 
-UPDATE 拆成 retract + insert，**写入 delta 表的内容本身已经是 Z-set**，无需额外转换。
+UPDATE is split into a retract plus an insert, so **what is written to the delta table is already a Z-set** and needs no further conversion.
 
-**纯 SQL trigger 的关键性质：即使某个进程没有加载本扩展，它的写入照样被捕获**，delta 表继续累积，下一个加载了扩展的连接能追上。用 hook 做不到这一点。
+**The key property of pure-SQL triggers: even a process that never loaded this extension has its writes captured.** The delta table keeps accumulating, and the next connection that has the extension loaded can catch up. Hooks cannot do this.
 
-v0 捕获表的**所有列**，不做按需裁剪。宽表上有浪费，但避免了"新增视图需要变更 delta 表结构"。
+v0 captures **every column** of a table and does no pruning. That wastes space on wide tables, but avoids "adding a view requires changing the delta table's structure".
 
-### 8.2 维护时机：v0 采用显式 refresh
+### 8.2 When maintenance happens: v0 uses explicit refresh
 
 ```sql
 SELECT ivm_refresh('revenue');
 ```
 
-两条自动化路径均不适合 v0：
+Neither automatic path suits v0:
 
-- **vtab 读时自动 drain**：SQLite 的读事务不能写，做不到。
-- **trigger 内调 UDF 立即维护**：技术上可行（已在写事务内，不构成重入），但 **SQLite 只有行级 trigger，没有语句级**——插入 1 万行会触发 1 万次维护，彻底破坏批量 delta 优化，bulk load 不可用。
+- **Draining automatically when the vtab is read**: SQLite read transactions cannot write, so this is impossible.
+- **Calling a UDF from a trigger to maintain immediately**: technically possible (it is already inside the write transaction, so it is not re-entrancy), but **SQLite has only row-level triggers, not statement-level ones** — inserting 10,000 rows would fire maintenance 10,000 times, destroying the batched-delta optimization entirely and making bulk loads unusable.
 
-**显式 refresh 不是妥协，它是本项目的永久 API，而且很可能是正确的抽象。**
+**Explicit refresh is not a compromise. It is this project's permanent API, and quite possibly the right abstraction.**
 
-三条理由：
+Three reasons:
 
-1. **两条自动化路径都被 SQLite 的机制堵死**（上文），不存在"以后想办法自动化"的余地。
-2. **它是测试矩阵成立的前提**——批次无关性（§9.1）只有在能精确控制维护时刻时才可测。
-3. **批处理本身就是相对手写 trigger 的性能优势所在**，见下。
+1. **Both automatic paths are blocked by SQLite's own mechanisms** (above); there is no "find a way to automate it later".
+2. **It is the precondition for the test matrix** — batch independence (§9.1) is testable only when the moment of maintenance can be controlled precisely.
+3. **Batching is itself where the performance advantage over hand-written triggers comes from**; see below.
 
-推荐的使用形态是把 refresh 放进应用自己的写事务：
+The recommended usage puts the refresh inside the application's own write transaction:
 
 ```sql
 BEGIN;
@@ -436,77 +436,77 @@ SELECT ivm_refresh('revenue');
 COMMIT;
 ```
 
-#### 为什么批处理是优势而不是缺陷
+#### Why batching is an advantage, not a defect
 
-手写的行级 trigger 对一万行插入必然执行一万次聚合 UPDATE。而拿到整批 delta 的增量引擎可以先做 **consolidation**：
+A hand-written row-level trigger necessarily runs 10,000 aggregate UPDATEs for 10,000 inserted rows. An incremental engine handed the whole batch of deltas can **consolidate** first:
 
 ```
-10000 条 raw Δ
-      ↓  Z-set consolidate（相同行权重相加）
-若只涉及 20 个 region
+10000 raw Δ
+      ↓  Z-set consolidation (weights of identical rows added)
+if only 20 regions are touched
       ↓
-20 次 group 状态更新
+20 group-state updates
 ```
 
-**这是显式 refresh 换来的、行级 trigger 结构上拿不到的东西**，也是本项目最可能成立的性能故事。因此 consolidation 被明确列为 M1 的内容，而非优化项。
+**This is what explicit refresh buys, and what row-level triggers structurally cannot have** — and it is the performance story most likely to hold up for this project. Consolidation is therefore explicitly M1 content, not an optimization.
 
-### 8.3 控制面：已由 M-1 定稿——虚表 + 命令通道（FTS5 惯用法）
+### 8.3 Control surface: settled by M-1 — a virtual table plus a command channel (the FTS5 idiom)
 
-早期草案把控制面定成标量 UDF：
+An early draft made the control surface scalar UDFs:
 
 ```sql
-SELECT ivm_create_view('revenue', 'SELECT ...');   -- 内部要建表、建 trigger
-SELECT ivm_refresh('revenue');                     -- 内部要写影子表
+SELECT ivm_create_view('revenue', 'SELECT ...');   -- creates tables and triggers internally
+SELECT ivm_refresh('revenue');                     -- writes shadow tables internally
 ```
 
-即：在一条正在 `sqlite3_step()` 的 `SELECT` 语句内部，用同一个连接做 DDL 和写入。这**不能靠"理论上应该可以"来赌**——SQLite 对 hook 的重入限制很严（commit/update hook 明确禁止在回调里再操作触发它的连接），application-defined function 的限制虽宽一些，但仍是在一条运行中的语句里递归使用同一连接。
+That is, doing DDL and writes on the same connection from inside a `SELECT` statement that is mid-`sqlite3_step()`. This **cannot be bet on "it ought to work in theory"** — SQLite restricts re-entrancy from hooks tightly (commit and update hooks explicitly forbid touching the connection that fired them from inside the callback), and although application-defined functions are held to looser rules, they still re-enter the same connection from inside a running statement.
 
-**M-1 spike 在真实 cdylib loadable extension 上把标量 UDF（方案 A）与虚表命令通道（方案 B）各跑了一遍 10 个场景的矩阵**（rollback、嵌套事务、WAL、双连接、并发、销毁路径、未加载扩展的连接、以及方案 A 独有的"扫描中调用"），结果见 [2026-09-18-m-1-results.md](../../spikes/2026-09-18-m-1-results.md)。结论：**方案 B 在所有适用于它的场景上全绿，采用方案 B；控制面语法定稿。**
+**The M-1 spike ran a 10-scenario matrix for both scalar UDFs (design A) and the virtual-table command channel (design B) on a real cdylib loadable extension** (rollback, nested transactions, WAL, two connections, concurrency, the teardown path, a connection without the extension loaded, and design A's own "called during a scan"). The results are in [2026-09-18-m-1-results.md](../../spikes/2026-09-18-m-1-results.md). Conclusion: **design B is green on every scenario that applies to it; design B is adopted, and the control-surface syntax is settled.**
 
 ```sql
--- xCreate 建立影子表与 trigger，DDL 上下文天然正确
+-- xCreate creates the shadow tables and triggers; the DDL context is correct by construction
 CREATE VIRTUAL TABLE revenue USING ivm(
     'SELECT region, SUM(amount), COUNT(*) FROM orders GROUP BY region'
 );
 
--- 命令通道：向与表同名的列写入
+-- the command channel: write to the column named after the table
 INSERT INTO revenue(revenue) VALUES ('refresh');
 
--- xFilter 读物化状态
+-- xFilter reads the materialized state
 SELECT * FROM revenue;
 
--- xDestroy：先删 trigger 再删影子表，顺序由扩展自己控制
+-- xDestroy: drop the triggers first, then the shadow tables, in an order the extension controls
 DROP TABLE revenue;
 ```
 
-参照：`CREATE VIRTUAL TABLE docs USING fts5(body)` 会经 xCreate 建出 `docs_data`、`docs_idx`、`docs_content`、`docs_docsize`、`docs_config` 五张影子表，`INSERT INTO docs(docs) VALUES('rebuild')` 是其命令入口。
+For reference: `CREATE VIRTUAL TABLE docs USING fts5(body)` creates five shadow tables through xCreate — `docs_data`, `docs_idx`, `docs_content`, `docs_docsize`, `docs_config` — and `INSERT INTO docs(docs) VALUES('rebuild')` is its command entry point.
 
-方案 B 在三处优于标量 UDF，且三处都在 M-1 里得到了实测支持：
+Design B beats scalar UDFs in three places, and M-1 measured support for all three:
 
-1. **DDL 发生在 SQLite 为之设计的上下文里**（`xCreate`）——场景 1–5 证实建表/建 trigger/写入在裸调用、显式事务、嵌套 savepoint、WAL 模式下全部成功，且回滚时（场景 3/4）影子表与 trigger 随事务一并消失，不留孤儿对象。
-2. **视图成为 `sqlite_master` 认识的真实对象**——`CREATE VIRTUAL TABLE` 语句本身就在 `sqlite_master` 里，`SELECT * FROM revenue` 经 `xFilter` 正常可读。
-3. **`DROP TABLE revenue` 经 `xDestroy` 自然清理影子表与 trigger，不需要额外的销毁 API**——场景 9 显示标量 UDF 方案没有这条性质：`DROP TABLE` 直接删掉影子表并不会级联删除指向它的 trigger，悬空的 trigger 会让**用户自己的基表**后续所有写入报错 `no such table`；而虚表方案的 `xDestroy` 由扩展自己控制顺序（先删 trigger 再删影子表），销毁后基表仍可正常写入。
+1. **DDL happens in the context SQLite designed for it** (`xCreate`) — scenarios 1–5 confirm that creating tables and triggers and writing all succeed in a bare call, an explicit transaction, a nested savepoint, and WAL mode; and on rollback (scenarios 3/4) the shadow tables and triggers disappear with the transaction, leaving no orphans.
+2. **The view becomes a real object that `sqlite_master` knows** — the `CREATE VIRTUAL TABLE` statement itself is in `sqlite_master`, and `SELECT * FROM revenue` reads normally through `xFilter`.
+3. **`DROP TABLE revenue` cleans up the shadow tables and triggers naturally through `xDestroy`, with no separate teardown API** — scenario 9 shows that the scalar-UDF design lacks this property: a `DROP TABLE` on a shadow table does not cascade to the trigger pointing at it, and the dangling trigger makes every later write to **the user's own base table** fail with `no such table`. In the virtual-table design, `xDestroy` controls the order itself (triggers first, then shadow tables), and the base table stays writable after teardown.
 
-M-1 还发现方案 A 有一个比场景 9 更严重、探针文档没有预判到具体形态的问题（场景 8）：若在扫描某张影子表的语句里调用 `ivm_refresh` 写同一张表（自引用），会导致游标不断看到自己刚插入的新行，陷入不报错、不减速的无界循环，实测到 46 万余行才被人工中断。方案 B 结构上不暴露这条路径——读走 `xFilter`（不写），写走独立的 `xUpdate` 语句（不在扫描回调里）。
+M-1 also found a problem in design A more serious than scenario 9, whose concrete form the probe document had not anticipated (scenario 8): calling `ivm_refresh` to write a shadow table from inside a statement scanning that same table (a self-reference) makes the cursor keep seeing the rows it just inserted, and it falls into an unbounded loop that neither errors nor slows down; it was interrupted by hand at over 460,000 rows. Design B does not expose this path structurally — reads go through `xFilter` (no writes), and writes go through a separate `xUpdate` statement (not from inside a scan callback).
 
-并发场景（场景 6/7：另一连接同时在读/在写）两套方案行为完全对称，是 SQLite 标准锁语义（rollback-journal 下 `SQLITE_BUSY`，WAL 下读不挡写、写互斥写），没有为选型提供额外信号。场景 10 确认了 §8.1 的声明：纯 SQL trigger 对未加载扩展的连接同样生效。
+Under concurrency (scenarios 6/7: another connection reading or writing at the same time) the two designs behave exactly symmetrically, following standard SQLite locking (`SQLITE_BUSY` under rollback-journal; under WAL, readers do not block writers and writers exclude writers), which gives no additional signal for the choice. Scenario 10 confirms §8.1's claim: pure-SQL triggers work for connections that never loaded the extension.
 
-**控制面到此定稿，本文档其余部分出现的 `ivm_create_view` / `ivm_refresh` 均指虚表命令通道形态的等价操作**（`CREATE VIRTUAL TABLE ... USING ivm(...)` / `INSERT INTO v(v) VALUES('refresh')`），不再是待定语法。
+**The control surface is now settled. Wherever `ivm_create_view` / `ivm_refresh` appear in the rest of this document, they mean the equivalent operations in the virtual-table command-channel form** (`CREATE VIRTUAL TABLE ... USING ivm(...)` / `INSERT INTO v(v) VALUES('refresh')`), not undecided syntax.
 
-### 8.4 护栏：不得从正在扫描目标表的语句内部触发维护
+### 8.4 Guard rail: never trigger maintenance from inside a statement scanning its target table
 
-M-1 的场景 8 在方案 A（标量 UDF）上实测到一个**静默**的灾难性行为：从一条正在扫描 `orders` 的 `SELECT` 内部调用会写入 `orders` 的维护逻辑，产生无界自引用循环——不报错、不回滚，一路跑到约 46.4 万行被人工杀掉。
+M-1's scenario 8 measured a **silent** catastrophic behaviour under design A (scalar UDFs): calling maintenance logic that writes to `orders` from inside a `SELECT` that is scanning `orders` produces an unbounded self-referential loop — no error, no rollback, running on until it was killed by hand at about 464,000 rows.
 
-选定方案 B（虚表 + 命令通道）之后这条路径在正常使用下不可达：维护由 `INSERT INTO v(v) VALUES('refresh')` 触发，而不是由某条 `SELECT` 的求值过程触发。但把它记为护栏，理由有二：
+With design B (virtual table + command channel) chosen, this path is unreachable in normal use: maintenance is triggered by `INSERT INTO v(v) VALUES('refresh')`, not by the evaluation of some `SELECT`. It is still recorded as a guard rail, for two reasons:
 
-1. **失败形态是静默的。** 它不表现为错误码或死锁，而表现为"这条语句怎么还没回来"。没有这段文字的话，将来撞上的人不会想到往自引用扫描的方向查。
-2. **方案 A 可能被重新考虑。** 若日后因分发或兼容原因回头看标量 UDF，这一条是它被排除的两个实测理由之一（另一条是销毁路径留下孤儿 trigger 毒死基表，见 §8.3）。
+1. **The failure is silent.** It does not show up as an error code or a deadlock, but as "why hasn't this statement come back". Without this paragraph, whoever hits it in future would not think to look in the direction of self-referential scans.
+2. **Design A might be reconsidered.** If scalar UDFs are revisited one day for distribution or compatibility reasons, this is one of the two measured reasons they were ruled out (the other is the teardown path leaving orphan triggers that poison the base table; see §8.3).
 
-> **规定：维护操作不得在一条正在读取其写入目标的语句的求值过程中被触发。** 实现层面，控制面必须让维护发生在语句边界上（命令通道的 `INSERT` 是一条独立语句），而不是发生在某个表达式的求值里。
+> **Rule: a maintenance operation must never be triggered during the evaluation of a statement that is reading the table the maintenance writes to.** At the implementation level, the control surface must make maintenance happen at a statement boundary (the command channel's `INSERT` is a statement of its own), never during the evaluation of an expression.
 
-### 8.5 引擎接缝契约
+### 8.5 The engine seam contract
 
-M1 的引擎通过 `ivmlite-test` 的 `Engine` trait 接入差分测试框架。该 trait 的形状不是实现细节——它决定了哪些行为**能被测到**：
+M1's engine plugs into the differential testing harness through `ivmlite-test`'s `Engine` trait. The trait's shape is not an implementation detail — it decides which behaviours **can be tested at all**:
 
 ```rust
 fn create_view(&mut self, &Database, &ViewQuery, initial: &BTreeMap<String, ZSet>) -> Result<(), EngineError>;
@@ -515,367 +515,367 @@ fn refresh(&mut self) -> Result<(), EngineError>;
 fn materialize(&mut self) -> Result<ZSet, EngineError>;
 ```
 
-四条约束及其理由：
+Four constraints, with their reasons:
 
-**`apply` 接收未合并的原始 Δ，不是 `ZSet`。** 同一行可以在同一批里出现多次，引擎必须自己决定要不要先 consolidate。若 harness 交出的是已合并的 `ZSet`，§8.2 所说的 consolidation——M1 的内容而非优化项，也是本项目最可能成立的性能故事——就从这个接缝上**结构性不可见**：引擎无论做没做合并，测试结果都一样。框架内有一个记录型引擎守着这条，喂进含重复行的批次并断言收到的是多条而非合并后的一条。
+**`apply` receives raw, unconsolidated deltas, not a `ZSet`.** The same row can appear several times in one batch, and the engine must decide for itself whether to consolidate first. If the harness handed over an already-merged `ZSet`, the consolidation of §8.2 — M1 content rather than an optimization, and the performance story most likely to hold up for this project — would be **structurally invisible** at this seam: the tests would come out the same whether or not the engine did the merging. A recording engine in the harness guards this, feeding a batch that contains duplicate rows and asserting that it receives several entries rather than one merged entry.
 
-**`refresh` 与 `apply` 分离。** §8.2 规定显式 refresh 是永久 API 而非临时妥协，§9.1 的批次无关性也只有在维护时刻可控时才可测。参照实现 `NaiveRecompute` 因此**真的**分两阶段：`apply` 只堆 pending，`refresh` 才并进 base。若 `apply` 急切合并，`refresh` 便成空操作，任何忽略该契约的引擎都不会被抓到。
+**`refresh` is separate from `apply`.** §8.2 makes explicit refresh a permanent API rather than a temporary compromise, and §9.1's batch independence is testable only when the moment of maintenance is controllable. The reference implementation `NaiveRecompute` therefore **really** has two phases: `apply` only accumulates pending deltas, and only `refresh` merges them into the base. If `apply` merged eagerly, `refresh` would be a no-op, and no engine that ignored the contract would be caught.
 
-**`apply` 带表名。** §6.3 禁止做出会让 join 返工的决定，而 join 需要多个基表（join 现排在 M1a）。`materialize` 刻意**不**带 view 标识：多视图要到 M4 的级联视图才出现且形态未定，现在加属投机；多表是已排期的已知需求，加一个参数是当下最便宜的时刻。
+**`apply` carries a table name.** §6.3 forbids decisions that would force rework for join, and join needs several base tables (join is now scheduled in M1a). `materialize` deliberately does **not** carry a view identifier: multiple views arrive only with M4's cascading views, in an undecided form, and adding it now would be speculation; multiple tables are a known, scheduled requirement, and now is the cheapest moment to add a parameter.
 
-**`create_view` 收整个 `Database` 与按表的初始状态**（M1a Phase 1 修订，2026-09-21）。原签名是 `(&Schema, &ZSet)`，单表假设写死在类型里。join 必须 bootstrap **两侧**，而一个只能看见一张表初始状态的引擎，"它有没有把第二张表也 bootstrap 起来"这个问题在接缝上**不可问**——与第一条约束的失效形态完全相同：引擎做没做，测试结果都一样。
+**`create_view` receives the whole `Database` and each table's initial state** (amended in M1a Phase 1, 2026-09-21). The original signature was `(&Schema, &ZSet)`, with the single-table assumption written into the type. Join must bootstrap **both sides**, and for an engine that can see only one table's initial state, the question "did it bootstrap the second table too?" **cannot be asked** at the seam — exactly the same failure mode as the first constraint: the tests come out the same whether or not the engine did it.
 
-> 这一条与上面三条的来历不同：前三条是 M0 设计时预先想到的，这一条是 M1a Phase 1 真的把框架多表化时被迫做出的。记在这里是因为 §8.5 开头那句话对第四条同样成立——它决定了哪些行为能被测到，所以它属于权威文档，不属于某份计划的一个条目。
+> This constraint has a different origin from the three above: those were anticipated during M0's design, while this one was forced when M1a Phase 1 actually made the harness multi-table. It is recorded here because the sentence that opens §8.5 holds for it too — it decides which behaviours can be tested, so it belongs in the authoritative document, not in an item of some plan.
 
-> `apply` 的签名**未变**：它从 M0 起就带表名（上面第三条）。M1a Phase 1 是这个参数第一次真的路由到多张表——在那之前只有一张表时它形同虚设。这正是第三条"加一个参数是当下最便宜的时刻"所预期的结果。
+> `apply`'s signature is **unchanged**: it has carried a table name since M0 (the third constraint above). M1a Phase 1 is the first time that parameter actually routes to more than one table — until then, with a single table, it was vestigial. That is exactly the outcome the third constraint's "now is the cheapest moment to add a parameter" anticipated.
 
 ---
 
-## 9. 验证体系
+## 9. Verification
 
-核心断言：
+The core assertion:
 
 ```
 recompute(Q, D_final) == materialize(IVM(Q, Δ₁..Δₙ))
-其中 D_final = D₀ + Δ₁ + ... + Δₙ
+where D_final = D₀ + Δ₁ + ... + Δₙ
 ```
 
-v0 无浮点，因此是**严格相等**（浮点 SUM 不满足结合律，增量与全量重算不会 bit-for-bit 相等——这是数学性质不是 bug，处理策略排在 M4）。
+v0 has no floating point, so this is **strict equality** (floating-point SUM is not associative, so incremental and full recomputation would not be bit-for-bit equal — a mathematical property, not a bug, whose handling is scheduled for M4).
 
-### 9.1 四层验证
+### 9.1 Four layers of verification
 
-| 层 | 内容 | 需要 oracle |
+| Layer | Content | Needs an oracle |
 |---|---|---|
-| **不变量** | 最终状态无负权重；无 `w=0` 僵尸行；`applied_seq` 单调且不超过 delta 表水位；每个 group key 在输出表中恰好一行 | 否 |
-| **批次无关性** | 同一串 delta，一次性应用 / 逐条应用 / 随机分批 → 最终状态必须完全一致 | 否 |
-| **主 oracle** | 同连接内全量重算，**在每一个可观察的 refresh 点**严格比对，而非只比对最终状态 | 权威 |
-| **交叉验证** | Turso MV 跑同样的 query 与更新序列 | M2+，不一致说明至少一方有 bug |
+| **Invariants** | No negative weights in the final state; no `w=0` zombie rows; `applied_seq` monotonic and never past the delta table's watermark; exactly one row per group key in the output table | No |
+| **Batch independence** | The same delta sequence applied all at once / one at a time / in random batches → the final states must be identical | No |
+| **Primary oracle** | Full recomputation on the same connection, compared strictly **at every observable refresh point**, not only at the final state | Authoritative |
+| **Cross-validation** | Turso MVs run the same query and update sequence | M2+; a disagreement means at least one side has a bug |
 
-批次无关性只有在维护时刻可被精确控制时才可测，自动维护模式下做不到。
+Batch independence is testable only when the moment of maintenance can be controlled precisely; it is impossible in an automatic-maintenance mode.
 
-> **但要如实说明它的实际地位：在「oracle 逐批比对」成立的前提下，跨模式比对作为失败检测路径是逻辑上不可达的。**
+> **But its actual standing must be stated honestly: given per-batch oracle comparison, the cross-mode comparison is logically unreachable as a failure-detection path.**
 >
-> 推演：`run` 在每个 refresh 点比对 oracle，所以 `run` 成功 ⇒ 该模式的最终状态等于 oracle 的期望；而 oracle 的期望只取决于最终基表状态，与 delta 如何分批无关；因此任意两个 `run` 成功的模式必然彼此相等。跨模式比对只可能在某个模式的 `run` 已经失败时才报错——它抓不到任何 `run` 抓不到的东西。
+> The argument: `run` compares against the oracle at every refresh point, so `run` succeeding ⇒ that mode's final state equals the oracle's expectation; the oracle's expectation depends only on the final base-table state, not on how the deltas were batched; so any two modes whose `run` succeeded must equal each other. The cross-mode comparison can only fail when some mode's `run` has already failed — it catches nothing `run` does not.
 >
-> 保留它的理由是成本近零，且一旦将来有人降低 `run` 的比对频率（那会是一次需要论证的改动），它会重新变得有意义。**不要把它计入独立的检测能力**，也不要为它编造一个不可能存在的失败用例。
+> It is kept because it costs almost nothing, and because it would become meaningful again if someone ever reduced how often `run` compares (which would be a change needing its own argument). **Do not count it as independent detection capability**, and do not invent a failing case for it that cannot exist.
 
-**为什么 oracle 必须逐批比对而非只比最终状态**：只在末尾比对时，一个"中途算错、形式上仍合法、后续又自行恢复"的实现可以完全通过——而这正是状态漂移类 bug 的典型形态（某个算子的累加器偏了，直到下一次该组被整体重写才被抹平）。不变量层拦不住它，因为错误的值同样满足"权重为 1、group key 唯一"。代价是测试复杂度从 O(n) 变成 O(n × 基表规模)，因此**差分测试的用例规模必须保持很小**（默认 25 行初始数据、150 步操作），大规模场景交给 benchmark 而非正确性测试。
+**Why the oracle must compare per batch rather than only at the end**: comparing only at the end lets an implementation pass that "goes wrong midway, stays well-formed, and later recovers on its own" — the typical shape of a state-drift bug (some operator's accumulator drifts until that group is next rewritten wholesale and the error is smoothed away). The invariant layer cannot stop it, because the wrong values also satisfy "weight 1, unique group key". The cost is that test complexity goes from O(n) to O(n × base-table size), so **differential test cases must stay very small** (25 rows of initial data and 150 operations by default), with large-scale scenarios left to the benchmark rather than the correctness tests.
 
-### 9.2 生成器的三个关键设计
+### 9.2 Key generator design decisions
 
-**1. 值域必须故意收窄。** 若 `region` 有 100 万个不同值，每个 group 只有一行，则永远测不到"同一个 group 反复增删"——而那正是 retraction 与僵尸行 bug 的产地。值域压到 5–20 个不同值，逼迫碰撞高频发生。NULL 也需高频出现（NULL 在 GROUP BY 中自成一组，是经典 bug 点）。
+**1. The value domain must be narrowed on purpose.** If `region` had a million distinct values, each group would have one row, and "the same group inserted into and deleted from repeatedly" would never be tested — which is exactly where retraction and zombie-row bugs come from. Squeeze the domain to 5–20 distinct values to force collisions to happen often. NULL must also appear often (NULL forms its own group under GROUP BY, a classic bug site).
 
-**2. 更新序列必须有偏采样。** 纯随机生成器在 IVM 测试中几乎抓不到 bug——随机 DELETE 很少命中真实存在的行。生成器需要相当比例的操作**从当前表中采样已存在的行**来删除/修改，并能刻意制造两种序列：
-- 删掉刚插入的行（权重归零路径）
-- 把一个 group 删空再填回来（retraction + 僵尸行温床）
+**2. Update sequences must be sampled with bias.** A purely random generator catches almost no bugs in IVM testing — a random DELETE rarely hits a row that actually exists. A sizeable share of operations must **sample existing rows from the current table** to delete or modify, and the generator must be able to produce two kinds of sequence deliberately:
+- deleting a row just inserted (the weight-to-zero path)
+- deleting a group empty and then filling it back up (breeding ground for retraction and zombie-row bugs)
 
-**3. v0 的 query 空间小到可以穷举。** 列子集 × 谓词 × group-by 列 × 聚合函数，v0 范围内组合数有限——**穷举优于随机**，可复现且覆盖完全。随机性留给更新序列。
+**3. v0's query space is small enough to enumerate.** Column subsets × predicates × group-by columns × aggregate functions has a finite number of combinations within v0's scope — **enumeration beats randomness**, being reproducible and complete. Randomness is left to the update sequences.
 
-**4. 差分测试的 schema 固定为每表 2 列——这是上一条成立的前提，不是随手定的数。**
+**4. The differential tests' schema is fixed at two columns per table — a precondition for the previous point, not an arbitrary number.**
 
-穷举规模对列数**极其敏感**，因为 group-by 的二元组合是 `C(n,2)`，而聚合与谓词的数量又各自随列数线性增长，三者相乘。M0 结束时的实测与外推：
+The size of the enumeration is **extremely sensitive** to the number of columns, because two-column group-by combinations grow as `C(n,2)` while the number of aggregates and predicates each grow linearly with the column count, and the three multiply. Measured and extrapolated at the end of M0:
 
-| schema | query 数 | 穷举扫描耗时 |
+| Schema | Queries | Time for the enumeration sweep |
 |---|---|---|
-| 单表 2 列（M0 实测） | 27 | 0.21s |
-| 双表各 2 列 + join | ~554 | ~10s（外推） |
-| 双表各 3 列 + join | ~4209 | ~80s（外推） |
+| One table, 2 columns (measured in M0) | 27 | 0.21s |
+| Two tables, 2 columns each, + join | ~554 | ~10s (extrapolated) |
+| Two tables, 3 columns each, + join | ~4209 | ~80s (extrapolated) |
 
-基准来自实测（27 个 query / 0.21 秒 → 每个约 7.8ms）；join 用例按 2.5x 估——**该乘数是估计值，不是测量值**，join 落地后必须实测替换。
+The baseline is measured (27 queries in 0.21 seconds → about 7.8ms each); join cases are estimated at 2.5x — **that multiplier is an estimate, not a measurement**, and must be replaced by a measurement once join lands.
 
-2 列时穷举成立且代价可忽略；3 列时单个测试进入分钟级。另经实测确认，穷举扫描是**孤立的单个测试**：50-seed 检出（0.07s）与 shrinker（0.10s）每个用例只取一个 query，不随穷举规模放大，所以代价不会连锁。
+At two columns the enumeration holds and its cost is negligible; at three a single test runs into minutes. It was also confirmed by measurement that the enumeration sweep is **a single isolated test**: the 50-seed detection test (0.07s) and the shrinker (0.10s) each take only one query per case and do not grow with the enumeration, so the cost does not compound.
 
-> **悬置的问题，M1 join 落地后用实测数字决定**：3 列唯一多出来的覆盖形状是"三个列各司其职"——sum 列 A、group by 列 B、filter 列 C。2 列时至少有两个角色挤在同一列上。"过滤用的列不是聚合用的列"是合理的 bug 位点（谓词是否按对的列下标求值）。它是否值 8 倍规模，现在无法判断，**不要在没有实测乘数的情况下先拍板**。
+> **An open question, to be decided with measured numbers once join lands in M1**: the only shape three columns add to coverage is "three columns with three distinct roles" — sum over column A, group by column B, filter on column C. With two columns, at least two roles share one column. "The filtered column is not the aggregated column" is a plausible bug site (is the predicate evaluated against the right column index?). Whether that is worth an 8x larger enumeration cannot be judged now; **do not decide it before there is a measured multiplier**.
 >
-> 若届时决定不加宽，有一个已算过的旋钮：把 join query 的 group-by 限制为单列，规模从 554 降到 236（10s → 4s）。代价是不测"按两侧各一列分组"的 join——而跨越两张表边界的多列 group key 恰是 join 之后最容易出 bug 的地方，所以这个旋钮应当最后才动。
+> If the decision is then not to widen, there is one knob already worked out: restrict join queries' group-by to a single column, which brings the size down from 554 to 236 (10s → 4s). The cost is not testing joins "grouped by one column from each side" — and multi-column group keys that cross the boundary between two tables are exactly where joins are most likely to have bugs, so this knob should be the last one turned.
 
 ### 9.3 Shrinking
 
-**必须自研，不能直接用 `proptest`。** 朴素的序列缩小会产生**非法序列**（删掉一个 INSERT，后续针对该行的 DELETE 就悬空了）。需要一个保持序列合法性的 delta-debugging 缩小器：先缩更新序列，再缩 query，再缩数据。
+**It must be written in-house; `proptest` cannot be used directly.** Naive sequence shrinking produces **illegal sequences** (remove an INSERT, and a later DELETE aimed at that row is left dangling). What is needed is a delta-debugging shrinker that preserves sequence legality: shrink the update sequence first, then the query, then the data.
 
-没有 shrinking，失败时面对的是数千步序列，无法调试。
+Without shrinking, a failure means facing a sequence of thousands of steps that cannot be debugged.
 
-### 9.4 可复现性
+### 9.4 Reproducibility
 
-所有随机走 seed；失败时打印 seed，可一条命令重放；失败用例固化进 `tests/regressions/` 成为永久回归测试。
+All randomness goes through a seed; a failure prints its seed and can be replayed with one command; failing cases are frozen into `tests/regressions/` as permanent regression tests.
 
-### 9.5 测试分层
+### 9.5 Test layers
 
-- **L0**：`ivmlite-core` 单元测试，不碰 SQLite，手工构造 Z-set 喂算子
-- **L1**：差分测试，单视图，穷举 query × 随机更新序列
-- **L2**：多视图、级联视图（M2+）
-- **L3**：Turso 交叉验证（M2+）
+- **L0**: `ivmlite-core` unit tests, no SQLite, hand-built Z-sets fed to operators
+- **L1**: differential tests, one view, enumerated queries × random update sequences
+- **L2**: multiple views, cascading views (M2+)
+- **L3**: Turso cross-validation (M2+)
 
 ---
 
 ## 10. Benchmark
 
-### 10.1 主 benchmark
+### 10.1 The main benchmark
 
 ```
-N 个视图 (N = 1, 10, 50, 200)
-  × 基表规模 (10k, 100k, 1M 行)
-  × 每批 delta 大小 (1, 10, 100, 1000 行)
-  × group 基数 (10, 1k, 100k 个不同分组键)
-→ 测量：应用一批 delta 并使所有视图变为最新所需时间
+N views (N = 1, 10, 50, 200)
+  × base-table size (10k, 100k, 1M rows)
+  × delta batch size (1, 10, 100, 1000 rows)
+  × group cardinality (10, 1k, 100k distinct group keys)
+→ measure: the time to apply one batch of deltas and bring every view up to date
 ```
 
-**group 基数是决定 IVM 赢不赢的首要参数，比基表规模本身更关键**，因此必须是显式维度而非硬编码常量：
+**Group cardinality is the first-order parameter for whether IVM wins, more decisive than the base-table size itself**, so it must be an explicit dimension rather than a hard-coded constant:
 
-| 配置 | 后果 |
+| Configuration | Consequence |
 |---|---|
-| 10 个 group / 100 万行 | 视图只有 10 行，状态极小，每条 delta 都命中热 group，IVM 优势极大 |
-| 100 万个 group / 100 万行 | 视图与基表等大，IVM 状态与数据等大，每条 delta 都是新建 group + retraction churn，优势基本消失 |
+| 10 groups / 1M rows | The view has only 10 rows, the state is tiny, every delta hits a hot group, and IVM's advantage is enormous |
+| 1M groups / 1M rows | The view is as large as the base table, IVM's state is as large as the data, every delta creates a new group plus retraction churn, and the advantage essentially disappears |
 
-交叉点的位置随该参数剧烈移动。**只报告单一 group 基数下的数字，等同于自己挑了一个好看的点**，不构成结论。
+The crossover moves sharply with this parameter. **Reporting numbers at a single group cardinality amounts to picking a flattering point**, and is not a conclusion.
 
-四维全交叉是 144 个配置，过大。约定：**扫 group 基数时把视图数固定为 10**，不做全交叉；视图数的扫描单独在 group 基数 = 1k 时进行。
+A full four-way cross is 144 configurations, too many. The convention: **fix the view count at 10 while sweeping group cardinality**, without a full cross; the view-count sweep runs separately at group cardinality = 1k.
 
-### 10.2 对照组按角色分层
+### 10.2 Baselines, layered by role
 
-| 角色 | 对照物 | 说明 |
+| Role | Baseline | Notes |
 |---|---|---|
-| **下界** | 只写基表不维护 | 纯写入成本 |
-| **怀疑者** | 手写 trigger 维护的汇总表 | 见下方的三级判据——**不是"必须打赢"** |
-| **基线** | 朴素重跑 | 交叉点在此测量 |
-| **同行** | Turso MV | 同宿主、同 DBSP，最公平 |
-| **天花板** | `dbsp` crate 裸跑（手搓 circuit，不过 SQL，不落盘） | 与本项目的差距即为 SQLite / 存储税，诊断价值极高 |
-| **参考** | duckDBSP / OpenIVM / pg_ivm | 跨宿主，只作背景不作裁决 |
+| **Lower bound** | Write the base table, maintain nothing | Pure write cost |
+| **Skeptic** | Summary tables maintained by hand-written triggers | See the three-tier bar below — **not "must beat"** |
+| **Baseline** | Naive recompute | The crossover is measured here |
+| **Peer** | Turso MVs | Same host, same DBSP — the fairest comparison |
+| **Ceiling** | The `dbsp` crate run bare (a hand-built circuit, no SQL, nothing on disk) | The gap to this project is the SQLite / storage tax, of great diagnostic value |
+| **Reference** | duckDBSP / OpenIVM / pg_ivm | Cross-host, background only, never a verdict |
 
-"怀疑者"这一栏对应的是对 v0 最直接的质疑：单表 GROUP BY + SUM/COUNT 就是人们手写了三十年的 trigger 汇总表。必须正面回答——但**判据不是"必须打赢"**。
+The "skeptic" row answers the most direct challenge to v0: single-table GROUP BY + SUM/COUNT is exactly the trigger-maintained summary table people have written by hand for thirty years. It must be answered head-on — but **the bar is not "must beat it"**.
 
-#### 对手写 trigger 的三级判据
+#### The three-tier bar against hand-written triggers
 
-早期草案写的是"v0 必须打赢手写 trigger，否则没有故事"。**这个判据是错的。** 针对 `GROUP BY region → SUM(amount)` 手写的专用 trigger，本身就是这条查询手工编译后的最优实现之一；而通用引擎必须为通用性付费：泛化的 delta 表示、序列化、arrangement 查找、算子分派、progress 跟踪、CDC 日志。**打不赢它不等于没有价值。**
+An early draft said "v0 must beat hand-written triggers or there is no story". **That bar is wrong.** A special-purpose trigger written by hand for `GROUP BY region → SUM(amount)` is itself one of the best implementations of that query, compiled by hand, while a general engine must pay for its generality: a generic delta representation, serialization, arrangement lookups, operator dispatch, progress tracking, the CDC log. **Not beating it does not mean having no value.**
 
-正确的判据分三级：
+The right bar has three tiers:
 
-| 级别 | 判据 | 含义 |
+| Tier | Bar | Meaning |
 |---|---|---|
-| **必须** | `ivmlite ≪ 全量重算` | 达不到则项目前提不成立 |
-| **期望** | `ivmlite` 接近手写 trigger | 通用性的代价在可接受范围内 |
-| **额外惊喜** | 大批量 Δ 下 `ivmlite` **优于**手写行级 trigger | consolidation 带来的结构性优势 |
+| **Must** | `ivmlite ≪ full recompute` | If not met, the project's premise does not hold |
+| **Expected** | `ivmlite` close to hand-written triggers | The price of generality is acceptable |
+| **Bonus** | `ivmlite` **faster than** hand-written row-level triggers on large Δ | The structural advantage consolidation brings |
 
-第三级是有机会达成的，而且机会正来自 §8.2 论证的批处理语义：一万次插入若只涉及 20 个 region，手写行级 trigger 要执行一万次聚合 UPDATE，而拿到整批 delta 的引擎 consolidate 后只需 20 次。
+The third tier is reachable, and the opportunity comes precisely from the batching semantics argued in §8.2: if 10,000 inserts touch only 20 regions, a hand-written row-level trigger runs 10,000 aggregate UPDATEs, while an engine handed the whole batch needs only 20 after consolidating.
 
-**因此 benchmark 必须包含"大批量 Δ + 低 group 基数"这个格子**——它是第三级判据唯一可能出现的地方，也是把手写 trigger 正确定位为"专用上界"而非"必须翻越的门槛"之后，真正值得测的东西。
+**So the benchmark must include the "large Δ + low group cardinality" cell** — the only place the third tier can show up, and, once hand-written triggers are correctly positioned as a "special-purpose upper bound" rather than a "threshold that must be crossed", the thing genuinely worth measuring.
 
-### 10.3 方法论约束
+### 10.3 Methodological constraints
 
-1. **跨宿主的绝对耗时不可比**（DuckDB vs SQLite 量的是宿主而非 IVM）。跨宿主只比**同宿主内的加速比** `朴素重跑 / 增量`。
-2. **CI 中只保留 same-host 对照组**；跨宿主对比做成一次性 writeup，不进 CI（否则必然腐烂）。
-3. **所有对照组必须维护完全相同的视图集合。** 若"手写 trigger"只能表达单一形状而"朴素重跑"跑的是另一批查询，测出的倍数无法用于 §10.4 的结论。视图集合的上限由**表达能力最弱的那个对照组**决定——v0 即 `GROUP BY <单列> → SUM, COUNT`，所有对照组一律用这一形状的 N 份副本。
-4. **所有对照组必须在计时开始前完成初始状态构建。** 在基表已有数据之后才创建空的汇总表，得到的是一个从不完整的视图，其维护成本也不具代表性。每条基线都要先完成一次全量 bootstrap，再开始测量增量成本。
-5. **测试数据必须有稳定主键，删改按主键定位。** 按全部列的值去找行会退化成全表扫描（`EXPLAIN QUERY PLAN` 显示 `SCAN`），使耗时随基表规模线性增长——而基表规模项正是这条 benchmark 唯一要证明的东西，被扫描淹没后结论归零。
-6. **绝不把其他项目公开发布的数字放进对比表。** 不同硬件、不同数据、不同查询、不同测量方法，别人博客或论文里的毫秒数与本项目的数字之间没有可比性。要与 Turso 等系统对比，就必须在同一台机器上、用同一份 workload 亲自跑一遍。他人发布的数字只有一个合法用途：判断自己的量级是否离谱到说明某处搞错了——不能进结论。
-7. **workload 必须是可移植产物，不得写死在 runner 里。** schema DDL、视图 SQL、数据生成参数、更新 trace 定义在一个独立文件中，生成器可将其导出为 CSV/SQL 供任何引擎加载。runner 是每引擎一份，workload 只有一份。否则每接入一个对比系统都要重新设计一次 benchmark，而重新设计过的 benchmark 之间不可比。这条同样约束**格子推导规则本身**——若被测矩阵（扫多少种基表规模、批大小、视图数、group 基数，以及怎样从这些维度构造出一个具体配置）活在 runner 代码里，外部 runner 就得重新实现这份推导逻辑，逐字段猜对，这与写死 workload 是同一种失败，只是换了一层：因此格子推导规则属于 workload 定义本身，而不是某一份 runner。
+1. **Absolute times across hosts are not comparable** (DuckDB vs SQLite measures the host, not IVM). Across hosts, compare only **the within-host speedup** `naive recompute / incremental`.
+2. **CI keeps only same-host baselines**; cross-host comparisons are a one-off writeup, not in CI (otherwise they are bound to rot).
+3. **Every baseline must maintain exactly the same set of views.** If "hand-written triggers" can express only one shape while "naive recompute" runs a different set of queries, the measured ratios cannot support §10.4's conclusions. The view set is capped by **the least expressive baseline** — for v0, `GROUP BY <one column> → SUM, COUNT` — and every baseline uses N copies of that shape.
+4. **Every baseline must finish building its initial state before timing starts.** Creating an empty summary table after the base table already has data yields a view that is never complete, with unrepresentative maintenance cost. Each baseline performs one full bootstrap first, then measures incremental cost.
+5. **Test data must have a stable primary key, and deletes and updates must locate rows by it.** Finding rows by the values of all columns degrades to a full table scan (`EXPLAIN QUERY PLAN` shows `SCAN`), making time grow linearly with the base table — and the base-table size is the one thing this benchmark exists to show, so once it is drowned by the scan the conclusion is worth nothing.
+6. **Never put numbers published by other projects into a comparison table.** Different hardware, data, queries, and measurement methods — milliseconds from someone else's blog or paper are not comparable with this project's numbers. Comparing with Turso or any other system means running it yourself on the same machine with the same workload. Other people's published numbers have exactly one legitimate use: judging whether your own order of magnitude is so far off that something must be wrong — never as a conclusion.
+7. **Workloads must be portable artifacts, not hard-coded in a runner.** The schema DDL, view SQL, data-generation parameters and update trace are defined in a standalone file that the generator can export as CSV/SQL for any engine to load. There is one runner per engine and only one workload. Otherwise every system brought in for comparison means redesigning the benchmark, and redesigned benchmarks are not comparable with each other. The same constraint applies to **the cell-derivation rules themselves**: if the measured matrix (how many base-table sizes, batch sizes, view counts and group cardinalities to sweep, and how to build a concrete configuration from those dimensions) lived in runner code, an external runner would have to re-implement that derivation and guess every field right — the same failure as a hard-coded workload, one layer up. So the cell-derivation rules belong to the workload definition itself, not to any one runner.
 
-### 10.4 要得出的结论
+### 10.4 The conclusion to reach
 
-IVM 耗时应随 **Δ 大小**增长、几乎不随**基表规模**增长；朴素重跑随基表规模线性增长。
+IVM's time should grow with **Δ size** and hardly at all with **base-table size**; naive recompute grows linearly with base-table size.
 
-**输出不是一个数字，而是一张面（surface）：**
+**The output is not a number but a surface:**
 
 ```
-基表规模 × Δ 大小 × group 基数 × 视图数 × refresh 频率
+base-table size × Δ size × group cardinality × view count × refresh frequency
                       ↓
-              全量重算耗时 / 增量耗时
+       full-recompute time / incremental time
 ```
 
-早期草案预先规定"交叉点落在 100 万行以上则对 SQLite 没意义"。**该阈值已删除**——它是拍脑袋定的，而且把一个五维问题压成了一个数。同一套实现在"10 个 group、大批量 Δ"和"90 万个 group、单行 Δ"下是两个完全不同的结论，不存在单一交叉点。
+An early draft stipulated in advance that "a crossover above one million rows makes it pointless for SQLite". **That threshold has been removed** — it was made up, and it squashed a five-dimensional problem into one number. The same implementation reaches two completely different conclusions under "10 groups, large Δ" and "900,000 groups, one-row Δ"; there is no single crossover.
 
-> **benchmark 的设计仍必须能够证伪本项目，只是判据换成了形状而非数字：**
+> **The benchmark must still be able to falsify this project; the bar is just a shape rather than a number:**
 >
-> **若这张面上不存在任何一个区域，使增量相对全量重算有实质优势（比值 > 2），则项目前提不成立。** 反过来，若优势区域存在，就照实报告它落在哪里——包括"只在极窄的一角成立"这种结论。
+> **If there is no region anywhere on this surface where incremental maintenance has a substantial advantage over full recomputation (a ratio > 2), the project's premise does not hold.** Conversely, if an advantage region exists, report honestly where it falls — including the conclusion "it holds only in one narrow corner".
 >
-> 一个只会得出好结论的 benchmark 没有价值；一个预先规定了好结论长什么样的 benchmark 同样没有价值。
+> A benchmark that can only reach good conclusions is worthless; so is one that stipulates in advance what a good conclusion looks like.
 
-### 10.5 次要指标
+### 10.5 Secondary metrics
 
-- **写放大**——安装本扩展后，trigger 使**所有**写入变慢，哪怕从不读视图。这是 IVM 的隐藏税，必须量化，否则收益数字是假的。
-- 空间放大：state + delta 表 vs 基表
-- bootstrap 耗时
+- **Write amplification** — once the extension is installed, triggers make **every** write slower, even if the views are never read. This is IVM's hidden tax and must be quantified, or the benefit numbers are fake.
+- Space amplification: state + delta tables vs the base tables
+- Bootstrap time
 
-### 10.6 已知简化（M0/M1 接受，M2 消除）
+### 10.6 Known simplifications (accepted in M0/M1, removed in M2)
 
-这三条都会让 M0/M1 的数字偏离真实负载，记录在此以免日后把它们当成结论：
+All three make M0/M1's numbers diverge from real workloads, and are recorded here so they are not mistaken for conclusions later:
 
-- **数据分布是均匀的，不是 Zipf。** 真实数据里少数热 group 吃掉大部分更新。这会显著改变缓存行为，也直接影响 M4 内存 arrangement 的收益评估——均匀分布下内存缓存的价值被低估。
-- **更新是均匀散开的，没有局部性。** 真实负载的更新集中打热 group。
-- **无法运行任何标准基准的查询。** TPC-H 的查询需要 join，Nexmark 的查询大多需要 join 与窗口，而 M0 的引擎侧是空的。M0 只能用合成数据；join 落地在 M1a，但跨系统对比还需要真实的 SQLite 扩展（M1b），因此在 M2 之前无法成立。
+- **The data distribution is uniform, not Zipf.** In real data a few hot groups take most of the updates. That changes cache behaviour significantly, and directly affects the evaluation of M4's in-memory arrangement — a uniform distribution understates the value of an in-memory cache.
+- **Updates are spread uniformly, with no locality.** Real workloads concentrate updates on hot groups.
+- **No standard benchmark's queries can be run.** TPC-H's queries need joins, Nexmark's mostly need joins and windows, and M0's engine side is empty. M0 can use only synthetic data; join lands in M1a, but a cross-system comparison also needs the real SQLite extension (M1b), so it cannot happen before M2.
 
-### 10.7 标准基准：M2 起接入 Nexmark
+### 10.7 Standard benchmark: Nexmark from M2 on
 
-join 落地后接 **Nexmark**——流式/增量系统的事实标准。Feldera 仓库内置 Nexmark benchmark，RisingWave 公开发布 Nexmark 结果，因此用它做对比时别人的数字才有参照系（仍须自行运行，见 §10.3 第 6 条）。
+Once join lands, bring in **Nexmark** — the de facto standard for streaming / incremental systems. The Feldera repository ships a Nexmark benchmark and RisingWave publishes Nexmark results, so other people's numbers have a frame of reference when comparing on it (they still have to be run yourself; see §10.3 item 6).
 
-现在即确定这一目标，目的是让 plan IR 与算子接口不往与之不兼容的方向漂移。
+The goal is fixed now so the plan IR and operator interfaces do not drift in a direction incompatible with it.
 
-### 10.8 建立时机
+### 10.8 When to build it
 
-**benchmark harness 先用朴素重跑实现填充"待测引擎"的位置**，于是第一天就有完整基线曲线，实现 core 的每一步都有实时对比，而不是做完才知道快慢。
+**The benchmark harness first fills the "engine under test" slot with a naive-recompute implementation**, so there is a complete baseline curve from day one and every step of implementing the core has a live comparison, rather than finding out how fast it is only at the end.
 
 ---
 
 ## 11. Roadmap
 
-> **顺序约束：测试框架与 benchmark 骨架必须在 core 之前建立；而 SQLite 扩展机制的探针（M-1）必须在 M1 之前。**
+> **Ordering constraint: the test framework and the benchmark skeleton must exist before the core; and the probe of SQLite's extension mechanics (M-1) must come before M1.**
 
-### M-1 — SQLite 扩展机制 spike（最先做）—— ✅ 已完成
+### M-1 — SQLite extension mechanics spike (first) — ✅ done
 
-**这是一个 spike，产出是结论不是代码。** 目的是在写任何引擎之前搞清楚控制面到底能不能按设想工作——如果不能，现在换比 core 写完再换便宜几个数量级。
+**This is a spike; its output is a conclusion, not code.** The purpose is to find out, before writing any engine, whether the control surface can actually work as imagined — if not, changing it now is orders of magnitude cheaper than changing it once the core is written.
 
-在**真实的 cdylib 扩展**（不是宿主语言的 sqlite3 绑定）上，把两套控制面各跑了一遍：
+Both control surfaces were run on a **real cdylib extension** (not a host-language sqlite3 binding):
 
-- **方案 A**：标量 UDF 内做 DDL 与写入
-- **方案 B**：`CREATE VIRTUAL TABLE ... USING ivm(...)`，xCreate 建影子表与 trigger，`INSERT INTO v(v) VALUES('refresh')` 作命令通道（FTS5 惯用法，主候选）
+- **Design A**: DDL and writes inside scalar UDFs
+- **Design B**: `CREATE VIRTUAL TABLE ... USING ivm(...)`, with xCreate creating the shadow tables and triggers and `INSERT INTO v(v) VALUES('refresh')` as the command channel (the FTS5 idiom, leading candidate)
 
-每套都覆盖了：`CREATE TABLE` / `CREATE TRIGGER` / 写影子表 / rollback / 嵌套事务 / WAL 模式 / 两个连接并发 / `DROP` 清理，方案 A 还额外覆盖了"扫描中调用"。
+Each covered: `CREATE TABLE` / `CREATE TRIGGER` / writing a shadow table / rollback / nested transactions / WAL mode / two concurrent connections / `DROP` cleanup, and design A additionally covered "called during a scan".
 
-> **完成判定：控制面定稿，§8.3 从"待验证"改为结论。** 结果：方案 B 全绿，采用方案 B；方案 A 暴露了两个问题（销毁路径留孤儿 trigger 毒死基表、扫描中自引用写入导致无界循环），记录为不采用 B 时的已知坑，不是"两套都有问题"意义上的阻塞项。完整矩阵与证据见 [2026-09-18-m-1-results.md](../../spikes/2026-09-18-m-1-results.md)。
+> **Done when: the control surface is settled and §8.3 changes from "to be verified" to a conclusion.** Result: design B all green, design B adopted; design A exposed two problems (the teardown path leaves orphan triggers that poison the base table; a self-referential write during a scan causes an unbounded loop), recorded as known pitfalls should B not be used — not a blocker in the "both designs have problems" sense. The full matrix and evidence are in [2026-09-18-m-1-results.md](../../spikes/2026-09-18-m-1-results.md).
 
-M-1 与 M0 相互独立（M0 是纯 Rust 的测试与 benchmark 骨架，不碰扩展 API），M-1 先做的原因（结论可能改写 §7 与 §8）已经落地：§8.3 已更新为结论；§7.3 的 bootstrap 原子性论证经场景 3/4 复核后维持不变，无需重写。
+M-1 and M0 are independent (M0 is the pure-Rust test and benchmark skeleton and never touches the extension API). The reason for doing M-1 first — its conclusion might rewrite §7 and §8 — has played out: §8.3 is updated to a conclusion, and §7.3's bootstrap-atomicity argument was re-checked against scenarios 3/4 and stands unchanged, with no rewrite needed.
 
-### M0 — 测试与基准骨架（core 之前）
+### M0 — test and benchmark skeleton (before the core)
 
-- crate 骨架 + CI
-- 生成器：schema / 数据 / 有偏更新序列 / query 穷举
-- 四层断言
-- 保持合法性的 shrinking、seed 重放
-- "待测引擎"位置先塞**朴素重跑**（平凡正确）→ 应当全绿
-- 再塞一个**故意有 bug 的假实现**（例如聚合不做 retraction）→ 框架必须抓到并缩到最小用例
-- benchmark harness + 三条 same-host 基线曲线
+- crate skeleton + CI
+- generators: schema / data / biased update sequences / query enumeration
+- the four layers of assertions
+- legality-preserving shrinking, seed replay
+- the "engine under test" slot filled first with **naive recompute** (trivially correct) → should be all green
+- then filled with a **deliberately buggy fake implementation** (for example, aggregation without retraction) → the framework must catch it and shrink it to a minimal case
+- the benchmark harness + three same-host baseline curves
 
-> **完成判定：框架能抓到植入的 bug 并 shrink 至 10 步以内；三条基线曲线出图。**
+> **Done when: the framework catches the planted bug and shrinks it to 10 steps or fewer, and the three baseline curves are plotted.**
 
-这一步不可省略——不验证"测试框架真的会红"，后续拿到的绿是假绿。
+This step cannot be skipped — without verifying that the test framework really goes red, every later green is a false green.
 
-### M1 — v0 引擎
+### M1 — the v0 engine
 
-- `ivmlite-core`：Value / Row / ZSet、plan IR、Arrangement trait、Filter / Project / Aggregate(SUM, COUNT)
-- **delta consolidation**（§8.2）：raw Δ 先按 Z-set 合并同一行的权重，再进算子。这是本项目最可能成立的性能故事，属于 M1 的内容而非后续优化
-- `ivmlite-sql`：`sqlparser-rs` → IR，Catalog trait，子集外硬报错
-- `ivmlite-sqlite`：cdylib、M-1 定稿的控制面、trigger DDL、shadow table
-- **bootstrap 的水位原子性**（§7.3）：高水位与基表快照必须在同一读事务内
-- **delta 表 GC**（§7.2）：`__ivm_dep` + 最落后视图水位 + 视图全部 DROP 后清理 trigger 与 delta 表
+- `ivmlite-core`: Value / Row / ZSet, plan IR, Arrangement trait, Filter / Project / Aggregate (SUM, COUNT)
+- **delta consolidation** (§8.2): raw Δ is first merged by Z-set, adding up the weights of identical rows, before it reaches the operators. This is the performance story most likely to hold up for this project, and belongs to M1 rather than being a later optimization
+- `ivmlite-sql`: `sqlparser-rs` → IR, the Catalog trait, hard errors outside the subset
+- `ivmlite-sqlite`: the cdylib, the control surface settled by M-1, trigger DDL, shadow tables
+- **watermark atomicity for bootstrap** (§7.3): the high watermark and the base-table snapshot must be taken in the same read transaction
+- **delta-table GC** (§7.2): `__ivm_dep` + the most lagging view's watermark + dropping the triggers and delta tables once every view is dropped
 
-**v0 限制**：根算子必须是带非空 GROUP BY 的 Aggregate（§5.2）；无全局聚合；STRICT table only 且拒绝 `ANY` 列；BINARY collation only；group-by key 只能是裸列；无浮点聚合；整数溢出未定义；比较运算符限于白名单；显式 refresh；INSERT / DELETE / UPDATE 全部支持。
+**v0 limitations**: the root operator must be an Aggregate with a non-empty GROUP BY (§5.2); no global aggregates; STRICT tables only, with `ANY` columns rejected; BINARY collation only; group-by keys are bare columns only; no floating-point aggregation; integer overflow undefined; comparison operators limited to a whitelist; explicit refresh; INSERT / DELETE / UPDATE all supported.
 
-> **完成判定：M0 的全部测试绿；§10.4 那张面跑出来；写放大有明确数字。数字难看也算完成。**
+> **Done when: all of M0's tests are green; the §10.4 surface has been measured; write amplification has a concrete number. Ugly numbers still count as done.**
 
-#### M1 拆成两段：M1a 纯 Rust 引擎，M1b SQLite 扩展
+#### M1 is split in two: M1a the pure-Rust engine, M1b the SQLite extension
 
-原先 M1 是一整块，且把 join 推到 M2。两处都改了：
+M1 used to be one block, with join pushed to M2. Both have changed:
 
-**拆的理由**：`Engine` trait（§8.5）**不要求 SQLite**。一个纯 Rust 的引擎实现它就能立刻接进 M0 的差分测试框架跑全套——穷举 query × 有偏更新序列 × 逐批 oracle 比对 × 批次无关性。所以 M1a 结束时会有一个**已被验证正确、且一行 `unsafe` 都没碰**的增量引擎。反过来一次做完，FFI 的问题会和算子的问题纠缠，而 M1b 是全项目唯一有 `unsafe` 的地方。
+**Why split it**: the `Engine` trait (§8.5) **does not require SQLite**. A pure-Rust engine implementing it plugs straight into M0's differential testing harness and runs the whole suite — enumerated queries × biased update sequences × per-batch oracle comparison × batch independence. So at the end of M1a there is an incremental engine that is **verified correct and has not touched a single line of `unsafe`**. Doing it all at once instead would tangle FFI problems with operator problems, and M1b is the only place in the whole project with `unsafe`.
 
-- **M1a**：plan IR、`Arrangement` trait 与内存实现、Filter / Project / Aggregate、**delta consolidation**、**Join**。纯 Rust，接入 M0 的 harness。
-- **M1b**：`ivmlite-sql`（`sqlparser-rs` → IR、Catalog、子集外硬报错）、`ivmlite-sqlite`（cdylib、§8.3 定稿的控制面、trigger DDL、shadow table）、bootstrap 水位原子性（§7.3）、delta GC（§7.2）。
+- **M1a**: plan IR, the `Arrangement` trait with an in-memory implementation, Filter / Project / Aggregate, **delta consolidation**, **Join**. Pure Rust, plugged into M0's harness.
+- **M1b**: `ivmlite-sql` (`sqlparser-rs` → IR, Catalog, hard errors outside the subset), `ivmlite-sqlite` (the cdylib, the control surface settled in §8.3, trigger DDL, shadow tables), bootstrap watermark atomicity (§7.3), delta GC (§7.2).
 
-**join 提前到 M1a 的理由**：M0 已按 §6.3 为它付过账——`Arrangement::get` 返回迭代器而非 `Option`、`Plan::Join` 占位已在、`apply` 已带表名。剩下的成本主要落在**测试框架的多表化**而非引擎，而那个重构越晚做要保全的代码越多。差分机制本身不在乎有几张表：单表就是只有一张表的多表用例。
+**Why join moved up to M1a**: M0 already paid for it per §6.3 — `Arrangement::get` returns an iterator rather than an `Option`, the `Plan::Join` placeholder exists, and `apply` carries a table name. What remains of the cost falls mostly on **making the test framework multi-table** rather than on the engine, and the later that refactor is done, the more code it has to preserve. The differential mechanism itself does not care how many tables there are: a single table is just a multi-table case with one table.
 
-**M1a 内部设一个检查点**：先完成多表框架重构并让单表引擎跑绿，再上 join。这样 join 出 bug 时能二分定位（是 join 引入的，还是框架重构就错了），而不必同时调两类 bug。
+**M1a has an internal checkpoint**: first finish the multi-table framework refactor and get the single-table engine green, then add join. That way, when join has a bug, it can be bisected (was it introduced by join, or was the framework refactor already wrong?) rather than debugging two kinds of bug at once.
 
-### M2 — 跨系统验证与标准基准（M1b 之后）
+### M2 — cross-system validation and standard benchmarks (after M1b)
 
-join 已移入 M1a，本里程碑只保留需要真实 SQLite 扩展才能做的部分：
+With join moved into M1a, this milestone keeps only what needs the real SQLite extension:
 
-- Turso 接入，一次 setup 兼顾两件事：**正确性交叉验证**（§9.1 第四层）与**性能同行对比**（§10.2）
-- 接入 **Nexmark**（§10.7）
-- 数据分布扩展为 Zipf，更新扩展出局部性（消除 §10.6 的前两条简化）
-- 观察并记录 join 状态爆炸（两侧都需保存全量）——M1a 会先在纯 Rust 侧看到它
-- 用实测数字回答 §9.2 第 4 条悬置的问题：差分 schema 加宽到每表 3 列是否值 8 倍规模
+- Bring in Turso, one setup serving two purposes: **correctness cross-validation** (the fourth layer of §9.1) and **performance peer comparison** (§10.2)
+- Bring in **Nexmark** (§10.7)
+- Extend the data distribution to Zipf and give updates locality (removing the first two simplifications of §10.6)
+- Observe and record join state explosion (both sides must be kept in full) — M1a will see it first on the pure-Rust side
+- Answer the open question of §9.2 item 4 with measured numbers: is widening the differential schema to 3 columns per table worth an 8x larger enumeration
 
-### M3 — 多连接语义与维护策略
+### M3 — multi-connection semantics and maintenance strategy
 
-**原先此处写的"vtab 自动 drain"已删除——它与 §8.2 的论证直接矛盾。** §8.2 证明了读事务不能写，所以 `SELECT * FROM view` 无法顺手把 pending delta 应用进去；而 trigger 内立即维护又因为 SQLite 只有行级 trigger 会把一次万行插入变成一万次维护。两条路都堵死，M3 不该承诺一个 §8 已经排除的东西。
+**The "vtab auto-drain" that used to be listed here has been removed — it directly contradicts §8.2's argument.** §8.2 shows that read transactions cannot write, so `SELECT * FROM view` cannot apply pending deltas along the way; and maintaining immediately from inside a trigger would, because SQLite has only row-level triggers, turn one 10,000-row insert into 10,000 maintenance runs. Both paths are blocked, and M3 should not promise something §8 has already ruled out.
 
-本里程碑改为：
+This milestone instead covers:
 
-- 多连接下的 staleness 语义与 `applied_seq` 水位协调
-- delta 表 GC 的并发安全（见 §7.2）
-- 维护触发策略的**人体工学改进**，而非自动化幻觉：例如提供 `ivm_refresh_all()`、把 refresh 挂进应用自己的 commit 流程的推荐写法
+- staleness semantics and `applied_seq` watermark coordination across multiple connections
+- concurrency safety of delta-table GC (see §7.2)
+- **ergonomic improvements** to how maintenance is triggered, rather than an illusion of automation: for example an `ivm_refresh_all()`, and a recommended way to hook refresh into the application's own commit flow
 
-**显式 refresh 是永久 API，不是 v0 的临时妥协**（见 §8.2）。
+**Explicit refresh is a permanent API, not a temporary v0 compromise** (see §8.2).
 
-### M4+ — 按价值排序
+### M4+ — in order of value
 
-- 内存 arrangement 缓存（用 M1 的基线证明它值得）
-- MIN / MAX（需要额外数据结构）
-- 级联视图
+- in-memory arrangement cache (proven worth it with M1's baselines)
+- MIN / MAX (needs an extra data structure)
+- cascading views
 - DISTINCT
-- 浮点聚合 + tolerance 策略
+- floating-point aggregation + a tolerance strategy
 - OUTER JOIN
 
-### 明确不做（至少一年内）
+### Explicitly not doing (for at least a year)
 
-递归 CTE、窗口函数、correlated subquery、任何分布式能力。
+Recursive CTEs, window functions, correlated subqueries, any distributed capability.
 
-### 项目层面的成功判定
+### Success for the project as a whole
 
-能够说出这句话：**"在 X 行、Y 个视图、Z 更新率下，相对手写 trigger 快/慢 N 倍。"**
+Being able to say: **"At X rows, Y views and Z update rate, it is N times faster / slower than hand-written triggers."**
 
-**答案是"慢"也算成功**——那是一个真结论。
-
----
-
-## 12. 决策记录：被否决的方案
-
-### 12.1 为什么不是 DuckDB
-
-见 §2。补充：duckDBSP 已经实现了本项目原计划 v0.1–v0.7 的全部内容（含 DISTINCT、MIN/MAX、窗口函数、递归 CTE、级联视图、持久化），在该宿主上做子集没有意义。且 DuckDB 扩展是 C++，与"学 Rust"的目标冲突。
-
-### 12.2 为什么不是"SQLite 旁边的 Rust 库"形态
-
-该形态（app 写入走自己的 API，类似 LiveStore 的 event-sourcing 模型）天然支持 wasm / 浏览器，能触及 local-first 真实用户。但：拿不到 trigger，CDC 需自行拦截；要求 app 改变写入方式，接入门槛高；benchmark 会混入 wasm↔JS 跨界开销，污染测量。
-
-扩展形态可以直接指向一个已存在的 `.db` 文件，差分测试与 benchmark 都在同一连接内运行，无噪声。这对 M0/M1 的目标更重要。
-
-### 12.3 为什么不用 `preupdate_hook` / session extension 做 CDC
-
-两者均需编译开关（`SQLITE_ENABLE_PREUPDATE_HOOK` / `SQLITE_ENABLE_SESSION`），大量发行版的 stock build 未开启，是实打实的移植税。trigger 到处可用、零开关、随事务回滚，且在扩展未加载时仍能捕获变更。
-
-### 12.4 为什么不走 SQL-to-SQL 编译（OpenIVM 路线）
-
-该路线把视图定义编译成维护用的 SQL 语句，不实现算子、不管状态、不做持久化，join 与聚合直接复用 SQLite 执行器。但：**学到的是编译器而非 dataflow 引擎**，与目标 1 冲突；性能被 SQLite 执行器与 SQL 往返封顶，讲不出"很多视图 × 极小 delta"的低延迟故事；且 OpenIVM 已经做完了。
-
-### 12.5 为什么不做静默全量回退
-
-不支持的 query 在 `ivm_create_view` 时硬报错。v0 阶段的静默降级会掩盖 bug——差分测试会通过，因为全量重算当然等于全量重算。等引擎稳定后再考虑 fallback。
-
-### 12.6 为什么 v0 不建完整的 DBSP circuit
-
-采用**方案 2 的数据模型 + 方案 1 的执行模型**：
-
-- **数据模型从第一天起就是 DBSP 的**——Z-set 带权重、算子是带显式状态的 delta 变换器、状态是按 key 索引的 arrangement。这决定了 join 与递归以后有地方安放，也决定了与 Turso 可比。
-- **执行模型先用朴素形态**——没有 circuit scheduler、没有 fixpoint 机制、没有通用 `I`/`D` 算子对。v0 就是"delta 进来，按 plan IR 顺序推一遍，state 更新，结果出去"。
-- **join 落地时重新评估是否需要真 circuit；递归上日程时必须上。**
-
-这样 v0 的代码量接近纯手写 delta 规则，但不欠 DBSP 的债。
-
-### 12.7 为什么 DELETE 在 v0 而不是 v0.2
-
-原始计划把 DELETE / UPDATE 放在 v0.2，意味着 v0 是 insert-only——那实质上是个"物化聚合缓存"而非 IVM，且 Z-set 权重、retraction、状态清理这些**全部真难点都会落在"看起来已经做完"之后**。DELETE 是 Z-set 赚钱的地方，必须在 v0。
-
-作为交换，join 从 v0 移出——join 增加的是范围而非架构风险，且 `Arrangement` 的形状已为它预留。
-
-### 12.8 为什么不与 TanStack DB 对比
-
-TanStack DB 是浏览器端 JS 库，与 v0 的扩展形态运行时不同、受众不同。该对比仅在"SQLite 旁边的库"形态下成立（见 §12.2），v0 不采用该形态，故出局。
+**"Slower" also counts as success** — it is a true conclusion.
 
 ---
 
-## 13. 已知限制（v0）
+## 12. Decision record: rejected alternatives
 
-1. **根算子必须是带非空 GROUP BY 的 Aggregate**；不支持无聚合的视图，也不支持全局聚合（§5.2）
-2. 仅 STRICT table，且**拒绝 `ANY` 列**（STRICT 本身不排除 `ANY`，见 §7.1）；列类型白名单为 `INTEGER` / `TEXT`
-3. 仅 BINARY collation；检测手段是从 `sqlite_master` 取建表语句匹配 `COLLATE`，属保守的过度拒绝（见 §7.1）
-4. group-by key 仅支持裸列，不支持表达式
-5. 无浮点聚合
-6. **整数溢出行为未定义**；要求 group 内和的绝对值 < 2^62（§6.1）
-7. 比较运算符限于 `>` `>=` `<` `<=` `=` `!=` `IS NULL` `IS NOT NULL`；无 `NOT` / `OR` / `LIKE` / `IN` / `BETWEEN` / 子查询（§6.1）
-8. 无 join
-9. 无 MIN / MAX / DISTINCT
-10. 需显式 refresh——这是永久 API 而非临时妥协（§8.2）
-11. delta 表捕获全部列，宽表上有空间浪费
-12. 所有写入承担 trigger 写放大，即使从不读视图
-13. 无法在浏览器或 iOS 系统 SQLite 上加载
+### 12.1 Why not DuckDB
+
+See §2. In addition: duckDBSP already implements everything this project originally planned for v0.1–v0.7 (including DISTINCT, MIN/MAX, window functions, recursive CTEs, cascading views, persistence), so building a subset on that host makes no sense. And DuckDB extensions are C++, which conflicts with the "learn Rust" goal.
+
+### 12.2 Why not the "Rust library next to SQLite" form
+
+That form (application writes go through its own API, similar to LiveStore's event-sourcing model) supports wasm / browsers naturally and could reach real local-first users. But: it gets no triggers, so CDC has to intercept writes itself; it requires the application to change how it writes, a high barrier to adoption; and the benchmark would mix in wasm↔JS boundary overhead, polluting the measurement.
+
+The extension form can point straight at an existing `.db` file, and differential tests and benchmarks both run on the same connection, without noise. That matters more for M0/M1's goals.
+
+### 12.3 Why not `preupdate_hook` / the session extension for CDC
+
+Both need compile-time switches (`SQLITE_ENABLE_PREUPDATE_HOOK` / `SQLITE_ENABLE_SESSION`) that many distributions' stock builds leave off — a real portability tax. Triggers work everywhere, need no switches, roll back with the transaction, and still capture changes when the extension is not loaded.
+
+### 12.4 Why not SQL-to-SQL compilation (the OpenIVM route)
+
+That route compiles a view definition into SQL statements for maintenance, implementing no operators, managing no state and doing no persistence, reusing SQLite's executor directly for joins and aggregation. But: **what you learn is a compiler, not a dataflow engine**, which conflicts with goal 1; performance is capped by SQLite's executor and SQL round trips, so it cannot tell the low-latency story of "many views × tiny deltas"; and OpenIVM has already done it.
+
+### 12.5 Why no silent fallback to full recomputation
+
+An unsupported query is a hard error at `ivm_create_view`. A silent downgrade during v0 would hide bugs — the differential tests would pass, because full recomputation of course equals full recomputation. A fallback can be considered once the engine is stable.
+
+### 12.6 Why v0 does not build a full DBSP circuit
+
+It takes **design 2's data model with design 1's execution model**:
+
+- **The data model is DBSP's from day one** — Z-sets with weights, operators as delta transformers with explicit state, state as key-indexed arrangements. This decides that join and recursion will have a place to go later, and that the project is comparable with Turso.
+- **The execution model starts naive** — no circuit scheduler, no fixpoint machinery, no generic `I`/`D` operator pair. v0 is simply "deltas come in, get pushed through in plan-IR order, state is updated, results come out".
+- **Whether a real circuit is needed is re-evaluated when join lands; it is required once recursion is on the schedule.**
+
+That keeps v0's code close to hand-written delta rules, without taking on any debt against DBSP.
+
+### 12.7 Why DELETE is in v0 rather than v0.2
+
+The original plan put DELETE / UPDATE in v0.2, making v0 insert-only — which is really a "materialized aggregate cache", not IVM, and would put **all the genuinely hard parts** — Z-set weights, retraction, state cleanup — **after the point where it looks done**. DELETE is where Z-sets earn their keep, and it must be in v0.
+
+In exchange, join was moved out of v0 — join adds scope rather than architectural risk, and `Arrangement`'s shape already reserves room for it.
+
+### 12.8 Why not compare with TanStack DB
+
+TanStack DB is a browser-side JS library, with a different runtime and audience from v0's extension form. The comparison only makes sense in the "library next to SQLite" form (see §12.2), which v0 does not adopt, so it is out.
+
+---
+
+## 13. Known limitations (v0)
+
+1. **The root operator must be an Aggregate with a non-empty GROUP BY**; views without aggregation and global aggregates are not supported (§5.2)
+2. STRICT tables only, with **`ANY` columns rejected** (STRICT alone does not exclude `ANY`; see §7.1); the column-type whitelist is `INTEGER` / `TEXT`
+3. BINARY collation only; detected by fetching the table's CREATE statement from `sqlite_master` and matching `COLLATE`, a conservative over-rejection (see §7.1)
+4. Group-by keys are bare columns only, not expressions
+5. No floating-point aggregation
+6. **Integer overflow is undefined behaviour**; the absolute value of a group's sum must be < 2^62 (§6.1)
+7. Comparison operators are limited to `>` `>=` `<` `<=` `=` `!=` `IS NULL` `IS NOT NULL`; no `NOT` / `OR` / `LIKE` / `IN` / `BETWEEN` / subqueries (§6.1)
+8. No join
+9. No MIN / MAX / DISTINCT
+10. Explicit refresh is required — a permanent API, not a temporary compromise (§8.2)
+11. Delta tables capture every column, wasting space on wide tables
+12. Every write pays the triggers' write amplification, even if the views are never read
+13. Cannot be loaded in browsers or the iOS system SQLite
