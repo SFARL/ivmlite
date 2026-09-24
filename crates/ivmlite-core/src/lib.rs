@@ -8,14 +8,18 @@ mod plan;
 mod query;
 mod row;
 mod schema;
+#[cfg(test)]
+mod test_support;
 mod value;
 mod zset;
 
 pub use agg::AggState;
-pub use arrangement::{Arrangement, MemArrangement};
+pub use arrangement::{
+    fresh_mem_arrangement, Arrangement, ArrangementId, ArrangementRole, MemArrangement,
+};
 pub use database::Database;
 pub use engine::{EngineError, IncrementalEngine};
-pub use join::{fresh_mem_arrangement, JoinSide, JoinState};
+pub use join::JoinState;
 pub use node::Node;
 pub use plan::{lower, Plan, PlanError};
 pub use query::{Agg, AggFn, Join, Predicate, ViewQuery};

@@ -1,4 +1,6 @@
-use crate::{Arrangement, JoinSide, JoinState, Plan, Predicate, Row, Value, ZSet};
+use crate::{
+    Arrangement, ArrangementId, ArrangementRole, JoinState, Plan, Predicate, Row, Value, ZSet,
+};
 
 /// The stateful operator tree. Built from a `Plan`, after which `delta` is called repeatedly.
 ///
@@ -42,12 +44,27 @@ impl Node {
     /// mechanically at every call site that must handle the new `Err`, so adding
     /// it back is a local change.
     ///
-    /// `arrangements` supplies each join input's arrangement (M1a Phase 3,
-    /// Ruling 2); the engine passes `fresh_mem_arrangement`.
+    /// `arrangements` supplies every arrangement an operator needs, asked for
+    /// by `ArrangementId`: the operator's pre-order position in `plan` and the
+    /// arrangement's role (M1b Phase 1, Ruling 2). The engine passes
+    /// `fresh_mem_arrangement`; a provider that returns non-empty arrangements
+    /// rebuilds a tree from persisted state.
     pub fn build(
         plan: &Plan,
-        arrangements: &mut dyn FnMut(JoinSide) -> Box<dyn Arrangement>,
+        arrangements: &mut dyn FnMut(ArrangementId) -> Box<dyn Arrangement>,
     ) -> Node {
+        let mut next = 0;
+        Node::build_at(plan, &mut next, arrangements)
+    }
+
+    /// `build`'s recursion: `next` is the pre-order index the next plan node gets.
+    fn build_at(
+        plan: &Plan,
+        next: &mut usize,
+        arrangements: &mut dyn FnMut(ArrangementId) -> Box<dyn Arrangement>,
+    ) -> Node {
+        let node = *next;
+        *next += 1;
         match plan {
             Plan::Scan { table, .. } => Node::Scan {
                 table: table.clone(),
@@ -58,35 +75,51 @@ impl Node {
                 left_key,
                 right_key,
             } => {
-                let left = Node::build(left, arrangements);
-                let right = Node::build(right, arrangements);
+                let left = Node::build_at(left, next, arrangements);
+                let right = Node::build_at(right, next, arrangements);
                 Node::Join {
                     left: Box::new(left),
                     right: Box::new(right),
                     state: JoinState::new(
                         *left_key,
                         *right_key,
-                        arrangements(JoinSide::Left),
-                        arrangements(JoinSide::Right),
+                        arrangements(ArrangementId {
+                            node,
+                            role: ArrangementRole::JoinLeft,
+                        }),
+                        arrangements(ArrangementId {
+                            node,
+                            role: ArrangementRole::JoinRight,
+                        }),
                     ),
                 }
             }
             Plan::Filter { input, predicate } => Node::Filter {
-                input: Box::new(Node::build(input, arrangements)),
+                input: Box::new(Node::build_at(input, next, arrangements)),
                 predicate: predicate.clone(),
             },
             Plan::Project { input, columns } => Node::Project {
-                input: Box::new(Node::build(input, arrangements)),
+                input: Box::new(Node::build_at(input, next, arrangements)),
                 columns: columns.clone(),
             },
             Plan::Aggregate {
                 input,
                 group_by,
                 aggs,
-            } => Node::Aggregate {
-                input: Box::new(Node::build(input, arrangements)),
-                state: crate::AggState::new(group_by.clone(), aggs.clone()),
-            },
+            } => {
+                let input = Node::build_at(input, next, arrangements);
+                Node::Aggregate {
+                    input: Box::new(input),
+                    state: crate::AggState::new(
+                        group_by.clone(),
+                        aggs.clone(),
+                        arrangements(ArrangementId {
+                            node,
+                            role: ArrangementRole::AggregateGroups,
+                        }),
+                    ),
+                }
+            }
         }
     }
 
@@ -143,9 +176,10 @@ impl Node {
                 input: child,
                 state,
             } => {
-                // Spec §6.2: aggregation is this engine's only stateful
-                // operator. Compute the upstream delta first, then let
-                // `AggState` decide what to retract and what to emit.
+                // Spec §6.2: aggregation is one of the engine's two stateful
+                // operators (the join is the other). Compute the upstream
+                // delta first, then let `AggState` decide what to retract and
+                // what to emit.
                 let upstream = child.delta(table, input);
                 state.absorb(&upstream)
             }
@@ -459,9 +493,9 @@ mod tests {
         // This is not a far-fetched mutation: spec §5.3 stores SQL text rather
         // than a serialized IR, so "build a fresh tree on every refresh" is an
         // entirely plausible refactor, and so is changing `delta` to take
-        // `&self`. Either would turn the engine's only stateful operator
-        // stateless — emitting only `+1` per batch and never retracting, which
-        // is §6.2's "biggest source of bugs".
+        // `&self`. Either would turn the aggregate — one of the engine's two
+        // stateful operators — stateless: emitting only `+1` per batch and
+        // never retracting, which is §6.2's "biggest source of bugs".
         let plan = crate::lower(
             &crate::ViewQuery {
                 group_by: vec![0],
@@ -604,15 +638,212 @@ mod tests {
         );
     }
 
-    #[test]
-    fn build_asks_for_one_arrangement_per_side() {
-        // Ruling 2: a future persisted-state provider tells the two inputs
-        // apart only through the `JoinSide` it is asked for.
+    fn scan(table: &str) -> Plan {
+        Plan::Scan {
+            table: table.into(),
+            columns: vec![0, 1],
+        }
+    }
+
+    fn count_agg() -> Agg {
+        Agg {
+            func: AggFn::Count,
+            column: None,
+        }
+    }
+
+    /// Records every id `Node::build` asks its provider for, in order.
+    fn ids_asked_for(plan: &Plan) -> Vec<crate::ArrangementId> {
         let mut asked = Vec::new();
-        let _ = Node::build(&join_plan(), &mut |side| {
-            asked.push(side);
-            crate::fresh_mem_arrangement(side)
+        let _ = Node::build(plan, &mut |id| {
+            asked.push(id);
+            crate::fresh_mem_arrangement(id)
         });
-        assert_eq!(asked, vec![crate::JoinSide::Left, crate::JoinSide::Right]);
+        asked
+    }
+
+    fn id(node: usize, role: crate::ArrangementRole) -> crate::ArrangementId {
+        crate::ArrangementId { node, role }
+    }
+
+    #[test]
+    fn build_asks_for_each_join_input_by_node_and_role() {
+        use crate::ArrangementRole::{JoinLeft, JoinRight};
+        assert_eq!(
+            ids_asked_for(&join_plan()),
+            vec![id(0, JoinLeft), id(0, JoinRight)]
+        );
+    }
+
+    #[test]
+    fn node_ids_number_the_plan_in_pre_order() {
+        // Aggregate(0) → Project(1) → Join(2) → Scan(3), Scan(4): a provider
+        // loading persisted state finds an operator's tables by this number,
+        // so it must depend only on the plan's shape.
+        use crate::ArrangementRole::{AggregateGroups, JoinLeft, JoinRight};
+        let plan = Plan::Aggregate {
+            input: Box::new(Plan::Project {
+                input: Box::new(join_plan()),
+                columns: vec![0],
+            }),
+            group_by: vec![0],
+            aggs: vec![count_agg()],
+        };
+        assert_eq!(
+            ids_asked_for(&plan),
+            vec![id(2, JoinLeft), id(2, JoinRight), id(0, AggregateGroups)]
+        );
+
+        // A Filter is a node too: it shifts the join to position 3.
+        let filtered = Plan::Aggregate {
+            input: Box::new(Plan::Project {
+                input: Box::new(Plan::Filter {
+                    input: Box::new(join_plan()),
+                    predicate: Predicate::IsNotNull { column: 1 },
+                }),
+                columns: vec![0],
+            }),
+            group_by: vec![0],
+            aggs: vec![count_agg()],
+        };
+        assert_eq!(
+            ids_asked_for(&filtered),
+            vec![id(3, JoinLeft), id(3, JoinRight), id(0, AggregateGroups)]
+        );
+    }
+
+    #[test]
+    fn two_joins_in_one_plan_get_distinct_ids() {
+        // The former per-join side marker could not tell two joins in one
+        // view apart (spec §4.4, M1a Phase 3 amendment); the node index can.
+        // Join(0) over Join(1) and Scan t2.
+        use crate::ArrangementRole::{JoinLeft, JoinRight};
+        let plan = Plan::Join {
+            left: Box::new(join_plan()),
+            right: Box::new(scan("t2")),
+            left_key: 0,
+            right_key: 0,
+        };
+        assert_eq!(
+            ids_asked_for(&plan),
+            vec![
+                id(1, JoinLeft),
+                id(1, JoinRight),
+                id(0, JoinLeft),
+                id(0, JoinRight)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_tree_rebuilt_from_its_arrangements_continues_where_the_old_one_left_off() {
+        // The whole operator tree of a join view — the join's two sides and
+        // the aggregate's groups — rebuilt from nothing but its arrangements'
+        // contents, must produce exactly the old tree's deltas from then on,
+        // starting with the retraction of a row only the old tree emitted:
+        // inserts and deletes on both tables, the group emptying and coming
+        // back, and SUM falling back to NULL.
+        use crate::test_support::{join_on_k, kv, kv_row, Mirrors};
+        let db = crate::Database::new(vec![kv("t0"), kv("t1")]);
+        let plan = crate::lower(&join_on_k(), &db).expect("a legal join query must lower");
+
+        let mirrors = Mirrors::default();
+        let mut old = Node::build(&plan, &mut |id| mirrors.arrangement(id));
+        old.delta("t0", &ZSet::from_rows([(kv_row("a", 1), 1)]));
+        old.delta(
+            "t1",
+            &ZSet::from_rows([(kv_row("a", 10), 1), (kv_row("a", 20), 1)]),
+        );
+
+        let mut rebuilt = Node::build(&plan, &mut |id| -> Box<dyn crate::Arrangement> {
+            Box::new(mirrors.snapshot(id))
+        });
+        let next = ZSet::from_rows([(kv_row("a", 5), 1)]);
+        let from_rebuilt = rebuilt.delta("t1", &next);
+        let from_old = old.delta("t1", &next);
+
+        let out = |count: i64, sum: i64| {
+            Row::new(vec![
+                Value::Text("a".into()),
+                Value::Int(count),
+                Value::Int(sum),
+            ])
+        };
+        assert_eq!(
+            from_old,
+            ZSet::from_rows([(out(2, 30), -1), (out(3, 35), 1)])
+        );
+        assert_eq!(from_rebuilt, from_old);
+
+        // A `t1` delta probes only the join's left arrangement; a `t0` delta
+        // is what reads the right one. (a, 2) meets the three right rows
+        // 10, 20 and 5: COUNT goes from 3 to 6 and SUM from 35 to 70.
+        let next_left = ZSet::from_rows([(kv_row("a", 2), 1)]);
+        let left_from_rebuilt = rebuilt.delta("t0", &next_left);
+        let left_from_old = old.delta("t0", &next_left);
+        assert_eq!(
+            left_from_old,
+            ZSet::from_rows([(out(3, 35), -1), (out(6, 70), 1)])
+        );
+        assert_eq!(left_from_rebuilt, left_from_old);
+
+        // Both trees now hold t0 {(a,1), (a,2)} and t1 {(a,10), (a,20), (a,5)}.
+        // The steps below continue them through deletes on both sides, the
+        // group emptying and coming back, and SUM falling back to NULL.
+        let mut step = |table: &str, delta: ZSet| {
+            let from_rebuilt = rebuilt.delta(table, &delta);
+            let from_old = old.delta(table, &delta);
+            assert_eq!(
+                from_rebuilt, from_old,
+                "the rebuilt tree must agree with the old one on {table} {delta:?}"
+            );
+            from_old
+        };
+        let null_v = Row::new(vec![Value::Text("a".into()), Value::Null]);
+
+        // Delete t1 (a,10) and (a,20): each meets both left rows, so four
+        // joined rows leave. COUNT 6 → 2; SUM 70 − 2·(10+20) = 10.
+        assert_eq!(
+            step(
+                "t1",
+                ZSet::from_rows([(kv_row("a", 10), -1), (kv_row("a", 20), -1)])
+            ),
+            ZSet::from_rows([(out(6, 70), -1), (out(2, 10), 1)])
+        );
+
+        // Delete both t0 rows: each meets (a,5), the only right row left, so
+        // COUNT 2 → 0 and the group empties — retracted, with no new row.
+        assert_eq!(
+            step(
+                "t0",
+                ZSet::from_rows([(kv_row("a", 1), -1), (kv_row("a", 2), -1)])
+            ),
+            ZSet::from_rows([(out(2, 10), -1)])
+        );
+
+        // Insert a t1 row whose v is NULL: there is no left row to meet, so
+        // the join emits nothing and the group stays absent.
+        assert_eq!(step("t1", ZSet::from_rows([(null_v, 1)])), ZSet::new());
+
+        // Insert t0 (a,3): it meets (a,5) and (a,NULL), so the group comes
+        // back with COUNT 2 and SUM 5 — the NULL counts as a row but adds
+        // nothing to the sum.
+        assert_eq!(
+            step("t0", ZSet::from_rows([(kv_row("a", 3), 1)])),
+            ZSet::from_rows([(out(2, 5), 1)])
+        );
+
+        // Delete t1 (a,5): the group keeps one row, (a,3)⋈(a,NULL), and no
+        // non-NULL input, so COUNT 2 → 1 and SUM falls back from 5 to NULL.
+        assert_eq!(
+            step("t1", ZSet::from_rows([(kv_row("a", 5), -1)])),
+            ZSet::from_rows([
+                (out(2, 5), -1),
+                (
+                    Row::new(vec![Value::Text("a".into()), Value::Int(1), Value::Null]),
+                    1
+                ),
+            ])
+        );
     }
 }

@@ -771,9 +771,12 @@ mod tests {
 
     /// The same sweep with the right table's columns swapped, so the join keys
     /// sit at different positions — `(0, 1)` and `(1, 0)` — in the two tables.
-    /// Over `gen_database(2)` both keys are always at the same position, where
-    /// `NaiveRecompute` and the oracle's `ON` clause reading the wrong side's
-    /// key index goes unnoticed.
+    /// This catches a key-index mistake in `NaiveRecompute`'s own join, or in
+    /// the oracle's `ON` clause, when the mistake sits in only one of the two.
+    /// A mistake **shared** by both — they then compute the same wrong join —
+    /// cancels out here; only
+    /// `incremental_engine_is_green_across_the_join_space_with_keys_at_different_positions`
+    /// (see the matching row in `docs/mutation-gates.md`) catches that case.
     #[test]
     fn naive_engine_passes_every_join_query_with_keys_at_different_positions() {
         naive_engine_passes_every_join_query_over(&gen_database_with_swapped_right_table());

@@ -269,6 +269,7 @@ impl IncrementalEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{join_on_k, kv, kv_row};
     use crate::{Agg, AggFn, Column, ColumnType, Predicate, Schema, Value};
 
     fn table(name: &str) -> Schema {
@@ -582,52 +583,6 @@ mod tests {
     }
 
     // --- M1a Phase 3 Task 2: the engine running join views ---
-
-    /// `(k TEXT, v INTEGER)`, the harness's two-column shape.
-    fn kv(name: &str) -> Schema {
-        Schema {
-            table: name.into(),
-            columns: vec![
-                Column {
-                    name: "k".into(),
-                    ty: ColumnType::Text,
-                    nullable: true,
-                },
-                Column {
-                    name: "v".into(),
-                    ty: ColumnType::Integer,
-                    nullable: true,
-                },
-            ],
-        }
-    }
-
-    fn kv_row(k: &str, v: i64) -> Row {
-        Row::new(vec![Value::Text(k.into()), Value::Int(v)])
-    }
-
-    /// `SELECT t0.k, COUNT(*), SUM(t1.v) FROM t0 JOIN t1 ON t0.k = t1.k GROUP BY t0.k`
-    fn join_on_k() -> ViewQuery {
-        ViewQuery {
-            group_by: vec![0],
-            aggs: vec![
-                Agg {
-                    func: AggFn::Count,
-                    column: None,
-                },
-                Agg {
-                    func: AggFn::Sum,
-                    column: Some(3),
-                },
-            ],
-            predicate: Predicate::None,
-            join: Some(crate::Join {
-                right: "t1".into(),
-                left_column: 0,
-                right_column: 0,
-            }),
-        }
-    }
 
     fn out(k: &str, count: i64, sum: i64) -> Row {
         Row::new(vec![

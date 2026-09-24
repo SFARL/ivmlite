@@ -1,22 +1,4 @@
-use crate::{Arrangement, MemArrangement, Row, Value, ZSet};
-
-/// Which input of a join an arrangement belongs to.
-///
-/// `Node::build` asks its arrangement provider for one arrangement per side
-/// and passes this so the provider can tell the two apart — the hook a future
-/// "rebuild the join from persisted state" provider needs (M1a Phase 3,
-/// Ruling 2).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum JoinSide {
-    Left,
-    Right,
-}
-
-/// The provider the engine passes to `Node::build` today: every side starts
-/// from an empty in-memory arrangement.
-pub fn fresh_mem_arrangement(_side: JoinSide) -> Box<dyn Arrangement> {
-    Box::new(MemArrangement::new())
-}
+use crate::{Arrangement, Row, Value, ZSet};
 
 /// Spec §6.1's bilinear operator: a two-table inner equi-join.
 ///
@@ -154,8 +136,8 @@ mod tests {
         JoinState::new(
             0,
             0,
-            fresh_mem_arrangement(JoinSide::Left),
-            fresh_mem_arrangement(JoinSide::Right),
+            Box::new(MemArrangement::new()),
+            Box::new(MemArrangement::new()),
         )
     }
 
@@ -297,8 +279,8 @@ mod tests {
         let mut j = JoinState::new(
             0,
             1,
-            fresh_mem_arrangement(JoinSide::Left),
-            fresh_mem_arrangement(JoinSide::Right),
+            Box::new(MemArrangement::new()),
+            Box::new(MemArrangement::new()),
         );
         let from_right = j.absorb(
             &z(&[(kv(Some("a"), 1), 1)]),
@@ -329,7 +311,7 @@ mod tests {
             &kv(Some("a"), 10),
             1,
         );
-        let mut j = JoinState::new(0, 0, fresh_mem_arrangement(JoinSide::Left), Box::new(right));
+        let mut j = JoinState::new(0, 0, Box::new(MemArrangement::new()), Box::new(right));
         let out = j.absorb(&z(&[(kv(Some("a"), 1), 1)]), &ZSet::new());
         assert_eq!(
             out,
