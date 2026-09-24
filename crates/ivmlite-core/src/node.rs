@@ -176,9 +176,10 @@ impl Node {
                 input: child,
                 state,
             } => {
-                // Spec §6.2: aggregation is this engine's only stateful
-                // operator. Compute the upstream delta first, then let
-                // `AggState` decide what to retract and what to emit.
+                // Spec §6.2: aggregation is one of the engine's two stateful
+                // operators (the join is the other). Compute the upstream
+                // delta first, then let `AggState` decide what to retract and
+                // what to emit.
                 let upstream = child.delta(table, input);
                 state.absorb(&upstream)
             }
@@ -738,8 +739,10 @@ mod tests {
     fn a_tree_rebuilt_from_its_arrangements_continues_where_the_old_one_left_off() {
         // The whole operator tree of a join view — the join's two sides and
         // the aggregate's groups — rebuilt from nothing but its arrangements'
-        // contents, must produce exactly the old tree's next delta, including
-        // the retraction of a row only the old tree emitted.
+        // contents, must produce exactly the old tree's deltas from then on,
+        // starting with the retraction of a row only the old tree emitted:
+        // inserts and deletes on both tables, the group emptying and coming
+        // back, and SUM falling back to NULL.
         use crate::test_support::{join_on_k, kv, kv_row, Mirrors};
         let db = crate::Database::new(vec![kv("t0"), kv("t1")]);
         let plan = crate::lower(&join_on_k(), &db).expect("a legal join query must lower");
@@ -783,5 +786,64 @@ mod tests {
             ZSet::from_rows([(out(3, 35), -1), (out(6, 70), 1)])
         );
         assert_eq!(left_from_rebuilt, left_from_old);
+
+        // Both trees now hold t0 {(a,1), (a,2)} and t1 {(a,10), (a,20), (a,5)}.
+        // The steps below continue them through deletes on both sides, the
+        // group emptying and coming back, and SUM falling back to NULL.
+        let mut step = |table: &str, delta: ZSet| {
+            let from_rebuilt = rebuilt.delta(table, &delta);
+            let from_old = old.delta(table, &delta);
+            assert_eq!(
+                from_rebuilt, from_old,
+                "the rebuilt tree must agree with the old one on {table} {delta:?}"
+            );
+            from_old
+        };
+        let null_v = Row::new(vec![Value::Text("a".into()), Value::Null]);
+
+        // Delete t1 (a,10) and (a,20): each meets both left rows, so four
+        // joined rows leave. COUNT 6 → 2; SUM 70 − 2·(10+20) = 10.
+        assert_eq!(
+            step(
+                "t1",
+                ZSet::from_rows([(kv_row("a", 10), -1), (kv_row("a", 20), -1)])
+            ),
+            ZSet::from_rows([(out(6, 70), -1), (out(2, 10), 1)])
+        );
+
+        // Delete both t0 rows: each meets (a,5), the only right row left, so
+        // COUNT 2 → 0 and the group empties — retracted, with no new row.
+        assert_eq!(
+            step(
+                "t0",
+                ZSet::from_rows([(kv_row("a", 1), -1), (kv_row("a", 2), -1)])
+            ),
+            ZSet::from_rows([(out(2, 10), -1)])
+        );
+
+        // Insert a t1 row whose v is NULL: there is no left row to meet, so
+        // the join emits nothing and the group stays absent.
+        assert_eq!(step("t1", ZSet::from_rows([(null_v, 1)])), ZSet::new());
+
+        // Insert t0 (a,3): it meets (a,5) and (a,NULL), so the group comes
+        // back with COUNT 2 and SUM 5 — the NULL counts as a row but adds
+        // nothing to the sum.
+        assert_eq!(
+            step("t0", ZSet::from_rows([(kv_row("a", 3), 1)])),
+            ZSet::from_rows([(out(2, 5), 1)])
+        );
+
+        // Delete t1 (a,5): the group keeps one row, (a,3)⋈(a,NULL), and no
+        // non-NULL input, so COUNT 2 → 1 and SUM falls back from 5 to NULL.
+        assert_eq!(
+            step("t1", ZSet::from_rows([(kv_row("a", 5), -1)])),
+            ZSet::from_rows([
+                (out(2, 5), -1),
+                (
+                    Row::new(vec![Value::Text("a".into()), Value::Int(1), Value::Null]),
+                    1
+                ),
+            ])
+        );
     }
 }

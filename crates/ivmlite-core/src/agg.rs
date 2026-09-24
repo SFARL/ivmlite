@@ -594,4 +594,17 @@ mod tests {
         let mut s = sum_state_on(Box::new(state));
         s.absorb(&ZSet::from_rows([(row(vec![txt("a"), int(1)]), 1)]));
     }
+
+    #[test]
+    #[should_panic(expected = "corrupted aggregate state")]
+    fn a_group_whose_one_stored_value_has_weight_two_is_reported_as_corrupted() {
+        // One value, but with weight 2: `store` only ever writes a group's
+        // state with weight 1, so this too is corrupted state, not a group
+        // whose state counts twice. The previous test cannot see this case:
+        // it has two values, and `load` rejects it for that alone.
+        let mut state = MemArrangement::new();
+        state.update(&row(vec![txt("a")]), &row(vec![int(1), int(5), int(1)]), 2);
+        let mut s = sum_state_on(Box::new(state));
+        s.absorb(&ZSet::from_rows([(row(vec![txt("a"), int(1)]), 1)]));
+    }
 }
