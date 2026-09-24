@@ -771,5 +771,17 @@ mod tests {
             ZSet::from_rows([(out(2, 30), -1), (out(3, 35), 1)])
         );
         assert_eq!(from_rebuilt, from_old);
+
+        // A `t1` delta probes only the join's left arrangement; a `t0` delta
+        // is what reads the right one. (a, 2) meets the three right rows
+        // 10, 20 and 5: COUNT goes from 3 to 6 and SUM from 35 to 70.
+        let next_left = ZSet::from_rows([(kv_row("a", 2), 1)]);
+        let left_from_rebuilt = rebuilt.delta("t0", &next_left);
+        let left_from_old = old.delta("t0", &next_left);
+        assert_eq!(
+            left_from_old,
+            ZSet::from_rows([(out(3, 35), -1), (out(6, 70), 1)])
+        );
+        assert_eq!(left_from_rebuilt, left_from_old);
     }
 }
