@@ -44,12 +44,57 @@ fn naive_engine_is_green_across_many_seeds() {
     }
 }
 
+/// The stride used to pick `naive_engine_satisfies_batch_invariance`'s and
+/// `incremental_engine_satisfies_batch_invariance`'s ten queries out of
+/// `enumerate`'s single-table space (M1b Phase 2a final review, Important 2):
+/// straight `seed % len` (what `gen_case` does) is not used here on purpose.
+/// With 17 predicates innermost in `cross`, `enumerate`'s first 51 entries are
+/// all `group_by=[0]`, and their first 17 are all `aggs=[COUNT(*)]` — so
+/// seeds 0..9 taken straight land on `group_by=[0]` with COUNT only, and SUM
+/// and the two-column group-by silently drop out of both batch-invariance
+/// sweeps. The stride spreads ten seeds across the whole 153-query space
+/// instead; `queries_covering_sum_and_two_column_group_by` below asserts the
+/// spread still reaches both, so a future change to the enumeration cannot
+/// remove them quietly.
+const BATCH_INVARIANCE_QUERY_STRIDE: usize = 7;
+
+/// Pick `seeds.len()` queries out of `queries` by `seed * BATCH_INVARIANCE_QUERY_STRIDE
+/// % queries.len()`, and assert the picks still include at least one SUM query
+/// and at least one two-column group-by (M1b Phase 2a final review,
+/// Important 2).
+fn queries_covering_sum_and_two_column_group_by(
+    queries: &[ViewQuery],
+    seeds: &[u64],
+) -> Vec<(u64, ViewQuery)> {
+    let selected: Vec<(u64, ViewQuery)> = seeds
+        .iter()
+        .map(|&seed| {
+            let query =
+                queries[(seed as usize * BATCH_INVARIANCE_QUERY_STRIDE) % queries.len()].clone();
+            (seed, query)
+        })
+        .collect();
+    assert!(
+        selected
+            .iter()
+            .any(|(_, q)| q.aggs.iter().any(|a| a.func == AggFn::Sum)),
+        "the stride must still reach at least one SUM query: {selected:?}"
+    );
+    assert!(
+        selected.iter().any(|(_, q)| q.group_by.len() == 2),
+        "the stride must still reach at least one two-column group-by: {selected:?}"
+    );
+    selected
+}
+
 #[test]
 fn naive_engine_satisfies_batch_invariance() {
     let db = db();
     let domain = Domain::default();
-    for seed in seed_range().into_iter().take(10) {
-        let case = gen_case(seed, &db, &domain, 25, 120, Batching::All);
+    let queries = enumerate(&schema());
+    let seeds: Vec<u64> = seed_range().into_iter().take(10).collect();
+    for (seed, query) in queries_covering_sum_and_two_column_group_by(&queries, &seeds) {
+        let case = gen_case_with_query(seed, &db, &domain, query, 25, 120, Batching::All);
         check_batch_invariance(&case, NaiveRecompute::new).unwrap_or_else(|f| {
             panic!("the reference implementation should not violate batch independence: {f}")
         });
@@ -69,8 +114,10 @@ fn naive_engine_satisfies_batch_invariance() {
 fn incremental_engine_satisfies_batch_invariance() {
     let db = gen_database(2);
     let domain = Domain::default();
-    for seed in seed_range().into_iter().take(10) {
-        let case = gen_case(seed, &db, &domain, 25, 120, Batching::All);
+    let queries = enumerate(&db.tables()[0]);
+    let seeds: Vec<u64> = seed_range().into_iter().take(10).collect();
+    for (seed, query) in queries_covering_sum_and_two_column_group_by(&queries, &seeds) {
+        let case = gen_case_with_query(seed, &db, &domain, query, 25, 120, Batching::All);
         check_batch_invariance(&case, IncrementalEngine::new).unwrap_or_else(|f| {
             panic!("the incremental engine should not violate batch independence: {f}")
         });
@@ -449,7 +496,11 @@ fn shrink_reduces_initial_rows_in_every_table_of_a_multi_table_case() {
             let mut engine = NoRetractionEngine::new();
             run(&mut engine, c).is_err()
         })
-        .expect("there should be at least one failing two-table case");
+        .expect(
+            "no single-table two-database case failed among the selected seeds \
+             (under IVMLITE_SEED, an odd seed draws a join query and is filtered \
+             out above, leaving nothing to find)",
+        );
 
     // I4's probe: phase 3's per-table loop must really run on a case with more
     // than one table in `initial`, not merely "accept several tables in its
