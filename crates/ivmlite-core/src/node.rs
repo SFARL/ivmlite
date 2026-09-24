@@ -492,9 +492,9 @@ mod tests {
         // This is not a far-fetched mutation: spec §5.3 stores SQL text rather
         // than a serialized IR, so "build a fresh tree on every refresh" is an
         // entirely plausible refactor, and so is changing `delta` to take
-        // `&self`. Either would turn the engine's only stateful operator
-        // stateless — emitting only `+1` per batch and never retracting, which
-        // is §6.2's "biggest source of bugs".
+        // `&self`. Either would turn the aggregate — one of the engine's two
+        // stateful operators — stateless: emitting only `+1` per batch and
+        // never retracting, which is §6.2's "biggest source of bugs".
         let plan = crate::lower(
             &crate::ViewQuery {
                 group_by: vec![0],
@@ -713,9 +713,9 @@ mod tests {
 
     #[test]
     fn two_joins_in_one_plan_get_distinct_ids() {
-        // `JoinSide` could not tell two joins in one view apart (spec §4.4,
-        // M1a Phase 3 amendment); the node index can. Join(0) over Join(1)
-        // and Scan t2.
+        // The former per-join side marker could not tell two joins in one
+        // view apart (spec §4.4, M1a Phase 3 amendment); the node index can.
+        // Join(0) over Join(1) and Scan t2.
         use crate::ArrangementRole::{JoinLeft, JoinRight};
         let plan = Plan::Join {
             left: Box::new(join_plan()),
