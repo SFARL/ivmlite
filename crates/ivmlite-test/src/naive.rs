@@ -84,9 +84,14 @@ fn passes(predicate: &Predicate, row: &Row) -> bool {
             if *cell == Value::Null {
                 return false;
             }
-            // `lower` guarantees `cell` and `value` are the same variant, and
-            // `Value`'s derived order within one variant is i64's order or
-            // `String`'s byte order — SQLite's BINARY collation.
+            // `cell` and `value` are the same variant here — not because
+            // `lower` guarantees it (`NaiveRecompute` never calls `lower`),
+            // but because the enumerator only ever generates a comparison
+            // literal of the column's own type (see
+            // `every_comparison_literal_has_its_columns_type` in
+            // `crates/ivmlite-test/src/query.rs`). `Value`'s derived order
+            // within one variant is i64's order or `String`'s byte order —
+            // SQLite's BINARY collation.
             match op {
                 CmpOp::Gt => cell > value,
                 CmpOp::Ge => cell >= value,
