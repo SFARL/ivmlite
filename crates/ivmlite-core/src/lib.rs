@@ -8,6 +8,8 @@ mod plan;
 mod query;
 mod row;
 mod schema;
+#[cfg(test)]
+mod test_support;
 mod value;
 mod zset;
 

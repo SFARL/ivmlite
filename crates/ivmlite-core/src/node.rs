@@ -106,10 +106,20 @@ impl Node {
                 input,
                 group_by,
                 aggs,
-            } => Node::Aggregate {
-                input: Box::new(Node::build_at(input, next, arrangements)),
-                state: crate::AggState::new(group_by.clone(), aggs.clone()),
-            },
+            } => {
+                let input = Node::build_at(input, next, arrangements);
+                Node::Aggregate {
+                    input: Box::new(input),
+                    state: crate::AggState::new(
+                        group_by.clone(),
+                        aggs.clone(),
+                        arrangements(ArrangementId {
+                            node,
+                            role: ArrangementRole::AggregateGroups,
+                        }),
+                    ),
+                }
+            }
         }
     }
 
@@ -669,7 +679,7 @@ mod tests {
         // Aggregate(0) → Project(1) → Join(2) → Scan(3), Scan(4): a provider
         // loading persisted state finds an operator's tables by this number,
         // so it must depend only on the plan's shape.
-        use crate::ArrangementRole::{JoinLeft, JoinRight};
+        use crate::ArrangementRole::{AggregateGroups, JoinLeft, JoinRight};
         let plan = Plan::Aggregate {
             input: Box::new(Plan::Project {
                 input: Box::new(join_plan()),
@@ -680,7 +690,7 @@ mod tests {
         };
         assert_eq!(
             ids_asked_for(&plan),
-            vec![id(2, JoinLeft), id(2, JoinRight)]
+            vec![id(2, JoinLeft), id(2, JoinRight), id(0, AggregateGroups)]
         );
 
         // A Filter is a node too: it shifts the join to position 3.
@@ -697,7 +707,7 @@ mod tests {
         };
         assert_eq!(
             ids_asked_for(&filtered),
-            vec![id(3, JoinLeft), id(3, JoinRight)]
+            vec![id(3, JoinLeft), id(3, JoinRight), id(0, AggregateGroups)]
         );
     }
 
@@ -722,5 +732,44 @@ mod tests {
                 id(0, JoinRight)
             ]
         );
+    }
+
+    #[test]
+    fn a_tree_rebuilt_from_its_arrangements_continues_where_the_old_one_left_off() {
+        // The whole operator tree of a join view — the join's two sides and
+        // the aggregate's groups — rebuilt from nothing but its arrangements'
+        // contents, must produce exactly the old tree's next delta, including
+        // the retraction of a row only the old tree emitted.
+        use crate::test_support::{join_on_k, kv, kv_row, Mirrors};
+        let db = crate::Database::new(vec![kv("t0"), kv("t1")]);
+        let plan = crate::lower(&join_on_k(), &db).expect("a legal join query must lower");
+
+        let mirrors = Mirrors::default();
+        let mut old = Node::build(&plan, &mut |id| mirrors.arrangement(id));
+        old.delta("t0", &ZSet::from_rows([(kv_row("a", 1), 1)]));
+        old.delta(
+            "t1",
+            &ZSet::from_rows([(kv_row("a", 10), 1), (kv_row("a", 20), 1)]),
+        );
+
+        let mut rebuilt = Node::build(&plan, &mut |id| -> Box<dyn crate::Arrangement> {
+            Box::new(mirrors.snapshot(id))
+        });
+        let next = ZSet::from_rows([(kv_row("a", 5), 1)]);
+        let from_rebuilt = rebuilt.delta("t1", &next);
+        let from_old = old.delta("t1", &next);
+
+        let out = |count: i64, sum: i64| {
+            Row::new(vec![
+                Value::Text("a".into()),
+                Value::Int(count),
+                Value::Int(sum),
+            ])
+        };
+        assert_eq!(
+            from_old,
+            ZSet::from_rows([(out(2, 30), -1), (out(3, 35), 1)])
+        );
+        assert_eq!(from_rebuilt, from_old);
     }
 }

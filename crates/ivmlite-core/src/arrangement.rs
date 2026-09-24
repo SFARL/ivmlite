@@ -39,6 +39,8 @@ pub enum ArrangementRole {
     JoinLeft,
     /// A join's right input, keyed by the join key.
     JoinRight,
+    /// An aggregate's per-group state, keyed by the group key; see `AggState`.
+    AggregateGroups,
 }
 
 /// The provider the engine passes to `Node::build` today: every arrangement
