@@ -75,9 +75,9 @@ pub fn seed_range() -> Vec<u64> {
 
 /// Generate a differential test case. `db` declares every base table the case
 /// involves (in a deterministic order, spec §9.4); the query is picked from
-/// `enumerate_database(db)` by `seed % len`: single-table queries over the
-/// anchor first, then — with two or more tables — the join queries over the
-/// first two.
+/// `enumerate_database(db)` by `seed % len`, which alternates the anchor's
+/// single-table queries with — for two or more tables — the join queries over
+/// the first two (M1b Phase 2a, Ruling 5).
 pub fn gen_case(
     seed: u64,
     db: &Database,
@@ -744,7 +744,10 @@ mod tests {
                     .is_some()
             })
             .count();
-        assert!(joins > 0, "no seed in 0..50 picked a join query");
+        assert!(
+            joins >= 20,
+            "only {joins} of seeds 0..50 picked a join query"
+        );
     }
 
     /// Every join query over `db`'s first two tables, one case each, seeded by
