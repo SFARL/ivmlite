@@ -19,6 +19,34 @@ pub trait Arrangement {
     fn scan(&self) -> Box<dyn Iterator<Item = (Row, Row, i64)> + '_>;
 }
 
+/// Which operator an arrangement belongs to, and which of its states it holds.
+///
+/// `node` is the operator's position in its `Plan` in pre-order: the root is
+/// 0, and a node's children are numbered after it, left before right. The same
+/// plan therefore always yields the same ids — what a provider that loads
+/// persisted state (§7's `__ivm_state_<view>_<op>`) needs to find the right
+/// table. `role` tells apart the arrangements of one operator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ArrangementId {
+    pub node: usize,
+    pub role: ArrangementRole,
+}
+
+/// The state an arrangement holds for its operator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ArrangementRole {
+    /// A join's left input, keyed by the join key.
+    JoinLeft,
+    /// A join's right input, keyed by the join key.
+    JoinRight,
+}
+
+/// The provider the engine passes to `Node::build` today: every arrangement
+/// starts empty, in memory.
+pub fn fresh_mem_arrangement(_id: ArrangementId) -> Box<dyn Arrangement> {
+    Box::new(MemArrangement::new())
+}
+
 /// M1a's in-memory implementation. M1b adds one backed by SQLite shadow tables.
 ///
 /// Both levels are `BTreeMap`s: spec §9.4 requires every iteration order that
