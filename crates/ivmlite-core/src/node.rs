@@ -187,8 +187,8 @@ impl Node {
     }
 }
 
-/// Spec §6.1's three-valued logic: NULL evaluates to UNKNOWN, and the row is
-/// excluded from the result.
+/// Spec §6.1's three-valued logic: a comparison with NULL is UNKNOWN, and the
+/// row is excluded from the result.
 ///
 /// It returns a `bool` rather than a three-valued enum because, for
 /// **filtering**, "false" and "unknown" get the same treatment. But **do not
@@ -198,24 +198,18 @@ impl Node {
 fn passes(predicate: &Predicate, row: &Row) -> bool {
     match predicate {
         Predicate::None => true,
-        Predicate::IntGt { column, value } => match row.get(*column) {
-            Value::Int(i) => i > value,
-            // NULL > 3 is UNKNOWN, so `false` is correct.
-            //
-            // `false` for Text > Int is a different kind of guarantee: it is
-            // not the right answer. SQLite orders types
-            // NULL < INTEGER/REAL < TEXT < BLOB, so `'abc' > 3` is `1` (true)
-            // in SQLite, not `0`. This arm is sound only because it cannot be
-            // reached through `create_view`: `lower` rejects `IntGt` over a
-            // non-INTEGER column at the boundary (external review P2-1). Before
-            // that it was unreachable only by `enumerate`'s convention, and a
-            // hand-built view would have silently disagreed with the oracle —
-            // undetectably, since `NaiveRecompute::passes` has the identical
-            // collapse. Supporting it would mean implementing storage-class
-            // ordering, not returning `true`. See the matching n/a row in
-            // docs/mutation-gates.md.
-            _ => false,
+        Predicate::Compare { column, op, value } => match (row.get(*column), value) {
+            // UNKNOWN for every operator, `!=` included: `NULL != 4` is not true.
+            (Value::Null, _) => false,
+            (Value::Int(a), Value::Int(b)) => op.holds(a.cmp(b)),
+            // Byte order, which is SQLite's BINARY collation (§7.1).
+            (Value::Text(a), Value::Text(b)) => op.holds(a.as_bytes().cmp(b.as_bytes())),
+            (a, b) => unreachable!(
+                "`lower` accepts a comparison only with a literal of the column's type, \
+                 and a STRICT table stores only that type: compared {a:?} with {b:?}"
+            ),
         },
+        Predicate::IsNull { column } => matches!(row.get(*column), Value::Null),
         Predicate::IsNotNull { column } => !matches!(row.get(*column), Value::Null),
     }
 }
@@ -223,7 +217,7 @@ fn passes(predicate: &Predicate, row: &Row) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{lower, Agg, AggFn, Predicate, Value, ViewQuery, ZSet};
+    use crate::{lower, Agg, AggFn, CmpOp, Predicate, Value, ViewQuery, ZSet};
 
     /// `t(k TEXT, v INTEGER)` — matches the rows these tests actually push,
     /// whose column 0 is text and column 1 is an integer.
@@ -268,6 +262,82 @@ mod tests {
         Value::Int(i)
     }
 
+    /// Spec §6.1: each whitelisted operator keeps exactly the rows SQL keeps.
+    /// The values sit below, at and above the literal, so every operator's
+    /// boundary is pinned (`>` against `>=`, `<` against `<=`).
+    #[test]
+    fn each_comparison_operator_keeps_the_rows_sql_keeps() {
+        let ints = [3, 4, 5];
+        let texts = ["v3", "v4", "v5"];
+        let expected: [(CmpOp, [bool; 3]); 6] = [
+            (CmpOp::Gt, [false, false, true]),
+            (CmpOp::Ge, [false, true, true]),
+            (CmpOp::Lt, [true, false, false]),
+            (CmpOp::Le, [true, true, false]),
+            (CmpOp::Eq, [false, true, false]),
+            (CmpOp::Ne, [true, false, true]),
+        ];
+        for (op, keep) in expected {
+            let on_int = Predicate::Compare {
+                column: 0,
+                op,
+                value: Value::Int(4),
+            };
+            let on_text = Predicate::Compare {
+                column: 0,
+                op,
+                value: Value::Text("v4".into()),
+            };
+            for ((&n, &t), &k) in ints.iter().zip(&texts).zip(&keep) {
+                assert_eq!(passes(&on_int, &row(vec![int(n)])), k, "{n} {op:?} 4");
+                assert_eq!(
+                    passes(&on_text, &row(vec![Value::Text(t.into())])),
+                    k,
+                    "'{t}' {op:?} 'v4'"
+                );
+            }
+        }
+    }
+
+    /// TEXT compares by byte order — SQLite's BINARY collation, the only one v0
+    /// accepts (§7.1) — not by any numeric reading of the text: 'v10' < 'v9'.
+    #[test]
+    fn text_comparison_is_byte_order() {
+        let lt_v9 = Predicate::Compare {
+            column: 0,
+            op: CmpOp::Lt,
+            value: Value::Text("v9".into()),
+        };
+        assert!(passes(&lt_v9, &row(vec![Value::Text("v10".into())])));
+    }
+
+    /// Spec §6.1 and Ruling 3: `NULL <op> literal` is UNKNOWN for every
+    /// operator, and filtering excludes UNKNOWN — `NULL != 4` included.
+    #[test]
+    fn a_null_value_passes_no_comparison_not_even_not_equal() {
+        for op in CmpOp::ALL {
+            for value in [Value::Int(4), Value::Text("v4".into())] {
+                let p = Predicate::Compare {
+                    column: 0,
+                    op,
+                    value: value.clone(),
+                };
+                assert!(
+                    !passes(&p, &row(vec![Value::Null])),
+                    "NULL {op:?} {value:?} is UNKNOWN, so the row must be excluded"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn is_null_keeps_only_null_rows() {
+        let p = Predicate::IsNull { column: 0 };
+        assert!(passes(&p, &row(vec![Value::Null])));
+        assert!(!passes(&p, &row(vec![int(0)])));
+        assert!(!passes(&p, &row(vec![Value::Text(String::new())])));
+    }
+
     #[test]
     fn scan_only_absorbs_its_own_table() {
         // With one table this looks redundant, but it is the mechanism by which
@@ -305,9 +375,10 @@ mod tests {
                     table: "t".into(),
                     columns: vec![0],
                 }),
-                predicate: Predicate::IntGt {
+                predicate: Predicate::Compare {
                     column: 0,
-                    value: 3,
+                    op: CmpOp::Gt,
+                    value: Value::Int(3),
                 },
             },
             &mut crate::fresh_mem_arrangement,
@@ -324,9 +395,10 @@ mod tests {
                     table: "t".into(),
                     columns: vec![0],
                 }),
-                predicate: Predicate::IntGt {
+                predicate: Predicate::Compare {
                     column: 0,
-                    value: 3,
+                    op: CmpOp::Gt,
+                    value: Value::Int(3),
                 },
             },
             &mut crate::fresh_mem_arrangement,
@@ -347,9 +419,10 @@ mod tests {
                     table: "t".into(),
                     columns: vec![0],
                 }),
-                predicate: Predicate::IntGt {
+                predicate: Predicate::Compare {
                     column: 0,
-                    value: 3,
+                    op: CmpOp::Gt,
+                    value: Value::Int(3),
                 },
             },
             &mut crate::fresh_mem_arrangement,
@@ -459,9 +532,10 @@ mod tests {
                     func: crate::AggFn::Count,
                     column: None,
                 }],
-                predicate: Predicate::IntGt {
+                predicate: Predicate::Compare {
                     column: 1,
-                    value: 3,
+                    op: CmpOp::Gt,
+                    value: Value::Int(3),
                 },
                 join: None,
             },
@@ -503,9 +577,10 @@ mod tests {
                     func: crate::AggFn::Count,
                     column: None,
                 }],
-                predicate: Predicate::IntGt {
+                predicate: Predicate::Compare {
                     column: 1,
-                    value: 3,
+                    op: CmpOp::Gt,
+                    value: Value::Int(3),
                 },
                 join: None,
             },
@@ -569,9 +644,10 @@ mod tests {
                 func: AggFn::Sum,
                 column: Some(1),
             }],
-            predicate: Predicate::IntGt {
+            predicate: Predicate::Compare {
                 column: 0,
-                value: 3,
+                op: CmpOp::Gt,
+                value: Value::Int(3),
             },
             join: None,
         };

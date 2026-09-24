@@ -1,5 +1,5 @@
-use crate::{Agg, AggFn, ColumnType, Predicate, Schema, ViewQuery};
-use ivmlite_core::{Database, Join};
+use crate::{Agg, AggFn, CmpOp, ColumnType, Predicate, Schema, ViewQuery};
+use ivmlite_core::{Database, Join, Value};
 
 /// Enumerate v0's query space.
 ///
@@ -42,9 +42,10 @@ pub fn enumerate(schema: &Schema) -> Vec<ViewQuery> {
 
     let mut predicates = vec![Predicate::None];
     for i in &int_cols {
-        predicates.push(Predicate::IntGt {
+        predicates.push(Predicate::Compare {
             column: *i,
-            value: 4,
+            op: CmpOp::Gt,
+            value: Value::Int(4),
         });
     }
     for i in 0..schema.arity() {
@@ -229,7 +230,8 @@ mod tests {
         for q in &qs {
             match &q.predicate {
                 Predicate::None => saw_none = true,
-                Predicate::IntGt { .. } => saw_int_gt = true,
+                Predicate::Compare { .. } => saw_int_gt = true,
+                Predicate::IsNull { .. } => {}
                 Predicate::IsNotNull { .. } => saw_is_not_null = true,
             }
         }

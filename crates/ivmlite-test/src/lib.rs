@@ -25,7 +25,8 @@ pub use differential::{
 pub use engine::{Engine, EngineError};
 pub use invariants::check_invariants;
 pub use ivmlite_core::{
-    Agg, AggFn, Column, ColumnType, Database, IncrementalEngine, Join, Predicate, Schema, ViewQuery,
+    Agg, AggFn, CmpOp, Column, ColumnType, Database, IncrementalEngine, Join, Predicate, Schema,
+    ViewQuery,
 };
 pub use naive::NaiveRecompute;
 pub use ops::{gen_ops, Op};

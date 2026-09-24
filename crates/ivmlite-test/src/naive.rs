@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use ivmlite_core::{Database, Row, Value, ZSet};
 
-use crate::{AggFn, Engine, EngineError, Predicate, ViewQuery};
+use crate::{AggFn, CmpOp, Engine, EngineError, Predicate, ViewQuery};
 
 /// The trivially correct reference implementation: it keeps the full base tables and recomputes on every materialize.
 ///
@@ -78,17 +78,25 @@ fn positive_part(z: &ZSet) -> ZSet {
 fn passes(predicate: &Predicate, row: &Row) -> bool {
     match predicate {
         Predicate::None => true,
-        Predicate::IntGt { column, value } => match row.get(*column) {
-            Value::Int(n) => n > value,
-            // NULL > n is UNKNOWN under SQL's three-valued logic, so `false` is
-            // right for NULL. For TEXT it is not: SQLite orders storage classes
-            // NULL < INTEGER/REAL < TEXT < BLOB, so `'abc' > 3` is true there.
-            // This reference implementation does not go through `lower`, which
-            // rejects IntGt over TEXT for the engine, so the arm stays
-            // unreachable here only because `enumerate` never generates IntGt
-            // on a TEXT column.
-            _ => false,
-        },
+        Predicate::Compare { column, op, value } => {
+            let cell = row.get(*column);
+            // NULL <op> anything is UNKNOWN (spec §6.1), for `!=` too.
+            if *cell == Value::Null {
+                return false;
+            }
+            // `lower` guarantees `cell` and `value` are the same variant, and
+            // `Value`'s derived order within one variant is i64's order or
+            // `String`'s byte order — SQLite's BINARY collation.
+            match op {
+                CmpOp::Gt => cell > value,
+                CmpOp::Ge => cell >= value,
+                CmpOp::Lt => cell < value,
+                CmpOp::Le => cell <= value,
+                CmpOp::Eq => cell == value,
+                CmpOp::Ne => cell != value,
+            }
+        }
+        Predicate::IsNull { column } => row.get(*column) == &Value::Null,
         Predicate::IsNotNull { column } => row.get(*column) != &Value::Null,
     }
 }
@@ -405,9 +413,10 @@ mod tests {
                 func: AggFn::Count,
                 column: None,
             }],
-            predicate: Predicate::IntGt {
+            predicate: Predicate::Compare {
                 column: 1,
-                value: 4,
+                op: CmpOp::Gt,
+                value: Value::Int(4),
             },
             join: None,
         };
@@ -420,6 +429,24 @@ mod tests {
             got.weight_of(&Row::new(vec![Value::Text("a".into()), Value::Int(1)])),
             1
         );
+    }
+
+    #[test]
+    fn naive_passes_follows_three_valued_logic_for_not_equal_and_is_null() {
+        let ne = Predicate::Compare {
+            column: 0,
+            op: CmpOp::Ne,
+            value: Value::Int(4),
+        };
+        assert!(passes(&ne, &Row::new(vec![Value::Int(3)])));
+        assert!(!passes(&ne, &Row::new(vec![Value::Int(4)])));
+        assert!(
+            !passes(&ne, &Row::new(vec![Value::Null])),
+            "NULL != 4 is UNKNOWN"
+        );
+        let is_null = Predicate::IsNull { column: 0 };
+        assert!(passes(&is_null, &Row::new(vec![Value::Null])));
+        assert!(!passes(&is_null, &Row::new(vec![Value::Int(0)])));
     }
 
     /// Item 13 (a deferred minor, from the same source as I4): the `IsNotNull`
