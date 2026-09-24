@@ -16,10 +16,10 @@ use crate::{AggFn, Engine, EngineError, Predicate, ViewQuery};
 ///
 /// `base` is held per table (`BTreeMap<String, ZSet>`) — since the harness went
 /// multi-table, the initial state `create_view` receives is split by table
-/// anyway. `materialize` still aggregates only the `anchor`'s state (the first
-/// table in `db`): queries are still single-table aggregates, join belongs to the
-/// engine plan (Phase 3), and Task 3's oracle fixed the same restriction in
-/// `recompute_via_sqlite`, which this follows.
+/// anyway. `materialize` aggregates the anchor's state (the first table in
+/// `db`), or for a join query the nested-loop join of the anchor and the right
+/// table — deliberately the simplest correct algorithm, sharing no code with
+/// `JoinState`.
 #[derive(Debug, Default)]
 pub struct NaiveRecompute {
     query: Option<ViewQuery>,
@@ -32,6 +32,47 @@ impl NaiveRecompute {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// The rows the view aggregates: the anchor's base state, or — for a join —
+    /// every matching pair of anchor and right rows, concatenated, with the
+    /// product of their weights.
+    ///
+    /// A NULL key never matches: SQL's `NULL = NULL` is UNKNOWN (measured in
+    /// SQLite; `sqlite_never_matches_null_join_keys` pins it on the oracle side).
+    ///
+    /// For a join, each side's rows with weight ≤ 0 are dropped **before**
+    /// joining (spec §5.1: they do not take part in recomputation), the same
+    /// rule `materialize` applies to a single table's rows. Dropping them only
+    /// after the join would let two negative rows join into a positive one.
+    fn input_rows(&self, query: &ViewQuery) -> ZSet {
+        let anchor = self.base.get(&self.anchor).cloned().unwrap_or_default();
+        let Some(join) = &query.join else {
+            return anchor;
+        };
+        let anchor = positive_part(&anchor);
+        let right = positive_part(&self.base.get(&join.right).cloned().unwrap_or_default());
+        let mut joined = ZSet::new();
+        for (l, &wl) in anchor.iter() {
+            for (r, &wr) in right.iter() {
+                let key = l.get(join.left_column);
+                if *key != Value::Null && key == r.get(join.right_column) {
+                    let mut values = l.0.clone();
+                    values.extend(r.0.iter().cloned());
+                    joined.update(Row::new(values), wl * wr);
+                }
+            }
+        }
+        joined
+    }
+}
+
+/// The rows of `z` with a positive weight.
+fn positive_part(z: &ZSet) -> ZSet {
+    ZSet::from_rows(
+        z.iter()
+            .filter(|(_, &w)| w > 0)
+            .map(|(row, &w)| (row.clone(), w)),
+    )
 }
 
 fn passes(predicate: &Predicate, row: &Row) -> bool {
@@ -104,8 +145,8 @@ impl Engine for NaiveRecompute {
         // the running sum would silently output 0.
         let mut groups: BTreeMap<Vec<Value>, Vec<(i64, i64)>> = BTreeMap::new();
 
-        let anchor_base = self.base.get(&self.anchor).cloned().unwrap_or_default();
-        for (row, weight) in anchor_base.iter() {
+        let rows = self.input_rows(query);
+        for (row, weight) in rows.iter() {
             if *weight <= 0 {
                 continue;
             }
@@ -152,7 +193,7 @@ impl Engine for NaiveRecompute {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::single_table_bases as single_table_case;
+    use crate::test_support::{join_on_k, kv, single_table_bases as single_table_case};
     use crate::{Agg, AggFn, Column, ColumnType, Predicate, Schema, ViewQuery};
     use ivmlite_core::{Row, Value};
 
@@ -194,6 +235,7 @@ mod tests {
                 },
             ],
             predicate: Predicate::None,
+            join: None,
         }
     }
 
@@ -203,6 +245,71 @@ mod tests {
 
     fn out(region: Value, sum: i64, count: i64) -> Row {
         Row::new(vec![region, Value::Int(sum), Value::Int(count)])
+    }
+
+    #[test]
+    fn joins_on_the_key_and_aggregates_the_joined_rows() {
+        let db = Database::new(vec![kv("t0"), kv("t1")]);
+        let r = |k: &str, v: i64| Row::new(vec![Value::Text(k.into()), Value::Int(v)]);
+        let bases = BTreeMap::from([
+            (
+                "t0".to_string(),
+                ZSet::from_rows([(r("a", 1), 1), (r("b", 2), 1)]),
+            ),
+            (
+                "t1".to_string(),
+                ZSet::from_rows([(r("a", 10), 1), (r("a", 20), 1)]),
+            ),
+        ]);
+        let mut e = NaiveRecompute::new();
+        e.create_view(&db, &join_on_k(), &bases).unwrap();
+        let got = e.materialize().unwrap();
+        assert_eq!(
+            got.weight_of(&Row::new(vec![
+                Value::Text("a".into()),
+                Value::Int(2),
+                Value::Int(30)
+            ])),
+            1
+        );
+        assert_eq!(got.len(), 1);
+    }
+
+    #[test]
+    fn null_join_keys_never_match() {
+        let db = Database::new(vec![kv("t0"), kv("t1")]);
+        let null_key = |v: i64| Row::new(vec![Value::Null, Value::Int(v)]);
+        let bases = BTreeMap::from([
+            ("t0".to_string(), ZSet::from_rows([(null_key(1), 1)])),
+            ("t1".to_string(), ZSet::from_rows([(null_key(10), 1)])),
+        ]);
+        let mut e = NaiveRecompute::new();
+        e.create_view(&db, &join_on_k(), &bases).unwrap();
+        assert!(e.materialize().unwrap().is_empty());
+    }
+
+    #[test]
+    fn two_negative_rows_do_not_join_into_a_positive_one() {
+        // Spec §5.1: a row with weight ≤ 0 takes no part in recomputation. Two
+        // retractions of rows never inserted leave `("a", 2)` at -1 in t0 and
+        // `("a", 10)` at -1 in t1; their product is +1, so skipping
+        // non-positive weights only after joining would report a group "a".
+        let db = Database::new(vec![kv("t0"), kv("t1")]);
+        let r = |k: &str, v: i64| Row::new(vec![Value::Text(k.into()), Value::Int(v)]);
+        let bases = BTreeMap::from([
+            ("t0".to_string(), ZSet::from_rows([(r("a", 1), 1)])),
+            ("t1".to_string(), ZSet::new()),
+        ]);
+        let mut e = NaiveRecompute::new();
+        e.create_view(&db, &join_on_k(), &bases).unwrap();
+        e.apply("t0", &[(r("a", 2), -1)]).unwrap();
+        e.apply("t1", &[(r("a", 10), -1)]).unwrap();
+        e.refresh().unwrap();
+        let got = e.materialize().unwrap();
+        assert!(
+            got.is_empty(),
+            "t1 holds no row of positive weight, so the join is empty: {got:?}"
+        );
     }
 
     #[test]
@@ -302,6 +409,7 @@ mod tests {
                 column: 1,
                 value: 4,
             },
+            join: None,
         };
         let base = ZSet::from_rows([(row("a", 10), 1), (row("a", 1), 1)]);
         let (db, bases) = single_table_case(&schema(), base.clone());
@@ -327,6 +435,7 @@ mod tests {
                 column: None,
             }],
             predicate: Predicate::IsNotNull { column: 0 },
+            join: None,
         };
         let base = ZSet::from_rows([
             (row("a", 10), 1),
@@ -380,6 +489,7 @@ mod tests {
                 },
             ],
             predicate: Predicate::None,
+            join: None,
         };
         // The two identical rows are merged by the ZSet into weight 2
         let base = ZSet::from_rows([

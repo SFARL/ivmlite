@@ -1,9 +1,9 @@
 use ivmlite_core::{Database, IncrementalEngine, Row, ZSet};
 use ivmlite_test::{
-    check_batch_invariance, enumerate, gen_case, gen_case_with_query, gen_database, is_legal,
-    load_regressions, recompute_via_sqlite, run, save_regression, seed_range, shrink, Agg, AggFn,
-    Batching, Column, ColumnType, Domain, Engine, NaiveRecompute, NoRetractionEngine, Predicate,
-    Schema, TransientDriftEngine, ViewQuery,
+    check_batch_invariance, enumerate, enumerate_join, gen_case, gen_case_with_query, gen_database,
+    gen_database_with_swapped_right_table, is_legal, load_regressions, recompute_via_sqlite, run,
+    save_regression, seed_range, shrink, Agg, AggFn, Batching, Column, ColumnType, Domain, Engine,
+    Join, NaiveRecompute, NoRetractionEngine, Predicate, Schema, TransientDriftEngine, ViewQuery,
 };
 use std::collections::BTreeMap;
 
@@ -392,28 +392,25 @@ fn saved_regressions_still_reproduce_their_original_failure() {
     }
 }
 
-/// This phase's deliverable: the framework can express multi-table cases. The
-/// query is still a single-table aggregate (join is in the engine plan's
-/// Phase 3), but both tables receive changes, so three code paths are genuinely
-/// executed: apply's table-name routing, `NaiveRecompute`'s per-table base /
-/// pending storage, and the oracle creating and loading every table in the
-/// `Database`.
+/// A two-table `Database` through `run` against the reference engine. Seeds
+/// 0–35 draw single-table queries and seeds 36 and up draw join queries, and
+/// both tables receive changes, so the non-anchor table reaches both
+/// `materialize()` and the oracle. Each of these mutations, measured, reddens
+/// this test (see `docs/mutation-gates.md`):
+/// - apply's table-name routing: hard-coding the table name `run` passes to
+///   `apply` as `db.tables()[0].table` (the M1a Phase 1 Task 5 row).
+/// - `NaiveRecompute`'s per-table base / pending: `apply` dropping every
+///   non-anchor delta goes red at seed 36 (item 1 of the join-landing checklist).
+/// - `run`'s own `bases` bookkeeping: skipping non-anchor tables goes red at
+///   seed 36 (item 2).
+/// - the oracle creating and loading every table: restricting its table loop
+///   to `db.tables()[0]` (also guarded by
+///   `oracle::tests::builds_every_table_in_the_database`).
 ///
-/// "Executed" is not "this test would catch it breaking" — only the first of
-/// the three is caught:
-/// - apply's table-name routing: **caught**. Hard-coding the table name `run`
-///   passes to `apply` as `db.tables()[0].table` reddens this test at `diff[0]`
-///   (measured by the review; see the M1a Phase 1 Task 5 row in
-///   `docs/mutation-gates.md`).
-/// - `NaiveRecompute`'s per-table base / pending: **not caught**. Phase 1's query
-///   and oracle render only the anchor table's (`db.tables()[0]`) single-table
-///   SQL, so the non-anchor state stored there is unobservable in both
-///   `materialize()` and the oracle comparison — silently dropping it does not
-///   redden this test. It is a registered known gap: see the row "§8.5 `apply`
-///   must really keep non-anchor tables' deltas" in `docs/mutation-gates.md`,
-///   to be re-verified once join lands and the oracle renders multi-table queries.
-/// - the oracle creating and loading every table: **not caught** here (it is
-///   guarded separately by `oracle::tests::builds_every_table_in_the_database`).
+/// It does **not** catch the second and third together: when `NaiveRecompute`
+/// and `bases` both drop non-anchor deltas, the engine and the oracle read the
+/// same stale right table and agree. That combination is caught only by the
+/// tests that run `IncrementalEngine`, which keeps its own state.
 #[test]
 fn a_two_table_case_runs_green_against_the_reference_engine() {
     let db = gen_database(2);
@@ -432,9 +429,9 @@ fn a_two_table_case_runs_green_against_the_reference_engine() {
 /// both tables' initial row counts were really reduced, not just the one table
 /// the loop happens to meet first.
 ///
-/// The query in this case still reads only the anchor table (`t0`) — query
-/// rendering always uses the anchor, an existing Phase 1 limitation — so `t1` is
-/// completely unobservable to the oracle comparison, and a correct shrink should
+/// The query in this case reads only the anchor table (`t0`) — the first
+/// failing seed draws a single-table query, which the test asserts below — so
+/// `t1` is completely unobservable to the oracle comparison, and a correct shrink should
 /// reduce it to 0 rows. That is the signal this test uses to tell "phase 3
 /// processed every table" from "phase 3 processed only the first table": if the
 /// loop handled only the first table (or never reached `t1`), `t1` would keep
@@ -460,6 +457,15 @@ fn shrink_reduces_initial_rows_in_every_table_of_a_multi_table_case() {
         case.database.len(),
         2,
         "this test must feed shrink a genuine two-table case"
+    );
+    // The "t1 should shrink to 0 rows" argument below holds only for a
+    // single-table query: with a join, t1 is observable. `gen_case` maps seeds
+    // below the single-table query count to single-table queries, so this
+    // guards against that mapping ever changing silently.
+    assert!(
+        case.query.join.is_none(),
+        "this test's reasoning needs a single-table query, got {:?}",
+        case.query
     );
     assert!(
         case.initial.keys().count() > 1,
@@ -624,6 +630,7 @@ fn create_view_rejects_a_global_aggregate() {
             column: None,
         }],
         predicate: Predicate::None,
+        join: None,
     };
     let mut engine = IncrementalEngine::new();
     let err = engine
@@ -638,4 +645,137 @@ fn create_view_rejects_a_global_aggregate() {
         "the error should name group_by: {}",
         err.0
     );
+}
+
+/// Every query of `db`'s join space (its first two tables), one case each,
+/// seeded by its index, run against `IncrementalEngine`.
+///
+/// Under `IVMLITE_SEED=<n>` only query `n` runs, so the replay command a
+/// `Failure` prints reproduces exactly the failing case.
+fn incremental_engine_is_green_across_the_join_space_of(db: &Database) {
+    let domain = Domain::default();
+    let queries = enumerate_join(&db.tables()[0], &db.tables()[1]);
+    let replay = std::env::var("IVMLITE_SEED").is_ok();
+    let selected: Vec<u64> = if replay {
+        seed_range()
+    } else {
+        (0..queries.len() as u64).collect()
+    };
+    for seed in selected {
+        let query = queries[seed as usize % queries.len()].clone();
+        let case = gen_case_with_query(seed, db, &domain, query, 20, 60, Batching::Chunks(4));
+        let mut engine = IncrementalEngine::new();
+        if let Err(f) = run(&mut engine, &case) {
+            panic!("the incremental engine disagrees with the oracle on join query {seed}: {f}");
+        }
+    }
+}
+
+/// The join counterpart of `incremental_engine_is_green_across_the_enumerated_space`.
+#[test]
+fn incremental_engine_is_green_across_the_join_space() {
+    incremental_engine_is_green_across_the_join_space_of(&gen_database(2));
+}
+
+/// The same sweep with the right table's columns swapped, so the join keys sit
+/// at different positions — `(0, 1)` and `(1, 0)` — in the two tables. Over
+/// `gen_database(2)` both keys are always at the same position, where reading
+/// one side's key index for the other goes unnoticed.
+#[test]
+fn incremental_engine_is_green_across_the_join_space_with_keys_at_different_positions() {
+    incremental_engine_is_green_across_the_join_space_of(&gen_database_with_swapped_right_table());
+}
+
+/// A join query whose group key crosses the table boundary: group by
+/// `t0.k, t1.v`, `SUM(t0.v)`, `COUNT(*)`, joined on `k = k`.
+fn cross_boundary_join(db: &Database) -> ViewQuery {
+    ViewQuery {
+        group_by: vec![0, 3],
+        aggs: vec![
+            Agg {
+                func: AggFn::Sum,
+                column: Some(1),
+            },
+            Agg {
+                func: AggFn::Count,
+                column: None,
+            },
+        ],
+        predicate: Predicate::None,
+        join: Some(Join {
+            right: db.tables()[1].table.clone(),
+            left_column: 0,
+            right_column: 0,
+        }),
+    }
+}
+
+/// The join counterpart of `incremental_engine_matches_naive_recompute_at_every_refresh_point`.
+#[test]
+fn incremental_engine_matches_naive_recompute_on_a_join_at_every_refresh_point() {
+    let db = gen_database(2);
+    let case = gen_case_with_query(
+        11,
+        &db,
+        &Domain::default(),
+        cross_boundary_join(&db),
+        25,
+        120,
+        Batching::Chunks(5),
+    );
+    let bases: BTreeMap<String, ZSet> = case
+        .initial
+        .iter()
+        .map(|(t, rows)| {
+            (
+                t.clone(),
+                ZSet::from_rows(rows.iter().map(|r| (r.clone(), 1))),
+            )
+        })
+        .collect();
+    let mut inc = IncrementalEngine::new();
+    let mut naive = NaiveRecompute::new();
+    inc.create_view(&case.database, &case.query, &bases)
+        .unwrap();
+    naive
+        .create_view(&case.database, &case.query, &bases)
+        .unwrap();
+    assert_eq!(
+        inc.materialize().unwrap(),
+        naive.materialize().unwrap(),
+        "they already disagree at bootstrap"
+    );
+    for batch in case.batches() {
+        for (table, raw) in &batch {
+            inc.apply(table, raw).unwrap();
+            naive.apply(table, raw).unwrap();
+        }
+        inc.refresh().unwrap();
+        naive.refresh().unwrap();
+        assert_eq!(
+            inc.materialize().unwrap(),
+            naive.materialize().unwrap(),
+            "incremental maintenance and full recomputation diverge at a refresh point"
+        );
+    }
+}
+
+/// The join counterpart of `incremental_engine_satisfies_batch_invariance`:
+/// the same delta sequence, batched four ways, must end in the same state.
+#[test]
+fn incremental_engine_satisfies_batch_invariance_on_joins() {
+    let db = gen_database(2);
+    let domain = Domain::default();
+    // Spreads the 10 seeds across the join space instead of taking its first
+    // ten queries, which all share one group-by.
+    const BATCH_INVARIANCE_QUERY_STRIDE: usize = 67;
+    let queries = enumerate_join(&db.tables()[0], &db.tables()[1]);
+    for seed in seed_range().into_iter().take(10) {
+        let query =
+            queries[(seed as usize * BATCH_INVARIANCE_QUERY_STRIDE) % queries.len()].clone();
+        let case = gen_case_with_query(seed, &db, &domain, query, 25, 120, Batching::All);
+        check_batch_invariance(&case, IncrementalEngine::new).unwrap_or_else(|f| {
+            panic!("the incremental engine should not violate batch independence on a join: {f}")
+        });
+    }
 }

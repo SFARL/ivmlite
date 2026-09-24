@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::{lower, Database, Node, Row, ViewQuery, ZSet};
+use crate::{fresh_mem_arrangement, lower, Database, Node, Row, ViewQuery, ZSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EngineError(pub String);
@@ -120,18 +120,8 @@ impl IncrementalEngine {
         query: &ViewQuery,
         initial: &BTreeMap<String, ZSet>,
     ) -> Result<(), EngineError> {
-        let anchor = db
-            .tables()
-            .first()
-            // In M1b the table order comes from `__ivm_dep`, not from the
-            // query's FROM clause — choosing "the first" here is only v0's
-            // existing convention (final review Finding I): in single-table
-            // cases the anchor happens to coincide with "the table the query
-            // reads", but that is no guarantee of `db.tables()`'s order, merely
-            // something no more complex case has yet exposed.
-            .ok_or_else(|| EngineError("the Database must have at least one table".into()))?;
-        let plan = lower(query, anchor).map_err(|e| EngineError(e.0))?;
-        let mut tree = CountingTree::new(Node::build(&plan));
+        let plan = lower(query, db).map_err(|e| EngineError(e.0))?;
+        let mut tree = CountingTree::new(Node::build(&plan, &mut fresh_mem_arrangement));
 
         // Bootstrap: push each table's initial state through as the first batch
         // of deltas. A declared table with no initial state is an error, not an
@@ -202,10 +192,19 @@ impl IncrementalEngine {
         // before it reaches the operators. Merge per table — the same row value
         // appearing in two tables must not cancel across them. A `BTreeMap`
         // rather than a `HashMap` keeps the advance order deterministic
-        // (§9.4), although it does not reach the output today: `ZSet::merge`
-        // is pointwise addition, independent of call order. It becomes
-        // observable once join lands and `ΔR⋈ΔS` reads both sides' current
-        // state — item 6 of the join-landing checklist in docs/mutation-gates.md.
+        // (§9.4), although the order does not reach the output, even for a
+        // join: `JoinState::absorb` folds each side's delta into its
+        // arrangement before the other side probes, so refreshing t0 then t1
+        // computes `ΔR⋈S + (R+ΔR)⋈ΔS` and t1 then t0 computes
+        // `R⋈ΔS + ΔR⋈(S+ΔS)`, both equal to the full bilinear formula. The
+        // order does change how that total is split between the two pushes,
+        // but the `Aggregate` above the join emits telescoping deltas — first
+        // `-old +mid`, then `-mid +new` — so the intermediate `mid` cancels and
+        // only the join's total output over the refresh reaches the view; and
+        // `ZSet::merge` is pointwise addition. Measured: with a `HashMap` here
+        // the whole suite stayed green in 12 of 12 runs, the join sweep
+        // exercising both orders (item 6 of the join-landing checklist in
+        // docs/mutation-gates.md).
         let mut by_table: BTreeMap<String, ZSet> = BTreeMap::new();
         for (table, row, w) in std::mem::take(&mut self.pending) {
             by_table.entry(table).or_default().update(row, w);
@@ -291,6 +290,7 @@ mod tests {
                 column: None,
             }],
             predicate: Predicate::None,
+            join: None,
         }
     }
 
@@ -366,6 +366,7 @@ mod tests {
                 column: None,
             }],
             predicate: Predicate::None,
+            join: None,
         }
     }
 
@@ -456,7 +457,7 @@ mod tests {
     fn deltas_for_different_tables_are_consolidated_separately() {
         // The same row value in two tables must not be merged across them —
         // that would let one table's change cancel another's. With one table
-        // the shape does not exist; once join lands it is the norm.
+        // the shape does not exist; with a join it is the norm.
         let two = Database::new(vec![
             Schema {
                 table: "t".into(),
@@ -578,5 +579,123 @@ mod tests {
             "the error should name the undeclared table: {}",
             err.0
         );
+    }
+
+    // --- M1a Phase 3 Task 2: the engine running join views ---
+
+    /// `(k TEXT, v INTEGER)`, the harness's two-column shape.
+    fn kv(name: &str) -> Schema {
+        Schema {
+            table: name.into(),
+            columns: vec![
+                Column {
+                    name: "k".into(),
+                    ty: ColumnType::Text,
+                    nullable: true,
+                },
+                Column {
+                    name: "v".into(),
+                    ty: ColumnType::Integer,
+                    nullable: true,
+                },
+            ],
+        }
+    }
+
+    fn kv_row(k: &str, v: i64) -> Row {
+        Row::new(vec![Value::Text(k.into()), Value::Int(v)])
+    }
+
+    /// `SELECT t0.k, COUNT(*), SUM(t1.v) FROM t0 JOIN t1 ON t0.k = t1.k GROUP BY t0.k`
+    fn join_on_k() -> ViewQuery {
+        ViewQuery {
+            group_by: vec![0],
+            aggs: vec![
+                Agg {
+                    func: AggFn::Count,
+                    column: None,
+                },
+                Agg {
+                    func: AggFn::Sum,
+                    column: Some(3),
+                },
+            ],
+            predicate: Predicate::None,
+            join: Some(crate::Join {
+                right: "t1".into(),
+                left_column: 0,
+                right_column: 0,
+            }),
+        }
+    }
+
+    fn out(k: &str, count: i64, sum: i64) -> Row {
+        Row::new(vec![
+            Value::Text(k.into()),
+            Value::Int(count),
+            Value::Int(sum),
+        ])
+    }
+
+    fn joined_engine() -> IncrementalEngine {
+        let db = Database::new(vec![kv("t0"), kv("t1")]);
+        let initial = BTreeMap::from([
+            (
+                "t0".to_string(),
+                ZSet::from_rows([(kv_row("a", 1), 1), (kv_row("b", 2), 1)]),
+            ),
+            (
+                "t1".to_string(),
+                ZSet::from_rows([(kv_row("a", 10), 1), (kv_row("a", 20), 1)]),
+            ),
+        ]);
+        let mut engine = IncrementalEngine::new();
+        engine.create_view(&db, &join_on_k(), &initial).unwrap();
+        engine
+    }
+
+    #[test]
+    fn a_join_view_bootstraps_from_both_tables() {
+        // Both tables' initial rows must reach the join: a bootstrap that
+        // absorbed only the anchor table would leave the right side empty and
+        // the view empty.
+        assert_eq!(
+            joined_engine().snapshot(),
+            ZSet::from_rows([(out("a", 2, 30), 1)])
+        );
+    }
+
+    #[test]
+    fn a_join_view_follows_changes_to_both_tables() {
+        let mut engine = joined_engine();
+        // Group "a" loses its only left row; "b" gains a right row; and key
+        // "c" arrives on both sides in the same refresh — the ΔR⋈ΔS term at
+        // the engine level.
+        engine
+            .apply("t0", &[(kv_row("a", 1), -1), (kv_row("c", 1), 1)])
+            .unwrap();
+        engine
+            .apply("t1", &[(kv_row("b", 5), 1), (kv_row("c", 7), 1)])
+            .unwrap();
+        engine.refresh().unwrap();
+        assert_eq!(
+            engine.snapshot(),
+            ZSet::from_rows([(out("b", 1, 5), 1), (out("c", 1, 7), 1)])
+        );
+    }
+
+    #[test]
+    fn create_view_rejects_a_join_on_an_unknown_table() {
+        let db = Database::new(vec![kv("t0"), kv("t1")]);
+        let mut query = join_on_k();
+        query.join.as_mut().unwrap().right = "nope".into();
+        let initial = BTreeMap::from([
+            ("t0".to_string(), ZSet::new()),
+            ("t1".to_string(), ZSet::new()),
+        ]);
+        let err = IncrementalEngine::new()
+            .create_view(&db, &query, &initial)
+            .expect_err("the right table must be declared");
+        assert!(err.0.contains("nope"), "{}", err.0);
     }
 }

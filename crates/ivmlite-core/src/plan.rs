@@ -1,11 +1,10 @@
-use crate::{Agg, AggFn, ColumnType, Predicate, Schema, ViewQuery};
+use crate::{Agg, AggFn, Column, ColumnType, Database, Join, Predicate, Schema, ViewQuery};
 
 /// Spec §5.2's plan IR.
 ///
-/// v0's legal shape is always `Scan → Filter? → Project → Aggregate`, which
-/// `lower` guarantees. The `Join` variant is left for Phase 3, to arrive with the
-/// join operator: adding now a variant that every match arm can only answer with
-/// `unreachable!()` would leave, at every match, code no test can reach.
+/// v0's legal shapes are `Scan → Filter? → Project → Aggregate` and, with a
+/// join, `Join(Scan, Scan) → Filter? → Project → Aggregate`; `lower` guarantees
+/// that nothing else is produced.
 ///
 /// Spec §5.2 writes the expressions inside nodes as `Expr`; this implementation
 /// uses `Vec<usize>` (column indices) and `Predicate` instead. v0's group-by keys
@@ -29,6 +28,20 @@ pub enum Plan {
         /// rather than reading all of them unconditionally. Until then it is a
         /// statement of intent, not any constraint currently in force.
         columns: Vec<usize>,
+    },
+    /// Spec §5.2 / §6.1: a two-table inner equi-join (M1a Phase 3). Its output
+    /// row is the left child's row followed by the right child's row, so every
+    /// operator above it indexes that concatenation: the left child's columns
+    /// first, then the right child's.
+    ///
+    /// The keys are column indices into each child's output rather than spec
+    /// §5.2's `Vec<(Expr, Expr)>`: v0 joins on exactly one pair of bare columns
+    /// (the same reasoning as the doc comment on `Plan` about `Expr`).
+    Join {
+        left: Box<Plan>,
+        right: Box<Plan>,
+        left_key: usize,
+        right_key: usize,
     },
     Filter {
         input: Box<Plan>,
@@ -62,17 +75,37 @@ impl std::error::Error for PlanError {}
 /// Lower the harness's flat `ViewQuery` into an operator tree, enforcing §5.2's legality checks at the boundary.
 ///
 /// This is the first place a `ViewQuery` crosses outside `enumerate`: the
-/// engine consumes it directly. `enumerate` never produces an illegal shape
-/// (`enumerate_covers_the_v0_space_and_is_nonempty` guards that), but a
-/// `ViewQuery` can be constructed freely, so the checks must live here.
+/// engine consumes it directly. `enumerate` never produces an illegal shape,
+/// but a `ViewQuery` can be constructed freely, so the checks must live here.
 ///
-/// `schema` is the base table the query reads. Its column count drives the
-/// out-of-range checks and its column types drive the type checks: v0 supports
-/// `SUM` and `IntGt` over INTEGER columns only, and rejects them over TEXT at
-/// this boundary rather than letting the engine silently disagree with SQLite.
-pub fn lower(query: &ViewQuery, schema: &Schema) -> Result<Plan, PlanError> {
-    let table = schema.table.as_str();
-    let arity = schema.arity();
+/// The view's left (or only) input is the anchor, `db.tables()[0]`. In M1b the
+/// table order comes from `__ivm_dep`, not from the query's FROM clause —
+/// choosing "the first" is only v0's convention (M1a Phase 2 final review
+/// Finding I). A join's right input is looked up by name in `db`.
+///
+/// Column indices are checked against the row the operators above the scans
+/// see — the anchor's columns, then (for a join) the right table's — and
+/// their types drive the type checks: v0 supports `SUM` and `IntGt` over
+/// INTEGER columns only, and join keys of one type only.
+pub fn lower(query: &ViewQuery, db: &Database) -> Result<Plan, PlanError> {
+    let anchor = db
+        .tables()
+        .first()
+        .ok_or_else(|| PlanError("the database has no tables".into()))?;
+    let right = match &query.join {
+        None => None,
+        Some(join) => Some(resolve_join(join, anchor, db)?),
+    };
+    let columns: Vec<&Column> = anchor
+        .columns
+        .iter()
+        .chain(right.into_iter().flat_map(|s| s.columns.iter()))
+        .collect();
+    let arity = columns.len();
+    let source = match right {
+        None => format!("table {}", anchor.table),
+        Some(r) => format!("the joined row of {} and {}", anchor.table, r.table),
+    };
     if query.group_by.is_empty() {
         return Err(PlanError(
             "spec §5.2: a view's root operator must be an Aggregate with a \
@@ -111,7 +144,7 @@ pub fn lower(query: &ViewQuery, schema: &Schema) -> Result<Plan, PlanError> {
     let check = |c: usize, what: &str| -> Result<(), PlanError> {
         if c >= arity {
             Err(PlanError(format!(
-                "{what} references column index {c}, but table {table} has only {arity} columns"
+                "{what} references column index {c}, but {source} has only {arity} columns"
             )))
         } else {
             Ok(())
@@ -148,7 +181,7 @@ pub fn lower(query: &ViewQuery, schema: &Schema) -> Result<Plan, PlanError> {
     //   false for TEXT.
     // `IS NOT NULL` is type-agnostic and stays allowed on any column.
     let require_integer = |c: usize, what: &str| -> Result<(), PlanError> {
-        let col = &schema.columns[c];
+        let col = columns[c];
         if col.ty == ColumnType::Integer {
             Ok(())
         } else {
@@ -199,10 +232,21 @@ pub fn lower(query: &ViewQuery, schema: &Schema) -> Result<Plan, PlanError> {
             .expect("keep is built from the group_by and agg columns, so it contains them")
     };
 
-    // Scan takes every column: Filter's predicate is evaluated against **base-table** indices, and narrowing happens after Filter.
-    let mut node = Plan::Scan {
-        table: table.to_string(),
-        columns: (0..arity).collect(),
+    // Each Scan takes every column of its table: Filter's predicate is
+    // evaluated against the joined (or base-table) row, and narrowing happens
+    // after Filter.
+    let scan = |s: &Schema| Plan::Scan {
+        table: s.table.clone(),
+        columns: (0..s.arity()).collect(),
+    };
+    let mut node = match (&query.join, right) {
+        (Some(join), Some(r)) => Plan::Join {
+            left: Box::new(scan(anchor)),
+            right: Box::new(scan(r)),
+            left_key: join.left_column,
+            right_key: join.right_column,
+        },
+        _ => scan(anchor),
     };
     if query.predicate != Predicate::None {
         node = Plan::Filter {
@@ -228,16 +272,65 @@ pub fn lower(query: &ViewQuery, schema: &Schema) -> Result<Plan, PlanError> {
     })
 }
 
+/// Validate a join against the database and return its right table.
+fn resolve_join<'a>(
+    join: &Join,
+    anchor: &Schema,
+    db: &'a Database,
+) -> Result<&'a Schema, PlanError> {
+    if join.right == anchor.table {
+        return Err(PlanError(format!(
+            "join: a self-join of table {} is not supported in v0 — `Join::right` names a \
+             table, not an alias, so the join cannot be rendered to SQL (a self-join needs \
+             table aliases) and the differential oracle cannot check it",
+            anchor.table
+        )));
+    }
+    let right = db
+        .get(&join.right)
+        .ok_or_else(|| PlanError(format!("join: table {} is not in the database", join.right)))?;
+    if join.left_column >= anchor.arity() {
+        return Err(PlanError(format!(
+            "join: left_column {} is out of range, table {} has only {} columns",
+            join.left_column,
+            anchor.table,
+            anchor.arity()
+        )));
+    }
+    if join.right_column >= right.arity() {
+        return Err(PlanError(format!(
+            "join: right_column {} is out of range, table {} has only {} columns",
+            join.right_column,
+            right.table,
+            right.arity()
+        )));
+    }
+    let (l, r) = (
+        &anchor.columns[join.left_column],
+        &right.columns[join.right_column],
+    );
+    if l.ty != r.ty {
+        return Err(PlanError(format!(
+            "join: the key columns must have the same type, but {}.{} is {:?} and {}.{} is {:?} \
+             — SQLite compares an INTEGER column with a TEXT column under numeric affinity, \
+             so '7' = 7 is true there, while v0 compares values exactly",
+            anchor.table, l.name, l.ty, right.table, r.name, r.ty
+        )));
+    }
+    Ok(right)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Agg, AggFn, Column, ColumnType, Predicate, Schema, ViewQuery};
+    use crate::{Agg, AggFn, Column, ColumnType, Database, Join, Predicate, Schema, ViewQuery};
 
     fn q(group_by: Vec<usize>, aggs: Vec<Agg>, predicate: Predicate) -> ViewQuery {
         ViewQuery {
             group_by,
             aggs,
             predicate,
+            join: None,
         }
     }
 
@@ -305,7 +398,7 @@ mod tests {
                     value: 3,
                 },
             ),
-            &ints(2),
+            &Database::single(ints(2)),
         )
         .expect("a legal query must lower");
 
@@ -356,7 +449,11 @@ mod tests {
         // Predicate::None should not produce an always-true Filter node: an
         // extra node is a pointless traversal on every batch, and it makes
         // "Filter is correctly skipped" unobservable.
-        let plan = lower(&q(vec![0], vec![count()], Predicate::None), &ints(2)).unwrap();
+        let plan = lower(
+            &q(vec![0], vec![count()], Predicate::None),
+            &Database::single(ints(2)),
+        )
+        .unwrap();
         let Plan::Aggregate { input, .. } = &plan else {
             panic!("{plan:?}")
         };
@@ -374,7 +471,11 @@ mod tests {
         // The group key is column 1 and SUM is over column 0 — the order after
         // narrowing must be deterministic and predictable, or Aggregate's index
         // remapping has nothing to line up against (spec §9.4).
-        let plan = lower(&q(vec![1], vec![sum(0)], Predicate::None), &ints(2)).unwrap();
+        let plan = lower(
+            &q(vec![1], vec![sum(0)], Predicate::None),
+            &Database::single(ints(2)),
+        )
+        .unwrap();
         let Plan::Aggregate {
             input,
             group_by,
@@ -408,7 +509,11 @@ mod tests {
         // A column that is both a group key and a SUM target must not appear in
         // the projection twice — twice would make Project's output width
         // disagree with what Aggregate expects.
-        let plan = lower(&q(vec![0], vec![sum(0)], Predicate::None), &ints(2)).unwrap();
+        let plan = lower(
+            &q(vec![0], vec![sum(0)], Predicate::None),
+            &Database::single(ints(2)),
+        )
+        .unwrap();
         let Plan::Aggregate {
             input,
             group_by,
@@ -433,7 +538,11 @@ mod tests {
         // since column 1 is not in group_by at all, so the dedup condition is
         // always true and `Project.columns` becomes `[0, 1, 1]`: a 3-wide
         // projection over a 2-column table.
-        let plan = lower(&q(vec![0], vec![sum(1), sum(1)], Predicate::None), &ints(2)).unwrap();
+        let plan = lower(
+            &q(vec![0], vec![sum(1), sum(1)], Predicate::None),
+            &Database::single(ints(2)),
+        )
+        .unwrap();
         let Plan::Aggregate {
             input,
             group_by,
@@ -471,8 +580,11 @@ mod tests {
         // it. This used to hold only generator-side (enumerate never produces
         // the shape); now that the engine consumes ViewQuery directly, the
         // boundary check must live here.
-        let err = lower(&q(vec![], vec![count()], Predicate::None), &ints(2))
-            .expect_err("an empty group_by must be rejected");
+        let err = lower(
+            &q(vec![], vec![count()], Predicate::None),
+            &Database::single(ints(2)),
+        )
+        .expect_err("an empty group_by must be rejected");
         assert!(
             err.0.contains("group_by") || err.0.contains("GROUP BY"),
             "the error should name group_by as the problem: {}",
@@ -486,8 +598,11 @@ mod tests {
         // really Scan→Project made directly into a view, exactly the shape §5.2
         // rules illegal (a Z-set weight of 2 would show as 2 rows where a plain
         // SQL view shows 3).
-        let err = lower(&q(vec![0], vec![], Predicate::None), &ints(2))
-            .expect_err("empty aggs must be rejected");
+        let err = lower(
+            &q(vec![0], vec![], Predicate::None),
+            &Database::single(ints(2)),
+        )
+        .expect_err("empty aggs must be rejected");
         assert!(
             err.0.contains("agg"),
             "the error should name aggs as the problem: {}",
@@ -509,8 +624,11 @@ mod tests {
             func: AggFn::Sum,
             column: None,
         };
-        let err = lower(&q(vec![0], vec![count(), bad], Predicate::None), &ints(2))
-            .expect_err("a SUM without a column must be rejected");
+        let err = lower(
+            &q(vec![0], vec![count(), bad], Predicate::None),
+            &Database::single(ints(2)),
+        )
+        .expect_err("a SUM without a column must be rejected");
         assert!(
             err.0.contains("SUM"),
             "the error should name SUM as the problem: {}",
@@ -534,8 +652,11 @@ mod tests {
         // aggs and the predicate in range, with only group_by=[7] out of range.
         // Deleting either of the other two `check`s leaves this test green —
         // the two tests below are what pin them individually.
-        let err = lower(&q(vec![7], vec![count()], Predicate::None), &ints(2))
-            .expect_err("an out-of-range group key must be rejected");
+        let err = lower(
+            &q(vec![7], vec![count()], Predicate::None),
+            &Database::single(ints(2)),
+        )
+        .expect_err("an out-of-range group key must be rejected");
         assert!(
             err.0.contains('7'),
             "the error should name the out-of-range index: {}",
@@ -558,8 +679,11 @@ mod tests {
             func: AggFn::Sum,
             column: Some(7),
         };
-        let err = lower(&q(vec![0], vec![bad], Predicate::None), &ints(2))
-            .expect_err("an out-of-range agg column must be rejected");
+        let err = lower(
+            &q(vec![0], vec![bad], Predicate::None),
+            &Database::single(ints(2)),
+        )
+        .expect_err("an out-of-range agg column must be rejected");
         assert!(
             err.0.contains('7'),
             "the error should name the out-of-range index: {}",
@@ -589,7 +713,7 @@ mod tests {
                     value: 3,
                 },
             ),
-            &ints(2),
+            &Database::single(ints(2)),
         )
         .expect_err("an out-of-range predicate column must be rejected");
         assert!(
@@ -610,8 +734,11 @@ mod tests {
         // (measured: SUM over ('7'), ('abc') is 7.0). v0 has no Real value and
         // its accumulator only sees Value::Int, so it would report NULL. The
         // query must be refused at create_view, not answered differently.
-        let err = lower(&q(vec![0], vec![sum(1)], Predicate::None), &int_then_text())
-            .expect_err("SUM over a TEXT column must be rejected");
+        let err = lower(
+            &q(vec![0], vec![sum(1)], Predicate::None),
+            &Database::single(int_then_text()),
+        )
+        .expect_err("SUM over a TEXT column must be rejected");
         assert!(
             err.0.contains("SUM") && err.0.contains("Text"),
             "the error must name SUM and the offending column type: {}",
@@ -632,7 +759,7 @@ mod tests {
                     value: 3,
                 },
             ),
-            &int_then_text(),
+            &Database::single(int_then_text()),
         )
         .expect_err("IntGt over a TEXT column must be rejected");
         assert!(
@@ -648,8 +775,228 @@ mod tests {
         // enumerated v0 space uses it on TEXT columns.
         lower(
             &q(vec![0], vec![count()], Predicate::IsNotNull { column: 1 }),
-            &int_then_text(),
+            &Database::single(int_then_text()),
         )
         .expect("IS NOT NULL over a TEXT column is legal");
+    }
+
+    /// `t0(k TEXT, v INTEGER)` and `t1(k TEXT, v INTEGER)` — the shape the
+    /// differential harness's `gen_database(2)` produces.
+    fn two_kv() -> Database {
+        let kv = |name: &str| Schema {
+            table: name.into(),
+            columns: vec![
+                Column {
+                    name: "k".into(),
+                    ty: ColumnType::Text,
+                    nullable: true,
+                },
+                Column {
+                    name: "v".into(),
+                    ty: ColumnType::Integer,
+                    nullable: true,
+                },
+            ],
+        };
+        Database::new(vec![kv("t0"), kv("t1")])
+    }
+
+    fn join(right: &str, left_column: usize, right_column: usize) -> Option<Join> {
+        Some(Join {
+            right: right.into(),
+            left_column,
+            right_column,
+        })
+    }
+
+    fn jq(
+        group_by: Vec<usize>,
+        aggs: Vec<Agg>,
+        predicate: Predicate,
+        j: Option<Join>,
+    ) -> ViewQuery {
+        ViewQuery {
+            join: j,
+            ..q(group_by, aggs, predicate)
+        }
+    }
+
+    #[test]
+    fn lowers_a_join_to_two_scans_under_a_join() {
+        // group by t1.k (joined column 2), SUM(t0.v) (joined column 1), join on k = k.
+        let plan = lower(
+            &jq(vec![2], vec![sum(1)], Predicate::None, join("t1", 0, 0)),
+            &two_kv(),
+        )
+        .expect("a legal join query must lower");
+        let scan = |t: &str| Plan::Scan {
+            table: t.into(),
+            columns: vec![0, 1],
+        };
+        assert_eq!(
+            plan,
+            Plan::Aggregate {
+                input: Box::new(Plan::Project {
+                    input: Box::new(Plan::Join {
+                        left: Box::new(scan("t0")),
+                        right: Box::new(scan("t1")),
+                        left_key: 0,
+                        right_key: 0,
+                    }),
+                    columns: vec![2, 1],
+                }),
+                group_by: vec![0],
+                aggs: vec![Agg {
+                    func: AggFn::Sum,
+                    column: Some(1),
+                }],
+            }
+        );
+    }
+
+    #[test]
+    fn join_keys_keep_their_own_sides_column_positions() {
+        // `t0(k TEXT, v INTEGER)` and `t1(v INTEGER, k TEXT)`: joining k = k is
+        // left column 0 against right column 1. Every other join test here
+        // joins equal positions, where swapping `left_key` and `right_key`
+        // cannot be seen.
+        let swapped = Schema {
+            table: "t1".into(),
+            columns: vec![
+                Column {
+                    name: "v".into(),
+                    ty: ColumnType::Integer,
+                    nullable: true,
+                },
+                Column {
+                    name: "k".into(),
+                    ty: ColumnType::Text,
+                    nullable: true,
+                },
+            ],
+        };
+        let db = Database::new(vec![two_kv().tables()[0].clone(), swapped]);
+        let plan = lower(
+            &jq(vec![0], vec![count()], Predicate::None, join("t1", 0, 1)),
+            &db,
+        )
+        .expect("t0.k and t1.k are both TEXT");
+        let Plan::Aggregate { input, .. } = plan else {
+            panic!("the root must be an Aggregate: {plan:?}");
+        };
+        let Plan::Project { input, .. } = *input else {
+            panic!("an Aggregate over a Project: {input:?}");
+        };
+        assert!(
+            matches!(
+                *input,
+                Plan::Join {
+                    left_key: 0,
+                    right_key: 1,
+                    ..
+                }
+            ),
+            "{input:?}"
+        );
+    }
+
+    #[test]
+    fn a_column_past_the_joined_row_is_rejected() {
+        let err = lower(
+            &jq(vec![4], vec![count()], Predicate::None, join("t1", 0, 0)),
+            &two_kv(),
+        )
+        .expect_err("the joined row has columns 0..4");
+        assert!(
+            err.0.contains('4') && err.0.contains("joined row"),
+            "{}",
+            err.0
+        );
+    }
+
+    #[test]
+    fn a_join_on_an_unknown_table_is_rejected() {
+        let err = lower(
+            &jq(vec![0], vec![count()], Predicate::None, join("nope", 0, 0)),
+            &two_kv(),
+        )
+        .expect_err("the right table must be declared");
+        assert!(err.0.contains("nope"), "{}", err.0);
+    }
+
+    #[test]
+    fn a_self_join_is_rejected() {
+        // `Join::right` names a table, not an alias, so a self-join cannot be
+        // rendered to SQL (it needs table aliases) and the oracle cannot check it.
+        let err = lower(
+            &jq(vec![0], vec![count()], Predicate::None, join("t0", 0, 0)),
+            &two_kv(),
+        )
+        .expect_err("v0 does not support self-joins");
+        assert!(err.0.contains("self-join"), "{}", err.0);
+    }
+
+    #[test]
+    fn an_out_of_range_left_join_key_is_rejected() {
+        let err = lower(
+            &jq(vec![0], vec![count()], Predicate::None, join("t1", 5, 0)),
+            &two_kv(),
+        )
+        .expect_err("t0 has only 2 columns");
+        assert!(
+            err.0.contains('5') && err.0.contains("left_column"),
+            "{}",
+            err.0
+        );
+    }
+
+    #[test]
+    fn an_out_of_range_right_join_key_is_rejected() {
+        let err = lower(
+            &jq(vec![0], vec![count()], Predicate::None, join("t1", 0, 5)),
+            &two_kv(),
+        )
+        .expect_err("t1 has only 2 columns");
+        assert!(
+            err.0.contains('5') && err.0.contains("right_column"),
+            "{}",
+            err.0
+        );
+    }
+
+    #[test]
+    fn join_keys_of_different_types_are_rejected() {
+        // Measured in SQLite: an INTEGER column compared with a TEXT column
+        // uses numeric affinity, so '7' = 7 is true there, while v0 compares
+        // values exactly (the plan's Ruling 4).
+        let err = lower(
+            &jq(vec![0], vec![count()], Predicate::None, join("t1", 0, 1)),
+            &two_kv(),
+        )
+        .expect_err("t0.k is TEXT and t1.v is INTEGER");
+        assert!(err.0.contains("same type"), "{}", err.0);
+    }
+
+    #[test]
+    fn int_gt_over_the_right_tables_text_column_is_rejected() {
+        // The type checks must use the joined row's columns: joined column 2 is t1.k, a TEXT column.
+        let err = lower(
+            &jq(
+                vec![0],
+                vec![count()],
+                Predicate::IntGt {
+                    column: 2,
+                    value: 3,
+                },
+                join("t1", 0, 0),
+            ),
+            &two_kv(),
+        )
+        .expect_err("IntGt over TEXT is rejected");
+        assert!(
+            err.0.contains("IntGt") && err.0.contains("Text"),
+            "{}",
+            err.0
+        );
     }
 }

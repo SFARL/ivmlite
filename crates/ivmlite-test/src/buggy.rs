@@ -182,6 +182,7 @@ mod tests {
                 column: Some(1),
             }],
             predicate: Predicate::None,
+            join: None,
         }
     }
 

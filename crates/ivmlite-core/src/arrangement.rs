@@ -89,8 +89,7 @@ mod tests {
     fn one_key_can_hold_multiple_values() {
         // Spec §6.3: get returns an iterator, not an Option, because each side
         // of a join is key → many rows. v0's group-by has no use for it, but
-        // the shape must hold now, or Phase 3 would have to change the whole
-        // operator tree's signatures.
+        // the shape must hold now, which `JoinState` relies on.
         let mut a = MemArrangement::new();
         a.update(&r(vec![1]), &r(vec![10]), 1);
         a.update(&r(vec![1]), &r(vec![20]), 3);

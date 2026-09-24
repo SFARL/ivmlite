@@ -21,6 +21,30 @@ pub enum Predicate {
     IsNotNull { column: usize },
 }
 
+/// A two-table inner equi-join (M1a Phase 3): `FROM <anchor> JOIN <right> ON
+/// <anchor>.<left_column> = <right>.<right_column>`.
+///
+/// The left input is always the anchor table (`db.tables()[0]`). Every other
+/// column index in the query — `group_by`, each `Agg::column`, the
+/// `predicate` — refers to the **joined row**: the anchor's columns, then the
+/// right table's.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Join {
+    pub right: String,
+    /// A column of the anchor table.
+    pub left_column: usize,
+    /// A column of the right table.
+    pub right_column: usize,
+}
+
+/// The differential harness's query format.
+///
+/// This is **not** the product's IR: M1b's SQL front end lowers straight from
+/// `sqlparser` to `Plan` without going through it. It only has to cover the
+/// query shapes v0 supports, so a join is one optional field rather than a
+/// tree; replacing it with a tree once the shapes multiply (multi-table joins,
+/// filters below a join) changes only test-side code.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ViewQuery {
@@ -28,6 +52,12 @@ pub struct ViewQuery {
     pub group_by: Vec<usize>,
     pub aggs: Vec<Agg>,
     pub predicate: Predicate,
+    /// `None` for a single-table view. The frozen regression fixtures, written
+    /// before joins existed, carry no `join` key; a missing key deserializes to
+    /// `None` anyway, through serde's missing-field handling for `Option`, and
+    /// `serde(default)` states that intent explicitly.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub join: Option<Join>,
 }
 
 impl ViewQuery {
@@ -55,6 +85,7 @@ mod tests {
                 },
             ],
             predicate: Predicate::None,
+            join: None,
         };
         assert_eq!(q.output_arity(), 3);
     }

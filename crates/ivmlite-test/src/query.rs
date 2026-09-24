@@ -1,4 +1,5 @@
 use crate::{Agg, AggFn, ColumnType, Predicate, Schema, ViewQuery};
+use ivmlite_core::{Database, Join};
 
 /// Enumerate v0's query space.
 ///
@@ -60,6 +61,7 @@ pub fn enumerate(schema: &Schema) -> Vec<ViewQuery> {
                     group_by: group_by.clone(),
                     aggs: aggs.clone(),
                     predicate: predicate.clone(),
+                    join: None,
                 });
             }
         }
@@ -67,10 +69,123 @@ pub fn enumerate(schema: &Schema) -> Vec<ViewQuery> {
     out
 }
 
+/// Enumerate v0's two-table join space: every pair of same-typed key columns,
+/// crossed with the single-table dimensions (group-by, aggregates, predicates)
+/// over the joined row — `left`'s columns, then `right`'s.
+///
+/// Keys of different types are never generated: `lower` rejects them (SQLite
+/// would compare them under numeric affinity).
+pub fn enumerate_join(left: &Schema, right: &Schema) -> Vec<ViewQuery> {
+    // The joined row, as a schema, so the single-table enumerator can supply
+    // the other dimensions. Its name and column names are never rendered.
+    let joined = Schema {
+        table: "joined".into(),
+        columns: left
+            .columns
+            .iter()
+            .chain(right.columns.iter())
+            .cloned()
+            .collect(),
+    };
+    let shapes = enumerate(&joined);
+    let mut out = Vec::new();
+    for (left_column, l) in left.columns.iter().enumerate() {
+        for (right_column, r) in right.columns.iter().enumerate() {
+            if l.ty != r.ty {
+                continue;
+            }
+            for shape in &shapes {
+                out.push(ViewQuery {
+                    join: Some(Join {
+                        right: right.table.clone(),
+                        left_column,
+                        right_column,
+                    }),
+                    ..shape.clone()
+                });
+            }
+        }
+    }
+    out
+}
+
+/// Every query `gen_case` can pick for `db`: the anchor's single-table queries
+/// first, then, when `db` has at least two tables, the join queries over its
+/// first two.
+///
+/// # Panics
+/// If `db` declares no tables: the single-table queries are enumerated over
+/// `db.tables()[0]`.
+pub fn enumerate_database(db: &Database) -> Vec<ViewQuery> {
+    let tables = db.tables();
+    let mut out = enumerate(&tables[0]);
+    if tables.len() >= 2 {
+        out.extend(enumerate_join(&tables[0], &tables[1]));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::kv;
     use crate::{Column, ColumnType, Schema};
+
+    #[test]
+    fn enumerate_join_pairs_only_same_typed_keys() {
+        let (l, r) = (kv("t0"), kv("t1"));
+        let qs = enumerate_join(&l, &r);
+        assert!(!qs.is_empty());
+        for q in &qs {
+            let j = q.join.as_ref().expect("every join query has a join");
+            assert_eq!(j.right, "t1");
+            assert_eq!(l.columns[j.left_column].ty, r.columns[j.right_column].ty);
+        }
+    }
+
+    #[test]
+    fn the_swapped_database_joins_keys_at_different_positions() {
+        // Over `gen_database(2)` every key pair is (i, i); the swapped database
+        // exists so the join space also holds pairs whose positions differ.
+        let db = crate::gen_database_with_swapped_right_table();
+        let mut pairs: Vec<(usize, usize)> = enumerate_join(&db.tables()[0], &db.tables()[1])
+            .iter()
+            .map(|q| {
+                let j = q.join.as_ref().expect("every join query has a join");
+                (j.left_column, j.right_column)
+            })
+            .collect();
+        pairs.dedup();
+        assert_eq!(pairs, vec![(0, 1), (1, 0)]);
+    }
+
+    #[test]
+    fn enumerate_join_groups_across_the_table_boundary() {
+        // Spec §9.2: multi-column group keys that cross the boundary between
+        // the two tables are exactly where joins are most likely to have bugs.
+        let qs = enumerate_join(&kv("t0"), &kv("t1"));
+        assert!(qs
+            .iter()
+            .any(|q| q.group_by.iter().any(|&c| c < 2) && q.group_by.iter().any(|&c| c >= 2)));
+    }
+
+    #[test]
+    fn enumerate_database_adds_join_queries_only_with_two_tables() {
+        let one = Database::single(kv("t0"));
+        assert_eq!(enumerate_database(&one), enumerate(&kv("t0")));
+        let two = Database::new(vec![kv("t0"), kv("t1")]);
+        let all = enumerate_database(&two);
+        let single = enumerate(&kv("t0"));
+        assert_eq!(
+            &all[..single.len()],
+            &single[..],
+            "single-table queries come first"
+        );
+        assert_eq!(
+            all.len(),
+            single.len() + enumerate_join(&kv("t0"), &kv("t1")).len()
+        );
+    }
 
     fn orders() -> Schema {
         Schema {

@@ -7,12 +7,13 @@
 //! byte-identical `single_table_case` in `naive.rs` and `buggy.rs` (building
 //! `(Database, BTreeMap<String, ZSet>)`), `ops.rs`'s `single_table_db` +
 //! `as_initial`, and `oracle.rs`'s `single_base`. They are gathered in this one
-//! file so that when Phase 3 first builds genuine two-table cases, it edits one
-//! place rather than five.
+//! file so that multi-table cases are built in one place rather than five.
 
 use std::collections::BTreeMap;
 
-use ivmlite_core::{Database, Row, Schema, ZSet};
+use ivmlite_core::{
+    Agg, AggFn, Column, ColumnType, Database, Join, Predicate, Row, Schema, ViewQuery, ZSet,
+};
 
 /// Wrap a single `Schema` as a `Database` holding only that table.
 pub fn single_table_db(schema: &Schema) -> Database {
@@ -35,4 +36,48 @@ pub fn single_table_bases(schema: &Schema, base: ZSet) -> (Database, BTreeMap<St
 /// `TestCase::initial`).
 pub fn as_initial(schema: &Schema, rows: Vec<Row>) -> BTreeMap<String, Vec<Row>> {
     BTreeMap::from([(schema.table.clone(), rows)])
+}
+
+/// A `(k TEXT nullable, v INTEGER nullable)` schema, named `name` — the shape
+/// every join test fixture shares (sql.rs, oracle.rs, naive.rs, query.rs).
+pub fn kv(name: &str) -> Schema {
+    Schema {
+        table: name.into(),
+        columns: vec![
+            Column {
+                name: "k".into(),
+                ty: ColumnType::Text,
+                nullable: true,
+            },
+            Column {
+                name: "v".into(),
+                ty: ColumnType::Integer,
+                nullable: true,
+            },
+        ],
+    }
+}
+
+/// `SELECT t0.k, COUNT(*), SUM(t1.v) FROM t0 JOIN t1 ON t0.k = t1.k GROUP BY t0.k`
+/// — the one join query shared by sql.rs, oracle.rs and naive.rs's tests.
+pub fn join_on_k() -> ViewQuery {
+    ViewQuery {
+        group_by: vec![0],
+        aggs: vec![
+            Agg {
+                func: AggFn::Count,
+                column: None,
+            },
+            Agg {
+                func: AggFn::Sum,
+                column: Some(3),
+            },
+        ],
+        predicate: Predicate::None,
+        join: Some(Join {
+            right: "t1".into(),
+            left_column: 0,
+            right_column: 0,
+        }),
+    }
 }

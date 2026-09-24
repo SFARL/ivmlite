@@ -58,6 +58,7 @@ mod tests {
                 column: None,
             }],
             predicate: Predicate::None,
+            join: None,
         }
     }
 
