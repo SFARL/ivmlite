@@ -8,6 +8,7 @@
   - [`2026-09-18-m0-test-and-bench-harness.md`](superpowers/plans/2026-09-18-m0-test-and-bench-harness.md) — M0: the test and benchmark harness
   - [`2026-09-20-m1a-phase1-multi-table-harness.md`](superpowers/plans/2026-09-20-m1a-phase1-multi-table-harness.md) — M1a Phase 1: the multi-table harness refactor
   - [`2026-09-21-m1a-phase2-engine.md`](superpowers/plans/2026-09-21-m1a-phase2-engine.md) — M1a Phase 2: the single-table incremental engine
+  - [`2026-09-23-m1a-phase3-join.md`](superpowers/plans/2026-09-23-m1a-phase3-join.md) — M1a Phase 3: the two-table equi-join
 - [`mutation-gates.md`](mutation-gates.md) — **the mutation-gate table**: spec requirement → mutation → the test that goes red. Every invariant M1 adds must be registered here.
 - **`bench/`** — benchmark results, charts and conclusions ([README](bench/README.md)).
 - **`adr/`** — Architecture Decision Records (reserved; see below).
