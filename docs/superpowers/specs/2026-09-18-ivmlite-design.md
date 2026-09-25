@@ -177,6 +177,10 @@ The cost is speed. But v0's goals are correctness and architecture, and this has
 >
 > - **`node.rs`'s `passes` has an `unreachable!` on a mixed-type comparison.** It holds today because `lower` admits only a literal of the column's declared type and a STRICT table stores only that type. M1b Phase 3's SQLite extension must decode rows strictly by declared type and catch panics at the FFI boundary — otherwise a corrupt row (one that somehow carries a mismatched cell) turns that `unreachable!` into a host-process abort instead of a reported error.
 
+> **Open question from the M1b Phase 2b final review**, recorded for M1b Phase 3:
+>
+> - **`SqlError` is a string.** `ivmlite-sql`'s `SqlError(pub String)` flattens every failure into one message, and `From<CatalogError>` flattens the catalog's error into it too. Phase 3 may need to tell a transient SQLite error (e.g. `SQLITE_BUSY`) from an unsupported table, which would make `SqlError` an enum. Decided once the SQLite catalog exists.
+
 ---
 
 ## 5. Data model and plan IR
