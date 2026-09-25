@@ -1,0 +1,3 @@
+Forest turned off faceting on https://labordata.bunkum.us/ because it was causing performance problems on some of the huge tables - but it would be nice if it could still be an option on smaller tables such as https://labordata.bunkum.us/voluntary_recognitions-4421085/voluntary_recognitions
+
+One option: a new setting that automatically disables faceting (and facet suggestion) for tables that have either more than X rows or that are so big that the count could not be completed within the time limit.

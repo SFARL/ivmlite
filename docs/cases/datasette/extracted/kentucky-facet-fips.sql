@@ -1,0 +1,1 @@
+select fips as value, count(*) as count from ( select rowid, date, county, state, fips, cases, deaths from ny_times_us_counties where state = 'Kentucky'  )  where fips  is not null   group by fips order by count desc, value limit 31

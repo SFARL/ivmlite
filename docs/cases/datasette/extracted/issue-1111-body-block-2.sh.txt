@@ -1,0 +1,6 @@
+$ time sqlite3 out.db < <(echo "select count(*) from PageviewsHour;")
+362794272
+
+real	0m44.523s
+user	0m2.497s
+sys	0m6.703s

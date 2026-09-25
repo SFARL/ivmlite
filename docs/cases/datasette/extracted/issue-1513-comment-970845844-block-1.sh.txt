@@ -1,0 +1,6 @@
+cd /tmp
+wget https://covid-19.datasettes.com/covid.db
+datasette covid.db \
+  --setting facet_time_limit_ms 10000 \
+  --setting sql_time_limit_ms 10000 \
+  --setting trace_debug 1

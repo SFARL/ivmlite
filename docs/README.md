@@ -14,6 +14,7 @@
   - [`2026-09-24-m1b-phase2b-sql-front-end.md`](superpowers/plans/2026-09-24-m1b-phase2b-sql-front-end.md) — M1b Phase 2b: the SQL front end
 - [`mutation-gates.md`](mutation-gates.md) — **the mutation-gate table**: spec requirement → mutation → the test that goes red. Every invariant M1 adds must be registered here.
 - **`bench/`** — benchmark results, charts and conclusions ([README](bench/README.md)).
+- **`cases/`** — original real-world reports, queries and implementation snapshots, collected before phase evaluation ([README](cases/README.md)).
 - **`adr/`** — Architecture Decision Records (reserved; see below).
 - **`spikes/`** — feasibility probes and their conclusions. The output is a conclusion, not code to keep.
   - [`2026-09-18-m-1-sqlite-extension-mechanics.md`](spikes/2026-09-18-m-1-sqlite-extension-mechanics.md) — M-1: can the control surface work as designed (blocks M1)

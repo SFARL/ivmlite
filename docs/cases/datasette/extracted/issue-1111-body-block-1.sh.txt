@@ -1,0 +1,5 @@
+$ time curl localhost:9999/out.json
+{"database": "out", "size": 24291454976, "tables": [{"name": "PageviewsHour", "columns": ["file", "code", "page", "pageviews"], "primary_keys": [], "count": null, "hidden": false, "fts_table": null, "foreign_keys": {"incoming": [], "outgoing": [{"other_table": "PageviewsHourFiles", "column": "file", "other_column": "file_id"}]}, "private": false}, {"name": "PageviewsHourFiles", "columns": ["file_id", "filename", "sha256", "size", "day", "hour"], "primary_keys": ["file_id"], "count": null, "hidden": false, "fts_table": null, "foreign_keys": {"incoming": [{"other_table": "PageviewsHour", "column": "file_id", "other_column": "file"}], "outgoing": []}, "private": false}, {"name": "sqlite_sequence", "columns": ["name", "seq"], "primary_keys": [], "count": 1, "hidden": false, "fts_table": null, "foreign_keys": {"incoming": [], "outgoing": []}, "private": false}], "hidden_count": 0, "views": [], "queries": [], "private": false, "allow_execute_sql": true, "query_ms": 43340.23213386536}
+real	0m43.417s
+user	0m0.006s
+sys	0m0.016s

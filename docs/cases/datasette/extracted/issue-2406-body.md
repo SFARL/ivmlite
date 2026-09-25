@@ -1,0 +1,3 @@
+We get a lot of performance issues from suggested facets - on large tables we end up running multiple SQL queries for every column (one for column facets, one for date facets, one for JSON facets), each with a 50ms `facet_suggest_time_limit_ms` time limit but even with that in place these can add up - 20 columns could be 20 * 3 * 50 = 3000ms, not including overhead of the Python code that manages the queries.
+
+Since these are really just suggestions, an optimization could be to only consider the first 1,000 rows in the table. This would be enough to spot likely date / JSON / column facets and should be much faster.

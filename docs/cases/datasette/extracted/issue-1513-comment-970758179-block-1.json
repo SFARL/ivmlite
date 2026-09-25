@@ -1,0 +1,72 @@
+[
+    {
+      "type": "sql",
+      "start": 31.214430154,
+      "end": 31.214817089,
+      "duration_ms": 0.3869350000016425,
+      "traceback": [
+        "  File \"/usr/local/lib/python3.8/site-packages/datasette/views/base.py\", line 262, in get\n    return await self.view_get(\n",
+        "  File \"/usr/local/lib/python3.8/site-packages/datasette/views/base.py\", line 477, in view_get\n    response_or_template_contexts = await self.data(\n",
+        "  File \"/usr/local/lib/python3.8/site-packages/datasette/views/table.py\", line 705, in data\n    results = await db.execute(sql, params, truncate=True, **extra_args)\n"
+      ],
+      "database": "global-power-plants",
+      "sql": "select rowid, country, country_long, name, gppd_idnr, capacity_mw, latitude, longitude, primary_fuel, other_fuel1, other_fuel2, other_fuel3, commissioning_year, owner, source, url, geolocation_source, wepp_id, year_of_capacity_data, generation_gwh_2013, generation_gwh_2014, generation_gwh_2015, generation_gwh_2016, generation_gwh_2017, generation_data_source, estimated_generation_gwh from [global-power-plants] order by rowid limit 3",
+      "params": {}
+    },
+    {
+      "type": "sql",
+      "start": 31.215234586,
+      "end": 31.220110342,
+      "duration_ms": 4.875756000000564,
+      "traceback": [
+        "  File \"/usr/local/lib/python3.8/site-packages/datasette/views/table.py\", line 760, in data\n    ) = await facet.facet_results()\n",
+        "  File \"/usr/local/lib/python3.8/site-packages/datasette/facets.py\", line 212, in facet_results\n    facet_rows_results = await self.ds.execute(\n",
+        "  File \"/usr/local/lib/python3.8/site-packages/datasette/app.py\", line 634, in execute\n    return await self.databases[db_name].execute(\n"
+      ],
+      "database": "global-power-plants",
+      "sql": "select country_long as value, count(*) as count from (\n                    select rowid, country, country_long, name, gppd_idnr, capacity_mw, latitude, longitude, primary_fuel, other_fuel1, other_fuel2, other_fuel3, commissioning_year, owner, source, url, geolocation_source, wepp_id, year_of_capacity_data, generation_gwh_2013, generation_gwh_2014, generation_gwh_2015, generation_gwh_2016, generation_gwh_2017, generation_data_source, estimated_generation_gwh from [global-power-plants] \n                )\n                where country_long is not null\n                group by country_long order by count desc, value limit 4",
+      "params": []
+    },
+    {
+      "type": "sql",
+      "start": 31.221062485,
+      "end": 31.228968364,
+      "duration_ms": 7.905878999999061,
+      "traceback": [
+        "  File \"/usr/local/lib/python3.8/site-packages/datasette/views/table.py\", line 760, in data\n    ) = await facet.facet_results()\n",
+        "  File \"/usr/local/lib/python3.8/site-packages/datasette/facets.py\", line 212, in facet_results\n    facet_rows_results = await self.ds.execute(\n",
+        "  File \"/usr/local/lib/python3.8/site-packages/datasette/app.py\", line 634, in execute\n    return await self.databases[db_name].execute(\n"
+      ],
+      "database": "global-power-plants",
+      "sql": "select owner as value, count(*) as count from (\n                    select rowid, country, country_long, name, gppd_idnr, capacity_mw, latitude, longitude, primary_fuel, other_fuel1, other_fuel2, other_fuel3, commissioning_year, owner, source, url, geolocation_source, wepp_id, year_of_capacity_data, generation_gwh_2013, generation_gwh_2014, generation_gwh_2015, generation_gwh_2016, generation_gwh_2017, generation_data_source, estimated_generation_gwh from [global-power-plants] \n                )\n                where owner is not null\n                group by owner order by count desc, value limit 4",
+      "params": []
+    },
+    {
+      "type": "sql",
+      "start": 31.229809757,
+      "end": 31.253902162,
+      "duration_ms": 24.09240499999754,
+      "traceback": [
+        "  File \"/usr/local/lib/python3.8/site-packages/datasette/views/table.py\", line 760, in data\n    ) = await facet.facet_results()\n",
+        "  File \"/usr/local/lib/python3.8/site-packages/datasette/facets.py\", line 212, in facet_results\n    facet_rows_results = await self.ds.execute(\n",
+        "  File \"/usr/local/lib/python3.8/site-packages/datasette/app.py\", line 634, in execute\n    return await self.databases[db_name].execute(\n"
+      ],
+      "database": "global-power-plants",
+      "sql": "select primary_fuel as value, count(*) as count from (\n                    select rowid, country, country_long, name, gppd_idnr, capacity_mw, latitude, longitude, primary_fuel, other_fuel1, other_fuel2, other_fuel3, commissioning_year, owner, source, url, geolocation_source, wepp_id, year_of_capacity_data, generation_gwh_2013, generation_gwh_2014, generation_gwh_2015, generation_gwh_2016, generation_gwh_2017, generation_data_source, estimated_generation_gwh from [global-power-plants] \n                )\n                where primary_fuel is not null\n                group by primary_fuel order by count desc, value limit 4",
+      "params": []
+    },
+    {
+      "type": "sql",
+      "start": 31.255699745,
+      "end": 31.256243889,
+      "duration_ms": 0.544143999999136,
+      "traceback": [
+        "  File \"/usr/local/lib/python3.8/site-packages/datasette/facets.py\", line 145, in suggest\n    row_count = await self.get_row_count()\n",
+        "  File \"/usr/local/lib/python3.8/site-packages/datasette/facets.py\", line 132, in get_row_count\n    await self.ds.execute(\n",
+        "  File \"/usr/local/lib/python3.8/site-packages/datasette/app.py\", line 634, in execute\n    return await self.databases[db_name].execute(\n"
+      ],
+      "database": "global-power-plants",
+      "sql": "select count(*) from (select rowid, country, country_long, name, gppd_idnr, capacity_mw, latitude, longitude, primary_fuel, other_fuel1, other_fuel2, other_fuel3, commissioning_year, owner, source, url, geolocation_source, wepp_id, year_of_capacity_data, generation_gwh_2013, generation_gwh_2014, generation_gwh_2015, generation_gwh_2016, generation_gwh_2017, generation_data_source, estimated_generation_gwh from [global-power-plants] )",
+      "params": []
+    }
+]

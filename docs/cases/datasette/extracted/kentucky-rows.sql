@@ -1,0 +1,1 @@
+select rowid, date, county, state, fips, cases, deaths from ny_times_us_counties where state = 'Kentucky' order by date desc limit 101

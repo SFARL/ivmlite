@@ -1,0 +1,597 @@
+{
+  "description": "Exact source text extractions; fence indices are one-based. No SQL or script corrections applied.",
+  "files": [
+    {
+      "path": "org-roam/extracted/original-query.el.txt",
+      "source": "org-roam/upstream/org-roam-db-materialized-view.md",
+      "source_url": "https://gist.github.com/akashpal-21/561d4e5d6939427534b5b38982582946/192bafa002578f7691dda884f7bcc5f044dc721c",
+      "steps": [
+        [
+          "fence",
+          6
+        ]
+      ],
+      "sha256": "de43928b0049677251ac14987a912172bb2982522123f6ff2b880e33c4c5e0e2",
+      "bytes": 1379
+    },
+    {
+      "path": "org-roam/extracted/initial-population.sql",
+      "source": "org-roam/upstream/org-roam-db-materialized-view.md",
+      "source_url": "https://gist.github.com/akashpal-21/561d4e5d6939427534b5b38982582946/192bafa002578f7691dda884f7bcc5f044dc721c",
+      "steps": [
+        [
+          "fence",
+          7
+        ]
+      ],
+      "sha256": "9788aa1ace6a440ad6eed6ca1ec8cb82a6b6107587117263830f199582f17b42",
+      "bytes": 1298
+    },
+    {
+      "path": "org-roam/extracted/node-list.el",
+      "source": "org-roam/upstream/org-roam-db-materialized-view.md",
+      "source_url": "https://gist.github.com/akashpal-21/561d4e5d6939427534b5b38982582946/192bafa002578f7691dda884f7bcc5f044dc721c",
+      "steps": [
+        [
+          "fence",
+          21
+        ]
+      ],
+      "sha256": "3cb967317effbf5e92734b08609bf0b9019875a83ed049dd6fce48543b895afa",
+      "bytes": 1832
+    },
+    {
+      "path": "org-roam/extracted/materialized-view.sql",
+      "source": "org-roam/upstream/org-roam-db-materialized-view.md",
+      "source_url": "https://gist.github.com/akashpal-21/561d4e5d6939427534b5b38982582946/192bafa002578f7691dda884f7bcc5f044dc721c",
+      "steps": [
+        [
+          "fence",
+          23
+        ]
+      ],
+      "sha256": "9a9561cf428eeb7522220dce20801b44a91841e8e37c73de4b8be2181c438556",
+      "bytes": 4784
+    },
+    {
+      "path": "org-roam/extracted/schema.sql",
+      "source": "org-roam/upstream/org-roam-db-materialized-view.md",
+      "source_url": "https://gist.github.com/akashpal-21/561d4e5d6939427534b5b38982582946/192bafa002578f7691dda884f7bcc5f044dc721c",
+      "steps": [
+        [
+          "fence",
+          24
+        ]
+      ],
+      "sha256": "7238d773319efb01c422b3015a605c0448a48ade29a49e22cefb53cc3be31a94",
+      "bytes": 1173
+    },
+    {
+      "path": "org-roam/extracted/generate-notes.sh",
+      "source": "org-roam/forum-topic.json",
+      "source_url": "https://org-roam.discourse.group/t/3483/1",
+      "steps": [
+        [
+          "json_path",
+          [
+            "post_stream",
+            "posts",
+            0,
+            "raw"
+          ]
+        ],
+        [
+          "fence",
+          1
+        ]
+      ],
+      "sha256": "02e5f02f6487a268d532dfd95179c68d7536fecf7fdeb75fae33e2004455c199",
+      "bytes": 803
+    },
+    {
+      "path": "org-roam/extracted/benchmark-conclusions.md",
+      "source": "org-roam/forum-remaining-posts.json",
+      "source_url": "https://org-roam.discourse.group/t/3483/25",
+      "steps": [
+        [
+          "json_path",
+          [
+            "post_stream",
+            "posts",
+            4,
+            "raw"
+          ]
+        ]
+      ],
+      "sha256": "62708003acc95ef4505e7acd7ed8295f7093c67de9f0cac556e2d4b0484ef7d4",
+      "bytes": 1957
+    },
+    {
+      "path": "datasette/extracted/issue-1259-body.md",
+      "source": "datasette/issue-1259.json",
+      "source_url": "https://github.com/simonw/datasette/issues/1259",
+      "steps": [
+        [
+          "json_path",
+          [
+            "body"
+          ]
+        ]
+      ],
+      "sha256": "e67a3222ce9d1843f0f7cde351d23e7827d23354ea9fc92e9bfaea32e3edf31e",
+      "bytes": 2479
+    },
+    {
+      "path": "datasette/extracted/issue-1259-body-block-1.sql",
+      "source": "datasette/issue-1259.json",
+      "source_url": "https://github.com/simonw/datasette/issues/1259",
+      "steps": [
+        [
+          "json_path",
+          [
+            "body"
+          ]
+        ],
+        [
+          "fence",
+          1
+        ]
+      ],
+      "sha256": "ac34a7a312bdf85a626d4a78c51fb1139f1d2ba03d7ee3a0e5952b7b99d34099",
+      "bytes": 460
+    },
+    {
+      "path": "datasette/extracted/issue-1513-body.md",
+      "source": "datasette/issue-1513.json",
+      "source_url": "https://github.com/simonw/datasette/issues/1513",
+      "steps": [
+        [
+          "json_path",
+          [
+            "body"
+          ]
+        ]
+      ],
+      "sha256": "c0b6a395c8f144cd93f39dd98a8c969bd293ffb20d88f961c8a16ea53fa97b84",
+      "bytes": 630
+    },
+    {
+      "path": "datasette/extracted/issue-1513-comment-970738130-block-1.sql",
+      "source": "datasette/issue-1513-comments.json",
+      "source_url": "https://github.com/simonw/datasette/issues/1513#issuecomment-970738130",
+      "steps": [
+        [
+          "json_path",
+          [
+            0,
+            "body"
+          ]
+        ],
+        [
+          "fence",
+          1
+        ]
+      ],
+      "sha256": "c88a914ed0ed739a15a460d4a9e4c907bc5472ec91fc0bf3db613a0b79415de8",
+      "bytes": 1087
+    },
+    {
+      "path": "datasette/extracted/issue-1513-comment-970758179-block-1.json",
+      "source": "datasette/issue-1513-comments.json",
+      "source_url": "https://github.com/simonw/datasette/issues/1513#issuecomment-970758179",
+      "steps": [
+        [
+          "json_path",
+          [
+            2,
+            "body"
+          ]
+        ],
+        [
+          "fence",
+          1
+        ]
+      ],
+      "sha256": "df0f4b08fb25d1aa59f6708ae991497617f3723305a319c2359cd6cceeaabcaf",
+      "bytes": 6296
+    },
+    {
+      "path": "datasette/extracted/issue-1513-comment-970758179-block-3.sql",
+      "source": "datasette/issue-1513-comments.json",
+      "source_url": "https://github.com/simonw/datasette/issues/1513#issuecomment-970758179",
+      "steps": [
+        [
+          "json_path",
+          [
+            2,
+            "body"
+          ]
+        ],
+        [
+          "fence",
+          3
+        ]
+      ],
+      "sha256": "137a861d7dc7da432ef42a1a31292e1161449a70553b116187a31a848ec5e382",
+      "bytes": 1268
+    },
+    {
+      "path": "datasette/extracted/issue-1513-comment-970766486-block-1.sql",
+      "source": "datasette/issue-1513-comments.json",
+      "source_url": "https://github.com/simonw/datasette/issues/1513#issuecomment-970766486",
+      "steps": [
+        [
+          "json_path",
+          [
+            3,
+            "body"
+          ]
+        ],
+        [
+          "fence",
+          1
+        ]
+      ],
+      "sha256": "209cded951bef28fbdda847f2915916215f4aea3502c31c434142119069b538a",
+      "bytes": 1223
+    },
+    {
+      "path": "datasette/extracted/issue-1513-comment-970845844-block-1.sh.txt",
+      "source": "datasette/issue-1513-comments.json",
+      "source_url": "https://github.com/simonw/datasette/issues/1513#issuecomment-970845844",
+      "steps": [
+        [
+          "json_path",
+          [
+            9,
+            "body"
+          ]
+        ],
+        [
+          "fence",
+          1
+        ]
+      ],
+      "sha256": "74553716111a875e3947fc8ee4e8af1c1ac03175cbbf2639454137409fb9c09b",
+      "bytes": 185
+    },
+    {
+      "path": "datasette/extracted/issue-1513-comment-970845844-block-2.json",
+      "source": "datasette/issue-1513-comments.json",
+      "source_url": "https://github.com/simonw/datasette/issues/1513#issuecomment-970845844",
+      "steps": [
+        [
+          "json_path",
+          [
+            9,
+            "body"
+          ]
+        ],
+        [
+          "fence",
+          2
+        ]
+      ],
+      "sha256": "0ab8845525b7a07ae28b897bf571e2d6699a95eeede49e9ecbaac8b8fa65f64b",
+      "bytes": 5129
+    },
+    {
+      "path": "datasette/extracted/issue-1513-comment-970853917-block-1.json",
+      "source": "datasette/issue-1513-comments.json",
+      "source_url": "https://github.com/simonw/datasette/issues/1513#issuecomment-970853917",
+      "steps": [
+        [
+          "json_path",
+          [
+            10,
+            "body"
+          ]
+        ],
+        [
+          "fence",
+          1
+        ]
+      ],
+      "sha256": "2e39f58c9780854feaa9382c6c20c0c56b192fdb25167f09268a0fbccc8560bd",
+      "bytes": 117
+    },
+    {
+      "path": "datasette/extracted/issue-1513-comment-970853917-block-2.json",
+      "source": "datasette/issue-1513-comments.json",
+      "source_url": "https://github.com/simonw/datasette/issues/1513#issuecomment-970853917",
+      "steps": [
+        [
+          "json_path",
+          [
+            10,
+            "body"
+          ]
+        ],
+        [
+          "fence",
+          2
+        ]
+      ],
+      "sha256": "a3ed9923dd7f016b89f74c141eb8313228197426b32e0ec5bfc50d76d86f823a",
+      "bytes": 118
+    },
+    {
+      "path": "datasette/extracted/issue-1513-comment-970853917-block-3.sql",
+      "source": "datasette/issue-1513-comments.json",
+      "source_url": "https://github.com/simonw/datasette/issues/1513#issuecomment-970853917",
+      "steps": [
+        [
+          "json_path",
+          [
+            10,
+            "body"
+          ]
+        ],
+        [
+          "fence",
+          3
+        ]
+      ],
+      "sha256": "bdb4fd928e0fc53ce3a6b2dcbe2257b3450926c4c37ff75055acf5081adbfd0a",
+      "bytes": 2283
+    },
+    {
+      "path": "datasette/extracted/issue-1111-body.md",
+      "source": "datasette/issue-1111.json",
+      "source_url": "https://github.com/simonw/datasette/issues/1111",
+      "steps": [
+        [
+          "json_path",
+          [
+            "body"
+          ]
+        ]
+      ],
+      "sha256": "1eaebee49131a6ca0ce9f63341a71e94530a13b4acae5059123afa6e3b855860",
+      "bytes": 2707
+    },
+    {
+      "path": "datasette/extracted/issue-1111-body-block-1.sh.txt",
+      "source": "datasette/issue-1111.json",
+      "source_url": "https://github.com/simonw/datasette/issues/1111",
+      "steps": [
+        [
+          "json_path",
+          [
+            "body"
+          ]
+        ],
+        [
+          "fence",
+          1
+        ]
+      ],
+      "sha256": "57848d87285de2311bf2edd1392be8e68532e7cccb40b6fcd478292411a0ce9f",
+      "bytes": 1076
+    },
+    {
+      "path": "datasette/extracted/issue-1111-body-block-2.sh.txt",
+      "source": "datasette/issue-1111.json",
+      "source_url": "https://github.com/simonw/datasette/issues/1111",
+      "steps": [
+        [
+          "json_path",
+          [
+            "body"
+          ]
+        ],
+        [
+          "fence",
+          2
+        ]
+      ],
+      "sha256": "14127b3923b05ca85c98988fb7478dfeb73c2f339e13904787026d0c4f5d2e45",
+      "bytes": 129
+    },
+    {
+      "path": "datasette/extracted/issue-859-body.md",
+      "source": "datasette/issue-859.json",
+      "source_url": "https://github.com/simonw/datasette/issues/859",
+      "steps": [
+        [
+          "json_path",
+          [
+            "body"
+          ]
+        ]
+      ],
+      "sha256": "595fea241896f60d4acb1209b5939aa5f0799ba777563d2aa6c4e6544eec6368",
+      "bytes": 3196
+    },
+    {
+      "path": "datasette/extracted/issue-1684-body.md",
+      "source": "datasette/issue-1684.json",
+      "source_url": "https://github.com/simonw/datasette/issues/1684",
+      "steps": [
+        [
+          "json_path",
+          [
+            "body"
+          ]
+        ]
+      ],
+      "sha256": "3814237b8180e663675cdbe475e3b0f7c4815cb9ee902fee7e1bba43e2f387c2",
+      "bytes": 505
+    },
+    {
+      "path": "datasette/extracted/issue-2406-body.md",
+      "source": "datasette/issue-2406.json",
+      "source_url": "https://github.com/simonw/datasette/issues/2406",
+      "steps": [
+        [
+          "json_path",
+          [
+            "body"
+          ]
+        ]
+      ],
+      "sha256": "e3887d6da8d5c9de8b396bd2d6a44133625a3e23c50cd33cc3ff3cc990894982",
+      "bytes": 624
+    },
+    {
+      "path": "datasette/extracted/forum-original-post.md",
+      "source": "datasette/forum.html",
+      "source_url": "https://sqlite.org/forum/forumpost/c0e0fcbe36?hist=&t=c",
+      "steps": [
+        [
+          "html_pre",
+          1
+        ]
+      ],
+      "sha256": "0431974be427c9fdc4c107aab0926f5f4b5014a03177b151a297a68de2067646",
+      "bytes": 5183
+    },
+    {
+      "path": "datasette/extracted/kentucky-rows.sql",
+      "source": "datasette/forum.html",
+      "source_url": "https://sqlite.org/forum/forumpost/c0e0fcbe36?hist=&t=c",
+      "steps": [
+        [
+          "html_pre",
+          1
+        ],
+        [
+          "inline_sql",
+          1
+        ]
+      ],
+      "sha256": "aef84b6f695f91b0e87c72216f3f7d1abe7cc8477255496f09619210b496b501",
+      "bytes": 134
+    },
+    {
+      "path": "datasette/extracted/kentucky-count.sql",
+      "source": "datasette/forum.html",
+      "source_url": "https://sqlite.org/forum/forumpost/c0e0fcbe36?hist=&t=c",
+      "steps": [
+        [
+          "html_pre",
+          1
+        ],
+        [
+          "inline_sql",
+          2
+        ]
+      ],
+      "sha256": "033ab37cb1c33dbf57d266648b03b3396804d0a8b1d5cac89fccdf4eca13cabe",
+      "bytes": 66
+    },
+    {
+      "path": "datasette/extracted/kentucky-facet-state.sql",
+      "source": "datasette/forum.html",
+      "source_url": "https://sqlite.org/forum/forumpost/c0e0fcbe36?hist=&t=c",
+      "steps": [
+        [
+          "html_pre",
+          1
+        ],
+        [
+          "inline_sql",
+          3
+        ]
+      ],
+      "sha256": "4580e32f5a3431067a2639de545d4a8b589c10923fdab870b804dc62ad84c88c",
+      "bytes": 234
+    },
+    {
+      "path": "datasette/extracted/kentucky-facet-county.sql",
+      "source": "datasette/forum.html",
+      "source_url": "https://sqlite.org/forum/forumpost/c0e0fcbe36?hist=&t=c",
+      "steps": [
+        [
+          "html_pre",
+          1
+        ],
+        [
+          "inline_sql",
+          4
+        ]
+      ],
+      "sha256": "ff0e257dfda402c1c1a9577afd7b8976d7dc589768f21f5c10f2f0d2be9b1b0c",
+      "bytes": 237
+    },
+    {
+      "path": "datasette/extracted/kentucky-facet-fips.sql",
+      "source": "datasette/forum.html",
+      "source_url": "https://sqlite.org/forum/forumpost/c0e0fcbe36?hist=&t=c",
+      "steps": [
+        [
+          "html_pre",
+          1
+        ],
+        [
+          "inline_sql",
+          5
+        ]
+      ],
+      "sha256": "971fa76b4c335a836b0eb01372b7c4a212b75b2efbaca65277b0fe65dc90a61d",
+      "bytes": 232
+    },
+    {
+      "path": "datasette/extracted/kentucky-combined.sql",
+      "source": "datasette/forum.html",
+      "source_url": "https://sqlite.org/forum/forumpost/c0e0fcbe36?hist=&t=c",
+      "steps": [
+        [
+          "html_pre",
+          1
+        ],
+        [
+          "fence",
+          1
+        ]
+      ],
+      "sha256": "9109c2a4ae7600db98d581aa09fe3d6c0ad5bbaa2d351f65bca96a0ecfb959f7",
+      "bytes": 1227
+    },
+    {
+      "path": "org-roam/extracted/issue-1997-body.md",
+      "source": "org-roam/issue-1997.json",
+      "source_url": "https://github.com/org-roam/org-roam/issues/1997",
+      "steps": [
+        [
+          "json_path",
+          [
+            "body"
+          ]
+        ]
+      ],
+      "sha256": "706731edf7467fbde2b8e171be8877d231da450506997002dd70f3f0c0dad544",
+      "bytes": 4444
+    },
+    {
+      "path": "taproot-assets/extracted/issue-642-body.md",
+      "source": "taproot-assets/issue-642.json",
+      "source_url": "https://github.com/lightninglabs/taproot-assets/issues/642",
+      "steps": [
+        [
+          "json_path",
+          [
+            "body"
+          ]
+        ]
+      ],
+      "sha256": "24cad2e2f34f0374b90fd442ea6dfa3c4fdfa11fb497d78d1789fcdad6a71f89",
+      "bytes": 3204
+    },
+    {
+      "path": "zero/extracted/issue-1631-body.md",
+      "source": "zero/issue-1631.json",
+      "source_url": "https://github.com/tursodatabase/libsql/issues/1631",
+      "steps": [
+        [
+          "json_path",
+          [
+            "body"
+          ]
+        ]
+      ],
+      "sha256": "0e8dfdd97b25dde623cdf2f12ebca7b24525c275454dc0ea8bb984a110da5f69",
+      "bytes": 1688
+    }
+  ]
+}

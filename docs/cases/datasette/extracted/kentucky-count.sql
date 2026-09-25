@@ -1,0 +1,1 @@
+select count(*) from ny_times_us_counties where state = 'Kentucky'

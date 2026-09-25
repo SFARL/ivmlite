@@ -1,0 +1,82 @@
+[
+    {
+      "type": "sql",
+      "start": 12.693033525,
+      "end": 12.694056904,
+      "duration_ms": 1.0233789999993803,
+      "traceback": [
+        "  File \"/usr/local/Cellar/datasette/0.58.1/libexec/lib/python3.9/site-packages/datasette/views/base.py\", line 262, in get\n    return await self.view_get(\n",
+        "  File \"/usr/local/Cellar/datasette/0.58.1/libexec/lib/python3.9/site-packages/datasette/views/base.py\", line 477, in view_get\n    response_or_template_contexts = await self.data(\n",
+        "  File \"/usr/local/Cellar/datasette/0.58.1/libexec/lib/python3.9/site-packages/datasette/views/table.py\", line 705, in data\n    results = await db.execute(sql, params, truncate=True, **extra_args)\n"
+      ],
+      "database": "covid",
+      "sql": "select rowid, date, county, state, fips, cases, deaths from ny_times_us_counties where \"cases\" > :p0 order by rowid limit 3",
+      "params": {
+        "p0": 10000
+      }
+    },
+    {
+      "type": "sql",
+      "start": 12.694285093,
+      "end": 12.814936275,
+      "duration_ms": 120.65118200000136,
+      "traceback": [
+        "  File \"/usr/local/Cellar/datasette/0.58.1/libexec/lib/python3.9/site-packages/datasette/views/base.py\", line 262, in get\n    return await self.view_get(\n",
+        "  File \"/usr/local/Cellar/datasette/0.58.1/libexec/lib/python3.9/site-packages/datasette/views/base.py\", line 477, in view_get\n    response_or_template_contexts = await self.data(\n",
+        "  File \"/usr/local/Cellar/datasette/0.58.1/libexec/lib/python3.9/site-packages/datasette/views/table.py\", line 723, in data\n    count_rows = list(await db.execute(count_sql, from_sql_params))\n"
+      ],
+      "database": "covid",
+      "sql": "select count(*) from ny_times_us_counties where \"cases\" > :p0",
+      "params": {
+        "p0": 10000
+      }
+    },
+    {
+      "type": "sql",
+      "start": 12.818812089,
+      "end": 12.851172544,
+      "duration_ms": 32.360455000000954,
+      "traceback": [
+        "  File \"/usr/local/Cellar/datasette/0.58.1/libexec/lib/python3.9/site-packages/datasette/views/table.py\", line 856, in data\n    suggested_facets.extend(await facet.suggest())\n",
+        "  File \"/usr/local/Cellar/datasette/0.58.1/libexec/lib/python3.9/site-packages/datasette/facets.py\", line 164, in suggest\n    distinct_values = await self.ds.execute(\n",
+        "  File \"/usr/local/Cellar/datasette/0.58.1/libexec/lib/python3.9/site-packages/datasette/app.py\", line 634, in execute\n    return await self.databases[db_name].execute(\n"
+      ],
+      "database": "covid",
+      "sql": "select county, count(*) as n from (\n                    select rowid, date, county, state, fips, cases, deaths from ny_times_us_counties where \"cases\" > :p0 \n                ) where county is not null\n                group by county\n                limit 4",
+      "params": {
+        "p0": 10000
+      }
+    },
+    {
+      "type": "sql",
+      "start": 12.851418868,
+      "end": 12.871268359,
+      "duration_ms": 19.84949100000044,
+      "traceback": [
+        "  File \"/usr/local/Cellar/datasette/0.58.1/libexec/lib/python3.9/site-packages/datasette/views/table.py\", line 856, in data\n    suggested_facets.extend(await facet.suggest())\n",
+        "  File \"/usr/local/Cellar/datasette/0.58.1/libexec/lib/python3.9/site-packages/datasette/facets.py\", line 164, in suggest\n    distinct_values = await self.ds.execute(\n",
+        "  File \"/usr/local/Cellar/datasette/0.58.1/libexec/lib/python3.9/site-packages/datasette/app.py\", line 634, in execute\n    return await self.databases[db_name].execute(\n"
+      ],
+      "database": "covid",
+      "sql": "select state, count(*) as n from (\n                    select rowid, date, county, state, fips, cases, deaths from ny_times_us_counties where \"cases\" > :p0 \n                ) where state is not null\n                group by state\n                limit 4",
+      "params": {
+        "p0": 10000
+      }
+    },
+    {
+      "type": "sql",
+      "start": 12.871497655,
+      "end": 12.897715027,
+      "duration_ms": 26.217371999999628,
+      "traceback": [
+        "  File \"/usr/local/Cellar/datasette/0.58.1/libexec/lib/python3.9/site-packages/datasette/views/table.py\", line 856, in data\n    suggested_facets.extend(await facet.suggest())\n",
+        "  File \"/usr/local/Cellar/datasette/0.58.1/libexec/lib/python3.9/site-packages/datasette/facets.py\", line 164, in suggest\n    distinct_values = await self.ds.execute(\n",
+        "  File \"/usr/local/Cellar/datasette/0.58.1/libexec/lib/python3.9/site-packages/datasette/app.py\", line 634, in execute\n    return await self.databases[db_name].execute(\n"
+      ],
+      "database": "covid",
+      "sql": "select fips, count(*) as n from (\n                    select rowid, date, county, state, fips, cases, deaths from ny_times_us_counties where \"cases\" > :p0 \n                ) where fips is not null\n                group by fips\n                limit 4",
+      "params": {
+        "p0": 10000
+      }
+    }
+]
