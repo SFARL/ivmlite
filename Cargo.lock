@@ -172,6 +172,7 @@ name = "ivmlite-test"
 version = "0.0.0"
 dependencies = [
  "ivmlite-core",
+ "ivmlite-sql",
  "rand",
  "rusqlite",
  "serde",
