@@ -11,6 +11,7 @@
   - [`2026-09-23-m1a-phase3-join.md`](superpowers/plans/2026-09-23-m1a-phase3-join.md) — M1a Phase 3: the two-table equi-join
   - [`2026-09-24-m1b-phase1-state-ownership.md`](superpowers/plans/2026-09-24-m1b-phase1-state-ownership.md) — M1b Phase 1: operator state behind `Arrangement`
   - [`2026-09-24-m1b-phase2a-predicate-whitelist.md`](superpowers/plans/2026-09-24-m1b-phase2a-predicate-whitelist.md) — M1b Phase 2a: the full predicate whitelist
+  - [`2026-09-24-m1b-phase2b-sql-front-end.md`](superpowers/plans/2026-09-24-m1b-phase2b-sql-front-end.md) — M1b Phase 2b: the SQL front end
 - [`mutation-gates.md`](mutation-gates.md) — **the mutation-gate table**: spec requirement → mutation → the test that goes red. Every invariant M1 adds must be registered here.
 - **`bench/`** — benchmark results, charts and conclusions ([README](bench/README.md)).
 - **`adr/`** — Architecture Decision Records (reserved; see below).
