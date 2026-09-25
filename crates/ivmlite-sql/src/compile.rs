@@ -1042,6 +1042,7 @@ mod tests {
             ("SELECT region, COUNT(*) FROM main.orders GROUP BY region", "schema prefix"),
             ("SELECT region, COUNT(*) FROM nope GROUP BY region", "no such table"),
             ("SELECT region, COUNT(*) FROM orders LEFT JOIN regions ON region = name GROUP BY region", "non-inner join"),
+            ("SELECT region, COUNT(*) FROM orders LEFT OUTER JOIN regions ON region = name GROUP BY region", "non-inner join"),
             ("SELECT region, COUNT(*) FROM orders CROSS JOIN regions GROUP BY region", "non-inner join"),
             ("SELECT region, COUNT(*) FROM orders JOIN regions USING (region) GROUP BY region", "without ON"),
             ("SELECT region, COUNT(*) FROM orders NATURAL JOIN regions GROUP BY region", "join"),
