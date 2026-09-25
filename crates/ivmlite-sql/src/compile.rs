@@ -3,15 +3,15 @@ use ivmlite_core::{
     ResolvedView, Schema, Value,
 };
 use sqlparser::ast::{
-    BinaryOperator, Expr, Function, FunctionArg, FunctionArgExpr, FunctionArgumentList,
+    BinaryOperator, Distinct, Expr, Function, FunctionArg, FunctionArgExpr, FunctionArgumentList,
     FunctionArguments, GroupByExpr, Ident, Join, JoinConstraint, JoinOperator, ObjectName,
-    ObjectNamePart, Query, Select, SelectFlavor, SelectItem, SetExpr, Spanned, Statement,
-    TableAlias, TableFactor, TableWithJoins, UnaryOperator, Value as SqlValue,
+    ObjectNamePart, Query, Select, SelectFlavor, SelectItem, SetExpr, Statement, TableAlias,
+    TableFactor, TableWithJoins, UnaryOperator, Value as SqlValue,
 };
 use sqlparser::dialect::SQLiteDialect;
 use sqlparser::parser::Parser;
 
-use crate::source::{call_text, offset};
+use crate::source::select_list_pieces;
 use crate::{Catalog, CatalogError};
 
 /// A view's SQL, compiled.
@@ -176,7 +176,19 @@ impl<'a> Scope<'a> {
                     .filter_map(|(s, offset)| position(&s.schema, &name.value).map(|i| offset + i));
                 match (found.next(), found.next()) {
                     (Some(i), None) => Ok(Some(i)),
-                    (None, _) => Err(SqlError(format!("no such column: {}", name.value))),
+                    (None, _) => Err(SqlError(format!(
+                        "no such column: {}{}",
+                        name.value,
+                        // Final review Minor 4: SQLite falls back to reading
+                        // a double-quoted token as a string literal when it
+                        // does not name a column; v0 does not, so say so
+                        // rather than leave it looking like a typo.
+                        if name.quote_style == Some('"') {
+                            " (a string literal takes single quotes, not double quotes)"
+                        } else {
+                            ""
+                        }
+                    ))),
                     (Some(_), Some(_)) => Err(SqlError(format!(
                         "ambiguous column name: {} — qualify it with its table",
                         name.value
@@ -284,7 +296,12 @@ fn plain_select(query: &Query) -> Result<&Select, SqlError> {
         value_table_mode,
         flavor,
     } = select.as_ref();
-    reject_if(distinct.is_some(), "DISTINCT")?;
+    // `ALL` (or no modifier at all) is a plain SELECT to SQLite; only an
+    // actual DISTINCT is rejected (final review Minor 3).
+    reject_if(
+        matches!(distinct, Some(Distinct::Distinct) | Some(Distinct::On(_))),
+        "DISTINCT",
+    )?;
     reject_if(having.is_some(), "HAVING")?;
     reject_if(!named_window.is_empty(), "WINDOW")?;
     reject_if(
@@ -472,9 +489,10 @@ impl Named {
 /// SQLite names a result column — its alias, else a bare column's declared
 /// name, else an aggregate's text as written.
 fn projection(sql: &str, scope: &Scope, items: &[SelectItem]) -> Result<Vec<Named>, SqlError> {
+    let pieces = select_list_pieces(sql, items.len())?;
     let mut out: Vec<Named> = Vec::new();
-    for item in items {
-        let (expr, alias) = match item {
+    for (sel_item, piece) in items.iter().zip(pieces) {
+        let (expr, alias) = match sel_item {
             SelectItem::UnnamedExpr(expr) => (expr, None),
             SelectItem::ExprWithAlias { expr, alias } => (expr, Some(alias)),
             _ => return Err(unsupported("SELECT * and multi-name aliases")),
@@ -504,11 +522,7 @@ fn projection(sql: &str, scope: &Scope, items: &[SelectItem]) -> Result<Vec<Name
                         "the SELECT expression `{expr}` (v0 selects bare columns, COUNT(*) and SUM(column))"
                     )));
                 };
-                let start = offset(sql, expr.span().start);
-                (
-                    Output::Agg(aggregate(scope, call)?),
-                    call_text(sql, start).to_string(),
-                )
+                (Output::Agg(aggregate(scope, call)?), piece)
             }
         };
         let name = alias.map_or(default_name, |a| a.value.clone());
@@ -602,7 +616,26 @@ fn group_by(
     )?;
     let mut keys = Vec::new();
     for e in exprs {
-        let i = scope.require_column(e, "the GROUP BY term")?;
+        let i = scope
+            .require_column(e, "the GROUP BY term")
+            .map_err(|err| {
+                // Final review Minor 4: SQLite accepts a GROUP BY term that
+                // names a SELECT alias; v0 does not (the alias may not even be
+                // a column), so say so rather than leave it looking like a
+                // typo, when that is why the lookup failed.
+                match strip_parens(e) {
+                    Expr::Identifier(name)
+                        if outputs
+                            .iter()
+                            .any(|o| o.name.eq_ignore_ascii_case(&name.value)) =>
+                    {
+                        SqlError(format!(
+                            "{err} (GROUP BY must name the column, not the alias)"
+                        ))
+                    }
+                    _ => err,
+                }
+            })?;
         if keys.contains(&i) {
             return Err(SqlError(format!(
                 "column {} appears twice in GROUP BY",
@@ -849,6 +882,17 @@ mod tests {
     }
 
     #[test]
+    fn select_all_is_accepted_as_a_plain_select() {
+        // Final review Minor 3: SQLite treats `SELECT ALL` as a plain
+        // SELECT, not a variant of DISTINCT.
+        let v = ok("SELECT ALL region, COUNT(*) FROM orders GROUP BY region");
+        assert_eq!(
+            v.plan,
+            plan_of(query(vec![0], vec![count()], Predicate::None))
+        );
+    }
+
+    #[test]
     fn an_alias_names_the_result_column() {
         let v = ok("SELECT region AS r, SUM(amount) total FROM orders GROUP BY region");
         let names: Vec<&str> = v.columns.iter().map(|c| c.name.as_str()).collect();
@@ -999,6 +1043,29 @@ mod tests {
     }
 
     #[test]
+    fn the_anchor_need_not_be_the_databases_first_table() {
+        // Final review Minor 5: `db()` lists `orders` first and `regions`
+        // second; the FROM clause names the anchor, not the database.
+        let v = ok("SELECT regions.name, COUNT(*) FROM regions JOIN orders \
+             ON regions.name = orders.region GROUP BY regions.name");
+        let d = db();
+        let expected = lower(&ResolvedView {
+            anchor: &d.tables()[1],
+            join: Some(ResolvedJoin {
+                right: &d.tables()[0],
+                left_column: 0,
+                right_column: 0,
+            }),
+            group_by: vec![0],
+            aggs: vec![count()],
+            predicate: Predicate::None,
+        })
+        .expect("a legal view");
+        assert_eq!(v.plan, expected);
+        assert_eq!(v.tables, vec!["regions".to_string(), "orders".to_string()]);
+    }
+
+    #[test]
     fn lower_s_checks_apply_to_sql() {
         // `lower` holds the legality rules; the front end only resolves names.
         assert!(err("SELECT SUM(amount) FROM orders").contains("GROUP BY"));
@@ -1089,6 +1156,23 @@ mod tests {
                 "{sql}\n  error: {e}\n  expected it to mention: {expected}"
             );
         }
+    }
+
+    /// Final review Minor 4: two error hints. SQLite's double-quoted-string
+    /// fallback and GROUP BY-by-alias are both accepted by SQLite but not by
+    /// v0; the rejection should say why, not just "no such column".
+    #[test]
+    fn a_double_quoted_unresolved_identifier_hints_at_single_quotes() {
+        let e = err(r#"SELECT region, COUNT(*) FROM orders WHERE region = "zz" GROUP BY region"#);
+        assert!(e.contains("no such column: zz"), "{e}");
+        assert!(e.contains("single quote"), "{e}");
+    }
+
+    #[test]
+    fn group_by_naming_a_select_alias_hints_at_the_column() {
+        let e = err("SELECT region AS r, COUNT(*) FROM orders GROUP BY r");
+        assert!(e.contains("no such column: r"), "{e}");
+        assert!(e.contains("alias"), "{e}");
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! M1b Phase 2b: the SQL front end against the harness's query space.
 
-use ivmlite_core::lower_query;
+use ivmlite_core::{lower_query, ColumnType};
 use ivmlite_sql::compile;
 use ivmlite_test::{
     create_table_sql, enumerate, enumerate_join, gen_database,
@@ -62,6 +62,22 @@ fn result_column_names_match_sqlite() {
             "SELECT t0.k AS region, sum(t0.v) total FROM t0 JOIN t1 ON t0.k = t1.k GROUP BY t0.k",
             "SELECT a.k, SUM ( b.\"v\" ) FROM t0 a JOIN t1 AS b ON b.k = a.k GROUP BY a.k",
             "SELECT\n  k,\n  COUNT(*)\nFROM t0\nGROUP BY k",
+            // Final review Critical 1: a comment inside an aggregate call must
+            // not unbalance the (now token-based) scanner, whatever quote or
+            // bracket character it contains.
+            "SELECT k, COUNT(/*(*/*) FROM t0 GROUP BY k",
+            "SELECT k, COUNT(/*'*/*) FROM t0 GROUP BY k",
+            "SELECT k, COUNT(* -- (\n) FROM t0 GROUP BY k",
+            "SELECT k, SUM(v /* \" */) FROM t0 GROUP BY k",
+            // Final review Important 2: shapes the differential harness never
+            // renders, where SQLite's naming and the old `call_text` disagreed.
+            "SELECT k, (COUNT(*)) FROM t0 GROUP BY k",
+            "SELECT k, ( SUM(v) ) FROM t0 GROUP BY k",
+            "SELECT k, COUNT(/* ) */ *) FROM t0 GROUP BY k",
+            "SELECT k, COUNT(*) -- )\nFROM t0 GROUP BY k",
+            // Final review Important 2: a comment before an item is not part
+            // of its name (measured against SQLite 3.53).
+            "SELECT k, /*c*/ COUNT(*) FROM t0 GROUP BY k",
         ]
         .map(String::from),
     );
@@ -77,4 +93,32 @@ fn result_column_names_match_sqlite() {
         let names: Vec<String> = compiled.columns.iter().map(|c| c.name.clone()).collect();
         assert_eq!(names, expected, "{sql}");
     }
+}
+
+/// Final review recommendation: an output column's type and nullability
+/// (Ruling 4) for a join query, not just its plan — a group key's are its
+/// table column's, `COUNT(*)` is a non-null INTEGER, `SUM` is a nullable
+/// INTEGER (SUM over only NULLs is NULL, spec §6.1). `gen_database`'s
+/// columns are both nullable (`k TEXT`, `v INTEGER`), so the group key here
+/// is expected nullable too — it is not `COUNT(*)`'s non-null INTEGER that
+/// would pass by accident.
+#[test]
+fn join_output_column_types_and_nullability_match_ruling_4() {
+    let db = gen_database(2);
+    let sql = "SELECT t1.k, SUM(t0.v), COUNT(*) FROM t0 JOIN t1 ON t0.k = t1.k GROUP BY t1.k";
+    let compiled = compile(sql, &db).unwrap_or_else(|e| panic!("{sql}: {e}"));
+    let types: Vec<(ColumnType, bool)> = compiled
+        .columns
+        .iter()
+        .map(|c| (c.ty, c.nullable))
+        .collect();
+    assert_eq!(
+        types,
+        vec![
+            (ColumnType::Text, true),     // t1.k: the group key's own column
+            (ColumnType::Integer, true),  // SUM(t0.v): nullable
+            (ColumnType::Integer, false), // COUNT(*): never NULL
+        ],
+        "{sql}"
+    );
 }
