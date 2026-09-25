@@ -90,7 +90,21 @@ pub fn view_query_to_sql(query: &ViewQuery, db: &Database) -> String {
     }
     let name = |i: usize| format!("\"{}\".\"{}\"", columns[i].0, columns[i].1);
 
-    let mut select: Vec<String> = query.group_by.iter().map(|i| name(*i)).collect();
+    // A result column's name must be unique — `ivmlite-sql` rejects a view
+    // whose output repeats one, as SQLite rejects a table with two columns of
+    // one name — so a group key whose column name an earlier key already
+    // took (a join grouped by `t0.k` and `t1.k`) is aliased `<table>_<column>`.
+    let mut taken: Vec<&str> = Vec::new();
+    let mut select: Vec<String> = Vec::new();
+    for &i in &query.group_by {
+        let (table, column) = columns[i];
+        if taken.iter().any(|t| t.eq_ignore_ascii_case(column)) {
+            select.push(format!("{} AS \"{table}_{column}\"", name(i)));
+        } else {
+            select.push(name(i));
+            taken.push(column);
+        }
+    }
     for agg in &query.aggs {
         select.push(match (agg.func, agg.column) {
             (AggFn::Count, _) => "COUNT(*)".to_string(),
@@ -299,6 +313,26 @@ mod tests {
                 .contains("WHERE \"orders\".\"region\" IS NOT NULL"),
             "{}",
             view_query_to_sql(&q, &Database::single(orders()))
+        );
+    }
+
+    /// A join grouped by `t0.k` and `t1.k` would name two result columns `k`,
+    /// which `ivmlite-sql` rejects, so the second is aliased.
+    #[test]
+    fn to_sql_aliases_a_group_key_whose_name_is_taken() {
+        let db = Database::new(vec![kv("t0"), kv("t1")]);
+        let q = ViewQuery {
+            group_by: vec![0, 2],
+            ..join_on_k()
+        };
+        let sql = view_query_to_sql(&q, &db);
+        assert!(
+            sql.starts_with("SELECT \"t0\".\"k\", \"t1\".\"k\" AS \"t1_k\", "),
+            "{sql}"
+        );
+        assert!(
+            sql.ends_with("GROUP BY \"t0\".\"k\", \"t1\".\"k\""),
+            "the GROUP BY clause names the column, not the alias: {sql}"
         );
     }
 }

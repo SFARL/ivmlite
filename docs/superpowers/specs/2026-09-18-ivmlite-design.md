@@ -111,6 +111,19 @@ This keeps the core unit-testable with no SQLite at all (feed deltas in, take de
 - name resolution and type inference against a `Catalog` trait (a trait so tests can fake it without a real database)
 - **any query outside the subset is a hard error**, with no silent fallback to full recomputation (see §12.5)
 
+> **Implemented (M1b Phase 2b, 2026-09-24).** `compile(sql: &str, catalog: &dyn Catalog) -> Result<CompiledView, SqlError>` parses a view's `SELECT` with `sqlparser`'s SQLite dialect and resolves it into a `ResolvedView` that it lowers through `ivmlite_core::lower`. `CompiledView` carries the `Plan`, the output columns (name, type, nullability, SELECT order), and the base tables the view reads, anchor first. The accepted grammar is
+>
+> ```text
+> SELECT <column>, …, <aggregate>, …
+> FROM <table> [[AS] <alias>]
+>      [[INNER] JOIN <table> [[AS] <alias>] ON <column> = <column>]
+> [WHERE <column> <op> <literal> | <literal> <op> <column>
+>      | <column> IS NULL | <column> IS NOT NULL]
+> GROUP BY <column>, …
+> ```
+>
+> — strictly wider than the harness's rendered SQL: it also accepts table and column aliases, an unqualified column when only one table in scope has it, a literal on the left of a comparison (`3 < v` flips to `v > 3`), `<>` alongside `!=`, parentheses around the WHERE expression or an operand, and the explicit `INNER` keyword on JOIN. A result column is named the way SQLite names it: an alias if there is one, else a bare column's declared name, else an aggregate's text exactly as written; two result columns named alike, compared case-insensitively, are rejected, since Phase 3 declares a view's columns as a table and SQLite rejects two columns of one name. Name resolution and typing go through a `Catalog` trait (`fn table(&self, name: &str) -> Result<Option<Schema>, CatalogError>`) — fallible so the SQLite `Catalog` (Phase 3) can reject what v0 cannot represent, reading `PRAGMA table_info` and the table's DDL: a non-STRICT table, an `ANY` column, a `COLLATE` clause (§7.1); `Database` implements it for tests and never fails. Legality lives in `ivmlite_core::lower` alone: `ivmlite-sql` only resolves names into a `ResolvedView` and calls `lower`, and the harness's `ViewQuery` is resolved the same way, through the new `lower_query`. `every_enumerated_query_compiles_to_the_plan_lower_query_builds` (`crates/ivmlite-test/tests/sql_front_end.rs`) compiles the SQL every one of the 2 × (153 + 900) enumerated queries renders to and checks it produces the same `Plan` that `lower_query` builds from the `ViewQuery` itself — standing in for running the differential sweeps through SQL, since the engine's behaviour is a function of its `Plan` alone.
+
 **`ivmlite-sqlite`**
 - the `sqlite3_ivmlite_init` extension entry point
 - the control surface: the vtab module for `CREATE VIRTUAL TABLE ... USING ivm(...)` and the `INSERT INTO v(v)` command channel (§8.3, settled by M-1; **not** scalar functions — design A was ruled out by measurement)
@@ -163,6 +176,10 @@ The cost is speed. But v0's goals are correctness and architecture, and this has
 > **Open question from the M1b Phase 2a final review**, recorded for M1b Phase 3:
 >
 > - **`node.rs`'s `passes` has an `unreachable!` on a mixed-type comparison.** It holds today because `lower` admits only a literal of the column's declared type and a STRICT table stores only that type. M1b Phase 3's SQLite extension must decode rows strictly by declared type and catch panics at the FFI boundary — otherwise a corrupt row (one that somehow carries a mismatched cell) turns that `unreachable!` into a host-process abort instead of a reported error.
+
+> **Open question from the M1b Phase 2b final review**, recorded for M1b Phase 3:
+>
+> - **`SqlError` is a string.** `ivmlite-sql`'s `SqlError(pub String)` flattens every failure into one message, and `From<CatalogError>` flattens the catalog's error into it too. Phase 3 may need to tell a transient SQLite error (e.g. `SQLITE_BUSY`) from an unsupported table, which would make `SqlError` an enum. Decided once the SQLite catalog exists.
 
 ---
 
@@ -654,6 +671,8 @@ At two columns the enumeration holds and its cost is a few seconds; at three a s
 >
 > If the decision is then not to widen, there is one knob already worked out: restrict join queries' group-by to a single column, which brings the join space down from 900 queries to 360 (2 key pairs × 4 single-column group-bys × 5 aggregate sets × 9 predicates) — about 1.65s instead of the measured 4.13s, a figure **computed** from the measured 4.13s / 900 queries, not measured. The cost is not testing joins "grouped by one column from each side" — and multi-column group keys that cross the boundary between two tables are exactly where joins are most likely to have bugs, so this knob should be the last one turned.
 
+**Decided (M1b Phase 2b, 2026-09-24): not widening.** The one shape three columns would add — a view that groups by one column, sums a second and filters on a third — is already enumerated: a join's row has four columns (for example `GROUP BY t0.k`, `SUM(t0.v)`, `WHERE t1.v …`), and a single-table view runs the same `Filter → Project → Aggregate` chain regardless of how many columns its table has. Widening would cost 12285 join queries per database, about 56 seconds per sweep (extrapolated, as recorded in the Phase 2a paragraph above) — for coverage the existing space already gives.
+
 ### 9.3 Shrinking
 
 **It must be written in-house; `proptest` cannot be used directly.** Naive sequence shrinking produces **illegal sequences** (remove an INSERT, and a later DELETE aimed at that row is left dangling). What is needed is a delta-debugging shrinker that preserves sequence legality: shrink the update sequence first, then the query, then the data.
@@ -939,9 +958,10 @@ TanStack DB is a browser-side JS library, with a different runtime and audience 
 6. **Integer overflow is undefined behaviour**; the absolute value of a group's sum must be < 2^62 (§6.1)
 7. Comparison operators are limited to `>` `>=` `<` `<=` `=` `!=` `IS NULL` `IS NOT NULL`; no `NOT` / `OR` / `LIKE` / `IN` / `BETWEEN` / subqueries (§6.1); a view has at most one predicate — no `AND` (M1b Phase 2a)
 8. `SUM` only over INTEGER columns, and a column may be compared only with a non-NULL literal of its own type; both are rejected at `ivm_create_view` (§6.1)
-9. Joins are limited to a two-table inner equi-join on one pair of columns of the same type (M1a Phase 3). No outer joins, no self-joins, no more than two tables, no multi-column keys. A NULL key matches nothing. Filters are evaluated after the join.
+9. Joins are limited to a two-table inner equi-join on one pair of columns of the same type (M1a Phase 3). No outer joins, no self-joins, no more than two tables, no multi-column keys. A NULL key matches nothing. Filters are evaluated after the join. Written `FROM a [AS x] [INNER] JOIN b [AS y] ON <column> = <column>`; table aliases are supported, but a self-join is rejected even with aliases (M1b Phase 2b)
 10. No MIN / MAX / DISTINCT
-11. Explicit refresh is required — a permanent API, not a temporary compromise (§8.2)
-12. Delta tables capture every column, wasting space on wide tables
-13. Every write pays the triggers' write amplification, even if the views are never read
-14. Cannot be loaded in browsers or the iOS system SQLite
+11. The SELECT list is the GROUP BY columns, each once, followed by the aggregates; GROUP BY names bare columns only (no positions like `GROUP BY 1`, no expressions); result column names must be unique; table names cannot be schema-qualified (`main.t`) (M1b Phase 2b)
+12. Explicit refresh is required — a permanent API, not a temporary compromise (§8.2)
+13. Delta tables capture every column, wasting space on wide tables
+14. Every write pays the triggers' write amplification, even if the views are never read
+15. Cannot be loaded in browsers or the iOS system SQLite

@@ -217,7 +217,7 @@ fn passes(predicate: &Predicate, row: &Row) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{lower, Agg, AggFn, CmpOp, Predicate, Value, ViewQuery, ZSet};
+    use crate::{lower_query, Agg, AggFn, CmpOp, Predicate, Value, ViewQuery, ZSet};
 
     /// `t(k TEXT, v INTEGER)` — matches the rows these tests actually push,
     /// whose column 0 is text and column 1 is an integer.
@@ -525,7 +525,7 @@ mod tests {
     #[test]
     fn aggregate_can_be_built_and_runs_through_the_tree() {
         // End to end: push one batch of deltas through a whole Scan → Filter → Project → Aggregate tree.
-        let plan = crate::lower(
+        let plan = crate::lower_query(
             &crate::ViewQuery {
                 group_by: vec![0],
                 aggs: vec![crate::Agg {
@@ -570,7 +570,7 @@ mod tests {
         // `&self`. Either would turn the aggregate — one of the engine's two
         // stateful operators — stateless: emitting only `+1` per batch and
         // never retracting, which is §6.2's "biggest source of bugs".
-        let plan = crate::lower(
+        let plan = crate::lower_query(
             &crate::ViewQuery {
                 group_by: vec![0],
                 aggs: vec![crate::Agg {
@@ -651,8 +651,8 @@ mod tests {
             },
             join: None,
         };
-        let plan =
-            lower(&query, &crate::Database::single(ints3())).expect("a legal query must lower");
+        let plan = lower_query(&query, &crate::Database::single(ints3()))
+            .expect("a legal query must lower");
         let Plan::Aggregate { input, .. } = plan else {
             panic!("lower's root operator must be an Aggregate");
         };
@@ -821,7 +821,7 @@ mod tests {
         // back, and SUM falling back to NULL.
         use crate::test_support::{join_on_k, kv, kv_row, Mirrors};
         let db = crate::Database::new(vec![kv("t0"), kv("t1")]);
-        let plan = crate::lower(&join_on_k(), &db).expect("a legal join query must lower");
+        let plan = crate::lower_query(&join_on_k(), &db).expect("a legal join query must lower");
 
         let mirrors = Mirrors::default();
         let mut old = Node::build(&plan, &mut |id| mirrors.arrangement(id));
