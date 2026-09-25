@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/ivmlite-bench", "crates/ivmlite-core", "crates/ivmlite-test", "crates/ivmlite-workload"]
+members = ["crates/ivmlite-bench", "crates/ivmlite-core", "crates/ivmlite-sql", "crates/ivmlite-test", "crates/ivmlite-workload"]
 
 [workspace.package]
 edition = "2021"
@@ -10,5 +10,6 @@ repository = "https://github.com/SFARL/ivmlite"
 
 [workspace.dependencies]
 ivmlite-core = { path = "crates/ivmlite-core" }
+ivmlite-sql = { path = "crates/ivmlite-sql" }
 rusqlite = { version = "0.40", features = ["bundled"] }
 rand = "0.10"
