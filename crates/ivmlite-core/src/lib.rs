@@ -21,7 +21,7 @@ pub use database::Database;
 pub use engine::{EngineError, IncrementalEngine};
 pub use join::JoinState;
 pub use node::Node;
-pub use plan::{lower, Plan, PlanError};
+pub use plan::{lower, lower_query, Plan, PlanError, ResolvedJoin, ResolvedView};
 pub use query::{Agg, AggFn, CmpOp, Join, Predicate, ViewQuery};
 pub use row::Row;
 pub use schema::{Column, ColumnType, Schema};

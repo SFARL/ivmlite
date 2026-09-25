@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::{fresh_mem_arrangement, lower, Database, Node, Row, ViewQuery, ZSet};
+use crate::{fresh_mem_arrangement, lower_query, Database, Node, Row, ViewQuery, ZSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EngineError(pub String);
@@ -120,7 +120,7 @@ impl IncrementalEngine {
         query: &ViewQuery,
         initial: &BTreeMap<String, ZSet>,
     ) -> Result<(), EngineError> {
-        let plan = lower(query, db).map_err(|e| EngineError(e.0))?;
+        let plan = lower_query(query, db).map_err(|e| EngineError(e.0))?;
         let mut tree = CountingTree::new(Node::build(&plan, &mut fresh_mem_arrangement));
 
         // Bootstrap: push each table's initial state through as the first batch
