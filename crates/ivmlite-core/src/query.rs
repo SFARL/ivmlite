@@ -1,3 +1,5 @@
+use crate::Value;
+
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AggFn {
@@ -13,12 +15,63 @@ pub struct Agg {
     pub column: Option<usize>,
 }
 
+/// A comparison operator from spec §6.1's whitelist. The literal is always the
+/// right operand: `Compare { op: Gt, .. }` is `column > literal`.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CmpOp {
+    Gt,
+    Ge,
+    Lt,
+    Le,
+    Eq,
+    Ne,
+}
+
+impl CmpOp {
+    pub const ALL: [CmpOp; 6] = [
+        CmpOp::Gt,
+        CmpOp::Ge,
+        CmpOp::Lt,
+        CmpOp::Le,
+        CmpOp::Eq,
+        CmpOp::Ne,
+    ];
+
+    /// Whether `column <op> literal` holds, given how the column's value
+    /// orders against the literal.
+    pub(crate) fn holds(self, ord: std::cmp::Ordering) -> bool {
+        use std::cmp::Ordering::{Equal, Greater, Less};
+        match self {
+            CmpOp::Gt => ord == Greater,
+            CmpOp::Ge => ord != Less,
+            CmpOp::Lt => ord == Less,
+            CmpOp::Le => ord != Greater,
+            CmpOp::Eq => ord == Equal,
+            CmpOp::Ne => ord != Equal,
+        }
+    }
+}
+
+/// A view's filter: spec §6.1's whitelist, at most one per view (M1b Phase 2a,
+/// Ruling 1 — no `AND`).
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Predicate {
     None,
-    IntGt { column: usize, value: i64 },
-    IsNotNull { column: usize },
+    /// `column <op> value`. `lower` requires `value` to have the column's
+    /// declared type — `Int` for INTEGER, `Text` for TEXT — and rejects NULL.
+    Compare {
+        column: usize,
+        op: CmpOp,
+        value: Value,
+    },
+    IsNull {
+        column: usize,
+    },
+    IsNotNull {
+        column: usize,
+    },
 }
 
 /// A two-table inner equi-join (M1a Phase 3): `FROM <anchor> JOIN <right> ON

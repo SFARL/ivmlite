@@ -59,8 +59,10 @@ pub fn gen_rows(rng: &mut StdRng, schema: &Schema, domain: &Domain, count: usize
 /// Each table has exactly 2 columns (both nullable: one TEXT, one INTEGER),
 /// and the column count is **not** a tunable parameter: spec §9.2 item 4 makes it
 /// a precondition for "enumeration beats randomness". Per spec §9.2, the
-/// two-column join enumeration is 700 queries (measured), and widening to 3
-/// columns is projected to grow it to about 4209 (extrapolated, not measured).
+/// two-column join enumeration is 900 queries (measured, M1b Phase 2a's
+/// reduced join predicate set), and widening to 3 columns is projected to
+/// grow it to 12285 (counted directly, not timed; the time is extrapolated,
+/// not measured).
 /// Both columns are nullable so that spec §6.1's "`SUM` over no non-NULL input
 /// returns NULL" path is really reached by random testing — which is why M0's
 /// integration tests made `amount` nullable.

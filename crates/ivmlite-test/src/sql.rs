@@ -5,12 +5,35 @@
 //! itself as the authoritative judge). Core owns the IR; the test crate owns
 //! "how to express that IR as SQL".
 
-use ivmlite_core::{AggFn, ColumnType, Database, Predicate, Schema, ViewQuery};
+use ivmlite_core::{AggFn, CmpOp, ColumnType, Database, Predicate, Schema, Value, ViewQuery};
 
 fn sql_type(ty: ColumnType) -> &'static str {
     match ty {
         ColumnType::Integer => "INTEGER",
         ColumnType::Text => "TEXT",
+    }
+}
+
+fn sql_op(op: CmpOp) -> &'static str {
+    match op {
+        CmpOp::Gt => ">",
+        CmpOp::Ge => ">=",
+        CmpOp::Lt => "<",
+        CmpOp::Le => "<=",
+        CmpOp::Eq => "=",
+        CmpOp::Ne => "!=",
+    }
+}
+
+/// A literal as SQL. A TEXT literal is single-quoted, with each `'` doubled.
+///
+/// # Panics
+/// On `Value::Null`, which `lower` rejects as a comparison literal.
+fn sql_literal(value: &Value) -> String {
+    match value {
+        Value::Int(n) => n.to_string(),
+        Value::Text(s) => format!("'{}'", s.replace('\'', "''")),
+        Value::Null => panic!("a comparison literal is never NULL; lower rejects it"),
     }
 }
 
@@ -89,7 +112,15 @@ pub fn view_query_to_sql(query: &ViewQuery, db: &Database) -> String {
 
     let where_clause = match &query.predicate {
         Predicate::None => String::new(),
-        Predicate::IntGt { column, value } => format!(" WHERE {} > {}", name(*column), value),
+        Predicate::Compare { column, op, value } => {
+            format!(
+                " WHERE {} {} {}",
+                name(*column),
+                sql_op(*op),
+                sql_literal(value)
+            )
+        }
+        Predicate::IsNull { column } => format!(" WHERE {} IS NULL", name(*column)),
         Predicate::IsNotNull { column } => format!(" WHERE {} IS NOT NULL", name(*column)),
     };
 
@@ -186,14 +217,66 @@ mod tests {
                 func: AggFn::Count,
                 column: None,
             }],
-            predicate: Predicate::IntGt {
+            predicate: Predicate::Compare {
                 column: 1,
-                value: 3,
+                op: CmpOp::Gt,
+                value: Value::Int(3),
             },
             join: None,
         };
         assert!(view_query_to_sql(&q, &Database::single(orders()))
             .contains("WHERE \"orders\".\"amount\" > 3"));
+    }
+
+    #[test]
+    fn to_sql_renders_every_operator_text_literals_and_is_null() {
+        let render = |predicate: Predicate| {
+            view_query_to_sql(
+                &ViewQuery {
+                    group_by: vec![0],
+                    aggs: vec![Agg {
+                        func: AggFn::Count,
+                        column: None,
+                    }],
+                    predicate,
+                    join: None,
+                },
+                &Database::single(orders()),
+            )
+        };
+        let expected = [
+            (CmpOp::Gt, ">"),
+            (CmpOp::Ge, ">="),
+            (CmpOp::Lt, "<"),
+            (CmpOp::Le, "<="),
+            (CmpOp::Eq, "="),
+            (CmpOp::Ne, "!="),
+        ];
+        for (op, symbol) in expected {
+            let sql = render(Predicate::Compare {
+                column: 1,
+                op,
+                value: Value::Int(-3),
+            });
+            assert!(
+                sql.contains(&format!("WHERE \"orders\".\"amount\" {symbol} -3 ")),
+                "{sql}"
+            );
+        }
+        let sql = render(Predicate::Compare {
+            column: 0,
+            op: CmpOp::Eq,
+            value: Value::Text("it's".into()),
+        });
+        assert!(
+            sql.contains("WHERE \"orders\".\"region\" = 'it''s' "),
+            "{sql}"
+        );
+        let sql = render(Predicate::IsNull { column: 0 });
+        assert!(
+            sql.contains("WHERE \"orders\".\"region\" IS NULL "),
+            "{sql}"
+        );
     }
 
     /// Item 13 (a deferred minor, from the same source as I4): `IsNotNull`

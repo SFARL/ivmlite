@@ -1,4 +1,4 @@
-use crate::{Agg, AggFn, Column, ColumnType, Database, Join, Predicate, Schema, ViewQuery};
+use crate::{Agg, AggFn, Column, ColumnType, Database, Join, Predicate, Schema, Value, ViewQuery};
 
 /// Spec §5.2's plan IR.
 ///
@@ -85,8 +85,9 @@ impl std::error::Error for PlanError {}
 ///
 /// Column indices are checked against the row the operators above the scans
 /// see — the anchor's columns, then (for a join) the right table's — and
-/// their types drive the type checks: v0 supports `SUM` and `IntGt` over
-/// INTEGER columns only, and join keys of one type only.
+/// their types drive the type checks: v0 supports `SUM` over INTEGER columns
+/// only, comparisons only against a literal of the column's own type, and
+/// join keys of one type only.
 pub fn lower(query: &ViewQuery, db: &Database) -> Result<Plan, PlanError> {
     let anchor = db
         .tables()
@@ -160,9 +161,9 @@ pub fn lower(query: &ViewQuery, db: &Database) -> Result<Plan, PlanError> {
     }
     match &query.predicate {
         Predicate::None => {}
-        Predicate::IntGt { column, .. } | Predicate::IsNotNull { column } => {
-            check(*column, "predicate")?
-        }
+        Predicate::Compare { column, .. }
+        | Predicate::IsNull { column }
+        | Predicate::IsNotNull { column } => check(*column, "predicate")?,
     }
 
     // Type checks. These run after the bounds checks because they index
@@ -176,10 +177,12 @@ pub fn lower(query: &ViewQuery, db: &Database) -> Result<Plan, PlanError> {
     //   rows `('7')` and `('abc')`. v0's `Value` has no `Real` variant at all
     //   (floating-point addition is not associative), and its accumulator only
     //   sees `Value::Int`, so it would report NULL.
-    // - `v > 3` is true for every TEXT value, because SQLite orders storage
-    //   classes as NULL < INTEGER/REAL < TEXT < BLOB. v0's `passes()` returns
-    //   false for TEXT.
-    // `IS NOT NULL` is type-agnostic and stays allowed on any column.
+    // - Every comparison operator has the same problem, not just `>`: SQLite
+    //   converts a mismatched literal by the column's affinity (so
+    //   `v > 3` is true for every TEXT value, since SQLite orders storage
+    //   classes as NULL < INTEGER/REAL < TEXT < BLOB), while v0 compares a
+    //   column only with a literal of its own type.
+    // `IS NULL` and `IS NOT NULL` are type-agnostic and stay allowed on any column.
     let require_integer = |c: usize, what: &str| -> Result<(), PlanError> {
         let col = columns[c];
         if col.ty == ColumnType::Integer {
@@ -197,8 +200,29 @@ pub fn lower(query: &ViewQuery, db: &Database) -> Result<Plan, PlanError> {
             require_integer(c, "SUM")?;
         }
     }
-    if let Predicate::IntGt { column, .. } = &query.predicate {
-        require_integer(*column, "IntGt")?;
+    if let Predicate::Compare { column, op, value } = &query.predicate {
+        let col = columns[*column];
+        let matches = match (col.ty, value) {
+            (_, Value::Null) => {
+                return Err(PlanError(format!(
+                    "the comparison {op:?} on column {column} (`{}`) has a NULL literal, \
+                     which makes it UNKNOWN for every row (spec §6.1); use IS NULL or \
+                     IS NOT NULL instead",
+                    col.name
+                )))
+            }
+            (ColumnType::Integer, Value::Int(_)) | (ColumnType::Text, Value::Text(_)) => true,
+            _ => false,
+        };
+        if !matches {
+            return Err(PlanError(format!(
+                "the comparison {op:?} between column {column} (`{}`) of type {:?} and the \
+                 literal {value:?} is not supported: v0 compares a column only with a literal \
+                 of its own type, while SQLite would convert the literal by the column's \
+                 affinity (spec §6.1)",
+                col.name, col.ty
+            )));
+        }
     }
 
     // The columns the projection keeps: group keys first (in their original
@@ -323,7 +347,9 @@ fn resolve_join<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Agg, AggFn, Column, ColumnType, Database, Join, Predicate, Schema, ViewQuery};
+    use crate::{
+        Agg, AggFn, CmpOp, Column, ColumnType, Database, Join, Predicate, Schema, Value, ViewQuery,
+    };
 
     fn q(group_by: Vec<usize>, aggs: Vec<Agg>, predicate: Predicate) -> ViewQuery {
         ViewQuery {
@@ -336,7 +362,7 @@ mod tests {
 
     /// A table named `orders` whose columns are all INTEGER. The lowering tests
     /// here never push rows through the plan, so an all-INTEGER schema makes
-    /// every `SUM` / `IntGt` legal without asserting anything about data.
+    /// every `SUM` / comparison legal without asserting anything about data.
     fn ints(arity: usize) -> Schema {
         Schema {
             table: "orders".into(),
@@ -390,14 +416,7 @@ mod tests {
         // Project must narrow 2 columns to 1, and Aggregate's group_by indices
         // must be remapped to the narrowed positions.
         let plan = lower(
-            &q(
-                vec![0],
-                vec![count()],
-                Predicate::IntGt {
-                    column: 1,
-                    value: 3,
-                },
-            ),
+            &q(vec![0], vec![count()], cmp(1, CmpOp::Gt, Value::Int(3))),
             &Database::single(ints(2)),
         )
         .expect("a legal query must lower");
@@ -427,9 +446,10 @@ mod tests {
         };
         assert_eq!(
             predicate,
-            &Predicate::IntGt {
+            &Predicate::Compare {
                 column: 1,
-                value: 3
+                op: CmpOp::Gt,
+                value: Value::Int(3),
             }
         );
 
@@ -705,14 +725,7 @@ mod tests {
         // predicate references (column 7) is out of range, pinning this branch
         // on its own.
         let err = lower(
-            &q(
-                vec![0],
-                vec![count()],
-                Predicate::IntGt {
-                    column: 7,
-                    value: 3,
-                },
-            ),
+            &q(vec![0], vec![count()], cmp(7, CmpOp::Gt, Value::Int(3))),
             &Database::single(ints(2)),
         )
         .expect_err("an out-of-range predicate column must be rejected");
@@ -746,27 +759,71 @@ mod tests {
         );
     }
 
+    fn cmp(column: usize, op: CmpOp, value: Value) -> Predicate {
+        Predicate::Compare { column, op, value }
+    }
+
     #[test]
-    fn int_gt_over_a_text_column_is_rejected_at_the_boundary() {
-        // SQLite orders storage classes NULL < INTEGER/REAL < TEXT < BLOB, so
-        // `v > 3` is true for every TEXT value; v0's `passes()` says false.
+    fn an_integer_literal_compared_with_a_text_column_is_rejected() {
+        // SQLite applies the TEXT column's affinity to the literal and
+        // compares it as text; v0 compares values exactly (spec §6.1,
+        // "Operand types must match").
+        let err = lower(
+            &q(vec![0], vec![count()], cmp(1, CmpOp::Gt, Value::Int(3))),
+            &Database::single(int_then_text()),
+        )
+        .expect_err("an INTEGER literal against a TEXT column must be rejected");
+        assert!(
+            err.0.contains("comparison") && err.0.contains("Text") && err.0.contains("Int"),
+            "the error must name the comparison and both types: {}",
+            err.0
+        );
+    }
+
+    #[test]
+    fn a_text_literal_compared_with_an_integer_column_is_rejected() {
         let err = lower(
             &q(
                 vec![0],
                 vec![count()],
-                Predicate::IntGt {
-                    column: 1,
-                    value: 3,
-                },
+                cmp(0, CmpOp::Eq, Value::Text("3".into())),
             ),
             &Database::single(int_then_text()),
         )
-        .expect_err("IntGt over a TEXT column must be rejected");
+        .expect_err("a TEXT literal against an INTEGER column must be rejected");
         assert!(
-            err.0.contains("IntGt") && err.0.contains("Text"),
-            "the error must name IntGt and the offending column type: {}",
+            err.0.contains("comparison") && err.0.contains("Integer") && err.0.contains("Text"),
+            "the error must name the comparison and both types: {}",
             err.0
         );
+    }
+
+    #[test]
+    fn a_null_literal_is_rejected_in_favour_of_is_null() {
+        let err = lower(
+            &q(vec![0], vec![count()], cmp(0, CmpOp::Eq, Value::Null)),
+            &Database::single(int_then_text()),
+        )
+        .expect_err("a comparison with NULL is always UNKNOWN and must be rejected");
+        assert!(
+            err.0.contains("NULL") && err.0.contains("IS NULL"),
+            "the error must point at IS NULL: {}",
+            err.0
+        );
+    }
+
+    #[test]
+    fn a_literal_of_the_columns_own_type_is_accepted() {
+        // Guards against over-rejecting: both types, several operators.
+        let db = Database::single(int_then_text());
+        for p in [
+            cmp(0, CmpOp::Le, Value::Int(3)),
+            cmp(1, CmpOp::Ne, Value::Text("x".into())),
+            Predicate::IsNull { column: 1 },
+        ] {
+            lower(&q(vec![0], vec![count()], p.clone()), &db)
+                .unwrap_or_else(|e| panic!("{p:?} is legal: {e}"));
+        }
     }
 
     #[test]
@@ -978,23 +1035,20 @@ mod tests {
     }
 
     #[test]
-    fn int_gt_over_the_right_tables_text_column_is_rejected() {
+    fn a_comparison_on_the_right_tables_text_column_checks_its_type() {
         // The type checks must use the joined row's columns: joined column 2 is t1.k, a TEXT column.
         let err = lower(
             &jq(
                 vec![0],
                 vec![count()],
-                Predicate::IntGt {
-                    column: 2,
-                    value: 3,
-                },
+                cmp(2, CmpOp::Gt, Value::Int(3)),
                 join("t1", 0, 0),
             ),
             &two_kv(),
         )
-        .expect_err("IntGt over TEXT is rejected");
+        .expect_err("a comparison against TEXT with an INTEGER literal is rejected");
         assert!(
-            err.0.contains("IntGt") && err.0.contains("Text"),
+            err.0.contains("comparison") && err.0.contains("Text"),
             "{}",
             err.0
         );

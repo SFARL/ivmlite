@@ -44,12 +44,57 @@ fn naive_engine_is_green_across_many_seeds() {
     }
 }
 
+/// The stride used to pick `naive_engine_satisfies_batch_invariance`'s and
+/// `incremental_engine_satisfies_batch_invariance`'s ten queries out of
+/// `enumerate`'s single-table space (M1b Phase 2a final review, Important 2):
+/// straight `seed % len` (what `gen_case` does) is not used here on purpose.
+/// With 17 predicates innermost in `cross`, `enumerate`'s first 51 entries are
+/// all `group_by=[0]`, and their first 17 are all `aggs=[COUNT(*)]` — so
+/// seeds 0..9 taken straight land on `group_by=[0]` with COUNT only, and SUM
+/// and the two-column group-by silently drop out of both batch-invariance
+/// sweeps. The stride spreads ten seeds across the whole 153-query space
+/// instead; `queries_covering_sum_and_two_column_group_by` below asserts the
+/// spread still reaches both, so a future change to the enumeration cannot
+/// remove them quietly.
+const BATCH_INVARIANCE_QUERY_STRIDE: usize = 7;
+
+/// Pick `seeds.len()` queries out of `queries` by `seed * BATCH_INVARIANCE_QUERY_STRIDE
+/// % queries.len()`, and assert the picks still include at least one SUM query
+/// and at least one two-column group-by (M1b Phase 2a final review,
+/// Important 2).
+fn queries_covering_sum_and_two_column_group_by(
+    queries: &[ViewQuery],
+    seeds: &[u64],
+) -> Vec<(u64, ViewQuery)> {
+    let selected: Vec<(u64, ViewQuery)> = seeds
+        .iter()
+        .map(|&seed| {
+            let query =
+                queries[(seed as usize * BATCH_INVARIANCE_QUERY_STRIDE) % queries.len()].clone();
+            (seed, query)
+        })
+        .collect();
+    assert!(
+        selected
+            .iter()
+            .any(|(_, q)| q.aggs.iter().any(|a| a.func == AggFn::Sum)),
+        "the stride must still reach at least one SUM query: {selected:?}"
+    );
+    assert!(
+        selected.iter().any(|(_, q)| q.group_by.len() == 2),
+        "the stride must still reach at least one two-column group-by: {selected:?}"
+    );
+    selected
+}
+
 #[test]
 fn naive_engine_satisfies_batch_invariance() {
     let db = db();
     let domain = Domain::default();
-    for seed in seed_range().into_iter().take(10) {
-        let case = gen_case(seed, &db, &domain, 25, 120, Batching::All);
+    let queries = enumerate(&schema());
+    let seeds: Vec<u64> = seed_range().into_iter().take(10).collect();
+    for (seed, query) in queries_covering_sum_and_two_column_group_by(&queries, &seeds) {
+        let case = gen_case_with_query(seed, &db, &domain, query, 25, 120, Batching::All);
         check_batch_invariance(&case, NaiveRecompute::new).unwrap_or_else(|f| {
             panic!("the reference implementation should not violate batch independence: {f}")
         });
@@ -69,8 +114,10 @@ fn naive_engine_satisfies_batch_invariance() {
 fn incremental_engine_satisfies_batch_invariance() {
     let db = gen_database(2);
     let domain = Domain::default();
-    for seed in seed_range().into_iter().take(10) {
-        let case = gen_case(seed, &db, &domain, 25, 120, Batching::All);
+    let queries = enumerate(&db.tables()[0]);
+    let seeds: Vec<u64> = seed_range().into_iter().take(10).collect();
+    for (seed, query) in queries_covering_sum_and_two_column_group_by(&queries, &seeds) {
+        let case = gen_case_with_query(seed, &db, &domain, query, 25, 120, Batching::All);
         check_batch_invariance(&case, IncrementalEngine::new).unwrap_or_else(|f| {
             panic!("the incremental engine should not violate batch independence: {f}")
         });
@@ -392,17 +439,17 @@ fn saved_regressions_still_reproduce_their_original_failure() {
     }
 }
 
-/// A two-table `Database` through `run` against the reference engine. Seeds
-/// 0–35 draw single-table queries and seeds 36 and up draw join queries, and
-/// both tables receive changes, so the non-anchor table reaches both
-/// `materialize()` and the oracle. Each of these mutations, measured, reddens
-/// this test (see `docs/mutation-gates.md`):
+/// A two-table `Database` through `run` against the reference engine. Even
+/// seeds draw single-table queries and odd seeds draw join queries
+/// (`enumerate_database` alternates them), and both tables receive changes, so
+/// the non-anchor table reaches both `materialize()` and the oracle. Each of
+/// these mutations, measured, reddens this test (see `docs/mutation-gates.md`):
 /// - apply's table-name routing: hard-coding the table name `run` passes to
 ///   `apply` as `db.tables()[0].table` (the M1a Phase 1 Task 5 row).
 /// - `NaiveRecompute`'s per-table base / pending: `apply` dropping every
-///   non-anchor delta goes red at seed 36 (item 1 of the join-landing checklist).
+///   non-anchor delta goes red at seed 1 (item 1 of the join-landing checklist).
 /// - `run`'s own `bases` bookkeeping: skipping non-anchor tables goes red at
-///   seed 36 (item 2).
+///   seed 1 (item 2).
 /// - the oracle creating and loading every table: restricting its table loop
 ///   to `db.tables()[0]` (also guarded by
 ///   `oracle::tests::builds_every_table_in_the_database`).
@@ -444,11 +491,16 @@ fn shrink_reduces_initial_rows_in_every_table_of_a_multi_table_case() {
     let case = seed_range()
         .into_iter()
         .map(|seed| gen_case(seed, &db, &domain, 25, 150, Batching::Chunks(5)))
+        .filter(|c| c.query.join.is_none())
         .find(|c| {
             let mut engine = NoRetractionEngine::new();
             run(&mut engine, c).is_err()
         })
-        .expect("there should be at least one failing two-table case");
+        .expect(
+            "no single-table two-database case failed among the selected seeds \
+             (under IVMLITE_SEED, an odd seed draws a join query and is filtered \
+             out above, leaving nothing to find)",
+        );
 
     // I4's probe: phase 3's per-table loop must really run on a case with more
     // than one table in `initial`, not merely "accept several tables in its
@@ -459,9 +511,9 @@ fn shrink_reduces_initial_rows_in_every_table_of_a_multi_table_case() {
         "this test must feed shrink a genuine two-table case"
     );
     // The "t1 should shrink to 0 rows" argument below holds only for a
-    // single-table query: with a join, t1 is observable. `gen_case` maps seeds
-    // below the single-table query count to single-table queries, so this
-    // guards against that mapping ever changing silently.
+    // single-table query: with a join, t1 is observable. The filter above
+    // picks one; this assertion keeps the argument honest if the filter is
+    // ever removed.
     assert!(
         case.query.join.is_none(),
         "this test's reasoning needs a single-table query, got {:?}",
@@ -519,57 +571,31 @@ fn shrink_reduces_initial_rows_in_every_table_of_a_multi_table_case() {
 /// This test has the same structure as `naive_engine_is_green_across_many_seeds`,
 /// with `IncrementalEngine` as the subject — it is incremental while the
 /// reference recomputes in full, and both must agree with the oracle at every
-/// refresh point.
+/// refresh point. Since M1b Phase 2a it runs every enumerated query once
+/// rather than 50 seeds (Ruling 6).
 #[test]
 fn incremental_engine_is_green_across_the_enumerated_space() {
     let db = gen_database(2);
     let domain = Domain::default();
     let queries = enumerate(&db.tables()[0]);
-    // Final review Finding D: this test's name promises "covers the whole
-    // enumerated query space", but the old assertion (`checked >= 50`) counted
-    // **seeds run**, not **queries covered** — the two coincided only because
-    // `seed_range()` yields 50 seeds by default and `enumerate` currently
-    // produces fewer queries than that. Counting the `exercised` index set makes
-    // the assertion verify what the name says: even if `enumerate` someday
-    // produces more than 50 queries, coverage is not silently lost here.
-    let mut exercised: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
-    let mut checked = 0usize;
-    for seed in seed_range() {
-        let idx = seed as usize % queries.len();
-        let query = &queries[idx];
-        let case = gen_case_with_query(
-            seed,
-            &db,
-            &domain,
-            query.clone(),
-            20,
-            60,
-            Batching::Chunks(4),
-        );
+    // One case per query, seeded by its index, so the whole space is covered
+    // whatever its size (M1b Phase 2a, Ruling 6; before it, 50 seeds drew
+    // `seed % 36` and a coverage assertion checked every query was hit).
+    // Under `IVMLITE_SEED=<n>` only query `n` runs, so the replay command a
+    // `Failure` prints reproduces exactly the failing case.
+    let replay = std::env::var("IVMLITE_SEED").is_ok();
+    let selected: Vec<u64> = if replay {
+        seed_range()
+    } else {
+        (0..queries.len() as u64).collect()
+    };
+    for seed in selected {
+        let query = queries[seed as usize % queries.len()].clone();
+        let case = gen_case_with_query(seed, &db, &domain, query, 20, 60, Batching::Chunks(4));
         let mut engine = IncrementalEngine::new();
         if let Err(f) = run(&mut engine, &case) {
             panic!("the incremental engine disagrees with the oracle at seed={seed}: {f}");
         }
-        exercised.insert(idx);
-        checked += 1;
-    }
-    assert!(checked >= 1, "at least one seed must run, ran {checked}");
-
-    // In `IVMLITE_SEED` single-seed replay mode only one query runs, so "cover the
-    // whole enumerated space" does not apply — the replay command
-    // `Failure::Display` prints is precisely `IVMLITE_SEED=<seed> cargo test ...`,
-    // and if this assertion still demanded every enumerated query in single-seed
-    // mode, following that replay instruction would first hit a red unrelated to
-    // the original bug (final review Finding D).
-    if std::env::var("IVMLITE_SEED").is_err() {
-        assert_eq!(
-            exercised.len(),
-            queries.len(),
-            "every one of the {} queries enumerate produces must be covered; only {} were: {:?}",
-            queries.len(),
-            exercised.len(),
-            exercised
-        );
     }
 }
 

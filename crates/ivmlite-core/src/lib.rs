@@ -22,7 +22,7 @@ pub use engine::{EngineError, IncrementalEngine};
 pub use join::JoinState;
 pub use node::Node;
 pub use plan::{lower, Plan, PlanError};
-pub use query::{Agg, AggFn, Join, Predicate, ViewQuery};
+pub use query::{Agg, AggFn, CmpOp, Join, Predicate, ViewQuery};
 pub use row::Row;
 pub use schema::{Column, ColumnType, Schema};
 pub use value::Value;
