@@ -4,7 +4,7 @@ use ivmlite_core::{Column, ColumnType, Schema};
 use ivmlite_sql::{Catalog, CatalogError};
 use rusqlite::{Connection, OptionalExtension};
 
-use crate::names::{literal, PREFIX};
+use crate::names::{has_reserved_prefix, literal, PREFIX};
 
 /// Reads a table's shape from `pragma_table_list`, `pragma_table_info` and its
 /// `CREATE` statement, and refuses what v0 cannot represent.
@@ -34,7 +34,7 @@ impl Catalog for SqliteCatalog<'_> {
             return Ok(None);
         };
         let refuse = |why: &str| Err(CatalogError(format!("table {declared}: {why}")));
-        if declared.len() >= PREFIX.len() && declared[..PREFIX.len()].eq_ignore_ascii_case(PREFIX) {
+        if has_reserved_prefix(&declared) {
             return refuse("is one of ivmlite's own shadow tables");
         }
         if kind != "table" {
@@ -48,7 +48,7 @@ impl Catalog for SqliteCatalog<'_> {
         let sql: String = self
             .conn
             .query_row(
-                "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = ?1",
+                "SELECT sql FROM \"main\".sqlite_schema WHERE type = 'table' AND name = ?1",
                 [&declared],
                 |r| r.get(0),
             )
@@ -70,7 +70,9 @@ impl Catalog for SqliteCatalog<'_> {
         let mut stmt = self
             .conn
             .prepare(&format!(
-                "SELECT name, type, \"notnull\", pk FROM pragma_table_info({})",
+                // The schema argument: without it, pragma_table_info reads a
+                // same-named TEMP table instead (measured).
+                "SELECT name, type, \"notnull\", pk FROM pragma_table_info({}, 'main')",
                 literal(&declared)
             ))
             .map_err(err)?;
@@ -87,7 +89,7 @@ impl Catalog for SqliteCatalog<'_> {
         let mut columns = Vec::new();
         for row in rows {
             let (column, ty, not_null, pk) = row.map_err(err)?;
-            if column.len() >= PREFIX.len() && column[..PREFIX.len()].eq_ignore_ascii_case(PREFIX) {
+            if has_reserved_prefix(&column) {
                 return refuse(&format!(
                     "column {column} starts with {PREFIX}, which ivmlite reserves for its own shadow columns (e.g. the delta table's)"
                 ));

@@ -12,8 +12,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::catalog::{require_utf8, SqliteCatalog};
 use crate::names::{
-    apply_trigger, delta_table, literal, main_qualified, out_table, quote, stage_table,
-    state_table, trigger, DELTA_SEQ, DELTA_W, DEPS, META, PROGRESS, VIEWS,
+    apply_trigger, delta_table, has_reserved_prefix, literal, main_qualified, out_table, quote,
+    stage_table, state_table, trigger, DELTA_SEQ, DELTA_W, DEPS, META, PREFIX, PROGRESS, VIEWS,
 };
 use crate::state::{BufferedArrangement, Pending};
 
@@ -62,7 +62,7 @@ fn arrangement_ids(plan: &Plan) -> Vec<ArrangementId> {
 /// named exactly `name`.
 fn object_exists(conn: &Connection, kind: &str, name: &str) -> Result<bool> {
     conn.query_row(
-        "SELECT 1 FROM sqlite_schema WHERE type = ?1 AND name = ?2",
+        "SELECT 1 FROM \"main\".sqlite_schema WHERE type = ?1 AND name = ?2",
         [kind, name],
         |_| Ok(()),
     )
@@ -148,22 +148,26 @@ pub fn declaration(name: &str, view: &CompiledView) -> Result<String> {
 }
 
 fn create_global_tables(conn: &Connection) -> Result<()> {
+    let meta = main_qualified(META);
     exec(
         conn,
         &format!(
-            "CREATE TABLE IF NOT EXISTS {META}(key TEXT PRIMARY KEY, value);
-             CREATE TABLE IF NOT EXISTS {VIEWS}(name TEXT PRIMARY KEY, sql TEXT NOT NULL,
+            "CREATE TABLE IF NOT EXISTS {meta}(key TEXT PRIMARY KEY, value);
+             CREATE TABLE IF NOT EXISTS {}(name TEXT PRIMARY KEY, sql TEXT NOT NULL,
                  plan TEXT NOT NULL, declaration TEXT NOT NULL, format INTEGER NOT NULL);
-             CREATE TABLE IF NOT EXISTS {DEPS}(view TEXT NOT NULL, tbl TEXT NOT NULL,
+             CREATE TABLE IF NOT EXISTS {}(view TEXT NOT NULL, tbl TEXT NOT NULL,
                  shape TEXT NOT NULL, PRIMARY KEY(view, tbl));
-             CREATE TABLE IF NOT EXISTS {PROGRESS}(view TEXT NOT NULL, tbl TEXT NOT NULL,
+             CREATE TABLE IF NOT EXISTS {}(view TEXT NOT NULL, tbl TEXT NOT NULL,
                  applied_seq INTEGER NOT NULL, PRIMARY KEY(view, tbl));
-             INSERT OR IGNORE INTO {META}(key, value) VALUES ('format', {FORMAT});"
+             INSERT OR IGNORE INTO {meta}(key, value) VALUES ('format', {FORMAT});",
+            main_qualified(VIEWS),
+            main_qualified(DEPS),
+            main_qualified(PROGRESS),
         ),
     )?;
     let format: i64 = conn
         .query_row(
-            &format!("SELECT value FROM {META} WHERE key = 'format'"),
+            &format!("SELECT value FROM {meta} WHERE key = 'format'"),
             [],
             |r| r.get(0),
         )
@@ -247,7 +251,7 @@ fn create_out_table(conn: &Connection, name: &str, view: &CompiledView) -> Resul
         conn,
         &format!(
             "CREATE TABLE {}({}, {WEIGHT} INTEGER NOT NULL)",
-            quote(&out_table(name)),
+            main_qualified(&out_table(name)),
             defs.join(", ")
         ),
     )
@@ -337,8 +341,13 @@ fn create_stage(
     view: &CompiledView,
     ids: &[ArrangementId],
 ) -> Result<()> {
+    // The trigger body names every table unqualified: SQLite rejects a
+    // schema-qualified name on INSERT/UPDATE/DELETE inside a trigger, and a
+    // trigger in `main` resolves its body's names in `main` (see
+    // `create_delta_table`). Every statement outside the body is qualified.
     let stage = quote(&stage_table(name));
     let out = quote(&out_table(name));
+    let progress = quote(PROGRESS);
     let n = view.columns.len();
     let defs: Vec<String> = view
         .columns
@@ -381,22 +390,23 @@ fn create_stage(
         new_cols.join(", ")
     ));
     body.push(format!(
-        "UPDATE {PROGRESS} SET applied_seq = NEW.seq \
+        "UPDATE {progress} SET applied_seq = NEW.seq \
          WHERE NEW.op = 'progress' AND view = {} AND tbl = NEW.tbl;",
         literal(name)
     ));
     exec(
         conn,
         &format!(
-            "CREATE TABLE {stage}(op TEXT NOT NULL, arr INTEGER, key BLOB, val BLOB, w INTEGER,
+            "CREATE TABLE {}(op TEXT NOT NULL, arr INTEGER, key BLOB, val BLOB, w INTEGER,
                  tbl TEXT, seq INTEGER, {}, armed INTEGER NOT NULL DEFAULT 0);
              CREATE TRIGGER {} AFTER UPDATE OF armed ON {stage}
                  WHEN OLD.armed = 0 AND NEW.armed = 1
              BEGIN
                  {}
              END;",
+            main_qualified(&stage_table(name)),
             defs.join(", "),
-            quote(&apply_trigger(name)),
+            main_qualified(&apply_trigger(name)),
             body.join("\n                 ")
         ),
     )
@@ -461,7 +471,7 @@ fn sql_value(v: &Value) -> rusqlite::types::Value {
 /// a single `UPDATE … SET armed = 1` fires the apply trigger for every row.
 /// If any row fails, SQLite rolls that whole statement back.
 fn apply(conn: &Connection, name: &str, view: &CompiledView, changes: &Changes) -> Result<()> {
-    let stage = quote(&stage_table(name));
+    let stage = main_qualified(&stage_table(name));
     exec(conn, &format!("DELETE FROM {stage}"))?;
     let stage_state =
         format!("INSERT INTO {stage}(op, arr, key, val, w) VALUES ('state', ?1, ?2, ?3, ?4)");
@@ -520,6 +530,11 @@ fn apply(conn: &Connection, name: &str, view: &CompiledView, changes: &Changes) 
 /// `CREATE VIRTUAL TABLE <name> USING ivm('<sql>')`, inside the statement's
 /// own transaction: create every shadow object, then bootstrap (spec §7.3).
 pub fn create(conn: &Rc<Connection>, name: &str, sql: &str) -> Result<CompiledView> {
+    if has_reserved_prefix(name) {
+        return Err(format!(
+            "the view name {name} starts with {PREFIX}, which ivmlite reserves for its own shadow tables"
+        ));
+    }
     let view = compile_view(conn, sql)?;
     // Computed first: a name clash fails before anything is created.
     let declared = declaration(name, &view)?;
@@ -547,7 +562,7 @@ pub fn create(conn: &Rc<Connection>, name: &str, sql: &str) -> Result<CompiledVi
             &format!(
                 "CREATE TABLE {}(key BLOB NOT NULL, val BLOB NOT NULL, w INTEGER NOT NULL,
                      PRIMARY KEY(key, val)) WITHOUT ROWID",
-                quote(&state_table(name, *id))
+                main_qualified(&state_table(name, *id))
             ),
         )?;
     }
@@ -555,14 +570,18 @@ pub fn create(conn: &Rc<Connection>, name: &str, sql: &str) -> Result<CompiledVi
     create_stage(conn, name, &view, &ids)?;
     conn.execute(
         &format!(
-            "INSERT INTO {VIEWS}(name, sql, plan, declaration, format) VALUES (?1, ?2, ?3, ?4, ?5)"
+            "INSERT INTO {}(name, sql, plan, declaration, format) VALUES (?1, ?2, ?3, ?4, ?5)",
+            main_qualified(VIEWS)
         ),
         params![name, sql, view.plan.canonical(), declared, FORMAT],
     )
     .map_err(sql_error)?;
     for (t, schema) in view.tables.iter().zip(&schemas) {
         conn.execute(
-            &format!("INSERT INTO {DEPS}(view, tbl, shape) VALUES (?1, ?2, ?3)"),
+            &format!(
+                "INSERT INTO {}(view, tbl, shape) VALUES (?1, ?2, ?3)",
+                main_qualified(DEPS)
+            ),
             params![name, t, shape(schema)],
         )
         .map_err(sql_error)?;
@@ -578,7 +597,10 @@ pub fn create(conn: &Rc<Connection>, name: &str, sql: &str) -> Result<CompiledVi
         .collect::<Result<_>>()?;
     for schema in &schemas {
         conn.execute(
-            &format!("INSERT INTO {PROGRESS}(view, tbl, applied_seq) VALUES (?1, ?2, 0)"),
+            &format!(
+                "INSERT INTO {}(view, tbl, applied_seq) VALUES (?1, ?2, 0)",
+                main_qualified(PROGRESS)
+            ),
             params![name, schema.table],
         )
         .map_err(sql_error)?;
@@ -611,7 +633,10 @@ pub struct Reopened {
 pub fn connect(conn: &Connection, name: &str) -> Result<Reopened> {
     let stored: Option<(String, String, String, i64)> = conn
         .query_row(
-            &format!("SELECT sql, plan, declaration, format FROM {VIEWS} WHERE name = ?1"),
+            &format!(
+                "SELECT sql, plan, declaration, format FROM {} WHERE name = ?1",
+                main_qualified(VIEWS)
+            ),
             [name],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
@@ -675,7 +700,10 @@ fn check_capture(conn: &Connection, name: &str, view: &CompiledView) -> Result<(
     for table in &view.tables {
         let recorded: Option<String> = conn
             .query_row(
-                &format!("SELECT shape FROM {DEPS} WHERE view = ?1 AND tbl = ?2"),
+                &format!(
+                    "SELECT shape FROM {} WHERE view = ?1 AND tbl = ?2",
+                    main_qualified(DEPS)
+                ),
                 params![name, table],
                 |r| r.get(0),
             )
@@ -714,7 +742,10 @@ pub fn refresh(conn: &Rc<Connection>, name: &str, view: &CompiledView) -> Result
         let schema = base_schema(conn, table)?;
         let applied: i64 = conn
             .query_row(
-                &format!("SELECT applied_seq FROM {PROGRESS} WHERE view = ?1 AND tbl = ?2"),
+                &format!(
+                    "SELECT applied_seq FROM {} WHERE view = ?1 AND tbl = ?2",
+                    main_qualified(PROGRESS)
+                ),
                 params![name, table],
                 |r| r.get(0),
             )
@@ -760,7 +791,10 @@ fn is_state_table_of(table: &str, view: &str) -> bool {
 /// maintained can still be dropped.
 pub fn destroy(conn: &Connection, name: &str) -> Result<()> {
     let tables: Vec<String> = conn
-        .prepare(&format!("SELECT tbl FROM {DEPS} WHERE view = ?1"))
+        .prepare(&format!(
+            "SELECT tbl FROM {} WHERE view = ?1",
+            main_qualified(DEPS)
+        ))
         .and_then(|mut s| s.query_map([name], |r| r.get(0))?.collect())
         .map_err(sql_error)?;
     for t in &tables {
@@ -779,7 +813,7 @@ pub fn destroy(conn: &Connection, name: &str) -> Result<()> {
         )?;
     }
     let state: Vec<String> = conn
-        .prepare("SELECT name FROM sqlite_schema WHERE type = 'table'")
+        .prepare("SELECT name FROM \"main\".sqlite_schema WHERE type = 'table'")
         .and_then(|mut s| {
             s.query_map([], |r| r.get::<_, String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()
@@ -789,31 +823,38 @@ pub fn destroy(conn: &Connection, name: &str) -> Result<()> {
         .filter(|t| is_state_table_of(t, name))
         .collect();
     for t in state {
-        exec(conn, &format!("DROP TABLE {}", quote(&t)))?;
+        exec(conn, &format!("DROP TABLE {}", main_qualified(&t)))?;
     }
     exec(
         conn,
-        &format!("DROP TABLE IF EXISTS {}", quote(&out_table(name))),
+        &format!("DROP TABLE IF EXISTS {}", main_qualified(&out_table(name))),
     )?;
     exec(
         conn,
-        &format!("DROP TABLE IF EXISTS {}", quote(&stage_table(name))),
+        &format!(
+            "DROP TABLE IF EXISTS {}",
+            main_qualified(&stage_table(name))
+        ),
     )?;
     for table in [VIEWS, DEPS, PROGRESS] {
         let column = if table == VIEWS { "name" } else { "view" };
-        conn.execute(&format!("DELETE FROM {table} WHERE {column} = ?1"), [name])
-            .map_err(sql_error)?;
+        conn.execute(
+            &format!("DELETE FROM {} WHERE {column} = ?1", main_qualified(table)),
+            [name],
+        )
+        .map_err(sql_error)?;
     }
     let left: i64 = conn
-        .query_row(&format!("SELECT count(*) FROM {VIEWS}"), [], |r| r.get(0))
+        .query_row(
+            &format!("SELECT count(*) FROM {}", main_qualified(VIEWS)),
+            [],
+            |r| r.get(0),
+        )
         .map_err(sql_error)?;
     if left == 0 {
-        exec(
-            conn,
-            &format!(
-                "DROP TABLE {META}; DROP TABLE {VIEWS}; DROP TABLE {DEPS}; DROP TABLE {PROGRESS};"
-            ),
-        )?;
+        for table in [META, VIEWS, DEPS, PROGRESS] {
+            exec(conn, &format!("DROP TABLE {}", main_qualified(table)))?;
+        }
     }
     Ok(())
 }

@@ -16,7 +16,7 @@ use rusqlite::vtab::{
 };
 use rusqlite::{ffi, Connection, Error};
 
-use crate::names::{out_table, quote};
+use crate::names::{main_qualified, out_table, quote};
 use crate::view;
 
 /// Run a callback body, turning its error and any panic into an SQLite error.
@@ -262,7 +262,7 @@ unsafe impl VTabCursor for IvmCursor {
                 .prepare(&format!(
                     "SELECT rowid, {} FROM {}",
                     cols.join(", "),
-                    quote(&self.out_table)
+                    main_qualified(&self.out_table)
                 ))
                 .map_err(|e| e.to_string())?;
             let rows = stmt

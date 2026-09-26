@@ -17,7 +17,7 @@ use ivmlite_core::{Arrangement, Row, StateError};
 use rusqlite::Connection;
 
 use crate::encode::{decode, encode};
-use crate::names::quote;
+use crate::names::main_qualified;
 
 /// An arrangement's pending weight changes, by key then value; shared with
 /// the refresh that stages them once the operator tree is done.
@@ -32,7 +32,7 @@ pub struct BufferedArrangement {
 
 impl BufferedArrangement {
     pub fn new(conn: Rc<Connection>, table: &str, pending: Pending) -> Self {
-        let t = quote(table);
+        let t = main_qualified(table);
         BufferedArrangement {
             conn,
             get_sql: format!("SELECT val, w FROM {t} WHERE key = ?1"),

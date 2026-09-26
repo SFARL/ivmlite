@@ -274,6 +274,18 @@ fn what_v0_cannot_maintain_is_rejected_by_name() {
             "{setup_sql} / {sql}: {err}"
         );
     }
+    // A view named with ivmlite's own prefix, in any case, would collide
+    // with (or be mistaken for) a shadow table (final review, Minor 7).
+    for view in ["__ivm_meta", "__IVM_out_x", "__Ivm_x"] {
+        let c = open_with_extension(None).unwrap();
+        c.execute_batch("CREATE TABLE t(k TEXT) STRICT").unwrap();
+        let err = create(&c, view, q).expect_err(view);
+        assert!(
+            err.to_string()
+                .contains(&format!("view name {view} starts with __ivm_")),
+            "{view}: {err}"
+        );
+    }
 }
 
 #[test]
@@ -406,6 +418,136 @@ fn a_view_whose_capture_is_broken_reports_why_and_can_still_be_dropped() {
         c.execute_batch("INSERT INTO orders(amount) VALUES (1)")
             .unwrap();
     }
+}
+
+/// Every row of every table in `names`, read from the TEMP schema.
+fn temp_contents(c: &Connection, names: &[&str]) -> Vec<Vec<Vec<Value>>> {
+    names
+        .iter()
+        .map(|t| rows(c, &format!("SELECT * FROM temp.\"{t}\"")))
+        .collect()
+}
+
+/// On the connection that owns the view, a TEMP table named like a base
+/// table is neither read by the catalog, the bootstrap or a refresh, nor
+/// given the capture triggers: SQLite resolves an unqualified name against
+/// `temp` before `main` (Phase 3a spec §4; final review, Important 3).
+#[test]
+fn a_temp_table_named_like_a_base_table_is_never_read_or_captured() {
+    let c = open_with_extension(None).unwrap();
+    setup(&c);
+    // Another column order and an extra column: reading its shape would
+    // change the plan's column positions.
+    c.execute_batch(
+        "CREATE TEMP TABLE orders(amount INTEGER, region TEXT, note TEXT) STRICT;
+         INSERT INTO temp.orders VALUES (1000, 'a', 'x'), (2000, 'temp', 'y');",
+    )
+    .unwrap();
+    let main_sums = SUMS.replace("FROM orders", "FROM main.orders");
+    create(&c, "sums", SUMS).unwrap();
+    assert_matches_oracle(&c, "sums", &main_sums);
+    c.execute_batch(
+        "INSERT INTO main.orders VALUES ('a', 5), ('d', 6);
+         DELETE FROM main.orders WHERE region = 'b';
+         UPDATE main.orders SET amount = 50 WHERE amount = 1;
+         INSERT INTO temp.orders VALUES (3000, 'temp', 'z');
+         DELETE FROM temp.orders WHERE amount = 1000;",
+    )
+    .unwrap();
+    refresh(&c, "sums").unwrap();
+    assert_matches_oracle(&c, "sums", &main_sums);
+    assert_eq!(
+        rows(
+            &c,
+            "SELECT name FROM sqlite_temp_schema WHERE type = 'trigger'"
+        ),
+        Vec::<Vec<Value>>::new(),
+        "a capture trigger landed on the TEMP table"
+    );
+    c.execute_batch("DROP TABLE sums").unwrap();
+    assert_eq!(
+        rows(&c, "SELECT count(*) FROM temp.orders"),
+        vec![vec![Value::Integer(2)]]
+    );
+}
+
+/// On the connection that owns the view, TEMP tables named like every table
+/// ivmlite creates — the global tables, the delta, output, stage and state
+/// tables — are never read, written or dropped by a create, a refresh, a
+/// read or a drop (final review, Important 3 and Minor 5: a TEMP
+/// `__ivm_out_<view>` used to make `SELECT * FROM v` read the TEMP rows).
+#[test]
+fn temp_tables_named_like_the_shadow_tables_are_never_touched() {
+    let c = open_with_extension(None).unwrap();
+    setup(&c);
+    let shadows = [
+        "__ivm_meta",
+        "__ivm_view",
+        "__ivm_dep",
+        "__ivm_progress",
+        "__ivm_delta_orders",
+        "__ivm_out_sums",
+        "__ivm_stage_sums",
+        "__ivm_state_sums_0_agg_groups",
+    ];
+    // Each TEMP table has the columns its namesake gets, so a statement
+    // that resolved to it would succeed silently rather than fail; each
+    // holds a row the real one never would.
+    c.execute_batch(
+        "CREATE TEMP TABLE __ivm_meta(key TEXT PRIMARY KEY, value);
+         INSERT INTO temp.__ivm_meta VALUES ('format', 1), ('temp', 1);
+         CREATE TEMP TABLE __ivm_view(name TEXT PRIMARY KEY, sql TEXT NOT NULL,
+             plan TEXT NOT NULL, declaration TEXT NOT NULL, format INTEGER NOT NULL);
+         INSERT INTO temp.__ivm_view VALUES ('temp', 'x', 'x', 'x', 1);
+         CREATE TEMP TABLE __ivm_dep(view TEXT NOT NULL, tbl TEXT NOT NULL,
+             shape TEXT NOT NULL, PRIMARY KEY(view, tbl));
+         INSERT INTO temp.__ivm_dep VALUES ('temp', 'x', 'x');
+         CREATE TEMP TABLE __ivm_progress(view TEXT NOT NULL, tbl TEXT NOT NULL,
+             applied_seq INTEGER NOT NULL, PRIMARY KEY(view, tbl));
+         INSERT INTO temp.__ivm_progress VALUES ('temp', 'x', 0);
+         CREATE TEMP TABLE __ivm_delta_orders(__ivm_seq INTEGER PRIMARY KEY,
+             __ivm_w INTEGER NOT NULL, region TEXT, amount INTEGER);
+         INSERT INTO temp.__ivm_delta_orders VALUES (1000, 1, 'temp', 1000);
+         CREATE TEMP TABLE __ivm_out_sums AS
+             SELECT region, SUM(amount), COUNT(*), 1 AS __w FROM orders WHERE 0 GROUP BY region;
+         INSERT INTO temp.__ivm_out_sums VALUES ('temp', 1000, 1000, 1);
+         CREATE TEMP TABLE __ivm_stage_sums(op TEXT NOT NULL, arr INTEGER, key BLOB, val BLOB,
+             w INTEGER, tbl TEXT, seq INTEGER, c0 TEXT, c1 INTEGER, c2 INTEGER,
+             armed INTEGER NOT NULL DEFAULT 0);
+         INSERT INTO temp.__ivm_stage_sums(op) VALUES ('temp');
+         CREATE TEMP TABLE __ivm_state_sums_0_agg_groups(key BLOB NOT NULL, val BLOB NOT NULL,
+             w INTEGER NOT NULL, PRIMARY KEY(key, val)) WITHOUT ROWID;
+         INSERT INTO temp.__ivm_state_sums_0_agg_groups VALUES (x'00', x'00', 1);",
+    )
+    .unwrap();
+    let temp_before = temp_contents(&c, &shadows);
+
+    create(&c, "sums", SUMS).unwrap();
+    assert_matches_oracle(&c, "sums", SUMS);
+    c.execute_batch(
+        "INSERT INTO orders VALUES ('a', 5), ('d', 6);
+         DELETE FROM orders WHERE region = 'b';
+         UPDATE orders SET amount = 50 WHERE amount = 1;",
+    )
+    .unwrap();
+    refresh(&c, "sums").unwrap();
+    assert_matches_oracle(&c, "sums", SUMS);
+    assert_eq!(temp_contents(&c, &shadows), temp_before);
+
+    c.execute_batch("DROP TABLE sums").unwrap();
+    assert_eq!(
+        temp_contents(&c, &shadows),
+        temp_before,
+        "DROP TABLE touched a TEMP table"
+    );
+    assert_eq!(
+        rows(
+            &c,
+            "SELECT name FROM main.sqlite_schema WHERE name LIKE '\\_\\_ivm\\_%' ESCAPE '\\'"
+        ),
+        Vec::<Vec<Value>>::new(),
+        "DROP TABLE left a shadow object in main"
+    );
 }
 
 /// Spec §6 scenario 6 (M-1 scenario 9).
