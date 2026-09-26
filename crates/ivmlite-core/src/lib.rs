@@ -15,12 +15,12 @@ mod zset;
 
 pub use agg::AggState;
 pub use arrangement::{
-    fresh_mem_arrangement, Arrangement, ArrangementId, ArrangementRole, MemArrangement,
+    fresh_mem_arrangement, Arrangement, ArrangementId, ArrangementRole, MemArrangement, StateError,
 };
 pub use database::Database;
 pub use engine::{EngineError, IncrementalEngine};
 pub use join::JoinState;
-pub use node::Node;
+pub use node::{ArrangementProvider, Node};
 pub use plan::{lower, lower_query, Plan, PlanError, ResolvedJoin, ResolvedView};
 pub use query::{Agg, AggFn, CmpOp, Join, Predicate, ViewQuery};
 pub use row::Row;

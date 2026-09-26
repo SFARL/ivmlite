@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::{fresh_mem_arrangement, lower_query, Database, Node, Row, ViewQuery, ZSet};
+use crate::{fresh_mem_arrangement, lower_query, Database, Node, Row, StateError, ViewQuery, ZSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EngineError(pub String);
@@ -60,16 +60,22 @@ impl CountingTree {
         }
     }
 
-    fn delta(&mut self, table: &str, input: &ZSet) -> ZSet {
+    fn delta(&mut self, table: &str, input: &ZSet) -> Result<ZSet, EngineError> {
         self.pushes += 1;
         self.rows_fed += input.len();
-        self.node.delta(table, input)
+        self.node.delta(table, input).map_err(state_error)
     }
 
     fn reset_counts(&mut self) {
         self.pushes = 0;
         self.rows_fed = 0;
     }
+}
+
+/// `IncrementalEngine` keeps its arrangements in memory, where only a
+/// corrupted aggregate state can fail; it is reported as an engine error.
+fn state_error(e: StateError) -> EngineError {
+    EngineError(format!("operator state: {e}"))
 }
 
 /// v0's incremental engine.
@@ -121,7 +127,8 @@ impl IncrementalEngine {
         initial: &BTreeMap<String, ZSet>,
     ) -> Result<(), EngineError> {
         let plan = lower_query(query, db).map_err(|e| EngineError(e.0))?;
-        let mut tree = CountingTree::new(Node::build(&plan, &mut fresh_mem_arrangement));
+        let mut tree =
+            CountingTree::new(Node::build(&plan, &mut fresh_mem_arrangement).map_err(state_error)?);
 
         // Bootstrap: push each table's initial state through as the first batch
         // of deltas. A declared table with no initial state is an error, not an
@@ -151,7 +158,7 @@ impl IncrementalEngine {
                     schema.table
                 ))
             })?;
-            view.merge(&tree.delta(&schema.table, base));
+            view.merge(&tree.delta(&schema.table, base)?);
         }
         self.view = view;
         self.tables = db.tables().iter().map(|s| s.table.clone()).collect();
@@ -219,7 +226,7 @@ impl IncrementalEngine {
             if delta.is_empty() {
                 continue;
             }
-            self.view.merge(&tree.delta(table, delta));
+            self.view.merge(&tree.delta(table, delta)?);
         }
         self.rows_processed = tree.rows_fed;
         self.tree_pushes = tree.pushes;

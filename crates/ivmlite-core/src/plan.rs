@@ -1,4 +1,6 @@
-use crate::{Agg, AggFn, Column, ColumnType, Database, Join, Predicate, Schema, Value, ViewQuery};
+use crate::{
+    Agg, AggFn, CmpOp, Column, ColumnType, Database, Join, Predicate, Schema, Value, ViewQuery,
+};
 
 /// Spec §5.2's plan IR.
 ///
@@ -59,6 +61,112 @@ pub enum Plan {
         /// Each `Agg::column` is likewise already remapped to `Project`'s output positions.
         aggs: Vec<Agg>,
     },
+}
+
+impl Plan {
+    /// A text rendering of the plan that identifies it exactly and does not
+    /// change with the Rust version: it is written out here by hand rather
+    /// than taken from `Debug`.
+    ///
+    /// `ivmlite-sqlite` stores it next to a view's SQL and compares it with the
+    /// rendering of a fresh `lower` on every reopen (M1b Phase 3a): the
+    /// operators' `ArrangementId`s and the aggregate's state layout mean
+    /// something only for one exact plan (spec §7), so a change to `lower` must
+    /// fail loudly instead of reading the wrong shadow tables. Names are
+    /// length-prefixed, so no table name can imitate the structure around it.
+    pub fn canonical(&self) -> String {
+        let mut out = String::new();
+        self.write_canonical(&mut out);
+        out
+    }
+
+    fn write_canonical(&self, out: &mut String) {
+        let list = |xs: &[usize]| {
+            xs.iter()
+                .map(|x| x.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        match self {
+            Plan::Scan { table, columns } => {
+                out.push_str(&format!(
+                    "scan({}:{table},[{}])",
+                    table.len(),
+                    list(columns)
+                ));
+            }
+            Plan::Join {
+                left,
+                right,
+                left_key,
+                right_key,
+            } => {
+                out.push_str(&format!("join({left_key},{right_key},"));
+                left.write_canonical(out);
+                out.push(',');
+                right.write_canonical(out);
+                out.push(')');
+            }
+            Plan::Filter { input, predicate } => {
+                out.push_str("filter(");
+                out.push_str(&canonical_predicate(predicate));
+                out.push(',');
+                input.write_canonical(out);
+                out.push(')');
+            }
+            Plan::Project { input, columns } => {
+                out.push_str(&format!("project([{}],", list(columns)));
+                input.write_canonical(out);
+                out.push(')');
+            }
+            Plan::Aggregate {
+                input,
+                group_by,
+                aggs,
+            } => {
+                let aggs: Vec<String> = aggs
+                    .iter()
+                    .map(|a| match (a.func, a.column) {
+                        (AggFn::Count, None) => "count".to_string(),
+                        (AggFn::Count, Some(c)) => format!("count({c})"),
+                        (AggFn::Sum, None) => "sum".to_string(),
+                        (AggFn::Sum, Some(c)) => format!("sum({c})"),
+                    })
+                    .collect();
+                out.push_str(&format!(
+                    "aggregate([{}],[{}],",
+                    list(group_by),
+                    aggs.join(",")
+                ));
+                input.write_canonical(out);
+                out.push(')');
+            }
+        }
+    }
+}
+
+fn canonical_predicate(predicate: &Predicate) -> String {
+    match predicate {
+        Predicate::None => "none".to_string(),
+        Predicate::Compare { column, op, value } => {
+            let op = match op {
+                CmpOp::Gt => "gt",
+                CmpOp::Ge => "ge",
+                CmpOp::Lt => "lt",
+                CmpOp::Le => "le",
+                CmpOp::Eq => "eq",
+                CmpOp::Ne => "ne",
+            };
+            let value = match value {
+                Value::Null => "null".to_string(),
+                Value::Int(n) => format!("int:{n}"),
+                Value::Text(t) => format!("text:{}:{t}", t.len()),
+            };
+            format!("{op}({column},{value})")
+        }
+        Predicate::IsNull { column } => format!("is_null({column})"),
+        Predicate::IsNotNull { column } => format!("is_not_null({column})"),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1104,5 +1212,48 @@ mod tests {
             "{}",
             err.0
         );
+    }
+
+    #[test]
+    fn the_canonical_text_of_a_join_view_is_pinned() {
+        // Stored with every persisted view (M1b Phase 3a): if this text ever
+        // changes for an unchanged plan, every existing view reports its state
+        // as unusable on reopen. Change it only together with a format bump.
+        let plan = lower_query(
+            &jq(
+                vec![2],
+                vec![sum(1), count()],
+                cmp(0, CmpOp::Ne, Value::Text("a,b".into())),
+                join("t1", 0, 0),
+            ),
+            &two_kv(),
+        )
+        .unwrap();
+        assert_eq!(
+            plan.canonical(),
+            "aggregate([0],[sum(1),count],project([2,1],filter(ne(0,text:3:a,b),\
+             join(0,0,scan(2:t0,[0,1]),scan(2:t1,[0,1])))))"
+        );
+    }
+
+    #[test]
+    fn plans_that_differ_have_different_canonical_texts() {
+        let db = Database::single(ints(2));
+        let texts: Vec<String> = [
+            q(vec![0], vec![count()], Predicate::None),
+            q(vec![1], vec![count()], Predicate::None),
+            q(vec![0], vec![sum(1)], Predicate::None),
+            q(vec![0], vec![count()], Predicate::IsNull { column: 1 }),
+            q(vec![0], vec![count()], cmp(1, CmpOp::Gt, Value::Int(3))),
+            q(vec![0], vec![count()], cmp(1, CmpOp::Ge, Value::Int(3))),
+            q(vec![0], vec![count()], cmp(1, CmpOp::Gt, Value::Int(-3))),
+        ]
+        .iter()
+        .map(|query| lower_query(query, &db).unwrap().canonical())
+        .collect();
+        let mut unique = texts.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), texts.len(), "{texts:#?}");
     }
 }

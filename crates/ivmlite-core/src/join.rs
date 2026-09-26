@@ -1,4 +1,4 @@
-use crate::{Arrangement, Row, Value, ZSet};
+use crate::{Arrangement, Row, StateError, Value, ZSet};
 
 /// Spec §6.1's bilinear operator: a two-table inner equi-join.
 ///
@@ -45,7 +45,7 @@ impl JoinState {
     /// The same argument makes the result independent of which table the
     /// engine refreshes first: across two calls, one per table, the two steps
     /// are exactly the two calls, in either order.
-    pub fn absorb(&mut self, left_delta: &ZSet, right_delta: &ZSet) -> ZSet {
+    pub fn absorb(&mut self, left_delta: &ZSet, right_delta: &ZSet) -> Result<ZSet, StateError> {
         let mut out = ZSet::new();
 
         // ΔR ⋈ S, against S from before this call.
@@ -53,13 +53,13 @@ impl JoinState {
             let Some(key) = join_key(l, self.left_key) else {
                 continue;
             };
-            for (r, wr) in self.right.get(&key) {
+            for (r, wr) in self.right.get(&key)? {
                 out.update(concat(l, &r), wl * wr);
             }
         }
         for (l, &wl) in left_delta.iter() {
             if let Some(key) = join_key(l, self.left_key) {
-                self.left.update(&key, l, wl);
+                self.left.update(&key, l, wl)?;
             }
         }
 
@@ -68,17 +68,17 @@ impl JoinState {
             let Some(key) = join_key(r, self.right_key) else {
                 continue;
             };
-            for (l, wl) in self.left.get(&key) {
+            for (l, wl) in self.left.get(&key)? {
                 out.update(concat(&l, r), wl * wr);
             }
         }
         for (r, &wr) in right_delta.iter() {
             if let Some(key) = join_key(r, self.right_key) {
-                self.right.update(&key, r, wr);
+                self.right.update(&key, r, wr)?;
             }
         }
 
-        out
+        Ok(out)
     }
 }
 
@@ -147,8 +147,11 @@ mod tests {
         let mut j = empty_join();
         assert!(j
             .absorb(&ZSet::new(), &z(&[(kv(Some("a"), 10), 1)]))
+            .unwrap()
             .is_empty());
-        let out = j.absorb(&z(&[(kv(Some("a"), 1), 1)]), &ZSet::new());
+        let out = j
+            .absorb(&z(&[(kv(Some("a"), 1), 1)]), &ZSet::new())
+            .unwrap();
         assert_eq!(
             out,
             z(&[(joined(&kv(Some("a"), 1), &kv(Some("a"), 10)), 1)])
@@ -161,8 +164,11 @@ mod tests {
         let mut j = empty_join();
         assert!(j
             .absorb(&z(&[(kv(Some("a"), 1), 1)]), &ZSet::new())
+            .unwrap()
             .is_empty());
-        let out = j.absorb(&ZSet::new(), &z(&[(kv(Some("a"), 10), 1)]));
+        let out = j
+            .absorb(&ZSet::new(), &z(&[(kv(Some("a"), 10), 1)]))
+            .unwrap();
         assert_eq!(
             out,
             z(&[(joined(&kv(Some("a"), 1), &kv(Some("a"), 10)), 1)])
@@ -176,7 +182,9 @@ mod tests {
         // implementation that joins both deltas against the state from before
         // the call drops this term.
         let mut j = empty_join();
-        let out = j.absorb(&z(&[(kv(Some("a"), 1), 1)]), &z(&[(kv(Some("a"), 10), 1)]));
+        let out = j
+            .absorb(&z(&[(kv(Some("a"), 1), 1)]), &z(&[(kv(Some("a"), 10), 1)]))
+            .unwrap();
         assert_eq!(
             out,
             z(&[(joined(&kv(Some("a"), 1), &kv(Some("a"), 10)), 1)])
@@ -189,10 +197,17 @@ mod tests {
         // another NULL. Measured in SQLite: an inner join on two NULL keys
         // yields no row.
         let mut j = empty_join();
-        assert!(j.absorb(&ZSet::new(), &z(&[(kv(None, 10), 1)])).is_empty());
-        assert!(j.absorb(&z(&[(kv(None, 1), 1)]), &ZSet::new()).is_empty());
+        assert!(j
+            .absorb(&ZSet::new(), &z(&[(kv(None, 10), 1)]))
+            .unwrap()
+            .is_empty());
+        assert!(j
+            .absorb(&z(&[(kv(None, 1), 1)]), &ZSet::new())
+            .unwrap()
+            .is_empty());
         assert!(j
             .absorb(&z(&[(kv(None, 2), 1)]), &z(&[(kv(None, 20), 1)]))
+            .unwrap()
             .is_empty());
     }
 
@@ -201,24 +216,32 @@ mod tests {
         // Z-set join: a row of weight 2 matched with a row of weight 3 is 6
         // joined rows. The retraction of one left copy is then -3.
         let mut j = empty_join();
-        j.absorb(&ZSet::new(), &z(&[(kv(Some("a"), 10), 3)]));
-        let out = j.absorb(&z(&[(kv(Some("a"), 1), 2)]), &ZSet::new());
+        j.absorb(&ZSet::new(), &z(&[(kv(Some("a"), 10), 3)]))
+            .unwrap();
+        let out = j
+            .absorb(&z(&[(kv(Some("a"), 1), 2)]), &ZSet::new())
+            .unwrap();
         let row = joined(&kv(Some("a"), 1), &kv(Some("a"), 10));
         assert_eq!(out, z(&[(row.clone(), 6)]));
-        let out = j.absorb(&z(&[(kv(Some("a"), 1), -1)]), &ZSet::new());
+        let out = j
+            .absorb(&z(&[(kv(Some("a"), 1), -1)]), &ZSet::new())
+            .unwrap();
         assert_eq!(out, z(&[(row, -3)]));
     }
 
     #[test]
     fn a_key_with_several_rows_on_the_other_side_matches_each() {
         // Spec §6.3: each side of a join is key → many rows, which is why
-        // `Arrangement::get` returns an iterator rather than an `Option`.
+        // `Arrangement::get` returns a `Vec` rather than an `Option`.
         let mut j = empty_join();
         j.absorb(
             &ZSet::new(),
             &z(&[(kv(Some("a"), 10), 1), (kv(Some("a"), 20), 1)]),
-        );
-        let out = j.absorb(&z(&[(kv(Some("a"), 1), 1)]), &ZSet::new());
+        )
+        .unwrap();
+        let out = j
+            .absorb(&z(&[(kv(Some("a"), 1), 1)]), &ZSet::new())
+            .unwrap();
         assert_eq!(
             out,
             z(&[
@@ -233,10 +256,16 @@ mod tests {
         // Every operator above the join indexes the joined row as "left
         // columns, then right columns", on the ΔR⋈S path and on the R⋈ΔS path.
         let mut j = empty_join();
-        let from_right = j.absorb(&ZSet::new(), &z(&[(kv(Some("a"), 10), 1)]));
+        let from_right = j
+            .absorb(&ZSet::new(), &z(&[(kv(Some("a"), 10), 1)]))
+            .unwrap();
         assert!(from_right.is_empty());
-        let from_left = j.absorb(&z(&[(kv(Some("a"), 1), 1)]), &ZSet::new());
-        let later_right = j.absorb(&ZSet::new(), &z(&[(kv(Some("a"), 20), 1)]));
+        let from_left = j
+            .absorb(&z(&[(kv(Some("a"), 1), 1)]), &ZSet::new())
+            .unwrap();
+        let later_right = j
+            .absorb(&ZSet::new(), &z(&[(kv(Some("a"), 20), 1)]))
+            .unwrap();
         assert_eq!(
             from_left,
             z(&[(joined(&kv(Some("a"), 1), &kv(Some("a"), 10)), 1)])
@@ -250,9 +279,13 @@ mod tests {
     #[test]
     fn retracting_a_row_retracts_its_join_results() {
         let mut j = empty_join();
-        j.absorb(&ZSet::new(), &z(&[(kv(Some("a"), 10), 1)]));
-        j.absorb(&z(&[(kv(Some("a"), 1), 1)]), &ZSet::new());
-        let out = j.absorb(&ZSet::new(), &z(&[(kv(Some("a"), 10), -1)]));
+        j.absorb(&ZSet::new(), &z(&[(kv(Some("a"), 10), 1)]))
+            .unwrap();
+        j.absorb(&z(&[(kv(Some("a"), 1), 1)]), &ZSet::new())
+            .unwrap();
+        let out = j
+            .absorb(&ZSet::new(), &z(&[(kv(Some("a"), 10), -1)]))
+            .unwrap();
         assert_eq!(
             out,
             z(&[(joined(&kv(Some("a"), 1), &kv(Some("a"), 10)), -1)])
@@ -261,6 +294,7 @@ mod tests {
         // for key "a" matches nothing.
         assert!(j
             .absorb(&z(&[(kv(Some("a"), 2), 1)]), &ZSet::new())
+            .unwrap()
             .is_empty());
     }
 
@@ -282,17 +316,21 @@ mod tests {
             Box::new(MemArrangement::new()),
             Box::new(MemArrangement::new()),
         );
-        let from_right = j.absorb(
-            &z(&[(kv(Some("a"), 1), 1)]),
-            &z(&[(vk(10, "a"), 1), (vk(1, "b"), 1)]),
-        );
+        let from_right = j
+            .absorb(
+                &z(&[(kv(Some("a"), 1), 1)]),
+                &z(&[(vk(10, "a"), 1), (vk(1, "b"), 1)]),
+            )
+            .unwrap();
         assert_eq!(
             from_right,
             z(&[(joined(&kv(Some("a"), 1), &vk(10, "a")), 1)])
         );
-        let from_left = j.absorb(&z(&[(kv(Some("b"), 2), 1)]), &ZSet::new());
+        let from_left = j
+            .absorb(&z(&[(kv(Some("b"), 2), 1)]), &ZSet::new())
+            .unwrap();
         assert_eq!(from_left, z(&[(joined(&kv(Some("b"), 2), &vk(1, "b")), 1)]));
-        let later_right = j.absorb(&ZSet::new(), &z(&[(vk(20, "b"), 1)]));
+        let later_right = j.absorb(&ZSet::new(), &z(&[(vk(20, "b"), 1)])).unwrap();
         assert_eq!(
             later_right,
             z(&[(joined(&kv(Some("b"), 2), &vk(20, "b")), 1)])
@@ -306,13 +344,17 @@ mod tests {
         // part of that contract: a one-column Row holding the key value, with
         // the whole input row as the value.
         let mut right = MemArrangement::new();
-        right.update(
-            &Row::new(vec![Value::Text("a".into())]),
-            &kv(Some("a"), 10),
-            1,
-        );
+        right
+            .update(
+                &Row::new(vec![Value::Text("a".into())]),
+                &kv(Some("a"), 10),
+                1,
+            )
+            .unwrap();
         let mut j = JoinState::new(0, 0, Box::new(MemArrangement::new()), Box::new(right));
-        let out = j.absorb(&z(&[(kv(Some("a"), 1), 1)]), &ZSet::new());
+        let out = j
+            .absorb(&z(&[(kv(Some("a"), 1), 1)]), &ZSet::new())
+            .unwrap();
         assert_eq!(
             out,
             z(&[(joined(&kv(Some("a"), 1), &kv(Some("a"), 10)), 1)])
