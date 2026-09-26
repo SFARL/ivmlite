@@ -35,7 +35,7 @@ A SQLite-backed arrangement can fail, so failure becomes part of the interfaces 
 
 ## 4. Persistence conventions
 
-All identifiers are double-quoted in every statement the extension issues.
+All identifiers are double-quoted in every statement the extension issues. A statement that reads, writes, creates or drops a **base** table, or a shadow object tied one-to-one to one (the delta table and its triggers), additionally schema-qualifies the name to `"main"`, so an unqualified reference cannot resolve against a same-named TEMP table instead — except inside a trigger body, where SQLite rejects a schema-qualified name on `INSERT`/`UPDATE`/`DELETE`; there the delta table is referenced unqualified, which still resolves to `main` because the trigger's own name stays qualified to it.
 
 **Global tables**, created with the first view and dropped with the last:
 
@@ -49,7 +49,7 @@ __ivm_progress(view TEXT, tbl TEXT, applied_seq INTEGER NOT NULL, PRIMARY KEY(vi
 
 `plan` is the lowered plan's canonical text — the plan fingerprint §4.4 asked for. It is stored as text rather than a hash so a mismatch can be read. `declaration` is the `CREATE TABLE` statement the virtual table was declared with, kept so a view whose SQL no longer compiles can still be opened, and so dropped (§5).
 
-**Per base table:** `__ivm_delta_<t>(seq INTEGER PRIMARY KEY AUTOINCREMENT, w INTEGER NOT NULL, <every column of t>)` and three triggers `__ivm_<t>_ins`, `__ivm_<t>_del`, `__ivm_<t>_upd`, exactly as §8.1 (an UPDATE writes −1 OLD then +1 NEW).
+**Per base table:** `__ivm_delta_<t>(__ivm_seq INTEGER PRIMARY KEY AUTOINCREMENT, __ivm_w INTEGER NOT NULL, <every column of t>)` — its own two columns are prefixed so a base column literally named `seq` or `w` is not shadowed — and three triggers `__ivm_trig_<t>_ins`, `__ivm_trig_<t>_del`, `__ivm_trig_<t>_upd` (the `trig_` infix so no base table name and event can spell the same string as an apply trigger's `__ivm_apply_<view>`), exactly as §8.1 (an UPDATE writes −1 OLD then +1 NEW). A base column whose name starts with `__ivm_`, matched case-insensitively, is rejected at `xCreate`: it would collide with the delta table's own columns or a future one.
 
 **Per stateful operator:** `__ivm_state_<view>_<node>_<role>(key BLOB NOT NULL, val BLOB NOT NULL, w INTEGER NOT NULL, PRIMARY KEY(key, val)) WITHOUT ROWID`. `<node>` is the operator's pre-order index in the plan (§4.4, unchanged); `<role>` is a fixed string — `join_left`, `join_right`, `agg_groups` — never the enum's `Debug` output. A row whose weight reaches 0 is deleted (§5.1). State tables are created with the view; on reopen a missing state table is an error, never an empty arrangement.
 
@@ -64,11 +64,11 @@ __ivm_progress(view TEXT, tbl TEXT, applied_seq INTEGER NOT NULL, PRIMARY KEY(vi
 **xCreate** (`CREATE VIRTUAL TABLE v USING ivm('<sql>')`), inside the statement's own transaction:
 
 1. The database encoding must be UTF-8. TEXT comparison is by UTF-8 byte order (the BINARY collation of §7.1 holds only then): measured, `'Ā' > 'a'` is true in a UTF-8 database and false in a UTF-16LE one.
-2. Compile the SQL with `ivmlite-sql` against the SQLite catalog, which reads `PRAGMA table_info` and the table's `CREATE` statement and rejects: an unknown table, a virtual table, an `__ivm_*` table, a table that is not STRICT, an `ANY` column, any `COLLATE` in the DDL (§7.1's conservative rule), and any column type other than INTEGER or TEXT.
+2. Compile the SQL with `ivmlite-sql` against the SQLite catalog, which reads `pragma_table_list`, `PRAGMA table_info` and the table's `CREATE` statement — matching the table name case-insensitively, the way SQLite's own catalog does — and rejects: an unknown table, a virtual table, an `__ivm_*` table, a table that is not STRICT, a base column whose name starts with `__ivm_` (case-insensitively), an `ANY` column, any `COLLATE` in the DDL (§7.1's conservative rule), and any column type other than INTEGER or TEXT.
 3. Phase 3a only: if a base table already has a delta table (another view tracks it), fail — Phase 3b lifts this.
 4. Create the global tables if missing (checking the stored format), the delta tables and triggers, the state tables and the output table; record `__ivm_view`, `__ivm_dep`, `__ivm_progress`.
 5. Bootstrap: read each base table in full, push it through the operator tree as the first batch, write the output, and set each progress row to the delta table's current high watermark. The delta table and triggers were created in the same transaction, so the high watermark is 0 and every later write is captured — §7.3's atomicity holds by construction.
-6. Declare the table: the output columns plus a hidden column named after the view, the FTS5 command idiom. A result column with the view's name is therefore rejected, and so is one named `__w`.
+6. Declare the table: the output columns plus a hidden column named after the view, the FTS5 command idiom. A result column is therefore rejected if it is named like the view (case-insensitively), like `__w` (the output table's own weight column), or like one of SQLite's rowid aliases `rowid`, `oid`, `_rowid_` (any case, since SQLite's own name matching is case-insensitive) — a result column that shadowed one of these otherwise left the output empty after an UPDATE, reproduced with `SELECT k AS rowid, SUM(x) FROM t GROUP BY k`.
 
 A `CREATE VIRTUAL TABLE` that fails part way leaves nothing behind, in autocommit mode and inside an explicit transaction alike: the statement writes `sqlite_schema`, so SQLite rolls it back as a whole (measured).
 
@@ -76,7 +76,7 @@ A `CREATE VIRTUAL TABLE` that fails part way leaves nothing behind, in autocommi
 
 **xBestIndex / xFilter / xColumn:** a full scan of `__ivm_out_<view>`.
 
-**xUpdate:** only `INSERT INTO v(v) VALUES('refresh')` is accepted; any other insert, update or delete, or another command, is an error. Refresh:
+**xUpdate:** only `INSERT INTO v(v) VALUES('refresh')` is accepted; any other insert, update or delete, or another command, is an error — including `INSERT INTO v(v) VALUES('refresh')` itself if any of the row's other, output-column values is non-NULL (`INSERT INTO v(col, v) VALUES (1, 'refresh')` fails rather than silently dropping the `1`). Refresh:
 
 1. for each base table in `__ivm_dep` order, read the deltas with `seq` above its progress, in `seq` order;
 2. push them through the operator tree, whose arrangements read the state tables and **buffer** every write in memory, overlaying it on what later reads see;
@@ -90,6 +90,8 @@ State, output and watermarks therefore commit together or not at all. The obviou
 
 **Every callback** runs inside `catch_unwind`; a panic becomes an SQLite error, never an unwind across the FFI boundary. Guarding only the entry point is not enough.
 
+**Known limitation:** `ALTER TABLE v RENAME TO w` on an ivmlite view leaves it undroppable. `rusqlite` 0.40 exposes no `xRename`, so SQLite renames the table in `sqlite_schema` without telling the extension; `__ivm_view` still holds the row under the old name `v`, so a later `DROP TABLE w` calls `xConnect` for `w`, finds no matching row, and fails with "ivmlite has no record of the view w". Phase 3b revisits this.
+
 ## 6. Acceptance scenarios
 
 Each has at least one test in `ivmlite-test` against the real loaded extension:
@@ -98,7 +100,7 @@ Each has at least one test in `ivmlite-test` against the real loaded extension:
 2. **Reopen.** The same engine in a mode that closes and reopens the database before every refresh, over a sweep; and a scenario where a connection without the extension writes the base tables before a refresh.
 3. **Failure and retry.** A fault injected with a test-only SQL trigger (`RAISE(ABORT)`) on the output table, and another on a state table, makes a refresh fail part way — in autocommit mode and inside an explicit transaction. Afterwards the state tables, the output table and the progress rows are identical to before, and the transaction's earlier statements survive; once the trigger is dropped, a retry matches the oracle.
 4. **Atomic create.** Creating a view inside a transaction that is rolled back leaves nothing; creating a view over tables that already hold rows bootstraps them.
-5. **Rejections.** Non-STRICT table, `ANY` column, `COLLATE`, UTF-16 database, unknown table, a view over an SQL view or an `__ivm_*` table, a base table another view already tracks, a result column named like the view, an unknown command, and `INSERT`/`UPDATE`/`DELETE` of rows on the view each fail with a message that names the problem. A tampered stored plan and a missing state table make every read and refresh fail with the reason, and the view can still be dropped.
+5. **Rejections.** Non-STRICT table, `ANY` column, `COLLATE`, UTF-16 database, unknown table, a base column named with ivmlite's own `__ivm_` prefix, a view over an SQL view or an `__ivm_*` table, a base table another view already tracks, a result column named like the view or `__w` or one of the rowid aliases (`rowid`, `oid`, `_rowid_`, any case), an unknown command, a refresh command that carries a value in an output column, and `INSERT`/`UPDATE`/`DELETE` of rows on the view each fail with a message that names the problem. A tampered stored plan and a missing state table make every read and refresh fail with the reason, and the view can still be dropped.
 6. **Drop.** After `DROP TABLE v`, `sqlite_master` holds only the user's objects and the base tables stay writable.
 
 ## 7. Front-end fixes carried into 3a
