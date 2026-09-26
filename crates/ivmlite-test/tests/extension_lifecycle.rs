@@ -55,7 +55,10 @@ fn assert_matches_oracle(c: &Connection, name: &str, sql: &str) {
     );
 }
 
-/// The names of the database's objects other than SQLite's own.
+/// The names of the database's objects other than SQLite's own. The
+/// `NOT LIKE 'sqlite_%'` filter also hides `sqlite_sequence`: the delta
+/// tables' AUTOINCREMENT creates it, and SQLite never drops it, so it stays
+/// after the last view is dropped (Phase 3a spec §6, scenario 6).
 fn objects(c: &Connection) -> Vec<Vec<Value>> {
     rows(
         c,
@@ -246,6 +249,9 @@ fn what_v0_cannot_maintain_is_rejected_by_name() {
         ("CREATE TABLE t(k TEXT) STRICT", "SELECT k, COUNT(*) FROM nope GROUP BY k", "no such table: nope"),
         ("CREATE TABLE t(k TEXT) STRICT; CREATE VIEW vv AS SELECT * FROM t", "SELECT k, COUNT(*) FROM vv GROUP BY k", "view"),
         ("CREATE TABLE __ivm_x(k TEXT) STRICT", "SELECT k, COUNT(*) FROM __ivm_x GROUP BY k", "ivmlite's own"),
+        // A virtual table (here another ivmlite view): pragma_table_list
+        // reports its type as `virtual`.
+        ("CREATE TABLE t(k TEXT) STRICT; CREATE VIRTUAL TABLE a USING ivm('SELECT k, COUNT(*) FROM t GROUP BY k')", "SELECT k, COUNT(*) FROM a GROUP BY k", "is a virtual"),
         ("CREATE TABLE t(k TEXT) STRICT; CREATE VIRTUAL TABLE a USING ivm('SELECT k, COUNT(*) FROM t GROUP BY k')", q, "already tracked"),
         ("CREATE TABLE t(k TEXT) STRICT", "SELECT k, COUNT(*) AS w FROM t GROUP BY k", "like the view"),
         ("CREATE TABLE t(k TEXT) STRICT", "SELECT k FROM t", "GROUP BY"),
