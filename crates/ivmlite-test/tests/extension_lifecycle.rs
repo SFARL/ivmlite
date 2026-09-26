@@ -257,6 +257,13 @@ fn what_v0_cannot_maintain_is_rejected_by_name() {
         // A base column whose name starts with `__ivm_` is refused: the
         // prefix is reserved for ivmlite's own shadow columns.
         ("CREATE TABLE t(k TEXT, __ivm_x INTEGER) STRICT", "SELECT k, COUNT(*) FROM t GROUP BY k", "__ivm_"),
+        // A table that declares REPLACE conflict resolution: SQLite fires no
+        // DELETE trigger for the rows REPLACE removes unless the writing
+        // connection has PRAGMA recursive_triggers ON, so every plain INSERT
+        // could silently lose a retraction (final review, Critical 1).
+        ("CREATE TABLE t(k TEXT UNIQUE ON CONFLICT REPLACE, v INTEGER) STRICT", q, "ON CONFLICT REPLACE"),
+        ("CREATE TABLE t(id INTEGER PRIMARY KEY ON CONFLICT REPLACE, k TEXT) STRICT", q, "ON CONFLICT REPLACE"),
+        ("CREATE TABLE t(k TEXT, v INTEGER, UNIQUE(k) on /* spaced */ conflict\n replace) STRICT", q, "ON CONFLICT REPLACE"),
     ];
     for (setup_sql, sql, expected) in cases {
         let c = open_with_extension(None).unwrap();
@@ -379,6 +386,84 @@ fn table_name_case_does_not_prevent_a_view_from_being_created_or_maintained() {
         .unwrap();
     refresh(&c2, "sums_lower").unwrap();
     assert_matches_oracle(&c2, "sums_lower", lower);
+}
+
+/// The COLLATE refusal matches the keyword as a token, not as a substring: a
+/// column named `collateral` (or `x_collate`) is an ordinary column (final
+/// review, Minor 6). A conflict clause other than REPLACE is accepted too.
+#[test]
+fn a_column_named_collateral_is_not_a_collate_clause() {
+    let c = open_with_extension(None).unwrap();
+    c.execute_batch(
+        "CREATE TABLE loans(collateral TEXT, x_collate INTEGER UNIQUE ON CONFLICT IGNORE) STRICT;
+         INSERT INTO loans VALUES ('house', 1), ('car', 2), ('house', 3);",
+    )
+    .unwrap();
+    let q = "SELECT collateral, SUM(x_collate), COUNT(*) FROM loans GROUP BY collateral";
+    create(&c, "by_collateral", q).unwrap();
+    assert_matches_oracle(&c, "by_collateral", q);
+    c.execute_batch("INSERT INTO loans VALUES ('car', 4)")
+        .unwrap();
+    refresh(&c, "by_collateral").unwrap();
+    assert_matches_oracle(&c, "by_collateral", q);
+}
+
+/// Statement-level REPLACE conflict resolution (`INSERT OR REPLACE`,
+/// `REPLACE INTO`, `UPDATE OR REPLACE`) removes rows without an explicit
+/// DELETE. SQLite fires the DELETE triggers for them only when the writing
+/// connection has `PRAGMA recursive_triggers = ON` (measured: with it off,
+/// only the new row's +1 reaches the delta table). With it on, a rowid
+/// conflict and a UNIQUE conflict are both captured and the view stays equal
+/// to the oracle (final review, Critical 1; a known v0 limitation otherwise,
+/// Phase 3a spec §5).
+#[test]
+fn replace_conflicts_are_captured_when_the_writer_has_recursive_triggers_on() {
+    let c = open_with_extension(None).unwrap();
+    c.execute_batch(
+        "CREATE TABLE kv(id INTEGER PRIMARY KEY, k TEXT UNIQUE, g TEXT, x INTEGER) STRICT;
+         INSERT INTO kv VALUES (1, 'a', 'p', 10), (2, 'b', 'p', 20), (3, 'c', 'q', 30);",
+    )
+    .unwrap();
+    let q = "SELECT g, SUM(x), COUNT(*) FROM kv GROUP BY g";
+    create(&c, "kv_sums", q).unwrap();
+    c.execute_batch("PRAGMA recursive_triggers = ON").unwrap();
+    for write in [
+        // A rowid conflict (and the same UNIQUE key): row 1 is replaced.
+        "INSERT OR REPLACE INTO kv VALUES (1, 'a', 'q', 100)",
+        // A UNIQUE conflict on k: row 2 is removed, row 4 inserted.
+        "REPLACE INTO kv VALUES (4, 'b', 'q', 5)",
+        // An UPDATE whose new k collides with row 3: row 3 is removed.
+        "UPDATE OR REPLACE kv SET k = 'c' WHERE id = 4",
+        // A rowid conflict with a new UNIQUE key.
+        "INSERT OR REPLACE INTO kv VALUES (1, 'z', 'p', 7)",
+    ] {
+        c.execute_batch(write).unwrap();
+        refresh(&c, "kv_sums").unwrap();
+        assert_matches_oracle(&c, "kv_sums", q);
+    }
+}
+
+/// An upsert (`INSERT … ON CONFLICT(col) DO UPDATE`) runs an ordinary UPDATE
+/// on the conflicting row, so its UPDATE trigger fires without
+/// recursive_triggers (final review, Critical 1).
+#[test]
+fn an_upsert_is_captured_without_recursive_triggers() {
+    let c = open_with_extension(None).unwrap();
+    c.execute_batch(
+        "CREATE TABLE kv(k TEXT UNIQUE, g TEXT, x INTEGER) STRICT;
+         INSERT INTO kv VALUES ('a', 'p', 10), ('b', 'p', 20), ('c', 'q', 30);",
+    )
+    .unwrap();
+    let q = "SELECT g, SUM(x), COUNT(*) FROM kv GROUP BY g";
+    create(&c, "kv_sums", q).unwrap();
+    c.execute_batch(
+        "INSERT INTO kv VALUES ('a', 'q', 1) ON CONFLICT(k) DO UPDATE SET g = excluded.g, x = x + excluded.x;
+         INSERT INTO kv VALUES ('d', 'p', 4) ON CONFLICT(k) DO UPDATE SET x = x + excluded.x;
+         INSERT INTO kv VALUES ('b', 'p', 2) ON CONFLICT(k) DO NOTHING;",
+    )
+    .unwrap();
+    refresh(&c, "kv_sums").unwrap();
+    assert_matches_oracle(&c, "kv_sums", q);
 }
 
 /// A base table with columns named `w` and `seq` is maintained correctly: the

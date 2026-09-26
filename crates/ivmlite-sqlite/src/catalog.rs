@@ -53,9 +53,18 @@ impl Catalog for SqliteCatalog<'_> {
                 |r| r.get(0),
             )
             .map_err(err)?;
-        if sql.to_ascii_uppercase().contains("COLLATE") {
+        let ddl = tokens(&sql);
+        if declares_collate(&ddl) {
             return refuse(
                 "declares a COLLATE clause; v0 supports only the BINARY collation (spec §7.1)",
+            );
+        }
+        if declares_on_conflict_replace(&ddl) {
+            return refuse(
+                "declares ON CONFLICT REPLACE; SQLite fires no DELETE trigger for a row that \
+                 REPLACE removes unless the writing connection has PRAGMA recursive_triggers ON, \
+                 so ivmlite v0 would miss the removal and the view would silently diverge \
+                 (Phase 3a spec §5)",
             );
         }
         let mut stmt = self
@@ -107,6 +116,83 @@ impl Catalog for SqliteCatalog<'_> {
     }
 }
 
+/// The tokens of a `CREATE TABLE` statement, in order: each keyword or bare
+/// identifier upper-cased, each punctuation character on its own, and each
+/// quoted string or identifier (`'…'`, `"…"`, `` `…` ``, `[…]`) as one empty
+/// token, so a word inside quotes is never mistaken for a keyword. Whitespace
+/// and comments (`-- …`, `/* … */`) only separate tokens.
+///
+/// The DDL checks below scan the whole statement, not a single column's
+/// definition — the conservative scope of spec §7.1 — but match keywords as
+/// whole tokens, so a column named `collateral` is not a COLLATE clause.
+fn tokens(sql: &str) -> Vec<String> {
+    let chars: Vec<char> = sql.chars().collect();
+    let at = |i: usize| chars.get(i).copied();
+    // SQLite's identifier characters: ASCII letters, digits, `_`, `$`, and
+    // every non-ASCII character.
+    let is_word = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '$' || !c.is_ascii();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while let Some(c) = at(i) {
+        if c.is_ascii_whitespace() {
+            i += 1;
+        } else if c == '-' && at(i + 1) == Some('-') {
+            while at(i).is_some_and(|c| c != '\n') {
+                i += 1;
+            }
+        } else if c == '/' && at(i + 1) == Some('*') {
+            i += 2;
+            while at(i).is_some() && !(at(i) == Some('*') && at(i + 1) == Some('/')) {
+                i += 1;
+            }
+            i += 2;
+        } else if matches!(c, '\'' | '"' | '`' | '[') {
+            let close = if c == '[' { ']' } else { c };
+            i += 1;
+            while let Some(q) = at(i) {
+                i += 1;
+                if q == close {
+                    // A doubled quote is an escaped quote, not the end;
+                    // `[…]` has no escape.
+                    if close != ']' && at(i) == Some(close) {
+                        i += 1;
+                    } else {
+                        break;
+                    }
+                }
+            }
+            out.push(String::new());
+        } else if is_word(c) {
+            let start = i;
+            while at(i).is_some_and(is_word) {
+                i += 1;
+            }
+            out.push(
+                chars[start..i]
+                    .iter()
+                    .collect::<String>()
+                    .to_ascii_uppercase(),
+            );
+        } else {
+            out.push(c.to_string());
+            i += 1;
+        }
+    }
+    out
+}
+
+fn declares_collate(ddl: &[String]) -> bool {
+    ddl.iter().any(|t| t == "COLLATE")
+}
+
+/// A column or table constraint's `ON CONFLICT REPLACE` (final review,
+/// Critical 1): with it, every plain INSERT or UPDATE that conflicts silently
+/// removes the old row.
+fn declares_on_conflict_replace(ddl: &[String]) -> bool {
+    ddl.windows(3)
+        .any(|w| w[0] == "ON" && w[1] == "CONFLICT" && w[2] == "REPLACE")
+}
+
 /// Fails unless the database is UTF-8: TEXT compares by UTF-8 byte order in
 /// the engine, which is SQLite's BINARY collation only for UTF-8 (Phase 3a
 /// spec §5; measured, `'Ā' > 'a'` differs between UTF-8 and UTF-16LE).
@@ -120,5 +206,43 @@ pub fn require_utf8(conn: &Connection) -> Result<(), String> {
         Err(format!(
             "the database encoding is {encoding}; ivmlite v0 supports UTF-8 databases only"
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn collate_is_matched_as_a_token_not_a_substring() {
+        assert!(declares_collate(&tokens(
+            "CREATE TABLE t(k TEXT collate nocase)"
+        )));
+        assert!(declares_collate(&tokens(
+            "CREATE TABLE t(k TEXT/**/COLLATE\tbinary)"
+        )));
+        assert!(!declares_collate(&tokens(
+            "CREATE TABLE t(collateral TEXT, x_collate INTEGER)"
+        )));
+        // Inside quotes or a comment, COLLATE is not a clause.
+        assert!(!declares_collate(&tokens(
+            "CREATE TABLE t(\"collate\" TEXT DEFAULT 'COLLATE') -- COLLATE"
+        )));
+    }
+
+    #[test]
+    fn on_conflict_replace_is_matched_across_whitespace_and_comments() {
+        assert!(declares_on_conflict_replace(&tokens(
+            "CREATE TABLE t(k TEXT UNIQUE ON CONFLICT REPLACE)"
+        )));
+        assert!(declares_on_conflict_replace(&tokens(
+            "CREATE TABLE t(k TEXT, UNIQUE(k) on /* x */ conflict -- y\n replace)"
+        )));
+        assert!(!declares_on_conflict_replace(&tokens(
+            "CREATE TABLE t(k TEXT UNIQUE ON CONFLICT IGNORE, \"on conflict replace\" TEXT)"
+        )));
+        assert!(!declares_on_conflict_replace(&tokens(
+            "CREATE TABLE t(k TEXT DEFAULT 'on conflict replace', [on conflict replace] TEXT)"
+        )));
     }
 }
