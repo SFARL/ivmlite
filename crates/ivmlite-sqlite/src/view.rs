@@ -58,15 +58,21 @@ fn arrangement_ids(plan: &Plan) -> Vec<ArrangementId> {
     ids
 }
 
-fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
+/// Whether the main schema holds an object of `kind` (`table`, `trigger`)
+/// named exactly `name`.
+fn object_exists(conn: &Connection, kind: &str, name: &str) -> Result<bool> {
     conn.query_row(
-        "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?1",
-        [name],
+        "SELECT 1 FROM sqlite_schema WHERE type = ?1 AND name = ?2",
+        [kind, name],
         |_| Ok(()),
     )
     .optional()
     .map(|found| found.is_some())
     .map_err(sql_error)
+}
+
+fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
+    object_exists(conn, "table", name)
 }
 
 fn base_schema(conn: &Connection, table: &str) -> Result<Schema> {
@@ -90,6 +96,20 @@ fn sql_type(column: &ivmlite_core::Column) -> &'static str {
         ivmlite_core::ColumnType::Integer => "INTEGER",
         ivmlite_core::ColumnType::Text => "TEXT",
     }
+}
+
+/// A base table's column shape — its columns' names and types, in order, as
+/// the catalog reports them — stored in `__ivm_dep` at create and compared on
+/// every connect and refresh. A table dropped and recreated with other
+/// column types can compile to the same plan, since the plan names columns
+/// by position only.
+fn shape(schema: &Schema) -> String {
+    schema
+        .columns
+        .iter()
+        .map(|c| format!("{} {}", quote(&c.name), sql_type(c)))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// The `CREATE TABLE` statement SQLite is given for the virtual table: the
@@ -135,7 +155,7 @@ fn create_global_tables(conn: &Connection) -> Result<()> {
              CREATE TABLE IF NOT EXISTS {VIEWS}(name TEXT PRIMARY KEY, sql TEXT NOT NULL,
                  plan TEXT NOT NULL, declaration TEXT NOT NULL, format INTEGER NOT NULL);
              CREATE TABLE IF NOT EXISTS {DEPS}(view TEXT NOT NULL, tbl TEXT NOT NULL,
-                 PRIMARY KEY(view, tbl));
+                 shape TEXT NOT NULL, PRIMARY KEY(view, tbl));
              CREATE TABLE IF NOT EXISTS {PROGRESS}(view TEXT NOT NULL, tbl TEXT NOT NULL,
                  applied_seq INTEGER NOT NULL, PRIMARY KEY(view, tbl));
              INSERT OR IGNORE INTO {META}(key, value) VALUES ('format', {FORMAT});"
@@ -540,10 +560,10 @@ pub fn create(conn: &Rc<Connection>, name: &str, sql: &str) -> Result<CompiledVi
         params![name, sql, view.plan.canonical(), declared, FORMAT],
     )
     .map_err(sql_error)?;
-    for t in &view.tables {
+    for (t, schema) in view.tables.iter().zip(&schemas) {
         conn.execute(
-            &format!("INSERT INTO {DEPS}(view, tbl) VALUES (?1, ?2)"),
-            params![name, t],
+            &format!("INSERT INTO {DEPS}(view, tbl, shape) VALUES (?1, ?2, ?3)"),
+            params![name, t, shape(schema)],
         )
         .map_err(sql_error)?;
     }
@@ -600,9 +620,13 @@ pub fn connect(conn: &Connection, name: &str) -> Result<Reopened> {
     let Some((sql, plan, declaration, format)) = stored else {
         return Err(format!("ivmlite has no record of the view {name}"));
     };
-    let view = verify(conn, name, &sql, &plan, format)
-        .map_err(|why| format!("view {name} cannot be maintained: {why}; drop and recreate it"));
+    let view = verify(conn, name, &sql, &plan, format).map_err(|why| broken(name, &why));
     Ok(Reopened { declaration, view })
+}
+
+/// The error every read and refresh of a broken view reports (spec §5).
+fn broken(name: &str, why: &str) -> String {
+    format!("view {name} cannot be maintained: {why}; drop and recreate it")
 }
 
 fn verify(
@@ -637,12 +661,53 @@ fn verify(
             return Err(format!("its shadow table {table} is missing"));
         }
     }
+    check_capture(conn, name, &view)?;
     Ok(view)
+}
+
+/// Checked on every connect and every refresh: each base table still has the
+/// column shape recorded at create and its three capture triggers, and the
+/// view still has its apply trigger. `DROP TABLE t` drops `t`'s triggers but
+/// not its delta table, so a recreated `t` would otherwise leave every later
+/// write uncaptured; without the apply trigger, a refresh would apply
+/// nothing. Either way the view would go stale with no error.
+fn check_capture(conn: &Connection, name: &str, view: &CompiledView) -> Result<()> {
+    for table in &view.tables {
+        let recorded: Option<String> = conn
+            .query_row(
+                &format!("SELECT shape FROM {DEPS} WHERE view = ?1 AND tbl = ?2"),
+                params![name, table],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(sql_error)?;
+        let recorded =
+            recorded.ok_or_else(|| format!("its dependency on table {table} is not recorded"))?;
+        let now = shape(&base_schema(conn, table)?);
+        if now != recorded {
+            return Err(format!(
+                "base table {table} changed shape since the view was created \
+                 (was ({recorded}), now ({now}))"
+            ));
+        }
+        for event in ["ins", "del", "upd"] {
+            let capture = trigger(table, event);
+            if !object_exists(conn, "trigger", &capture)? {
+                return Err(format!("its capture trigger {capture} is missing"));
+            }
+        }
+    }
+    let apply = apply_trigger(name);
+    if !object_exists(conn, "trigger", &apply)? {
+        return Err(format!("its apply trigger {apply} is missing"));
+    }
+    Ok(())
 }
 
 /// `INSERT INTO v(v) VALUES('refresh')`: bring the view up to date. State,
 /// output and watermarks change together or not at all (see `apply`).
 pub fn refresh(conn: &Rc<Connection>, name: &str, view: &CompiledView) -> Result<()> {
+    check_capture(conn, name, view).map_err(|why| broken(name, &why))?;
     let mut batches = Vec::new();
     let mut progress = Vec::new();
     for table in &view.tables {

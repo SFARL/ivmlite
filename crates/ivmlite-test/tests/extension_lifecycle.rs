@@ -344,6 +344,70 @@ fn a_broken_view_reports_why_and_can_still_be_dropped() {
     }
 }
 
+/// A view whose capture no longer works — a base table dropped and recreated
+/// (its triggers go with it), recreated with another shape, altered, or the
+/// view's apply trigger dropped — is a broken view (spec §5): a refresh on
+/// the connection that made the change, and a read and a refresh on a fresh
+/// connection, fail with the reason; and the view can still be dropped
+/// (final review, Important 2). Without these checks every refresh
+/// succeeded against a stale view, or silently applied nothing.
+#[test]
+fn a_view_whose_capture_is_broken_reports_why_and_can_still_be_dropped() {
+    for (breakage, expected) in [
+        (
+            "DROP TABLE orders; CREATE TABLE orders(region TEXT, amount INTEGER) STRICT;",
+            "__ivm_trig_orders_ins is missing",
+        ),
+        (
+            "DROP TABLE orders; CREATE TABLE orders(region INTEGER, amount INTEGER) STRICT;",
+            "changed shape",
+        ),
+        // Adding a column changes the scan's column list, so the plan check
+        // reports it first (a v0 limitation, Phase 3a spec §5).
+        ("ALTER TABLE orders ADD COLUMN note TEXT", "different plan"),
+        (
+            "DROP TRIGGER __ivm_apply_sums",
+            "__ivm_apply_sums is missing",
+        ),
+    ] {
+        let file = TempFile::new("capture-broken");
+        let c = open_with_extension(Some(file.path())).unwrap();
+        setup(&c);
+        let user_objects = objects(&c);
+        create(&c, "sums", SUMS).unwrap();
+        c.execute_batch(breakage).unwrap();
+        // A NULL region fits either recreated shape.
+        c.execute_batch("INSERT INTO orders(amount) VALUES (7)")
+            .unwrap();
+        let err = refresh(&c, "sums").expect_err(breakage);
+        assert!(
+            err.to_string().contains(expected) && err.to_string().contains("drop and recreate"),
+            "{breakage} / same connection: {err}"
+        );
+        drop(c);
+
+        let c = open_with_extension(Some(file.path())).unwrap();
+        for sql in [
+            "SELECT * FROM sums",
+            "INSERT INTO sums(sums) VALUES ('refresh')",
+        ] {
+            let err = c.execute_batch(sql).expect_err(sql);
+            assert!(
+                err.to_string().contains(expected),
+                "{breakage} / {sql}: {err}"
+            );
+        }
+        c.execute_batch("DROP TABLE sums").unwrap();
+        assert_eq!(
+            objects(&c),
+            user_objects,
+            "{breakage}: DROP TABLE left objects"
+        );
+        c.execute_batch("INSERT INTO orders(amount) VALUES (1)")
+            .unwrap();
+    }
+}
+
 /// Spec §6 scenario 6 (M-1 scenario 9).
 #[test]
 fn drop_removes_every_shadow_object_and_the_base_tables_stay_writable() {
