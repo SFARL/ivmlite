@@ -37,37 +37,57 @@ pub fn extension_library() -> PathBuf {
         "libivmlite_sqlite.so"
     };
     let lib = repo().join("crates/ivmlite-sqlite/target/debug").join(name);
-    let built = std::fs::metadata(&lib)
-        .and_then(|m| m.modified())
-        .unwrap_or_else(|_| {
-            panic!(
-                "the ivmlite extension is not built at {}; run scripts/build-extension.sh",
-                lib.display()
-            )
-        });
-    let newest = [
+    let crates: Vec<PathBuf> = [
         "crates/ivmlite-sqlite",
         "crates/ivmlite-core",
         "crates/ivmlite-sql",
     ]
     .iter()
-    .flat_map(|dir| sources(&repo().join(dir)))
-    .max()
-    .expect("the extension has sources");
-    assert!(
-        built >= newest,
-        "the ivmlite extension at {} is older than its sources; run scripts/build-extension.sh",
-        lib.display()
-    );
+    .map(|dir| repo().join(dir))
+    .collect();
+    if let Err(why) = check_library(&lib, &crates) {
+        panic!("{why}");
+    }
     lib
 }
 
-/// The modification times of a crate's manifest and every file under `src/`.
+/// `Ok` if `lib` exists and is at least as new as every source file of
+/// `crates`; otherwise why not, with the instruction to rebuild. A missing
+/// or stale library is an error, never a skip: a skipped extension test
+/// would be a false green (Phase 3a spec §2).
+fn check_library(lib: &Path, crates: &[PathBuf]) -> Result<(), String> {
+    let built = std::fs::metadata(lib)
+        .and_then(|m| m.modified())
+        .map_err(|_| {
+            format!(
+                "the ivmlite extension is not built at {}; run scripts/build-extension.sh",
+                lib.display()
+            )
+        })?;
+    let newest = crates
+        .iter()
+        .flat_map(|dir| sources(dir))
+        .max()
+        .ok_or_else(|| "the ivmlite extension has no source files".to_string())?;
+    if built < newest {
+        return Err(format!(
+            "the ivmlite extension at {} is older than its sources; run scripts/build-extension.sh",
+            lib.display()
+        ));
+    }
+    Ok(())
+}
+
+/// The modification times of a crate's manifest, its lock file if it has
+/// one (the extension builds outside the workspace, with its own
+/// `Cargo.lock`), and every file under `src/`.
 fn sources(dir: &Path) -> Vec<SystemTime> {
     let mut out = Vec::new();
     let mut stack = vec![dir.join("src")];
-    if let Ok(m) = std::fs::metadata(dir.join("Cargo.toml")).and_then(|m| m.modified()) {
-        out.push(m);
+    for file in ["Cargo.toml", "Cargo.lock"] {
+        if let Ok(m) = std::fs::metadata(dir.join(file)).and_then(|m| m.modified()) {
+            out.push(m);
+        }
     }
     while let Some(d) = stack.pop() {
         for entry in std::fs::read_dir(&d).into_iter().flatten().flatten() {
@@ -305,5 +325,95 @@ impl Engine for SqliteExtensionEngine {
             z.update(row.map_err(err)?, 1);
         }
         Ok(z)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// A fake crate directory — `Cargo.toml`, `Cargo.lock`, `src/lib.rs` —
+    /// and a fake library next to it, each with a chosen modification time
+    /// (seconds after an arbitrary epoch); removed when dropped.
+    struct FakeBuild {
+        dir: PathBuf,
+    }
+
+    impl FakeBuild {
+        fn new(tag: &str) -> Self {
+            let dir =
+                std::env::temp_dir().join(format!("ivmlite-libcheck-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(dir.join("crate/src")).unwrap();
+            FakeBuild { dir }
+        }
+
+        fn krate(&self) -> PathBuf {
+            self.dir.join("crate")
+        }
+
+        fn lib(&self) -> PathBuf {
+            self.dir.join("libivmlite_sqlite.dylib")
+        }
+
+        /// Create (or overwrite) `path` with modification time `secs`.
+        fn touch(&self, path: &Path, secs: u64) {
+            let file = std::fs::File::create(path).unwrap();
+            file.set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000 + secs))
+                .unwrap();
+        }
+
+        /// Every source at time 10; the manifest's lock file at `lock`.
+        fn sources_at(&self, lock: u64) {
+            self.touch(&self.krate().join("Cargo.toml"), 10);
+            self.touch(&self.krate().join("src/lib.rs"), 10);
+            self.touch(&self.krate().join("Cargo.lock"), lock);
+        }
+    }
+
+    impl Drop for FakeBuild {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    #[test]
+    fn a_missing_library_is_an_error_not_a_skip() {
+        let b = FakeBuild::new("missing");
+        b.sources_at(10);
+        let err = check_library(&b.lib(), &[b.krate()]).unwrap_err();
+        assert!(err.contains("is not built"), "{err}");
+        assert!(err.contains("scripts/build-extension.sh"), "{err}");
+    }
+
+    #[test]
+    fn a_library_older_than_a_source_file_is_an_error() {
+        let b = FakeBuild::new("stale-src");
+        b.sources_at(10);
+        b.touch(&b.lib(), 20);
+        b.touch(&b.krate().join("src/lib.rs"), 30);
+        let err = check_library(&b.lib(), &[b.krate()]).unwrap_err();
+        assert!(err.contains("older than its sources"), "{err}");
+    }
+
+    /// The extension's own `Cargo.lock` decides which dependency versions it
+    /// is built with, so a newer lock file makes the library stale too
+    /// (final review, Minor 11).
+    #[test]
+    fn a_library_older_than_the_lock_file_is_an_error() {
+        let b = FakeBuild::new("stale-lock");
+        b.sources_at(30);
+        b.touch(&b.lib(), 20);
+        let err = check_library(&b.lib(), &[b.krate()]).unwrap_err();
+        assert!(err.contains("older than its sources"), "{err}");
+    }
+
+    #[test]
+    fn a_library_newer_than_every_source_is_accepted() {
+        let b = FakeBuild::new("fresh");
+        b.sources_at(10);
+        b.touch(&b.lib(), 20);
+        assert_eq!(check_library(&b.lib(), &[b.krate()]), Ok(()));
     }
 }

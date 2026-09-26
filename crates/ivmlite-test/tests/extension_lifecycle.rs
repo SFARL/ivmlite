@@ -550,6 +550,37 @@ fn temp_tables_named_like_the_shadow_tables_are_never_touched() {
     );
 }
 
+/// A SUM past `i64::MAX` panics in the core engine in a debug build
+/// (`agg.rs` adds with overflow checks on). Every extension callback runs
+/// inside `guard`, so create and refresh fail with an SQLite error rather
+/// than unwinding across the FFI boundary and aborting the host process
+/// (final review, Important 4). A release build wraps instead — within the
+/// parent spec's "overflow is undefined" (§6.1).
+#[test]
+fn an_overflowing_sum_is_an_sqlite_error_not_a_crash() {
+    let c = open_with_extension(None).unwrap();
+    c.execute_batch(
+        "CREATE TABLE big(k TEXT, x INTEGER) STRICT;
+         INSERT INTO big VALUES ('a', 9223372036854775807), ('a', 1);",
+    )
+    .unwrap();
+    let q = "SELECT k, SUM(x) FROM big GROUP BY k";
+    let err = create(&c, "big_sums", q).expect_err("the bootstrap overflows");
+    assert!(err.to_string().contains("overflow"), "create: {err}");
+
+    c.execute_batch("DELETE FROM big WHERE x = 1").unwrap();
+    create(&c, "big_sums", q).unwrap();
+    c.execute_batch("INSERT INTO big VALUES ('a', 1)").unwrap();
+    let err = refresh(&c, "big_sums").expect_err("the refresh overflows");
+    assert!(err.to_string().contains("overflow"), "refresh: {err}");
+    // The failed refresh changed nothing, and the view can still be dropped.
+    assert_eq!(
+        rows(&c, "SELECT * FROM big_sums"),
+        vec![vec![Value::Text("a".into()), Value::Integer(i64::MAX)]]
+    );
+    c.execute_batch("DROP TABLE big_sums").unwrap();
+}
+
 /// Spec §6 scenario 6 (M-1 scenario 9).
 #[test]
 fn drop_removes_every_shadow_object_and_the_base_tables_stay_writable() {
