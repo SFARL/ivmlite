@@ -15,11 +15,16 @@ pub struct SqliteCatalog<'a> {
 impl Catalog for SqliteCatalog<'_> {
     fn table(&self, name: &str) -> Result<Option<Schema>, CatalogError> {
         let err = |e: rusqlite::Error| CatalogError(format!("reading the catalog: {e}"));
-        // pragma_table_list matches names case-insensitively, as SQLite does.
+        // pragma_table_list's `name` column compares case-sensitively by
+        // default (measured: `FROM orders` failed to find a table declared
+        // `Orders`, although SQLite itself accepts it); COLLATE NOCASE makes
+        // this match names the way SQLite does. The row's own `name` column
+        // still carries the declared spelling, which `declared` below keeps.
         let found: Option<(String, String, bool)> = self
             .conn
             .query_row(
-                "SELECT name, type, strict FROM pragma_table_list WHERE schema = 'main' AND name = ?1",
+                "SELECT name, type, strict FROM pragma_table_list \
+                 WHERE schema = 'main' AND name = ?1 COLLATE NOCASE",
                 [name],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
@@ -73,6 +78,11 @@ impl Catalog for SqliteCatalog<'_> {
         let mut columns = Vec::new();
         for row in rows {
             let (column, ty, not_null, pk) = row.map_err(err)?;
+            if column.len() >= PREFIX.len() && column[..PREFIX.len()].eq_ignore_ascii_case(PREFIX) {
+                return refuse(&format!(
+                    "column {column} starts with {PREFIX}, which ivmlite reserves for its own shadow columns (e.g. the delta table's)"
+                ));
+            }
             let ty = match ty.to_ascii_uppercase().as_str() {
                 "INTEGER" | "INT" => ColumnType::Integer,
                 "TEXT" => ColumnType::Text,

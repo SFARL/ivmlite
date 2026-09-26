@@ -32,17 +32,24 @@ pub unsafe extern "C" fn sqlite3_ivmlite_init(
     err: *mut *mut c_char,
     api: *mut ffi::sqlite3_api_routines,
 ) -> c_int {
-    Connection::extension_init2(db, err, api, |conn| {
-        // The `ivm` module: a writable virtual table, `INSERT` being its
-        // command channel. A `const` is promoted to the `'static` the
-        // registration needs.
-        const IVM: Module<'static, vtab::IvmTab> = Module::update_module();
-        std::panic::catch_unwind(AssertUnwindSafe(|| conn.create_module(c"ivm", &IVM, None)))
-            .unwrap_or_else(|_| {
+    // SAFETY: `db`, `err` and `api` are exactly what SQLite passed to this
+    // `sqlite3_ivmlite_init` call (the entry point's own contract, see its
+    // doc comment above); `extension_init2`'s contract is that `init` must do
+    // nothing but register features, and the closure below only calls
+    // `create_module`.
+    unsafe {
+        Connection::extension_init2(db, err, api, |conn| {
+            // The `ivm` module: a writable virtual table, `INSERT` being its
+            // command channel. A `const` is promoted to the `'static` the
+            // registration needs.
+            const IVM: Module<'static, vtab::IvmTab> = Module::update_module();
+            std::panic::catch_unwind(AssertUnwindSafe(|| conn.create_module(c"ivm", &IVM, None)))
+                .unwrap_or_else(|_| {
                 Err(rusqlite::Error::ModuleError(
                     "ivmlite internal error while registering the ivm module".to_string(),
                 ))
             })?;
-        Ok(false)
-    })
+            Ok(false)
+        })
+    }
 }

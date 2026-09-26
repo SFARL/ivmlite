@@ -12,8 +12,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::catalog::{require_utf8, SqliteCatalog};
 use crate::names::{
-    apply_trigger, delta_table, literal, out_table, quote, stage_table, state_table, trigger, DEPS,
-    META, PROGRESS, VIEWS,
+    apply_trigger, delta_table, literal, main_qualified, out_table, quote, stage_table,
+    state_table, trigger, DELTA_SEQ, DELTA_W, DEPS, META, PROGRESS, VIEWS,
 };
 use crate::state::{BufferedArrangement, Pending};
 
@@ -22,6 +22,14 @@ pub const FORMAT: i64 = 1;
 
 /// The column of the view's output table that holds each row's weight.
 const WEIGHT: &str = "__w";
+
+/// Names SQLite reserves for a table's rowid (spec §7): a result column with
+/// one of these would shadow the alias `__ivm_out_<view>`'s own rowid needs —
+/// the apply trigger's `DELETE … WHERE rowid = …` and the cursor's
+/// `SELECT rowid, …` both rely on `rowid` naming the real row id, not a
+/// same-named result column (reproduced: `SELECT k AS rowid, SUM(x) FROM t
+/// GROUP BY k` left the output empty after an UPDATE).
+const ROWID_ALIASES: [&str; 3] = ["rowid", "oid", "_rowid_"];
 
 type Result<T> = std::result::Result<T, String>;
 
@@ -97,6 +105,16 @@ pub fn declaration(name: &str, view: &CompiledView) -> Result<String> {
             "a result column is named {name}, like the view; the view's name is its command column"
         ));
     }
+    if let Some(c) = view.columns.iter().find(|c| {
+        ROWID_ALIASES
+            .iter()
+            .any(|reserved| c.name.eq_ignore_ascii_case(reserved))
+    }) {
+        return Err(format!(
+            "a result column is named {}, which SQLite reserves for the rowid",
+            c.name
+        ));
+    }
     let columns: Vec<String> = view
         .columns
         .iter()
@@ -140,7 +158,7 @@ fn create_global_tables(conn: &Connection) -> Result<()> {
 
 fn create_delta_table(conn: &Connection, schema: &Schema) -> Result<()> {
     let t = &schema.table;
-    let delta = quote(&delta_table(t));
+    let delta = main_qualified(&delta_table(t));
     let defs: Vec<String> = schema
         .columns
         .iter()
@@ -149,28 +167,35 @@ fn create_delta_table(conn: &Connection, schema: &Schema) -> Result<()> {
     let cols = column_list(schema, "");
     let new = column_list(schema, "NEW.");
     let old = column_list(schema, "OLD.");
+    // The ON clause of CREATE TRIGGER cannot be schema-qualified (SQL forbids
+    // it), so this stays an unqualified reference; the trigger's own name
+    // below is qualified to `main` instead, which SQLite requires to bind to
+    // an `ON` table in that same schema — never a same-named TEMP table.
     let base = quote(t);
     // Spec §8.1: an UPDATE is a retraction of OLD plus an insertion of NEW, so
     // the delta table already holds a Z-set. AUTOINCREMENT: once Phase 3b
     // deletes consumed deltas, a reused `seq` would fall below a watermark.
+    // The delta table's own columns are `DELTA_SEQ`/`DELTA_W`
+    // (`__ivm_seq`/`__ivm_w`), not `seq`/`w`, so a base column named `seq` or
+    // `w` is not shadowed by them.
     exec(
         conn,
         &format!(
-            "CREATE TABLE {delta}(seq INTEGER PRIMARY KEY AUTOINCREMENT, w INTEGER NOT NULL, {defs});
+            "CREATE TABLE {delta}({DELTA_SEQ} INTEGER PRIMARY KEY AUTOINCREMENT, {DELTA_W} INTEGER NOT NULL, {defs});
              CREATE TRIGGER {ins} AFTER INSERT ON {base} BEGIN
-                 INSERT INTO {delta}(w, {cols}) VALUES (1, {new});
+                 INSERT INTO {delta}({DELTA_W}, {cols}) VALUES (1, {new});
              END;
              CREATE TRIGGER {del} AFTER DELETE ON {base} BEGIN
-                 INSERT INTO {delta}(w, {cols}) VALUES (-1, {old});
+                 INSERT INTO {delta}({DELTA_W}, {cols}) VALUES (-1, {old});
              END;
              CREATE TRIGGER {upd} AFTER UPDATE ON {base} BEGIN
-                 INSERT INTO {delta}(w, {cols}) VALUES (-1, {old});
-                 INSERT INTO {delta}(w, {cols}) VALUES (1, {new});
+                 INSERT INTO {delta}({DELTA_W}, {cols}) VALUES (-1, {old});
+                 INSERT INTO {delta}({DELTA_W}, {cols}) VALUES (1, {new});
              END;",
             defs = defs.join(", "),
-            ins = quote(&trigger(t, "ins")),
-            del = quote(&trigger(t, "del")),
-            upd = quote(&trigger(t, "upd")),
+            ins = main_qualified(&trigger(t, "ins")),
+            del = main_qualified(&trigger(t, "del")),
+            upd = main_qualified(&trigger(t, "upd")),
         ),
     )
 }
@@ -235,7 +260,7 @@ fn read_base(conn: &Connection, schema: &Schema) -> Result<ZSet> {
         .prepare(&format!(
             "SELECT {} FROM {}",
             column_list(schema, ""),
-            quote(&schema.table)
+            main_qualified(&schema.table)
         ))
         .map_err(sql_error)?;
     let n = schema.columns.len();
@@ -253,9 +278,9 @@ fn read_base(conn: &Connection, schema: &Schema) -> Result<ZSet> {
 fn read_deltas(conn: &Connection, schema: &Schema, after: i64) -> Result<(ZSet, i64)> {
     let mut stmt = conn
         .prepare(&format!(
-            "SELECT seq, w, {} FROM {} WHERE seq > ?1 ORDER BY seq",
+            "SELECT {DELTA_SEQ}, {DELTA_W}, {} FROM {} WHERE {DELTA_SEQ} > ?1 ORDER BY {DELTA_SEQ}",
             column_list(schema, ""),
-            quote(&delta_table(&schema.table))
+            main_qualified(&delta_table(&schema.table))
         ))
         .map_err(sql_error)?;
     let n = schema.columns.len();
@@ -669,12 +694,15 @@ pub fn destroy(conn: &Connection, name: &str) -> Result<()> {
         for event in ["ins", "del", "upd"] {
             exec(
                 conn,
-                &format!("DROP TRIGGER IF EXISTS {}", quote(&trigger(t, event))),
+                &format!(
+                    "DROP TRIGGER IF EXISTS {}",
+                    main_qualified(&trigger(t, event))
+                ),
             )?;
         }
         exec(
             conn,
-            &format!("DROP TABLE IF EXISTS {}", quote(&delta_table(t))),
+            &format!("DROP TABLE IF EXISTS {}", main_qualified(&delta_table(t))),
         )?;
     }
     let state: Vec<String> = conn
@@ -720,6 +748,49 @@ pub fn destroy(conn: &Connection, name: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ivmlite_core::{Column, ColumnType};
+
+    /// A minimal `CompiledView` over one base table `t`, with the given
+    /// output columns — enough to exercise `declaration`'s checks without a
+    /// real SQL compile.
+    fn view_with_columns(columns: Vec<&str>) -> CompiledView {
+        CompiledView {
+            plan: Plan::Scan {
+                table: "t".into(),
+                columns: vec![],
+            },
+            columns: columns
+                .into_iter()
+                .map(|name| Column {
+                    name: name.into(),
+                    ty: ColumnType::Integer,
+                    nullable: false,
+                })
+                .collect(),
+            tables: vec!["t".into()],
+        }
+    }
+
+    #[test]
+    fn declaration_rejects_a_rowid_alias_result_column_case_insensitively() {
+        for reserved in ["rowid", "RowId", "OID", "_ROWID_"] {
+            let view = view_with_columns(vec!["k", reserved]);
+            let err = declaration("v", &view).expect_err(reserved);
+            assert!(
+                err.contains(reserved)
+                    || err
+                        .to_ascii_lowercase()
+                        .contains(&reserved.to_ascii_lowercase()),
+                "{reserved}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn declaration_accepts_an_ordinary_result_column_set() {
+        let view = view_with_columns(vec!["k", "total"]);
+        assert!(declaration("v", &view).is_ok());
+    }
 
     #[test]
     fn a_views_state_tables_are_recognized_exactly() {
