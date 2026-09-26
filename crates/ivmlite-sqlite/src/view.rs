@@ -159,6 +159,14 @@ fn create_global_tables(conn: &Connection) -> Result<()> {
 fn create_delta_table(conn: &Connection, schema: &Schema) -> Result<()> {
     let t = &schema.table;
     let delta = main_qualified(&delta_table(t));
+    // Measured: SQLite rejects a schema-qualified table name on an INSERT
+    // inside a trigger body ("qualified table names are not allowed on
+    // INSERT, UPDATE, and DELETE statements within triggers"), so the bodies
+    // below reference the delta table unqualified. This still resolves to
+    // `main`, not a same-named TEMP table: a non-TEMP trigger's body resolves
+    // an unqualified name in the schema the trigger itself lives in, and the
+    // trigger's own name is qualified to `main` below.
+    let delta_body = quote(&delta_table(t));
     let defs: Vec<String> = schema
         .columns
         .iter()
@@ -183,14 +191,14 @@ fn create_delta_table(conn: &Connection, schema: &Schema) -> Result<()> {
         &format!(
             "CREATE TABLE {delta}({DELTA_SEQ} INTEGER PRIMARY KEY AUTOINCREMENT, {DELTA_W} INTEGER NOT NULL, {defs});
              CREATE TRIGGER {ins} AFTER INSERT ON {base} BEGIN
-                 INSERT INTO {delta}({DELTA_W}, {cols}) VALUES (1, {new});
+                 INSERT INTO {delta_body}({DELTA_W}, {cols}) VALUES (1, {new});
              END;
              CREATE TRIGGER {del} AFTER DELETE ON {base} BEGIN
-                 INSERT INTO {delta}({DELTA_W}, {cols}) VALUES (-1, {old});
+                 INSERT INTO {delta_body}({DELTA_W}, {cols}) VALUES (-1, {old});
              END;
              CREATE TRIGGER {upd} AFTER UPDATE ON {base} BEGIN
-                 INSERT INTO {delta}({DELTA_W}, {cols}) VALUES (-1, {old});
-                 INSERT INTO {delta}({DELTA_W}, {cols}) VALUES (1, {new});
+                 INSERT INTO {delta_body}({DELTA_W}, {cols}) VALUES (-1, {old});
+                 INSERT INTO {delta_body}({DELTA_W}, {cols}) VALUES (1, {new});
              END;",
             defs = defs.join(", "),
             ins = main_qualified(&trigger(t, "ins")),
