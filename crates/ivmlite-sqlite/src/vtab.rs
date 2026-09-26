@@ -101,6 +101,8 @@ impl IvmTab {
     }
 }
 
+// SAFETY: `IvmTab` is `#[repr(C)]` with `base: ffi::sqlite3_vtab` as its first
+// field, as `VTab`'s safety contract requires.
 unsafe impl<'vtab> VTab<'vtab> for IvmTab {
     type Aux = ();
     type Cursor = IvmCursor<'vtab>;
@@ -212,6 +214,8 @@ pub struct IvmCursor<'vtab> {
     at: usize,
 }
 
+// SAFETY: `IvmCursor` is `#[repr(C)]` with `base: ffi::sqlite3_vtab_cursor` as
+// its first field, as `VTabCursor`'s safety contract requires.
 unsafe impl VTabCursor for IvmCursor<'_> {
     fn filter(
         &mut self,
