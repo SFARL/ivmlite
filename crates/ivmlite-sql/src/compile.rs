@@ -341,9 +341,12 @@ fn from_clause<'a>(
         [] => None,
         [Join {
             relation,
-            global: _,
+            global,
             join_operator,
         }] => {
+            // `FROM t0 GLOBAL JOIN t1`: sqlparser reads a GLOBAL join, but
+            // SQLite reads `GLOBAL` as `t0`'s alias (measured, 3.53).
+            reject_if(*global, "GLOBAL JOIN")?;
             let constraint =
                 match join_operator {
                     JoinOperator::Join(c) | JoinOperator::Inner(c) => c,
@@ -745,6 +748,14 @@ fn flip(op: CmpOp) -> CmpOp {
     }
 }
 
+/// `1L`: sqlparser accepts a long suffix that SQLite rejects as an
+/// unrecognized token (measured, 3.53).
+fn long_literal(text: &str) -> SqlError {
+    unsupported(&format!(
+        "the literal {text}L (SQLite does not accept an L suffix)"
+    ))
+}
+
 /// An integer, a single-quoted string, or NULL (which `lower` rejects with a
 /// pointer to IS NULL).
 fn literal(expr: &Expr) -> Result<Value, SqlError> {
@@ -757,7 +768,8 @@ fn literal(expr: &Expr) -> Result<Value, SqlError> {
     };
     match strip_parens(expr) {
         Expr::Value(v) => match &v.value {
-            SqlValue::Number(text, _) => integer(text),
+            SqlValue::Number(text, false) => integer(text),
+            SqlValue::Number(text, true) => Err(long_literal(text)),
             SqlValue::SingleQuotedString(s) => Ok(Value::Text(s.clone())),
             SqlValue::Null => Ok(Value::Null),
             _ => Err(unsupported(&format!("the literal `{expr}`"))),
@@ -767,7 +779,8 @@ fn literal(expr: &Expr) -> Result<Value, SqlError> {
             expr: inner,
         } => match strip_parens(inner) {
             Expr::Value(v) => match &v.value {
-                SqlValue::Number(text, _) => integer(&format!("-{text}")),
+                SqlValue::Number(text, false) => integer(&format!("-{text}")),
+                SqlValue::Number(text, true) => Err(long_literal(text)),
                 _ => Err(unsupported(&format!("the literal `{expr}`"))),
             },
             _ => Err(unsupported(&format!("the operand `{expr}`"))),
@@ -1110,6 +1123,7 @@ mod tests {
             ("SELECT region, COUNT(*) FROM nope GROUP BY region", "no such table"),
             ("SELECT region, COUNT(*) FROM orders LEFT JOIN regions ON region = name GROUP BY region", "non-inner join"),
             ("SELECT region, COUNT(*) FROM orders LEFT OUTER JOIN regions ON region = name GROUP BY region", "non-inner join"),
+            ("SELECT region, COUNT(*) FROM orders GLOBAL JOIN regions ON region = name GROUP BY region", "GLOBAL JOIN"),
             ("SELECT region, COUNT(*) FROM orders CROSS JOIN regions GROUP BY region", "non-inner join"),
             ("SELECT region, COUNT(*) FROM orders JOIN regions USING (region) GROUP BY region", "without ON"),
             ("SELECT region, COUNT(*) FROM orders NATURAL JOIN regions GROUP BY region", "join"),
@@ -1142,6 +1156,8 @@ mod tests {
             ("SELECT region, COUNT(*) FROM orders WHERE amount > (SELECT 1) GROUP BY region", "operand"),
             ("SELECT region, COUNT(*) FROM orders WHERE amount > amount GROUP BY region", "two columns"),
             ("SELECT region, COUNT(*) FROM orders WHERE amount > 1.5 GROUP BY region", "64-bit integers"),
+            ("SELECT region, COUNT(*) FROM orders WHERE amount > 1L GROUP BY region", "L suffix"),
+            ("SELECT region, COUNT(*) FROM orders WHERE amount > -1L GROUP BY region", "L suffix"),
             ("SELECT region, COUNT(*) FROM orders WHERE amount > 9223372036854775808 GROUP BY region", "64-bit integers"),
             ("SELECT region, COUNT(*) FROM orders WHERE amount + 1 > 2 GROUP BY region", "WHERE clause"),
             ("SELECT region, COUNT(*) FROM orders WHERE nope > 1 GROUP BY region", "no such column"),

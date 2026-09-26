@@ -104,7 +104,15 @@ fn piece_text(
     }
     let from = offset(sql, line_starts, tokens[first].span.start);
     let to = offset(sql, line_starts, tokens[last].span.end);
-    sql.get(from..to).map(str::to_string).ok_or_else(malformed)
+    // SQLite trims trailing whitespace from the name, including whitespace a
+    // trailing line comment's token carries (`-- hi  ` and the `\r` of a CRLF
+    // line end; measured, 3.53). Its whitespace set is sqlite3Isspace's.
+    sql.get(from..to)
+        .map(|text| {
+            text.trim_end_matches([' ', '\t', '\n', '\x0b', '\x0c', '\r'])
+                .to_string()
+        })
+        .ok_or_else(malformed)
 }
 
 /// The SELECT list's items, each as the source text SQLite would use to name

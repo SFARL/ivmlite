@@ -75,6 +75,8 @@ fn result_column_names_match_sqlite() {
             "SELECT k, ( SUM(v) ) FROM t0 GROUP BY k",
             "SELECT k, COUNT(/* ) */ *) FROM t0 GROUP BY k",
             "SELECT k, COUNT(*) -- )\nFROM t0 GROUP BY k",
+            "SELECT k, COUNT(*) -- hi\r\nFROM t0 GROUP BY k",
+            "SELECT k, COUNT(*) -- hi  \nFROM t0 GROUP BY k",
             // Final review Important 2: a comment before an item is not part
             // of its name (measured against SQLite 3.53).
             "SELECT k, /*c*/ COUNT(*) FROM t0 GROUP BY k",
