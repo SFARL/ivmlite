@@ -223,7 +223,13 @@ fn creating_a_view_is_atomic() {
         "SELECT region, COUNT(*) AS __w FROM orders GROUP BY region",
     )
     .expect_err("__w is reserved");
-    assert!(err.to_string().contains("__w"), "{err}");
+    // ivmlite's own message, not SQLite's "duplicate column name: __w",
+    // which the output table's CREATE would also raise without the check.
+    assert!(
+        err.to_string()
+            .contains("a result column is named __w, which ivmlite reserves"),
+        "{err}"
+    );
     assert_eq!(objects(&c), user_objects);
     c.execute_batch("COMMIT").unwrap();
     assert_eq!(
