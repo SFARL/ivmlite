@@ -1,5 +1,7 @@
 [workspace]
 resolver = "2"
+# The SQLite extension builds separately: see its Cargo.toml.
+exclude = ["crates/ivmlite-sqlite"]
 members = ["crates/ivmlite-bench", "crates/ivmlite-core", "crates/ivmlite-sql", "crates/ivmlite-test", "crates/ivmlite-workload"]
 
 [workspace.package]

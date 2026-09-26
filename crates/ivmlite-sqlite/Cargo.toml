@@ -1,0 +1,22 @@
+# Not a member of the root workspace: this crate needs rusqlite's
+# `loadable_extension` feature, and the test host (`ivmlite-test`) needs
+# `bundled` + `load_extension`; Cargo unifies features across one build, and
+# the two cannot be compiled together. Build it with `scripts/test-all.sh` or
+# `cargo build --manifest-path crates/ivmlite-sqlite/Cargo.toml`.
+[package]
+name = "ivmlite-sqlite"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.95"
+license = "MIT"
+repository = "https://github.com/SFARL/ivmlite"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+ivmlite-core = { path = "../ivmlite-core" }
+ivmlite-sql = { path = "../ivmlite-sql" }
+rusqlite = { version = "0.40", features = ["loadable_extension", "vtab"] }
+
+[workspace]
