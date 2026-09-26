@@ -952,43 +952,91 @@ mod tests {
     #[test]
     fn a_provider_that_fails_fails_the_build() {
         // M1b Phase 3a: a shadow table that should exist and does not is an
-        // error from `build`, not an empty arrangement.
-        let err = Node::build(
-            &crate::lower_query(
-                &join_on_k(),
-                &crate::Database::new(vec![kv("t0"), kv("t1")]),
-            )
-            .unwrap(),
-            &mut |_| Err(crate::StateError("no such state table".into())),
+        // error from `build`, not an empty arrangement — proven for **each**
+        // operator that asks the provider for one, not just the first. A
+        // provider that fails unconditionally cannot tell them apart: an
+        // earlier, still-correct `?` in the recursion (e.g. the join's own,
+        // asked for before the aggregate's) would mask a later one that a
+        // mutation silently swallowed. Failing one role at a time, with every
+        // other role served a fresh `MemArrangement`, isolates each call site.
+        let plan = crate::lower_query(
+            &join_on_k(),
+            &crate::Database::new(vec![kv("t0"), kv("t1")]),
         )
-        .expect_err("the provider's error must reach the caller");
-        assert_eq!(err.0, "no such state table");
+        .unwrap();
+        for failing in [
+            ArrangementRole::JoinLeft,
+            ArrangementRole::JoinRight,
+            ArrangementRole::AggregateGroups,
+        ] {
+            let err = Node::build(&plan, &mut |id| -> Result<
+                Box<dyn crate::Arrangement>,
+                crate::StateError,
+            > {
+                if id.role == failing {
+                    Err(crate::StateError(format!("no {failing:?} table")))
+                } else {
+                    Ok(Box::new(crate::MemArrangement::new()))
+                }
+            })
+            .expect_err("the provider's error must reach the caller");
+            assert_eq!(err.0, format!("no {failing:?} table"), "{failing:?}");
+        }
     }
 
     #[test]
     fn a_state_error_inside_the_tree_reaches_the_caller() {
         // Both stateful operators pass their arrangement's error up through
-        // `delta` rather than swallowing it or panicking.
+        // `delta` rather than swallowing it or panicking. The two pushes are
+        // deliberately **not** chained: which push must fail differs by role,
+        // and chaining them would let a later push's own, unrelated failure
+        // stand in for an earlier one that a mutation silently bypassed.
         use crate::test_support::Failing;
         let db = crate::Database::new(vec![kv("t0"), kv("t1")]);
         let plan = crate::lower_query(&join_on_k(), &db).unwrap();
-        for failing in [ArrangementRole::JoinRight, ArrangementRole::AggregateGroups] {
-            let mut tree = Node::build(&plan, &mut |id| -> Result<
-                Box<dyn crate::Arrangement>,
-                crate::StateError,
-            > {
-                if id.role == failing {
-                    Ok(Box::new(Failing))
-                } else {
-                    Ok(Box::new(crate::MemArrangement::new()))
-                }
-            })
-            .unwrap();
-            let err = tree
-                .delta("t0", &ZSet::from_rows([(kv_row("a", 1), 1)]))
-                .and_then(|_| tree.delta("t1", &ZSet::from_rows([(kv_row("a", 2), 1)])))
-                .expect_err("a failing arrangement must fail the push");
-            assert!(err.0.starts_with("injected"), "{failing:?}: {err}");
-        }
+
+        // JoinRight failing: the first push (`t0`, ΔR) probes the right
+        // arrangement's `get` directly (the ΔR⋈S term), so it must fail on
+        // its own — nothing later in that same push touches the right
+        // arrangement (the right delta is empty, so neither the `get` in the
+        // (R+ΔR)⋈ΔS term nor the right-side `update` ever run).
+        let mut tree = Node::build(&plan, &mut |id| -> Result<
+            Box<dyn crate::Arrangement>,
+            crate::StateError,
+        > {
+            if id.role == ArrangementRole::JoinRight {
+                Ok(Box::new(Failing))
+            } else {
+                Ok(Box::new(crate::MemArrangement::new()))
+            }
+        })
+        .unwrap();
+        let err = tree
+            .delta("t0", &ZSet::from_rows([(kv_row("a", 1), 1)]))
+            .expect_err("JoinRight: the first push alone must fail");
+        assert!(err.0.starts_with("injected"), "{err}");
+
+        // AggregateGroups failing: the first push (`t0`) must **succeed** —
+        // the right side is still empty, so the join emits nothing and the
+        // aggregate's `absorb` never touches a group, so it never calls
+        // `load`. Only the second push (`t1`), which completes the join and
+        // reaches the aggregate with a non-empty delta, must fail.
+        let mut tree = Node::build(&plan, &mut |id| -> Result<
+            Box<dyn crate::Arrangement>,
+            crate::StateError,
+        > {
+            if id.role == ArrangementRole::AggregateGroups {
+                Ok(Box::new(Failing))
+            } else {
+                Ok(Box::new(crate::MemArrangement::new()))
+            }
+        })
+        .unwrap();
+        tree.delta("t0", &ZSet::from_rows([(kv_row("a", 1), 1)]))
+            .expect("AggregateGroups: the first push must succeed — the join emits nothing yet");
+        let err = tree
+            .delta("t1", &ZSet::from_rows([(kv_row("a", 2), 1)]))
+            .expect_err("AggregateGroups: the second push must fail");
+        assert!(err.0.starts_with("injected"), "{err}");
     }
 }
