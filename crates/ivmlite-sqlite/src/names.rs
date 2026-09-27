@@ -37,11 +37,23 @@ pub const PROGRESS: &str = "__ivm_progress";
 /// table relies on that same shape and the triggers built from it.
 pub const TRACKED: &str = "__ivm_tracked";
 
-/// Every capture trigger event a tracked base table gets. Every loop over a
-/// table's capture triggers uses this constant, not a literal list, so a
-/// later phase that adds events (Task 4 raises it to five, for REPLACE
-/// capture) changes it in one place.
-pub const CAPTURE_EVENTS: [&str; 3] = ["ins", "del", "upd"];
+/// Every capture trigger event a tracked base table gets (Phase 3b spec §3,
+/// §6.2): the AFTER triggers `ins`, `del` and `upd`, and the BEFORE triggers
+/// `preins` and `preupd` that record REPLACE candidates. Every loop over a
+/// table's capture triggers uses this constant, not a literal list.
+///
+/// No event contains `_`, so `__ivm_trig_<table>_<event>` still splits
+/// uniquely at its last `_`, and no two (table, event) pairs spell the same
+/// trigger name.
+pub const CAPTURE_EVENTS: [&str; 5] = ["ins", "del", "upd", "preins", "preupd"];
+
+/// The recursive-triggers probe (Phase 3b spec §6.2): a global table whose
+/// one trigger, `PROBE_STEP`, re-inserts into it. With `recursive_triggers`
+/// OFF, inserting a 0 leaves 2 rows; with it ON, 3. A trigger body cannot
+/// read `pragma_recursive_triggers`, so this is how the capture triggers
+/// tell the two apart.
+pub const PROBE: &str = "__ivm_probe";
+pub const PROBE_STEP: &str = "__ivm_probe_step";
 
 /// Every name the extension creates starts with this; the catalog refuses a
 /// view over such a table, and refuses a base column with this prefix too (a
@@ -66,6 +78,12 @@ pub const DELTA_W: &str = "__ivm_w";
 
 pub fn delta_table(table: &str) -> String {
     format!("__ivm_delta_{table}")
+}
+
+/// A base table's REPLACE candidates, held between a BEFORE capture trigger
+/// and its AFTER trigger (Phase 3b spec §6.2).
+pub fn pend_table(table: &str) -> String {
+    format!("__ivm_pend_{table}")
 }
 
 /// A base table's delta-maintaining trigger. Named `__ivm_trig_<table>_<event>`

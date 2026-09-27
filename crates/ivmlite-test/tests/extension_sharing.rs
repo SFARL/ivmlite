@@ -9,8 +9,8 @@ use rusqlite::Connection;
 
 const COUNTS: &str = "SELECT region, COUNT(*) FROM orders GROUP BY region";
 
-/// Capture triggers per base table (spec §3; Task 4 raises it to 5).
-const CAPTURE_TRIGGERS: i64 = 3;
+/// Capture triggers per base table (spec §3).
+const CAPTURE_TRIGGERS: i64 = 5;
 
 fn capture_objects(c: &Connection, table: &str) -> i64 {
     count(

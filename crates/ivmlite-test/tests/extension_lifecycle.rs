@@ -168,13 +168,6 @@ fn what_v0_cannot_maintain_is_rejected_by_name() {
         // A base column whose name starts with `__ivm_` is refused: the
         // prefix is reserved for ivmlite's own shadow columns.
         ("CREATE TABLE t(k TEXT, __ivm_x INTEGER) STRICT", "SELECT k, COUNT(*) FROM t GROUP BY k", "__ivm_"),
-        // A table that declares REPLACE conflict resolution: SQLite fires no
-        // DELETE trigger for the rows REPLACE removes unless the writing
-        // connection has PRAGMA recursive_triggers ON, so every plain INSERT
-        // could silently lose a retraction (final review, Critical 1).
-        ("CREATE TABLE t(k TEXT UNIQUE ON CONFLICT REPLACE, v INTEGER) STRICT", q, "ON CONFLICT REPLACE"),
-        ("CREATE TABLE t(id INTEGER PRIMARY KEY ON CONFLICT REPLACE, k TEXT) STRICT", q, "ON CONFLICT REPLACE"),
-        ("CREATE TABLE t(k TEXT, v INTEGER, UNIQUE(k) on /* spaced */ conflict\n replace) STRICT", q, "ON CONFLICT REPLACE"),
         // Phase 3b spec §6.1: what REPLACE capture cannot look up.
         ("CREATE TABLE t(k TEXT, v INTEGER) STRICT; CREATE UNIQUE INDEX uk ON t(k COLLATE NOCASE)", q, "collation NOCASE"),
         ("CREATE TABLE t(k TEXT, v INTEGER) STRICT; CREATE UNIQUE INDEX up ON t(v) WHERE v > 0", q, "partial"),
@@ -474,7 +467,7 @@ fn a_temp_table_named_like_a_base_table_is_never_read_or_captured() {
 }
 
 /// On the connection that owns the view, TEMP tables named like every table
-/// ivmlite creates — the global tables, the delta, output, stage and state
+/// ivmlite creates — the global tables, the delta, pend, output, stage and state
 /// tables — are never read, written or dropped by a create, a refresh, a
 /// read or a drop (final review, Important 3 and Minor 5: a TEMP
 /// `__ivm_out_<view>` used to make `SELECT * FROM v` read the TEMP rows).
@@ -487,7 +480,10 @@ fn temp_tables_named_like_the_shadow_tables_are_never_touched() {
         "__ivm_view",
         "__ivm_dep",
         "__ivm_progress",
+        "__ivm_tracked",
+        "__ivm_probe",
         "__ivm_delta_orders",
+        "__ivm_pend_orders",
         "__ivm_out_sums",
         "__ivm_stage_sums",
         "__ivm_state_sums_0_agg_groups",
@@ -507,9 +503,15 @@ fn temp_tables_named_like_the_shadow_tables_are_never_touched() {
          CREATE TEMP TABLE __ivm_progress(view TEXT NOT NULL, tbl TEXT NOT NULL,
              applied_seq INTEGER NOT NULL, PRIMARY KEY(view, tbl));
          INSERT INTO temp.__ivm_progress VALUES ('temp', 'x', 0);
+         CREATE TEMP TABLE __ivm_tracked(tbl TEXT PRIMARY KEY, shape TEXT NOT NULL);
+         INSERT INTO temp.__ivm_tracked VALUES ('temp', 'x');
+         CREATE TEMP TABLE __ivm_probe(n INTEGER NOT NULL);
+         INSERT INTO temp.__ivm_probe VALUES (1000);
          CREATE TEMP TABLE __ivm_delta_orders(__ivm_seq INTEGER PRIMARY KEY,
              __ivm_w INTEGER NOT NULL, region TEXT, amount INTEGER);
          INSERT INTO temp.__ivm_delta_orders VALUES (1000, 1, 'temp', 1000);
+         CREATE TEMP TABLE __ivm_pend_orders(__ivm_rid INTEGER, region TEXT, amount INTEGER);
+         INSERT INTO temp.__ivm_pend_orders VALUES (1000, 'temp', 1000);
          CREATE TEMP TABLE __ivm_out_sums AS
              SELECT region, SUM(amount), COUNT(*), 1 AS __w FROM orders WHERE 0 GROUP BY region;
          INSERT INTO temp.__ivm_out_sums VALUES ('temp', 1000, 1000, 1);
@@ -652,9 +654,10 @@ fn a_column_named_collateral_is_not_a_collate_clause() {
 /// DELETE. SQLite fires the DELETE triggers for them only when the writing
 /// connection has `PRAGMA recursive_triggers = ON` (measured: with it off,
 /// only the new row's +1 reaches the delta table). With it on, a rowid
-/// conflict and a UNIQUE conflict are both captured and the view stays equal
-/// to the oracle (final review, Critical 1; a known v0 limitation otherwise,
-/// Phase 3a spec §5).
+/// conflict and a UNIQUE conflict are both captured by those DELETE triggers
+/// and the view stays equal to the oracle (final review, Critical 1). With it
+/// off, Phase 3b's REPLACE capture records them instead (spec §6.2;
+/// `extension_replace.rs`).
 #[test]
 fn replace_conflicts_are_captured_when_the_writer_has_recursive_triggers_on() {
     let c = open_with_extension(None).unwrap();

@@ -12,9 +12,9 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::catalog::{require_utf8, CaptureInfo, SqliteCatalog};
 use crate::names::{
-    apply_trigger, delta_table, has_reserved_prefix, literal, main_qualified, out_table, quote,
-    stage_table, state_table, trigger, CAPTURE_EVENTS, DELTA_SEQ, DELTA_W, DEPS, META, PREFIX,
-    PROGRESS, TRACKED, VIEWS,
+    apply_trigger, delta_table, has_reserved_prefix, literal, main_qualified, out_table,
+    pend_table, quote, stage_table, state_table, trigger, CAPTURE_EVENTS, DELTA_SEQ, DELTA_W, DEPS,
+    META, PREFIX, PROBE, PROBE_STEP, PROGRESS, TRACKED, VIEWS,
 };
 use crate::state::{BufferedArrangement, Pending};
 
@@ -231,6 +231,22 @@ fn create_global_tables(conn: &Connection) -> Result<()> {
             main_qualified(PROGRESS),
         ),
     )?;
+    // The recursive-triggers probe (spec §6.2): `PROBE_STEP` re-inserts into
+    // `PROBE` while `n < 2`. With `recursive_triggers` OFF it does not fire
+    // for its own insert, so inserting a 0 leaves 2 rows; with it ON, 3. As
+    // in `track`, the `ON` table and the body's table stay unqualified and
+    // the trigger's own name binds it to `main`.
+    let probe_body = quote(PROBE);
+    exec(
+        conn,
+        &format!(
+            "CREATE TABLE IF NOT EXISTS {}(n INTEGER NOT NULL);
+             CREATE TRIGGER IF NOT EXISTS {} AFTER INSERT ON {probe_body} WHEN NEW.n < 2
+             BEGIN INSERT INTO {probe_body}(n) VALUES (NEW.n + 1); END;",
+            main_qualified(PROBE),
+            main_qualified(PROBE_STEP),
+        ),
+    )?;
     let format: i64 = conn
         .query_row(
             &format!("SELECT value FROM {meta} WHERE key = 'format'"),
@@ -246,74 +262,197 @@ fn create_global_tables(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Start capturing `table`'s writes (Phase 3a §8.1, shared since Phase 3b
-/// §4): its delta table, its `CAPTURE_EVENTS` triggers, and the
-/// `__ivm_tracked` row that every later view of it, and every connect and
-/// refresh, checks its capture against.
-fn track(conn: &Connection, schema: &Schema) -> Result<()> {
+/// How the capture triggers name a row of `t` (spec §6.2): its rowid, or
+/// for a WITHOUT ROWID table its primary-key columns.
+fn identity(capture: &CaptureInfo) -> Option<Vec<String>> {
+    capture.without_rowid.then(|| {
+        capture
+            .unique_keys
+            .iter()
+            .find(|k| k.primary)
+            .expect("a WITHOUT ROWID table has a primary key")
+            .columns
+            .iter()
+            .map(|c| quote(&c.name))
+            .collect()
+    })
+}
+
+/// `a = b AND …` over the identity: `rowid`, or the primary-key columns.
+fn same_row(pk: &Option<Vec<String>>, left: &str, right: &str) -> String {
+    match pk {
+        None => format!("{left}rowid = {right}rowid"),
+        Some(cols) => cols
+            .iter()
+            .map(|c| format!("{left}{c} = {right}{c}"))
+            .collect::<Vec<_>>()
+            .join(" AND "),
+    }
+}
+
+/// The existing rows a new row could replace (spec §6.2), one `UNION`
+/// branch per unique index plus the rowid, each able to use its own index.
+/// `exclude_old`: in BEFORE UPDATE, never the row being updated.
+fn candidates(schema: &Schema, capture: &CaptureInfo, exclude_old: bool) -> String {
+    let base = quote(&schema.table);
+    let cols = column_list(schema, "");
+    let pk = identity(capture);
+    let rid = if pk.is_some() { "NULL" } else { "rowid" };
+    let mut branches = Vec::new();
+    if pk.is_none() {
+        branches.push("rowid = NEW.rowid".to_string());
+    }
+    for key in &capture.unique_keys {
+        let terms: Vec<String> = key
+            .columns
+            .iter()
+            .map(|c| {
+                let q = quote(&c.name);
+                // REPLACE substitutes a NOT NULL key's default for a NULL
+                // (spec §2). `d` is a literal: the catalog refuses any other
+                // default on such a key (spec §6.1), so it is safe to splice.
+                match (&c.default, c.not_null) {
+                    (Some(d), true) if !d.eq_ignore_ascii_case("NULL") => {
+                        format!("{q} = COALESCE(NEW.{q}, {d})")
+                    }
+                    _ => format!("{q} = NEW.{q}"),
+                }
+            })
+            .collect();
+        branches.push(terms.join(" AND "));
+    }
+    let exclude = match (&pk, exclude_old) {
+        (_, false) => String::new(),
+        (None, true) => " AND rowid <> OLD.rowid".to_string(),
+        (Some(_), true) => format!(" AND NOT ({})", same_row(&pk, "", "OLD.")),
+    };
+    branches
+        .iter()
+        .map(|b| format!("SELECT {rid}, {cols} FROM {base} WHERE ({b}){exclude}"))
+        .collect::<Vec<_>>()
+        .join(" UNION ")
+}
+
+/// The `CREATE TRIGGER` statements for every one of `CAPTURE_EVENTS`
+/// (Phase 3a §8.1, Phase 3b §6.2).
+fn capture_triggers(schema: &Schema, capture: &CaptureInfo) -> String {
     let t = &schema.table;
-    let delta = main_qualified(&delta_table(t));
     // Measured: SQLite rejects a schema-qualified table name on an INSERT
     // inside a trigger body ("qualified table names are not allowed on
     // INSERT, UPDATE, and DELETE statements within triggers"), so the bodies
-    // below reference the delta table unqualified. This still resolves to
-    // `main`, not a same-named TEMP table: a non-TEMP trigger's body resolves
-    // an unqualified name in the schema the trigger itself lives in, and the
-    // trigger's own name is qualified to `main` below.
-    let delta_body = quote(&delta_table(t));
-    let defs: Vec<String> = schema
-        .columns
-        .iter()
-        .map(|c| format!("{} {}", quote(&c.name), sql_type(c)))
-        .collect();
-    let cols = column_list(schema, "");
-    let new = column_list(schema, "NEW.");
-    let old = column_list(schema, "OLD.");
+    // below reference the delta, pend and probe tables unqualified. This
+    // still resolves to `main`, not a same-named TEMP table: a non-TEMP
+    // trigger's body resolves an unqualified name in the schema the trigger
+    // itself lives in, and the trigger's own name is qualified to `main`
+    // below.
+    let delta = quote(&delta_table(t));
+    let pend = quote(&pend_table(t));
+    let probe = quote(PROBE);
     // The ON clause of CREATE TRIGGER cannot be schema-qualified (SQL forbids
     // it), so this stays an unqualified reference; the trigger's own name
     // below is qualified to `main` instead, which SQLite requires to bind to
     // an `ON` table in that same schema — never a same-named TEMP table.
     let base = quote(t);
+    let cols = column_list(schema, "");
+    let new = column_list(schema, "NEW.");
+    let old = column_list(schema, "OLD.");
+    let p_cols = column_list(schema, "p.");
+    let pk = identity(capture);
+    // Record the candidates, but only when the probe shows recursive
+    // triggers OFF: with them ON, SQLite's own DELETE trigger captures every
+    // row REPLACE removes, as in Phase 3a.
+    let fill = |exclude_old: bool| {
+        let c = candidates(schema, capture, exclude_old);
+        format!(
+            "DELETE FROM {pend};
+                 INSERT INTO {probe}(n) SELECT 0 WHERE EXISTS ({c});
+                 INSERT INTO {pend}(__ivm_rid, {cols}) SELECT * FROM ({c}) WHERE (SELECT count(*) FROM {probe}) = 2;
+                 DELETE FROM {probe};"
+        )
+    };
+    // A candidate was removed when it is gone from `t`, or when the new row
+    // now holds its rowid (a rowid REPLACE, even with identical values).
+    let gone = match &pk {
+        None => format!(
+            "p.__ivm_rid = NEW.rowid OR NOT EXISTS (SELECT 1 FROM {base} WHERE rowid = p.__ivm_rid)"
+        ),
+        Some(_) => format!(
+            "({}) OR NOT EXISTS (SELECT 1 FROM {base} WHERE {})",
+            same_row(&pk, "p.", "NEW."),
+            same_row(&pk, "", "p.")
+        ),
+    };
+    let confirm = format!(
+        "INSERT INTO {delta}({DELTA_W}, {cols}) SELECT -1, {p_cols} FROM {pend} AS p WHERE {gone};
+                 DELETE FROM {pend};"
+    );
+    // A deleted row is never also counted as a confirmed candidate.
+    let forget = match &pk {
+        None => format!("DELETE FROM {pend} WHERE __ivm_rid = OLD.rowid;"),
+        Some(_) => format!("DELETE FROM {pend} WHERE {};", same_row(&pk, "", "OLD.")),
+    };
+    let plus_new = format!("INSERT INTO {delta}({DELTA_W}, {cols}) VALUES (1, {new});");
+    let minus_old = format!("INSERT INTO {delta}({DELTA_W}, {cols}) VALUES (-1, {old});");
+    let mut sql = String::new();
+    for event in CAPTURE_EVENTS {
+        let (when, body) = match event {
+            // Spec §6.2: record what this INSERT could replace.
+            "preins" => ("BEFORE INSERT", fill(false)),
+            // Spec §6.2: record what this UPDATE could replace, never the
+            // row being updated itself.
+            "preupd" => ("BEFORE UPDATE", fill(true)),
+            // Spec §6.2: confirm the removed candidates, then the new row.
+            "ins" => (
+                "AFTER INSERT",
+                format!("{confirm}\n                 {plus_new}"),
+            ),
+            // Spec §6.2 and §8.1: confirm the removed candidates, then the
+            // update as a retraction of OLD plus an insertion of NEW.
+            "upd" => (
+                "AFTER UPDATE",
+                format!("{confirm}\n                 {minus_old}\n                 {plus_new}"),
+            ),
+            // Spec §6.2: forget the row's candidate, then retract it.
+            "del" => (
+                "AFTER DELETE",
+                format!("{forget}\n                 {minus_old}"),
+            ),
+            other => unreachable!("CAPTURE_EVENTS has no trigger body for {other}"),
+        };
+        sql.push_str(&format!(
+            "\n             CREATE TRIGGER {} {when} ON {base} BEGIN\n                 {body}\n             END;",
+            main_qualified(&trigger(t, event)),
+        ));
+    }
+    sql
+}
+
+/// Start capturing `table`'s writes (Phase 3a §8.1, shared since Phase 3b
+/// §4): its delta and pend tables, its `CAPTURE_EVENTS` triggers, and the
+/// `__ivm_tracked` row that every later view of it, and every connect and
+/// refresh, checks its capture against.
+fn track(conn: &Connection, schema: &Schema) -> Result<()> {
+    let t = &schema.table;
+    let capture = SqliteCatalog { conn }.capture(t)?;
+    let defs: Vec<String> = schema
+        .columns
+        .iter()
+        .map(|c| format!("{} {}", quote(&c.name), sql_type(c)))
+        .collect();
+    let defs = defs.join(", ");
     // AUTOINCREMENT: once Phase 3b's GC deletes consumed deltas, a reused
     // `seq` would fall below a watermark. The delta table's own columns are
     // `DELTA_SEQ`/`DELTA_W` (`__ivm_seq`/`__ivm_w`), not `seq`/`w`, so a base
     // column named `seq` or `w` is not shadowed by them.
     let mut sql = format!(
-        "CREATE TABLE {delta}({DELTA_SEQ} INTEGER PRIMARY KEY AUTOINCREMENT, \
-         {DELTA_W} INTEGER NOT NULL, {});",
-        defs.join(", ")
+        "CREATE TABLE {}({DELTA_SEQ} INTEGER PRIMARY KEY AUTOINCREMENT, \
+         {DELTA_W} INTEGER NOT NULL, {defs});
+         CREATE TABLE {}(__ivm_rid INTEGER, {defs});",
+        main_qualified(&delta_table(t)),
+        main_qualified(&pend_table(t)),
     );
-    // Spec §8.1: an UPDATE is a retraction of OLD plus an insertion of NEW, so
-    // the delta table already holds a Z-set. Every loop over a table's
-    // capture triggers uses `CAPTURE_EVENTS`, so a later phase that grows it
-    // (Task 4: REPLACE capture adds two more) needs no change here beyond the
-    // constant and this match.
-    for event in CAPTURE_EVENTS {
-        let (on, body) = match event {
-            "ins" => (
-                "INSERT",
-                format!("INSERT INTO {delta_body}({DELTA_W}, {cols}) VALUES (1, {new});"),
-            ),
-            "del" => (
-                "DELETE",
-                format!("INSERT INTO {delta_body}({DELTA_W}, {cols}) VALUES (-1, {old});"),
-            ),
-            "upd" => (
-                "UPDATE",
-                format!(
-                    "INSERT INTO {delta_body}({DELTA_W}, {cols}) VALUES (-1, {old});
-                     INSERT INTO {delta_body}({DELTA_W}, {cols}) VALUES (1, {new});"
-                ),
-            ),
-            other => unreachable!("CAPTURE_EVENTS names only ins/del/upd, not {other}"),
-        };
-        sql.push_str(&format!(
-            "\n             CREATE TRIGGER {} AFTER {on} ON {base} BEGIN\n                 {body}\n             END;",
-            main_qualified(&trigger(t, event)),
-        ));
-    }
+    sql.push_str(&capture_triggers(schema, &capture));
     exec(conn, &sql)?;
-    let capture = SqliteCatalog { conn }.capture(t)?;
     conn.execute(
         &format!(
             "INSERT INTO {}(tbl, shape) VALUES (?1, ?2)",
@@ -405,6 +544,12 @@ fn check_table_capture(conn: &Connection, table: &str) -> Result<()> {
         check_trigger(conn, &trigger(table, event), table)
             .map_err(|why| format!("its capture trigger {why}"))?;
     }
+    check_trigger(conn, PROBE_STEP, PROBE)
+        .map_err(|why| format!("its recursive-triggers probe {why}"))?;
+    let pend = pend_table(table);
+    if !table_exists(conn, &pend)? {
+        return Err(format!("its shadow table {pend} is missing"));
+    }
     Ok(())
 }
 
@@ -419,13 +564,12 @@ fn untrack(conn: &Connection, table: &str) -> Result<()> {
             ),
         )?;
     }
-    exec(
-        conn,
-        &format!(
-            "DROP TABLE IF EXISTS {}",
-            main_qualified(&delta_table(table))
-        ),
-    )?;
+    for shadow in [delta_table(table), pend_table(table)] {
+        exec(
+            conn,
+            &format!("DROP TABLE IF EXISTS {}", main_qualified(&shadow)),
+        )?;
+    }
     conn.execute(
         &format!("DELETE FROM {} WHERE tbl = ?1", main_qualified(TRACKED)),
         [table],
@@ -1056,7 +1200,8 @@ pub fn destroy(conn: &Connection, name: &str) -> Result<()> {
         )
         .map_err(sql_error)?;
     if left == 0 {
-        for table in [META, VIEWS, TRACKED, DEPS, PROGRESS] {
+        // `PROBE`'s trigger goes with it.
+        for table in [META, VIEWS, TRACKED, DEPS, PROGRESS, PROBE] {
             exec(conn, &format!("DROP TABLE {}", main_qualified(table)))?;
         }
     }

@@ -21,9 +21,8 @@ pub struct KeyColumn {
 pub struct UniqueKey {
     pub index: String,
     /// `origin = 'pk'`: for a `WITHOUT ROWID` table, this key's columns are
-    /// the primary key, so the candidate lookup has no separate rowid branch
-    /// (Phase 3b spec §6.2); Task 4 reads this to build that lookup.
-    #[allow(dead_code)]
+    /// the primary key, which the capture triggers name its rows by in place
+    /// of a rowid (Phase 3b spec §6.2).
     pub primary: bool,
     pub partial: bool,
     /// Some key is an expression (`pragma_index_xinfo.cid = -2`).
@@ -89,14 +88,6 @@ impl Catalog for SqliteCatalog<'_> {
         if declares_collate(&ddl) {
             return refuse(
                 "declares a COLLATE clause; v0 supports only the BINARY collation (spec §7.1)",
-            );
-        }
-        if declares_on_conflict_replace(&ddl) {
-            return refuse(
-                "declares ON CONFLICT REPLACE; SQLite fires no DELETE trigger for a row that \
-                 REPLACE removes unless the writing connection has PRAGMA recursive_triggers ON, \
-                 so ivmlite v0 would miss the removal and the view would silently diverge \
-                 (Phase 3a spec §5)",
             );
         }
         let mut stmt = self
@@ -362,14 +353,6 @@ fn declares_collate(ddl: &[String]) -> bool {
     ddl.iter().any(|t| t == "COLLATE")
 }
 
-/// A column or table constraint's `ON CONFLICT REPLACE` (final review,
-/// Critical 1): with it, every plain INSERT or UPDATE that conflicts silently
-/// removes the old row.
-fn declares_on_conflict_replace(ddl: &[String]) -> bool {
-    ddl.windows(3)
-        .any(|w| w[0] == "ON" && w[1] == "CONFLICT" && w[2] == "REPLACE")
-}
-
 /// Fails unless the database is UTF-8: TEXT compares by UTF-8 byte order in
 /// the engine, which is SQLite's BINARY collation only for UTF-8 (Phase 3a
 /// spec §5; measured, `'Ā' > 'a'` differs between UTF-8 and UTF-16LE).
@@ -428,21 +411,5 @@ mod tests {
         ] {
             assert!(!is_literal_default(no), "{no}");
         }
-    }
-
-    #[test]
-    fn on_conflict_replace_is_matched_across_whitespace_and_comments() {
-        assert!(declares_on_conflict_replace(&tokens(
-            "CREATE TABLE t(k TEXT UNIQUE ON CONFLICT REPLACE)"
-        )));
-        assert!(declares_on_conflict_replace(&tokens(
-            "CREATE TABLE t(k TEXT, UNIQUE(k) on /* x */ conflict -- y\n replace)"
-        )));
-        assert!(!declares_on_conflict_replace(&tokens(
-            "CREATE TABLE t(k TEXT UNIQUE ON CONFLICT IGNORE, \"on conflict replace\" TEXT)"
-        )));
-        assert!(!declares_on_conflict_replace(&tokens(
-            "CREATE TABLE t(k TEXT DEFAULT 'on conflict replace', [on conflict replace] TEXT)"
-        )));
     }
 }
