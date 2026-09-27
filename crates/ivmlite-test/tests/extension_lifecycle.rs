@@ -432,6 +432,91 @@ fn a_view_whose_capture_is_broken_reports_why_and_can_still_be_dropped() {
     }
 }
 
+/// `ALTER TABLE t RENAME` carries `t`'s capture triggers to the new name
+/// but leaves the trigger names alone, so a new `t` with the same shape
+/// passes a check by name. The check must also verify which table each
+/// trigger is on. Otherwise the view keeps following the old table, with
+/// no error.
+#[test]
+fn a_capture_trigger_left_on_a_renamed_table_breaks_the_view() {
+    let file = TempFile::new("renamed-base");
+    let c = open_with_extension(Some(file.path())).unwrap();
+    setup(&c);
+    create(&c, "sums", SUMS).unwrap();
+    c.execute_batch(
+        "ALTER TABLE orders RENAME TO old_orders;
+         CREATE TABLE orders(region TEXT, amount INTEGER) STRICT;
+         INSERT INTO orders VALUES ('b', 10);
+         INSERT INTO old_orders VALUES ('a', 1);",
+    )
+    .unwrap();
+    let expected = "__ivm_trig_orders_ins is on table old_orders";
+    let err = refresh(&c, "sums").expect_err("the view no longer captures orders");
+    assert!(
+        err.to_string().contains(expected) && err.to_string().contains("drop and recreate"),
+        "same connection: {err}"
+    );
+    drop(c);
+
+    let c = open_with_extension(Some(file.path())).unwrap();
+    for sql in [
+        "SELECT * FROM sums",
+        "INSERT INTO sums(sums) VALUES ('refresh')",
+    ] {
+        let err = c.execute_batch(sql).expect_err(sql);
+        assert!(err.to_string().contains(expected), "{sql}: {err}");
+    }
+    c.execute_batch("DROP TABLE sums").unwrap();
+    assert_eq!(
+        rows(
+            &c,
+            "SELECT name FROM sqlite_schema WHERE name LIKE '\\_\\_ivm\\_%' ESCAPE '\\'"
+        ),
+        Vec::<Vec<Value>>::new(),
+        "DROP TABLE left shadow objects"
+    );
+    c.execute_batch("INSERT INTO old_orders VALUES ('a', 1)")
+        .unwrap();
+}
+
+/// Once the arming `UPDATE` has applied a refresh, nothing may fail the
+/// refresh: in an explicit transaction a failure would report an error for
+/// changes that stay applied. Here the stage table refuses to be emptied.
+/// The refresh that fills the stage must still succeed. The next refresh,
+/// which empties the stage before staging anything, fails with nothing
+/// changed.
+#[test]
+fn nothing_after_the_apply_can_fail_a_refresh() {
+    let c = open_with_extension(None).unwrap();
+    setup(&c);
+    create(&c, "sums", SUMS).unwrap();
+    // The bootstrap leaves its changes staged; a refresh with nothing to
+    // apply empties the stage and stages nothing.
+    refresh(&c, "sums").unwrap();
+    c.execute_batch(
+        "CREATE TRIGGER fault BEFORE DELETE ON __ivm_stage_sums \
+         BEGIN SELECT RAISE(ABORT, 'injected fault'); END;
+         BEGIN;
+         INSERT INTO orders VALUES ('a', 1);",
+    )
+    .unwrap();
+    refresh(&c, "sums").expect("the apply succeeded, so the refresh must too");
+    assert_matches_oracle(&c, "sums", SUMS);
+
+    c.execute_batch("INSERT INTO orders VALUES ('b', 1)")
+        .unwrap();
+    let before = durable_state(&c, "sums");
+    let err = refresh(&c, "sums").expect_err("the stage cannot be emptied");
+    assert!(err.to_string().contains("injected fault"), "{err}");
+    assert_eq!(durable_state(&c, "sums"), before);
+    assert!(!c.is_autocommit(), "the transaction must still be open");
+
+    c.execute_batch("DROP TRIGGER fault").unwrap();
+    refresh(&c, "sums").unwrap();
+    c.execute_batch("COMMIT").unwrap();
+    assert_matches_oracle(&c, "sums", SUMS);
+}
+
 /// Every row of every table in `names`, read from the TEMP schema.
 fn temp_contents(c: &Connection, names: &[&str]) -> Vec<Vec<Vec<Value>>> {
     names

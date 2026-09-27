@@ -75,6 +75,27 @@ fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
     object_exists(conn, "table", name)
 }
 
+/// `trigger` must exist and be on `table`. Its name alone proves nothing:
+/// `ALTER TABLE t RENAME TO u` carries `t`'s triggers to `u` under their
+/// old names.
+fn check_trigger(conn: &Connection, trigger: &str, table: &str) -> Result<()> {
+    let on: Option<String> = conn
+        .query_row(
+            "SELECT tbl_name FROM \"main\".sqlite_schema WHERE type = 'trigger' AND name = ?1",
+            [trigger],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(sql_error)?;
+    match on {
+        None => Err(format!("{trigger} is missing")),
+        Some(on) if !on.eq_ignore_ascii_case(table) => {
+            Err(format!("{trigger} is on table {on}, not {table}"))
+        }
+        Some(_) => Ok(()),
+    }
+}
+
 fn base_schema(conn: &Connection, table: &str) -> Result<Schema> {
     SqliteCatalog { conn }
         .table(table)
@@ -522,9 +543,10 @@ fn apply(conn: &Connection, name: &str, view: &CompiledView, changes: &Changes) 
         )
         .map_err(sql_error)?;
     }
-    // The one statement that changes durable state.
-    exec(conn, &format!("UPDATE {stage} SET armed = 1"))?;
-    exec(conn, &format!("DELETE FROM {stage}"))
+    // The one statement that changes durable state, and the last one: a
+    // failure after it would report an error for changes that stay applied.
+    // The stage is left full and emptied by the next apply.
+    exec(conn, &format!("UPDATE {stage} SET armed = 1"))
 }
 
 /// `CREATE VIRTUAL TABLE <name> USING ivm('<sql>')`, inside the statement's
@@ -692,7 +714,7 @@ fn verify(
 
 /// Checked on every connect and every refresh: each base table still has the
 /// column shape recorded at create and its three capture triggers, and the
-/// view still has its apply trigger. `DROP TABLE t` drops `t`'s triggers but
+/// view still has its apply trigger, each on the table it was created on. `DROP TABLE t` drops `t`'s triggers but
 /// not its delta table, so a recreated `t` would otherwise leave every later
 /// write uncaptured; without the apply trigger, a refresh would apply
 /// nothing. Either way the view would go stale with no error.
@@ -719,17 +741,12 @@ fn check_capture(conn: &Connection, name: &str, view: &CompiledView) -> Result<(
             ));
         }
         for event in ["ins", "del", "upd"] {
-            let capture = trigger(table, event);
-            if !object_exists(conn, "trigger", &capture)? {
-                return Err(format!("its capture trigger {capture} is missing"));
-            }
+            check_trigger(conn, &trigger(table, event), table)
+                .map_err(|why| format!("its capture trigger {why}"))?;
         }
     }
-    let apply = apply_trigger(name);
-    if !object_exists(conn, "trigger", &apply)? {
-        return Err(format!("its apply trigger {apply} is missing"));
-    }
-    Ok(())
+    check_trigger(conn, &apply_trigger(name), &stage_table(name))
+        .map_err(|why| format!("its apply trigger {why}"))
 }
 
 /// `INSERT INTO v(v) VALUES('refresh')`: bring the view up to date. State,
