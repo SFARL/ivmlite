@@ -198,8 +198,10 @@ enum Recursive {
 
 /// When a test installs its user triggers relative to the view's capture
 /// triggers. SQLite does not specify the order in which several triggers on
-/// one event fire (spec §2), and in practice it follows creation order, so
-/// each order puts the user's triggers on the other side of ivmlite's.
+/// one event fire (spec §2). In practice (measured, SQLite 3.53) the trigger
+/// created most recently fires first: user triggers created before the view
+/// fire after ivmlite's, and ones created after it fire before. Each order
+/// puts the user's triggers on the other side of ivmlite's.
 #[derive(Clone, Copy)]
 enum UserTriggers {
     BeforeView,
@@ -218,8 +220,11 @@ impl UserTriggers {
 }
 
 /// Write `t` at random through two connections — one with the extension,
-/// one without — and after every refresh compare a view holding `t`'s full
-/// contents with SQLite's own evaluation (spec §8 scenario 4).
+/// one without — and after every refresh compare two views with SQLite's
+/// own evaluation (spec §8 scenario 4): one holding `t`'s full contents, and
+/// a coarse one grouping by `x` alone. In the first, a row retracted twice
+/// vanishes just as a row retracted once does; in the second it shares a
+/// group with other rows, so the extra retraction shows as a wrong count.
 ///
 /// `reentry_kind` names `reentry` in the database file's name, with the
 /// trigger order, the variant and the seed: both differential tests run at
@@ -236,6 +241,8 @@ fn differential(
     let v = &VARIANTS[variant];
     let group = v.cols.join(", ");
     let everything = format!("SELECT {group}, COUNT(*) FROM t GROUP BY {group}");
+    let by_x = "SELECT x, COUNT(*) FROM t GROUP BY x";
+    let views = [("everything", everything.as_str()), ("by_x", by_x)];
     for seed in seeds {
         let file = TempFile::new(&format!(
             "replace-{reentry_kind}-{}-{variant}-{seed}",
@@ -246,7 +253,9 @@ fn differential(
         if let UserTriggers::BeforeView = order {
             c.execute_batch(reentry).unwrap();
         }
-        create(&c, "everything", &everything).unwrap();
+        for (name, q) in views {
+            create(&c, name, q).unwrap();
+        }
         if let UserTriggers::AfterView = order {
             c.execute_batch(reentry).unwrap();
         }
@@ -268,16 +277,22 @@ fn differential(
             // Constraint failures are part of the space; they change nothing.
             let _ = writer.execute_batch(&sql);
             if r.random_bool(0.3) || step == 39 {
-                refresh(&c, "everything").unwrap_or_else(|e| {
-                    panic!("{} {} seed {seed} step {step}: {e}", v.name, order.tag())
-                });
-                assert_eq!(
-                    rows(&c, "SELECT * FROM everything"),
-                    rows(&c, &everything),
-                    "{} {} seed {seed} step {step} after: {sql}",
-                    v.name,
-                    order.tag()
-                );
+                for (name, q) in views {
+                    refresh(&c, name).unwrap_or_else(|e| {
+                        panic!(
+                            "{} {} seed {seed} step {step}: {name}: {e}",
+                            v.name,
+                            order.tag()
+                        )
+                    });
+                    assert_eq!(
+                        rows(&c, &format!("SELECT * FROM {name}")),
+                        rows(&c, q),
+                        "{} {} seed {seed} step {step} view {name} after: {sql}",
+                        v.name,
+                        order.tag()
+                    );
+                }
             }
         }
     }
@@ -456,4 +471,79 @@ fn a_row_a_user_trigger_deletes_before_the_insert_is_retracted_once() {
             order.tag()
         );
     }
+}
+
+/// Spec §6.3: dropping the probe table drops its trigger with it, so every
+/// view reports the missing probe — and can still be dropped (the global
+/// drop at the last view must not require the probe table to exist).
+#[test]
+fn a_missing_probe_table_breaks_the_view_and_it_still_drops() {
+    let c = open_with_extension(None).unwrap();
+    c.execute_batch(
+        "CREATE TABLE t(k TEXT UNIQUE, v INTEGER) STRICT; INSERT INTO t VALUES ('a', 1);",
+    )
+    .unwrap();
+    create(&c, "ks", KS).unwrap();
+    c.execute_batch("DROP TABLE __ivm_probe").unwrap();
+    let err = refresh(&c, "ks").expect_err("the probe table is gone");
+    assert!(
+        err.to_string().contains("__ivm_probe_step is missing"),
+        "{err}"
+    );
+    c.execute_batch("DROP TABLE ks").unwrap();
+    // Capture is gone with the last view, so the table is writable again.
+    c.execute_batch("INSERT INTO t VALUES ('b', 2)").unwrap();
+}
+
+/// The generated trigger SQL names the base table inside subqueries next to
+/// `NEW`, `OLD` and the pend table's alias. A base table named like one of
+/// those (in any case) must not capture the reference: a table `p` used to
+/// make the confirmation's `p."k"` read the base table, and a table `old`
+/// made the BEFORE UPDATE exclusion's `OLD."k"` read it, so REPLACE
+/// deletions went uncaptured (task review, Ruling 9).
+#[test]
+fn base_tables_named_like_the_trigger_aliases_are_captured_exactly() {
+    // Every divergent case is collected, so a failure lists them all.
+    let mut diverged = Vec::new();
+    for name in ["p", "P", "old", "OLD", "new", "New"] {
+        for (layout, ddl) in [
+            ("rowid", format!("CREATE TABLE \"{name}\"(k TEXT UNIQUE, u TEXT UNIQUE, v INTEGER) STRICT")),
+            (
+                "without rowid",
+                format!("CREATE TABLE \"{name}\"(k TEXT PRIMARY KEY, u TEXT UNIQUE, v INTEGER) STRICT, WITHOUT ROWID"),
+            ),
+        ] {
+            let c = open_with_extension(None).unwrap();
+            c.execute_batch(&ddl).unwrap();
+            c.execute_batch(&format!(
+                "INSERT INTO \"{name}\" VALUES ('a', 'x', 1), ('b', 'y', 2), ('c', 'z', 3), ('d', 'w', 1)"
+            ))
+            .unwrap();
+            let views = [
+                ("everything", format!("SELECT k, u, v, COUNT(*) FROM \"{name}\" GROUP BY k, u, v")),
+                ("by_v", format!("SELECT v, COUNT(*) FROM \"{name}\" GROUP BY v")),
+            ];
+            for (view, q) in &views {
+                create(&c, view, q).unwrap_or_else(|e| panic!("{layout} {name}: {e}"));
+            }
+            c.execute_batch("PRAGMA recursive_triggers = OFF").unwrap();
+            for write in [
+                // Replaces `a` (same k) and `b` (same u).
+                format!("INSERT OR REPLACE INTO \"{name}\" VALUES ('a', 'y', 10)"),
+                // Replaces `c` through k.
+                format!("UPDATE OR REPLACE \"{name}\" SET k = 'c' WHERE k = 'a'"),
+                // Replaces `c` (now holding u = 'y') through u.
+                format!("UPDATE OR REPLACE \"{name}\" SET u = 'y', v = 1 WHERE k = 'd'"),
+            ] {
+                c.execute_batch(&write).unwrap();
+                for (view, q) in &views {
+                    refresh(&c, view).unwrap();
+                    if rows(&c, &format!("SELECT * FROM {view}")) != rows(&c, q) {
+                        diverged.push(format!("{layout} table {name}, view {view}, after: {write}"));
+                    }
+                }
+            }
+        }
+    }
+    assert!(diverged.is_empty(), "diverged:\n{}", diverged.join("\n"));
 }

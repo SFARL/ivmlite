@@ -290,17 +290,32 @@ fn same_row(pk: &Option<Vec<String>>, left: &str, right: &str) -> String {
     }
 }
 
+/// The alias every generated subquery gives the base table, and the one the
+/// confirmation gives the pend table. The base table's own name cannot be
+/// used: a table named `p`, `old` or `new` (in any case) would capture
+/// `p.`, `OLD.` or `NEW.` references meant for the pend table or the
+/// trigger's pseudo-rows, and REPLACE deletions would silently go
+/// uncaptured (task review, measured). The catalog refuses base tables with
+/// the reserved `__ivm_` prefix, so these aliases cannot collide.
+const BASE_ALIAS: &str = "__ivm_b";
+const PEND_ALIAS: &str = "__ivm_p";
+
 /// The existing rows a new row could replace (spec §6.2), one `UNION`
 /// branch per unique index plus the rowid, each able to use its own index.
 /// `exclude_old`: in BEFORE UPDATE, never the row being updated.
 fn candidates(schema: &Schema, capture: &CaptureInfo, exclude_old: bool) -> String {
     let base = quote(&schema.table);
-    let cols = column_list(schema, "");
+    let b = format!("{BASE_ALIAS}.");
+    let cols = column_list(schema, &b);
     let pk = identity(capture);
-    let rid = if pk.is_some() { "NULL" } else { "rowid" };
+    let rid = if pk.is_some() {
+        "NULL".to_string()
+    } else {
+        format!("{b}rowid")
+    };
     let mut branches = Vec::new();
     if pk.is_none() {
-        branches.push("rowid = NEW.rowid".to_string());
+        branches.push(format!("{b}rowid = NEW.rowid"));
     }
     for key in &capture.unique_keys {
         let terms: Vec<String> = key
@@ -313,9 +328,9 @@ fn candidates(schema: &Schema, capture: &CaptureInfo, exclude_old: bool) -> Stri
                 // default on such a key (spec §6.1), so it is safe to splice.
                 match (&c.default, c.not_null) {
                     (Some(d), true) if !d.eq_ignore_ascii_case("NULL") => {
-                        format!("{q} = COALESCE(NEW.{q}, {d})")
+                        format!("{b}{q} = COALESCE(NEW.{q}, {d})")
                     }
-                    _ => format!("{q} = NEW.{q}"),
+                    _ => format!("{b}{q} = NEW.{q}"),
                 }
             })
             .collect();
@@ -323,12 +338,14 @@ fn candidates(schema: &Schema, capture: &CaptureInfo, exclude_old: bool) -> Stri
     }
     let exclude = match (&pk, exclude_old) {
         (_, false) => String::new(),
-        (None, true) => " AND rowid <> OLD.rowid".to_string(),
-        (Some(_), true) => format!(" AND NOT ({})", same_row(&pk, "", "OLD.")),
+        (None, true) => format!(" AND {b}rowid <> OLD.rowid"),
+        (Some(_), true) => format!(" AND NOT ({})", same_row(&pk, &b, "OLD.")),
     };
     branches
         .iter()
-        .map(|b| format!("SELECT {rid}, {cols} FROM {base} WHERE ({b}){exclude}"))
+        .map(|branch| {
+            format!("SELECT {rid}, {cols} FROM {base} AS {BASE_ALIAS} WHERE ({branch}){exclude}")
+        })
         .collect::<Vec<_>>()
         .join(" UNION ")
 }
@@ -356,7 +373,9 @@ fn capture_triggers(schema: &Schema, capture: &CaptureInfo) -> String {
     let cols = column_list(schema, "");
     let new = column_list(schema, "NEW.");
     let old = column_list(schema, "OLD.");
-    let p_cols = column_list(schema, "p.");
+    let p = format!("{PEND_ALIAS}.");
+    let b = format!("{BASE_ALIAS}.");
+    let p_cols = column_list(schema, &p);
     let pk = identity(capture);
     // Record the candidates, but only when the probe shows recursive
     // triggers OFF: with them ON, SQLite's own DELETE trigger captures every
@@ -374,16 +393,17 @@ fn capture_triggers(schema: &Schema, capture: &CaptureInfo) -> String {
     // now holds its rowid (a rowid REPLACE, even with identical values).
     let gone = match &pk {
         None => format!(
-            "p.__ivm_rid = NEW.rowid OR NOT EXISTS (SELECT 1 FROM {base} WHERE rowid = p.__ivm_rid)"
+            "{p}__ivm_rid = NEW.rowid OR NOT EXISTS \
+             (SELECT 1 FROM {base} AS {BASE_ALIAS} WHERE {b}rowid = {p}__ivm_rid)"
         ),
         Some(_) => format!(
-            "({}) OR NOT EXISTS (SELECT 1 FROM {base} WHERE {})",
-            same_row(&pk, "p.", "NEW."),
-            same_row(&pk, "", "p.")
+            "({}) OR NOT EXISTS (SELECT 1 FROM {base} AS {BASE_ALIAS} WHERE {})",
+            same_row(&pk, &p, "NEW."),
+            same_row(&pk, &b, &p)
         ),
     };
     let confirm = format!(
-        "INSERT INTO {delta}({DELTA_W}, {cols}) SELECT -1, {p_cols} FROM {pend} AS p WHERE {gone};
+        "INSERT INTO {delta}({DELTA_W}, {cols}) SELECT -1, {p_cols} FROM {pend} AS {PEND_ALIAS} WHERE {gone};
                  DELETE FROM {pend};"
     );
     // A deleted row is never also counted as a confirmed candidate.
@@ -1201,8 +1221,13 @@ pub fn destroy(conn: &Connection, name: &str) -> Result<()> {
         .map_err(sql_error)?;
     if left == 0 {
         // `PROBE`'s trigger goes with it.
+        // IF EXISTS: a view whose global table the user dropped (the probe,
+        // say) is broken, and must still be droppable.
         for table in [META, VIEWS, TRACKED, DEPS, PROGRESS, PROBE] {
-            exec(conn, &format!("DROP TABLE {}", main_qualified(table)))?;
+            exec(
+                conn,
+                &format!("DROP TABLE IF EXISTS {}", main_qualified(table)),
+            )?;
         }
     }
     Ok(())
