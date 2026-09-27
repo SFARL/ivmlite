@@ -621,9 +621,13 @@ fn check_table_capture(conn: &Connection, table: &str) -> Result<()> {
     }
     check_trigger(conn, PROBE_STEP, PROBE)
         .map_err(|why| format!("its recursive-triggers probe {why}"))?;
-    let pend = pend_table(table);
-    if !table_exists(conn, &pend)? {
-        return Err(format!("its shadow table {pend} is missing"));
+    // The delta table too, not only at connect (`verify`): a refresh on a
+    // connection that is already connected would otherwise fail with a bare
+    // "no such table" rather than as a broken view.
+    for shadow in [delta_table(table), pend_table(table)] {
+        if !table_exists(conn, &shadow)? {
+            return Err(format!("its shadow table {shadow} is missing"));
+        }
     }
     Ok(())
 }
@@ -645,11 +649,15 @@ fn untrack(conn: &Connection, table: &str) -> Result<()> {
             &format!("DROP TABLE IF EXISTS {}", main_qualified(&shadow)),
         )?;
     }
-    conn.execute(
-        &format!("DELETE FROM {} WHERE tbl = ?1", main_qualified(TRACKED)),
-        [table],
-    )
-    .map_err(sql_error)?;
+    // A view whose `__ivm_tracked` the user dropped is broken, and must
+    // still be droppable (Phase 3a §5).
+    if table_exists(conn, TRACKED)? {
+        conn.execute(
+            &format!("DELETE FROM {} WHERE tbl = ?1", main_qualified(TRACKED)),
+            [table],
+        )
+        .map_err(sql_error)?;
+    }
     Ok(())
 }
 
@@ -1260,10 +1268,12 @@ pub fn destroy(conn: &Connection, name: &str) -> Result<()> {
     )?;
     // This view's own `__ivm_dep` row was already deleted above, so `readers`
     // now reports only the views, if any, still reading `t` — never this one.
+    // A delta table the user dropped leaves nothing to collect, and the
+    // views that still read it are broken and must stay droppable.
     for t in &tables {
         if readers(conn, t)?.is_empty() {
             untrack(conn, t)?;
-        } else {
+        } else if table_exists(conn, &delta_table(t))? {
             collect_garbage(conn, t)?;
         }
     }

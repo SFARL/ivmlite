@@ -1,6 +1,6 @@
 # M1b Phase 3b: shared capture, delta GC, REPLACE capture, rename refusal
 
-**Status:** approved 2026-09-27. Amended 2026-09-27 after implementation: §2, §4, §6.2, §6.4, §8 (see below); and after the final review: §3, §6.1, §6.2, §6.3, §6.4 (the unique-index latch, final review C1). **Parent specs:** [2026-09-18-ivmlite-design.md](2026-09-18-ivmlite-design.md) (§7.2 GC, §7.3 bootstrap watermark, §8.1 triggers) and [2026-09-26-m1b-phase3a-sqlite-extension-design.md](2026-09-26-m1b-phase3a-sqlite-extension-design.md), whose conventions (§4: quoting, `"main"` qualification, unqualified names inside trigger bodies; §5: one-statement apply, broken views still connect, every callback guarded) all still hold. Where this document and Phase 3a disagree, this document is newer and wins.
+**Status:** approved 2026-09-27. Amended 2026-09-27 after implementation: §2, §4, §6.2, §6.4, §8 (see below); and after the final review: §3, §6.1, §6.2, §6.3, §6.4 (the unique-index latch, final review C1), §4 and §6.3 (dropping views whose shared capture is broken, final review I2). **Parent specs:** [2026-09-18-ivmlite-design.md](2026-09-18-ivmlite-design.md) (§7.2 GC, §7.3 bootstrap watermark, §8.1 triggers) and [2026-09-26-m1b-phase3a-sqlite-extension-design.md](2026-09-26-m1b-phase3a-sqlite-extension-design.md), whose conventions (§4: quoting, `"main"` qualification, unqualified names inside trigger bodies; §5: one-statement apply, broken views still connect, every callback guarded) all still hold. Where this document and Phase 3a disagree, this document is newer and wins.
 
 ## 1. Scope
 
@@ -91,9 +91,11 @@ The shape is text so a mismatch can be printed. Any difference makes every view 
 
 1. delete v's rows from `__ivm_view`, `__ivm_dep` and `__ivm_progress`; drop its state, output and stage tables (the apply trigger goes with the stage table);
 2. for each base table v read:
-   - **no view reads it any more:** drop its five triggers first, so the table stays writable, then its delta and pend tables and its `__ivm_tracked` row;
-   - **another view still reads it:** run the table's GC delete (§5), since v may have been the slowest reader;
+   - **no view reads it any more:** drop its five triggers first, so the table stays writable, then its delta and pend tables and its `__ivm_tracked` row (when `__ivm_tracked` still exists);
+   - **another view still reads it:** run the table's GC delete (§5), since v may have been the slowest reader — when its delta table still exists;
 3. when no view is left, drop the global tables, including `__ivm_probe`, each with `DROP TABLE IF EXISTS`: a view whose probe table (or another global table) was dropped by hand is a broken view (§6.3's checks), and it must still be droppable.
+
+The two "when … still exists" conditions in step 2 serve the same rule (final review I2, measured): with two views over `t`, a user who dropped `__ivm_delta_t` could drop neither view (`SQL logic error` from the GC delete), and one who dropped `__ivm_tracked` could not drop the last one.
 
 ## 5. Delta GC
 
@@ -182,7 +184,7 @@ At every connect and refresh, and at every create over a tracked table, the view
 
 - all five capture triggers of each base table exist on that table (the `tbl_name` check from the 3c287f6 review);
 - `__ivm_probe_step` exists on `__ivm_probe`;
-- the table's pend table exists;
+- the table's delta and pend tables exist (the delta table was checked only at connect before the final review, so a refresh on an already-connected connection failed with a bare "no such table" instead of as a broken view);
 - the shape equals `__ivm_tracked`'s;
 - `__ivm_tracked.broken` is NULL: no capture trigger has latched a unique-index change (§6.2). It is checked first, and its text is the reason the view reports. A latched table also refuses every new view over it.
 

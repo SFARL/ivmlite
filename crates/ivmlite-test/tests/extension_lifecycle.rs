@@ -266,6 +266,45 @@ fn a_broken_view_reports_why_and_can_still_be_dropped() {
     }
 }
 
+/// Final review, I2: two views share `orders`' capture, and the user drops
+/// one of its shared shadow tables — the delta table, or `__ivm_tracked`.
+/// Both views report why, and both still drop, in either order; after the
+/// last drop only the user's objects remain and `orders` is writable. The
+/// first drop used to fail with "SQL logic error" in `collect_garbage`
+/// (no delta table), and the last one in `untrack` (no `__ivm_tracked`).
+#[test]
+fn two_views_sharing_a_broken_capture_can_both_still_be_dropped() {
+    let counts = "SELECT region, COUNT(*) FROM orders GROUP BY region";
+    for breakage in ["DROP TABLE __ivm_delta_orders", "DROP TABLE __ivm_tracked"] {
+        for order in [["sums", "counts"], ["counts", "sums"]] {
+            let c = open_with_extension(None).unwrap();
+            setup(&c);
+            let user_objects = objects(&c);
+            create(&c, "sums", SUMS).unwrap();
+            create(&c, "counts", counts).unwrap();
+            c.execute_batch(breakage).unwrap();
+            for view in order {
+                let err = refresh(&c, view).expect_err(breakage);
+                assert!(
+                    err.to_string().contains("cannot be maintained"),
+                    "{breakage} / {view}: {err}"
+                );
+            }
+            for view in order {
+                c.execute_batch(&format!("DROP TABLE {view}"))
+                    .unwrap_or_else(|e| panic!("{breakage} / DROP TABLE {view}: {e}"));
+            }
+            assert_eq!(
+                objects(&c),
+                user_objects,
+                "{breakage}: DROP TABLE left objects"
+            );
+            c.execute_batch("INSERT INTO orders VALUES ('a', 1)")
+                .unwrap();
+        }
+    }
+}
+
 /// A view whose capture no longer works — a base table dropped and recreated
 /// (its triggers go with it), recreated with another shape, altered, or the
 /// view's apply trigger dropped — is a broken view (spec §5): a refresh on
