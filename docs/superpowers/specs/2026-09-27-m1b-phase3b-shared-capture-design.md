@@ -1,6 +1,6 @@
 # M1b Phase 3b: shared capture, delta GC, REPLACE capture, rename refusal
 
-**Status:** approved 2026-09-27. **Parent specs:** [2026-09-18-ivmlite-design.md](2026-09-18-ivmlite-design.md) (§7.2 GC, §7.3 bootstrap watermark, §8.1 triggers) and [2026-09-26-m1b-phase3a-sqlite-extension-design.md](2026-09-26-m1b-phase3a-sqlite-extension-design.md), whose conventions (§4: quoting, `"main"` qualification, unqualified names inside trigger bodies; §5: one-statement apply, broken views still connect, every callback guarded) all still hold. Where this document and Phase 3a disagree, this document is newer and wins.
+**Status:** approved 2026-09-27. Amended 2026-09-27 after implementation: §2, §6.2, §6.4 (see below). **Parent specs:** [2026-09-18-ivmlite-design.md](2026-09-18-ivmlite-design.md) (§7.2 GC, §7.3 bootstrap watermark, §8.1 triggers) and [2026-09-26-m1b-phase3a-sqlite-extension-design.md](2026-09-26-m1b-phase3a-sqlite-extension-design.md), whose conventions (§4: quoting, `"main"` qualification, unqualified names inside trigger bodies; §5: one-statement apply, broken views still connect, every callback guarded) all still hold. Where this document and Phase 3a disagree, this document is newer and wins.
 
 ## 1. Scope
 
@@ -22,8 +22,8 @@ All measured on SQLite 3.51 (CLI) and 3.53 (Python), 2026-09-27, with throwaway 
 - A separate `CREATE UNIQUE INDEX … (k COLLATE NOCASE)` makes REPLACE remove `'A'` for a new `'a'`, which `k = NEW.k` (BINARY) does not find (external review).
 - A foreign-key `ON DELETE CASCADE` triggered by a REPLACE deletion fires the child table's DELETE trigger with `recursive_triggers` OFF and ON alike. Cascades need nothing new.
 - **The outer statement's conflict clause overrides the clause of statements inside its triggers**: under an outer `INSERT OR IGNORE`, a user trigger's `INSERT OR REPLACE` behaves as `OR IGNORE`.
-- SQLite does not specify the order in which several triggers on one event fire, so a user's AFTER trigger may run before ivmlite's.
-- Random differentials over three table variants (rowid with `INTEGER PRIMARY KEY`, plain rowid, `WITHOUT ROWID`; each with a `NOT NULL DEFAULT 'd'` unique column, a nullable unique column and a composite unique key) and 14 statement kinds (plain, `OR REPLACE`, `REPLACE`, `OR IGNORE`, both upserts, `UPDATE` in plain / `OR REPLACE` / `OR IGNORE`, `DELETE`, `INSERT … SELECT`, key swaps, omitted and NULL-assigned defaulted keys), 300 seeds × 50 statements per variant, 900 runs per cell, refreshing at random points and comparing the view with the base table:
+- SQLite does not specify the order in which several triggers on one event fire, so a user's AFTER trigger may run before ivmlite's. **Measured on SQLite 3.53 (task review, Task 4): the trigger created most recently fires first.** So a user trigger created before the view's capture triggers fires *after* them, and one created after the view fires *before* them.
+- **Prototype measurements (pre-probe prototype, before the shipped §6.2 mechanism was implemented).** Random differentials over three table variants (rowid with `INTEGER PRIMARY KEY`, plain rowid, `WITHOUT ROWID`; each with a `NOT NULL DEFAULT 'd'` unique column, a nullable unique column and a composite unique key) and 14 statement kinds (plain, `OR REPLACE`, `REPLACE`, `OR IGNORE`, both upserts, `UPDATE` in plain / `OR REPLACE` / `OR IGNORE`, `DELETE`, `INSERT … SELECT`, key swaps, omitted and NULL-assigned defaulted keys), 300 seeds × 50 statements per variant, 900 runs per cell, refreshing at random points and comparing the view with the base table:
 
   | writer's `recursive_triggers` | no re-entry | same-table re-entry, never conflicting | same-table re-entry, conflicting |
   |---|---|---|---|
@@ -32,7 +32,14 @@ All measured on SQLite 3.51 (CLI) and 3.53 (Python), 2026-09-27, with throwaway 
   | always OFF, §6 design | 0 | 672 | 728 |
   | random per statement, §6 design | 0 | 478 | 521 |
 
-  (Divergent runs of 900.) Removing each part of the §6 mechanism in turn — the candidate confirmation, the DELETE trigger's candidate removal, the `rowid = NEW.rowid` confirmation — made the no-re-entry column fail (400/400, 400/400, 194/400 runs in an earlier 400-seed run). Two rejected alternatives: a shared candidate table **without** the recursive-triggers probe broke the "always ON, conflicting re-entry" cell (227 of 900) that plain Phase 3a triggers get right; weight-0 markers in the delta resolved at refresh by a per-rowid timeline failed even non-conflicting re-entry (187 of 900), because trigger order scrambles the timeline.
+  (Divergent runs of 900, **prototype figures**.) Removing each part of the prototype's §6 mechanism in turn — the candidate confirmation, the DELETE trigger's candidate removal, the `rowid = NEW.rowid` confirmation — made the no-re-entry column fail (400/400, 400/400, 194/400 runs in an earlier 400-seed run, **prototype figures**). Two rejected alternatives, also measured against the prototype: a shared candidate table **without** the recursive-triggers probe broke the "always ON, conflicting re-entry" cell (227 of 900) that plain Phase 3a triggers get right; weight-0 markers in the delta resolved at refresh by a per-rowid timeline failed even non-conflicting re-entry (187 of 900), because trigger order scrambles the timeline.
+
+  **What the shipped design's gate mutations actually measured** (Task 4 report, both fix rounds; `scripts/test-all.sh`, baseline 329/0 unless noted): removing the candidate confirmation (recording no −1 at all), or dropping the `NOT NULL` key's COALESCE default, or dropping the rowid-replacement disjunct (`p.__ivm_rid = NEW.rowid OR …`), each turns the random differential red **without any re-entry** (326/3, 328/1 and 326/3 respectively). By contrast, each of the following three parts is caught only by a targeted test, never by either random differential:
+  - the confirmation-when-gone check (`WHERE {gone}` → `WHERE 1`): caught only by a real row at rowid −1 (330/1);
+  - `forget` (the AFTER DELETE trigger's candidate removal): caught only by a same-table BEFORE trigger's explicit delete, with `recursive_triggers` OFF and the user trigger created *before* the view (330/1);
+  - the recursive-triggers probe gate (`= 2` → `>= 2`): caught only by the always-ON re-entry differential, with the user triggers created *after* the view (330/1).
+
+  **Without re-entry, `forget` alone and the probe gate alone are redundant with each other**: with `recursive_triggers` ON the probe records nothing, so there is nothing for `forget` to forget; with it OFF and no re-entry, every BEFORE empties the pend table before any DELETE trigger can fire between a BEFORE and its AFTER. Mutating both at once, by contrast, turns both differentials red. This contradicts the prototype's single-removal figures above (400/400 for removing `forget`, 227/900 for no probe), which came from a design that differed in some other part; the shipped design's mechanism is correct in every measured cell, and the gap is recorded, not silently resolved, in `docs/mutation-gates.md`.
 
 ## 3. Persistence (format 2)
 
@@ -83,7 +90,7 @@ The shape is text so a mismatch can be printed. Any difference makes every view 
 2. for each base table v read:
    - **no view reads it any more:** drop its five triggers first, so the table stays writable, then its delta and pend tables and its `__ivm_tracked` row;
    - **another view still reads it:** run the table's GC delete (§5), since v may have been the slowest reader;
-3. when no view is left, drop the global tables, including `__ivm_probe`.
+3. when no view is left, drop the global tables, including `__ivm_probe`, each with `DROP TABLE IF EXISTS`: a view whose probe table (or another global table) was dropped by hand is a broken view (§6.3's checks), and it must still be droppable.
 
 ## 5. Delta GC
 
@@ -123,10 +130,12 @@ Because these rules live in the catalog, a unique index added later also makes t
 
 For base table `t` with columns `C`, the **candidates** of a new row are the existing rows that the row could replace. For a rowid table they are the union of:
 
-- `SELECT rowid, C FROM t WHERE rowid = NEW.rowid`;
-- for each unique index with keys `k1 … kn`, `SELECT rowid, C FROM t WHERE k1 = e1 AND … AND kn = en`, where `ei` is `COALESCE(NEW.ki, <literal default>)` for a `NOT NULL` key with a literal default and `NEW.ki` otherwise.
+- `SELECT __ivm_b.rowid, C FROM t AS __ivm_b WHERE __ivm_b.rowid = NEW.rowid`;
+- for each unique index with keys `k1 … kn`, `SELECT __ivm_b.rowid, C FROM t AS __ivm_b WHERE __ivm_b.k1 = e1 AND … AND __ivm_b.kn = en`, where `ei` is `COALESCE(NEW.ki, <literal default>)` for a `NOT NULL` key with a literal default and `NEW.ki` otherwise.
 
-The branches are joined with `UNION` so each can use its own index. `NEW.rowid` is −1 in a BEFORE INSERT without an explicit rowid (measured), which can only add a harmless extra candidate. For a `WITHOUT ROWID` table, the rowid branch is absent (its primary key is one of the unique indexes) and `NULL` stands in for `rowid`. In BEFORE UPDATE, each branch also excludes the row being updated: `AND rowid <> OLD.rowid`, or for `WITHOUT ROWID`, `AND NOT (p1 = OLD.p1 AND …)` over the primary-key columns.
+The branches are joined with `UNION` so each can use its own index. `NEW.rowid` is −1 in a BEFORE INSERT without an explicit rowid (measured), which can only add a harmless extra candidate. For a `WITHOUT ROWID` table, the rowid branch is absent (its primary key is one of the unique indexes) and `NULL` stands in for `rowid`. In BEFORE UPDATE, each branch also excludes the row being updated: `AND __ivm_b.rowid <> OLD.rowid`, or for `WITHOUT ROWID`, `AND NOT (__ivm_b.p1 = OLD.p1 AND …)` over the primary-key columns.
+
+**Every candidate subquery aliases the base table as `__ivm_b` (the confirmation below aliases the pend table as `__ivm_p`), and every column it selects is qualified through that alias.** Without it, a base table literally named `p`, `old` or `new` (any case) would capture the `p.`, `OLD.` or `NEW.` references the generated SQL means for the pend table or the trigger's own pseudo-rows — measured (task review): a `WITHOUT ROWID` table named `p`, `P`, `old` or `OLD` silently diverged under `UPDATE OR REPLACE` without the alias. A rowid table under any of these names, and a table of either layout named `new`/`New`, did not diverge; for `new`, the unaliased cost is only an avoidable full scan, not a wrong result. The catalog refuses base tables with the reserved `__ivm_` prefix (§6.1), so `__ivm_b` and `__ivm_p` cannot collide with a base table's own name.
 
 **The recursive-triggers probe.** `__ivm_probe` has one trigger, `__ivm_probe_step AFTER INSERT ON __ivm_probe WHEN NEW.n < 2 BEGIN INSERT INTO __ivm_probe VALUES (NEW.n + 1); END`. With `recursive_triggers` OFF, the trigger fires for the first row but not for the row it inserts itself, so inserting a 0 leaves 2 rows; with it ON, 3.
 
@@ -140,8 +149,9 @@ INSERT INTO pend(__ivm_rid, C) SELECT * FROM (<candidates>) WHERE (SELECT count(
 DELETE FROM probe;
 
 -- AFTER INSERT (ins)
-INSERT INTO delta(__ivm_w, C) SELECT -1, C FROM pend AS p
-  WHERE p.__ivm_rid = NEW.rowid OR NOT EXISTS (SELECT 1 FROM t WHERE rowid = p.__ivm_rid);
+INSERT INTO delta(__ivm_w, C) SELECT -1, C FROM pend AS __ivm_p
+  WHERE __ivm_p.__ivm_rid = NEW.rowid
+     OR NOT EXISTS (SELECT 1 FROM t AS __ivm_b WHERE __ivm_b.rowid = __ivm_p.__ivm_rid);
 DELETE FROM pend;
 INSERT INTO delta(__ivm_w, C) VALUES (1, NEW.C);
 
@@ -152,7 +162,7 @@ DELETE FROM pend WHERE __ivm_rid = OLD.rowid;
 INSERT INTO delta(__ivm_w, C) VALUES (-1, OLD.C);
 ```
 
-(`delta`, `pend` and `probe` stand for `__ivm_delta_<t>`, `__ivm_pend_<t>` and `__ivm_probe`, unqualified as every trigger body requires.)
+(`delta`, `pend` and `probe` stand for `__ivm_delta_<t>`, `__ivm_pend_<t>` and `__ivm_probe`, unqualified as every trigger body requires. `t` is aliased `__ivm_b` and `pend` is aliased `__ivm_p`, as above.)
 
 - **Recording.** With `recursive_triggers` OFF, BEFORE records the candidates.
 - **Confirmation.** AFTER confirms a candidate as removed when it is gone from `t`, or when the new row now holds its rowid (a rowid REPLACE, including one with identical values). That is when the −1 is recorded.
@@ -176,6 +186,8 @@ Capture is exact:
 - with it OFF, for every statement that does not write the same base table again from inside its own trigger program — directly, or through triggers on other tables.
 
 **One case is not supported:** a writer with `recursive_triggers` OFF whose REPLACE-style deletion happens while such a same-table re-entry is running. Neither the candidate table nor any trigger-only design measured (§2) can capture or detect it. The view may silently diverge.
+
+Because SQLite does not specify trigger firing order (§2), the re-entry differential (§8 scenario 4) runs with the user's re-entrant triggers created **both before and after** the view — on SQLite 3.53 this is the only way to exercise both firing orders, since the trigger created most recently fires first (§2).
 
 The documentation says so plainly and recommends `PRAGMA recursive_triggers = ON` for any writer of a database whose tracked tables have triggers that write back to the same table. Triggers that write only to other tables are unaffected. A foreign-key cascade is not a re-entry (§2).
 
@@ -212,7 +224,7 @@ Each has at least one test against the real loaded extension, landing with the t
    - After every reader has refreshed, the table's delta table is empty. A lagging view keeps exactly the rows after its watermark.
    - Dropping the slowest view deletes what only it held back.
    - A fault injected on the delta table's deletion (a test `BEFORE DELETE` trigger with `RAISE(ABORT)`) fails the refresh with delta, state, output and watermarks unchanged, in autocommit mode and in an explicit transaction, and a retry succeeds.
-4. **REPLACE differential.** The §2 generator ported to a Rust test over the three table variants, with `recursive_triggers` chosen at random per statement, some statements written by a connection without the extension, and refreshes at random points. After each refresh, a view that groups by every column (so it holds the table's full contents) matches SQLite's own evaluation. The re-entry variants also run with `recursive_triggers` always ON and must stay exact.
+4. **REPLACE differential.** The §2 generator ported to a Rust test over the three table variants, with `recursive_triggers` chosen at random per statement, some statements written by a connection without the extension, and refreshes at random points. After each refresh, two views are checked against SQLite's own evaluation: a view that groups by every column (so it holds the table's full contents) and a coarse `GROUP BY x` view — the full-contents view cannot see a row that was retracted twice, since a doubly-retracted group vanishes exactly like a singly-retracted one, so the coarse view is needed to catch that failure mode. The re-entry variants also run with `recursive_triggers` always ON and must stay exact, and with the re-entrant user triggers created both before and after the view (§6.4), since SQLite's trigger firing order is unspecified.
 5. **REPLACE rules.** Each §6.1 refusal fails creation with a message that names it; a table declaring `ON CONFLICT REPLACE` is now accepted and maintained. Adding a unique index after creation makes the view report the change and still drop.
 6. **Rename.** `ALTER TABLE v RENAME TO w` fails with the §7 message, in autocommit mode and in an explicit transaction; v still refreshes and reads, and can be dropped.
 7. **Format.** A database whose `__ivm_meta` says format 1 is refused by create and by connect.
