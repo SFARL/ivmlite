@@ -196,15 +196,38 @@ enum Recursive {
     AlwaysOn,
 }
 
+/// When a test installs its user triggers relative to the view's capture
+/// triggers. SQLite does not specify the order in which several triggers on
+/// one event fire (spec §2), and in practice it follows creation order, so
+/// each order puts the user's triggers on the other side of ivmlite's.
+#[derive(Clone, Copy)]
+enum UserTriggers {
+    BeforeView,
+    AfterView,
+}
+
+impl UserTriggers {
+    const BOTH: [UserTriggers; 2] = [UserTriggers::BeforeView, UserTriggers::AfterView];
+
+    fn tag(self) -> &'static str {
+        match self {
+            UserTriggers::BeforeView => "before-view",
+            UserTriggers::AfterView => "after-view",
+        }
+    }
+}
+
 /// Write `t` at random through two connections — one with the extension,
 /// one without — and after every refresh compare a view holding `t`'s full
 /// contents with SQLite's own evaluation (spec §8 scenario 4).
 ///
 /// `reentry_kind` names `reentry` in the database file's name, with the
-/// variant and the seed: both differential tests run at once in this test
-/// binary over overlapping seeds, and no two running cases may share a file.
+/// trigger order, the variant and the seed: both differential tests run at
+/// once in this test binary over overlapping seeds, and no two running cases
+/// may share a file. `order` installs `reentry` before or after the view.
 fn differential(
     reentry_kind: &str,
+    order: UserTriggers,
     variant: usize,
     reentry: &str,
     recursive: Recursive,
@@ -214,11 +237,19 @@ fn differential(
     let group = v.cols.join(", ");
     let everything = format!("SELECT {group}, COUNT(*) FROM t GROUP BY {group}");
     for seed in seeds {
-        let file = TempFile::new(&format!("replace-{reentry_kind}-{variant}-{seed}"));
+        let file = TempFile::new(&format!(
+            "replace-{reentry_kind}-{}-{variant}-{seed}",
+            order.tag()
+        ));
         let c = open_with_extension(Some(file.path())).unwrap();
         c.execute_batch(v.ddl).unwrap();
-        c.execute_batch(reentry).unwrap();
+        if let UserTriggers::BeforeView = order {
+            c.execute_batch(reentry).unwrap();
+        }
         create(&c, "everything", &everything).unwrap();
+        if let UserTriggers::AfterView = order {
+            c.execute_batch(reentry).unwrap();
+        }
         let plain = Connection::open(file.path()).unwrap();
         let mut r = StdRng::seed_from_u64(seed);
         for step in 0..40 {
@@ -237,13 +268,15 @@ fn differential(
             // Constraint failures are part of the space; they change nothing.
             let _ = writer.execute_batch(&sql);
             if r.random_bool(0.3) || step == 39 {
-                refresh(&c, "everything")
-                    .unwrap_or_else(|e| panic!("{} seed {seed} step {step}: {e}", v.name));
+                refresh(&c, "everything").unwrap_or_else(|e| {
+                    panic!("{} {} seed {seed} step {step}: {e}", v.name, order.tag())
+                });
                 assert_eq!(
                     rows(&c, "SELECT * FROM everything"),
                     rows(&c, &everything),
-                    "{} seed {seed} step {step} after: {sql}",
-                    v.name
+                    "{} {} seed {seed} step {step} after: {sql}",
+                    v.name,
+                    order.tag()
                 );
             }
         }
@@ -253,12 +286,20 @@ fn differential(
 #[test]
 fn replace_is_captured_without_reentry_whatever_the_writers_recursive_triggers() {
     for variant in 0..VARIANTS.len() {
-        differential("none", variant, "", Recursive::RandomPerStatement, 0..60);
+        differential(
+            "none",
+            UserTriggers::BeforeView,
+            variant,
+            "",
+            Recursive::RandomPerStatement,
+            0..60,
+        );
     }
 }
 
 /// Spec §6.4: with recursive_triggers ON, capture stays exact even when
-/// user triggers write the same table again.
+/// user triggers write the same table again, whichever side of ivmlite's
+/// triggers they fire on.
 #[test]
 fn replace_is_captured_under_reentry_when_the_writer_has_recursive_triggers_on() {
     for variant in 0..VARIANTS.len() {
@@ -266,7 +307,9 @@ fn replace_is_captured_under_reentry_when_the_writer_has_recursive_triggers_on()
             ("conflicting", REENTRY_CONFLICTING),
             ("non-conflicting", REENTRY_NON_CONFLICTING),
         ] {
-            differential(kind, variant, reentry, Recursive::AlwaysOn, 0..30);
+            for order in UserTriggers::BOTH {
+                differential(kind, order, variant, reentry, Recursive::AlwaysOn, 0..30);
+            }
         }
     }
 }
@@ -342,4 +385,75 @@ fn a_missing_probe_trigger_breaks_the_view() {
         "{err}"
     );
     c.execute_batch("DROP TABLE ks").unwrap();
+}
+
+/// Spec §6.2: in a BEFORE INSERT without an explicit rowid, `NEW.rowid` is
+/// −1, so a real row at rowid −1 becomes a candidate of every such insert.
+/// It is not replaced, and it is still in `t` afterwards, so it must never
+/// be confirmed: the confirmation checks that a candidate is gone.
+#[test]
+fn a_row_at_rowid_minus_one_is_not_taken_for_a_replaced_row() {
+    for (ddl, seed_rows, q) in [
+        (
+            "CREATE TABLE t(k TEXT, v INTEGER) STRICT",
+            "INSERT INTO t(rowid, k, v) VALUES (-1, 'neg', 1), (5, 'five', 2)",
+            "SELECT k, v, COUNT(*) FROM t GROUP BY k, v",
+        ),
+        (
+            "CREATE TABLE t(id INTEGER PRIMARY KEY, k TEXT) STRICT",
+            "INSERT INTO t VALUES (-1, 'neg'), (5, 'five')",
+            "SELECT id, k, COUNT(*) FROM t GROUP BY id, k",
+        ),
+    ] {
+        let c = open_with_extension(None).unwrap();
+        c.execute_batch(ddl).unwrap();
+        c.execute_batch(seed_rows).unwrap();
+        create(&c, "everything", q).unwrap();
+        c.execute_batch("PRAGMA recursive_triggers = OFF").unwrap();
+        c.execute_batch("INSERT INTO t(k) VALUES ('new')").unwrap();
+        refresh(&c, "everything").unwrap();
+        assert_matches_oracle(&c, "everything", q);
+    }
+}
+
+/// Spec §6.2: a row deleted between a BEFORE and its AFTER trigger is
+/// retracted once, by the DELETE trigger, which also forgets its candidate.
+/// Here a user BEFORE INSERT trigger deletes the row a plain INSERT would
+/// conflict with, so that INSERT never replaces it. This pins behavior
+/// slightly inside spec §6.4's re-entry region (the trigger writes `t`
+/// again), with recursive_triggers OFF. When ivmlite's BEFORE fires first,
+/// it records the row as a candidate, and without the forget the AFTER
+/// would confirm it and count the deletion twice; in the other order there
+/// is no candidate to record.
+#[test]
+fn a_row_a_user_trigger_deletes_before_the_insert_is_retracted_once() {
+    // `b` shares `a`'s group, so a second retraction of `a` shows as a
+    // wrong count rather than as a group that vanishes either way.
+    let q = "SELECT v, COUNT(*) FROM t GROUP BY v";
+    for order in UserTriggers::BOTH {
+        let c = open_with_extension(None).unwrap();
+        c.execute_batch(
+            "CREATE TABLE t(k TEXT UNIQUE, v INTEGER) STRICT;
+             INSERT INTO t VALUES ('a', 1), ('b', 1);",
+        )
+        .unwrap();
+        let user_clear = "CREATE TRIGGER user_clear BEFORE INSERT ON t BEGIN
+             DELETE FROM t WHERE k = NEW.k; END;";
+        if let UserTriggers::BeforeView = order {
+            c.execute_batch(user_clear).unwrap();
+        }
+        create(&c, "everything", q).unwrap();
+        if let UserTriggers::AfterView = order {
+            c.execute_batch(user_clear).unwrap();
+        }
+        c.execute_batch("PRAGMA recursive_triggers = OFF").unwrap();
+        c.execute_batch("INSERT INTO t VALUES ('a', 3)").unwrap();
+        refresh(&c, "everything").unwrap_or_else(|e| panic!("user triggers {}: {e}", order.tag()));
+        assert_eq!(
+            rows(&c, "SELECT * FROM everything"),
+            rows(&c, q),
+            "user triggers {}",
+            order.tag()
+        );
+    }
 }
