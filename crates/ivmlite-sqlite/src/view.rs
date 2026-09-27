@@ -325,6 +325,22 @@ fn high_watermark(conn: &Connection, table: &str) -> Result<i64> {
     .map_err(sql_error)
 }
 
+/// Delete `table`'s delta rows that every reader has consumed (spec §5).
+/// Used when a view is dropped while others still read `table`: the dropped
+/// view may have been the slowest.
+fn collect_garbage(conn: &Connection, table: &str) -> Result<()> {
+    conn.execute(
+        &format!(
+            "DELETE FROM {} WHERE {DELTA_SEQ} <= (SELECT MIN(applied_seq) FROM {} WHERE tbl = ?1)",
+            main_qualified(&delta_table(table)),
+            main_qualified(PROGRESS)
+        ),
+        [table],
+    )
+    .map(|_| ())
+    .map_err(sql_error)
+}
+
 /// `table`'s capture as every view of it relies on: the shape its triggers
 /// were generated from, and every capture trigger on `table` itself.
 fn check_table_capture(conn: &Connection, table: &str) -> Result<()> {
@@ -542,6 +558,17 @@ fn create_stage(
          WHERE NEW.op = 'progress' AND view = {} AND tbl = NEW.tbl;",
         literal(name)
     ));
+    // Spec §5: once this view's watermark for `t` moves, delete every delta
+    // row of `t` that every reader has consumed. Only on the stage row that
+    // moves `t`'s watermark, inside the one arming statement.
+    for t in &view.tables {
+        body.push(format!(
+            "DELETE FROM {delta} WHERE NEW.op = 'progress' AND NEW.tbl = {lit} \
+             AND {DELTA_SEQ} <= (SELECT MIN(applied_seq) FROM {progress} WHERE tbl = {lit});",
+            delta = quote(&delta_table(t)),
+            lit = literal(t),
+        ));
+    }
     exec(
         conn,
         &format!(
@@ -979,6 +1006,8 @@ pub fn destroy(conn: &Connection, name: &str) -> Result<()> {
     for t in &tables {
         if readers(conn, t)?.is_empty() {
             untrack(conn, t)?;
+        } else {
+            collect_garbage(conn, t)?;
         }
     }
     let left: i64 = conn
