@@ -219,7 +219,8 @@ fn create_global_tables(conn: &Connection) -> Result<()> {
             "CREATE TABLE IF NOT EXISTS {meta}(key TEXT PRIMARY KEY, value);
              CREATE TABLE IF NOT EXISTS {}(name TEXT PRIMARY KEY, sql TEXT NOT NULL,
                  plan TEXT NOT NULL, declaration TEXT NOT NULL, format INTEGER NOT NULL);
-             CREATE TABLE IF NOT EXISTS {}(tbl TEXT PRIMARY KEY, shape TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS {}(tbl TEXT PRIMARY KEY, shape TEXT NOT NULL,
+                 broken TEXT);
              CREATE TABLE IF NOT EXISTS {}(view TEXT NOT NULL, tbl TEXT NOT NULL,
                  PRIMARY KEY(view, tbl));
              CREATE TABLE IF NOT EXISTS {}(view TEXT NOT NULL, tbl TEXT NOT NULL,
@@ -350,9 +351,38 @@ fn candidates(schema: &Schema, capture: &CaptureInfo, exclude_old: bool) -> Stri
         .join(" UNION ")
 }
 
+/// A query for the fingerprint of `table`'s explicit unique indexes (spec
+/// §6.3): their `CREATE UNIQUE INDEX` statements in name order, one per
+/// line, or NULL when there is none. `schema` is `"main".` outside a
+/// trigger and empty inside one, where a trigger in `main` reads `main`'s
+/// `sqlite_schema` (measured, with an attached database holding a
+/// same-named table and unique index). `table` is an SQL expression.
+///
+/// SQLite stores every such statement with the prefix normalized to
+/// `CREATE UNIQUE INDEX ` (measured: `create  unique index if not exists`
+/// and a leading comment are both stored that way), so the `LIKE` needs no
+/// more than that prefix. Autoindexes have no `sql` and are left out: they
+/// change only when the table is rebuilt, which drops the triggers too.
+fn unique_index_fingerprint(schema: &str, table: &str) -> String {
+    format!(
+        "SELECT group_concat(sql, char(10)) FROM (
+             SELECT sql FROM {schema}sqlite_schema
+             WHERE type = 'index' AND tbl_name = {table} COLLATE NOCASE
+               AND sql LIKE 'CREATE UNIQUE INDEX%'
+             ORDER BY name)"
+    )
+}
+
+/// What `__ivm_tracked.broken` says once a capture trigger of `table` has
+/// run against unique indexes other than the ones it was generated from.
+fn unique_indexes_changed(table: &str) -> String {
+    format!("the unique indexes of {table} changed after its capture was generated")
+}
+
 /// The `CREATE TRIGGER` statements for every one of `CAPTURE_EVENTS`
-/// (Phase 3a §8.1, Phase 3b §6.2).
-fn capture_triggers(schema: &Schema, capture: &CaptureInfo) -> String {
+/// (Phase 3a §8.1, Phase 3b §6.2). `fingerprint` is
+/// `unique_index_fingerprint`'s value when the table was tracked.
+fn capture_triggers(schema: &Schema, capture: &CaptureInfo, fingerprint: Option<&str>) -> String {
     let t = &schema.table;
     // Measured: SQLite rejects a schema-qualified table name on an INSERT
     // inside a trigger body ("qualified table names are not allowed on
@@ -380,10 +410,26 @@ fn capture_triggers(schema: &Schema, capture: &CaptureInfo) -> String {
     // Record the candidates, but only when the probe shows recursive
     // triggers OFF: with them ON, SQLite's own DELETE trigger captures every
     // row REPLACE removes, as in Phase 3a.
+    //
+    // Before anything else, latch a change to the unique indexes (spec
+    // §6.3): the candidate lookup below was generated from the indexes that
+    // existed when `t` was tracked, so under any other set a REPLACE may
+    // remove a row it never looks up. The shape check alone cannot see an
+    // index that was added and dropped again between two refreshes; this
+    // sees every write, and `broken` is never cleared.
+    let latch = format!(
+        "UPDATE {} SET broken = {} WHERE tbl = {} AND broken IS NULL AND ({}) IS NOT {};",
+        quote(TRACKED),
+        literal(&unique_indexes_changed(t)),
+        literal(t),
+        unique_index_fingerprint("", &literal(t)),
+        fingerprint.map_or_else(|| "NULL".to_string(), literal),
+    );
     let fill = |exclude_old: bool| {
         let c = candidates(schema, capture, exclude_old);
         format!(
-            "DELETE FROM {pend};
+            "{latch}
+                 DELETE FROM {pend};
                  INSERT INTO {probe}(n) SELECT 0 WHERE EXISTS ({c});
                  INSERT INTO {pend}(__ivm_rid, {cols}) SELECT * FROM ({c}) WHERE (SELECT count(*) FROM {probe}) = 2;
                  DELETE FROM {probe};"
@@ -471,7 +517,12 @@ fn track(conn: &Connection, schema: &Schema) -> Result<()> {
         main_qualified(&delta_table(t)),
         main_qualified(&pend_table(t)),
     );
-    sql.push_str(&capture_triggers(schema, &capture));
+    let fingerprint: Option<String> = conn
+        .query_row(&unique_index_fingerprint("\"main\".", "?1"), [t], |r| {
+            r.get(0)
+        })
+        .map_err(sql_error)?;
+    sql.push_str(&capture_triggers(schema, &capture, fingerprint.as_deref()));
     exec(conn, &sql)?;
     conn.execute(
         &format!(
@@ -537,21 +588,25 @@ fn collect_garbage(conn: &Connection, table: &str) -> Result<()> {
     .map_err(sql_error)
 }
 
-/// `table`'s capture as every view of it relies on: the shape its triggers
-/// were generated from, and every capture trigger on `table` itself.
+/// `table`'s capture as every view of it relies on: no capture trigger has
+/// latched a unique-index change, the shape its triggers were generated
+/// from, and every capture trigger on `table` itself.
 fn check_table_capture(conn: &Connection, table: &str) -> Result<()> {
-    let recorded: Option<String> = conn
+    let recorded: Option<(String, Option<String>)> = conn
         .query_row(
             &format!(
-                "SELECT shape FROM {} WHERE tbl = ?1",
+                "SELECT shape, broken FROM {} WHERE tbl = ?1",
                 main_qualified(TRACKED)
             ),
             [table],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()
         .map_err(sql_error)?;
-    let recorded = recorded.ok_or_else(|| format!("table {table} is not tracked"))?;
+    let (recorded, latched) = recorded.ok_or_else(|| format!("table {table} is not tracked"))?;
+    if let Some(why) = latched {
+        return Err(why);
+    }
     let capture = SqliteCatalog { conn }.capture(table)?;
     let now = shape(&base_schema(conn, table)?, &capture);
     if now != recorded {

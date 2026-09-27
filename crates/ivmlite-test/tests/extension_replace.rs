@@ -62,6 +62,154 @@ fn a_unique_index_added_after_create_breaks_the_view() {
     }
 }
 
+/// What every view of `t` reports once its capture triggers have run
+/// against a unique-index set other than the one they were generated from
+/// (spec §6.3, the unique-index latch).
+const LATCHED: &str = "the unique indexes of t changed after its capture was generated";
+
+/// How many tracked tables have latched a unique-index change.
+const LATCHES: &str = "SELECT count(*) FROM __ivm_tracked WHERE broken IS NOT NULL";
+
+/// `ks` over `t(id INTEGER PRIMARY KEY, k INTEGER, v TEXT)`, in a file, with
+/// one row; the connection writes with recursive_triggers OFF, so a row
+/// REPLACE removes is captured only through the candidate lookup.
+fn transient_index_setup(file: &TempFile) -> Connection {
+    let c = open_with_extension(Some(file.path())).unwrap();
+    c.execute_batch(
+        "CREATE TABLE t(id INTEGER PRIMARY KEY, k INTEGER, v TEXT) STRICT;
+         INSERT INTO t VALUES (1, 5, 'a');
+         PRAGMA recursive_triggers = OFF;",
+    )
+    .unwrap();
+    create(&c, "ks", KS).unwrap();
+    c
+}
+
+/// Every use of a latched view fails with `LATCHED`, on the connection that
+/// wrote and after a reopen; no new view of `t` can be created; and the view
+/// still drops, leaving `t` writable and uncaptured.
+fn assert_latched_and_droppable(c: Connection, file: &TempFile, case: &str) {
+    let err = refresh(&c, "ks").expect_err(case);
+    assert!(
+        err.to_string().contains(LATCHED) && err.to_string().contains("drop and recreate"),
+        "{case}: {err}"
+    );
+    drop(c);
+    let c = open_with_extension(Some(file.path())).unwrap();
+    for sql in ["SELECT * FROM ks", "INSERT INTO ks(ks) VALUES ('refresh')"] {
+        let err = c.execute_batch(sql).expect_err(sql);
+        assert!(err.to_string().contains(LATCHED), "{case} / {sql}: {err}");
+    }
+    let err = create(&c, "other", "SELECT v, COUNT(*) FROM t GROUP BY v").expect_err(case);
+    assert!(err.to_string().contains(LATCHED), "{case} / create: {err}");
+    c.execute_batch("DROP TABLE ks").unwrap();
+    assert_eq!(
+        objects(&c),
+        rows(
+            &c,
+            "SELECT type, name FROM sqlite_schema WHERE tbl_name = 't' AND type IN ('table', 'index')"
+        ),
+        "{case}: DROP TABLE left objects"
+    );
+    c.execute_batch("INSERT INTO t VALUES (3, 7, 'c')").unwrap();
+}
+
+/// Final review, C1: the capture triggers are generated from the unique
+/// indexes that exist when `t` is first tracked, and the shape check only
+/// compares snapshots. A unique index added, used by a REPLACE (whose
+/// removed row the triggers never looked up) and dropped again before the
+/// next refresh left the shape unchanged, and the refresh succeeded with a
+/// wrong count. The BEFORE triggers now latch the change (spec §6.3).
+#[test]
+fn a_unique_index_added_and_dropped_between_refreshes_breaks_the_view() {
+    let file = TempFile::new("transient-unique");
+    let c = transient_index_setup(&file);
+    c.execute_batch(
+        "CREATE UNIQUE INDEX i ON t(k);
+         INSERT OR REPLACE INTO t VALUES (2, 5, 'b');
+         DROP INDEX i;",
+    )
+    .unwrap();
+    assert_latched_and_droppable(c, &file, "transient unique index");
+}
+
+/// Final review, C1 (reviewer's h9): once a refresh has reported the added
+/// unique index, dropping it again must not make the view maintainable:
+/// the REPLACE it let through is still missing from the deltas.
+#[test]
+fn a_view_that_reported_an_added_unique_index_stays_broken_after_it_is_dropped() {
+    let file = TempFile::new("reverted-unique");
+    let c = transient_index_setup(&file);
+    c.execute_batch(
+        "CREATE UNIQUE INDEX i ON t(k);
+         INSERT OR REPLACE INTO t VALUES (2, 5, 'b');",
+    )
+    .unwrap();
+    let err = refresh(&c, "ks").expect_err("the unique index exists");
+    assert!(err.to_string().contains("cannot be maintained"), "{err}");
+    c.execute_batch("DROP INDEX i").unwrap();
+    assert_latched_and_droppable(c, &file, "reverted unique index");
+}
+
+/// The latch covers the explicit unique indexes only, and only while a
+/// write sees them: a non-unique index added and dropped around writes,
+/// and a unique index added and dropped with no write in between, leave
+/// the triggers exactly as correct as before, and the view keeps working.
+#[test]
+fn indexes_that_never_change_what_replace_removes_keep_the_view_working() {
+    let c = open_with_extension(None).unwrap();
+    c.execute_batch(
+        "CREATE TABLE t(id INTEGER PRIMARY KEY, k INTEGER, v TEXT) STRICT;
+         INSERT INTO t VALUES (1, 5, 'a');
+         PRAGMA recursive_triggers = OFF;",
+    )
+    .unwrap();
+    create(&c, "ks", KS).unwrap();
+    c.execute_batch(
+        "CREATE INDEX n ON t(k);
+         INSERT OR REPLACE INTO t VALUES (2, 5, 'b');
+         UPDATE t SET k = 6 WHERE id = 1;
+         DROP INDEX n;
+         CREATE UNIQUE INDEX u ON t(v);
+         DROP INDEX u;
+         INSERT OR REPLACE INTO t VALUES (1, 5, 'c');",
+    )
+    .unwrap();
+    refresh(&c, "ks").unwrap();
+    assert_matches_oracle(&c, "ks", KS);
+    assert_eq!(count(&c, LATCHES), 0);
+}
+
+/// Final review, minor 2: dropping a unique index the triggers were
+/// generated with changes the shape, so the view reports it; a write after
+/// the drop also sets the latch (the index set differs either way, and the
+/// fingerprint compares it exactly), which stays set when the same index is
+/// created again. Both are "broken", never silently wrong.
+#[test]
+fn dropping_a_unique_index_the_capture_was_generated_with_breaks_the_view() {
+    let file = TempFile::new("dropped-unique");
+    let c = open_with_extension(Some(file.path())).unwrap();
+    c.execute_batch(
+        "CREATE TABLE t(id INTEGER PRIMARY KEY, k INTEGER, v TEXT) STRICT;
+         CREATE UNIQUE INDEX uk ON t(k);
+         INSERT INTO t VALUES (1, 5, 'a');
+         PRAGMA recursive_triggers = OFF;",
+    )
+    .unwrap();
+    create(&c, "ks", KS).unwrap();
+    c.execute_batch("DROP INDEX uk").unwrap();
+    let err = refresh(&c, "ks").expect_err("the unique index is gone");
+    assert!(err.to_string().contains("changed shape"), "{err}");
+    assert_eq!(count(&c, LATCHES), 0);
+    c.execute_batch(
+        "INSERT INTO t VALUES (2, 5, 'b');
+         DELETE FROM t WHERE id = 2;
+         CREATE UNIQUE INDEX uk ON t(k);",
+    )
+    .unwrap();
+    assert_latched_and_droppable(c, &file, "dropped and recreated unique index");
+}
+
 /// Spec §2's three table variants: each has a `NOT NULL DEFAULT 'd'` unique
 /// key, a nullable unique column and a composite unique key.
 struct Variant {

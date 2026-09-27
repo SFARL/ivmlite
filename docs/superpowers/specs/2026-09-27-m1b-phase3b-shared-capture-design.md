@@ -1,6 +1,6 @@
 # M1b Phase 3b: shared capture, delta GC, REPLACE capture, rename refusal
 
-**Status:** approved 2026-09-27. Amended 2026-09-27 after implementation: §2, §4, §6.2, §6.4, §8 (see below). **Parent specs:** [2026-09-18-ivmlite-design.md](2026-09-18-ivmlite-design.md) (§7.2 GC, §7.3 bootstrap watermark, §8.1 triggers) and [2026-09-26-m1b-phase3a-sqlite-extension-design.md](2026-09-26-m1b-phase3a-sqlite-extension-design.md), whose conventions (§4: quoting, `"main"` qualification, unqualified names inside trigger bodies; §5: one-statement apply, broken views still connect, every callback guarded) all still hold. Where this document and Phase 3a disagree, this document is newer and wins.
+**Status:** approved 2026-09-27. Amended 2026-09-27 after implementation: §2, §4, §6.2, §6.4, §8 (see below); and after the final review: §3, §6.1, §6.2, §6.3, §6.4 (the unique-index latch, final review C1). **Parent specs:** [2026-09-18-ivmlite-design.md](2026-09-18-ivmlite-design.md) (§7.2 GC, §7.3 bootstrap watermark, §8.1 triggers) and [2026-09-26-m1b-phase3a-sqlite-extension-design.md](2026-09-26-m1b-phase3a-sqlite-extension-design.md), whose conventions (§4: quoting, `"main"` qualification, unqualified names inside trigger bodies; §5: one-statement apply, broken views still connect, every callback guarded) all still hold. Where this document and Phase 3a disagree, this document is newer and wins.
 
 ## 1. Scope
 
@@ -51,7 +51,8 @@ All measured on SQLite 3.51 (CLI) and 3.53 (Python), 2026-09-27, with throwaway 
 __ivm_meta(key TEXT PRIMARY KEY, value)                        -- ('format', 2)
 __ivm_view(name TEXT PRIMARY KEY, sql TEXT NOT NULL, plan TEXT NOT NULL,
            declaration TEXT NOT NULL, format INTEGER NOT NULL)
-__ivm_tracked(tbl TEXT PRIMARY KEY, shape TEXT NOT NULL)       -- new: one row per captured base table
+__ivm_tracked(tbl TEXT PRIMARY KEY, shape TEXT NOT NULL,
+              broken TEXT)                                     -- new: one row per captured base table
 __ivm_dep(view TEXT NOT NULL, tbl TEXT NOT NULL, PRIMARY KEY(view, tbl))   -- shape moved to __ivm_tracked
 __ivm_progress(view TEXT NOT NULL, tbl TEXT NOT NULL, applied_seq INTEGER NOT NULL, PRIMARY KEY(view, tbl))
 __ivm_probe(n INTEGER NOT NULL)                                -- new, with trigger __ivm_probe_step (§6.2)
@@ -73,6 +74,8 @@ The shape moves from `__ivm_dep` to `__ivm_tracked` because the capture triggers
 - for each `NOT NULL` column that is a key of some unique index, its default's text as `pragma_table_info` reports it (absent → none).
 
 The shape is text so a mismatch can be printed. Any difference makes every view of the table a broken view (Phase 3a §5), including a unique index added after the view was created: triggers built without it would miss its REPLACE deletions.
+
+**The shape alone is only a snapshot.** It is compared when a view is created, connected or refreshed, so it cannot see a unique index that was added, used by a REPLACE and dropped again between two refreshes: the shape is equal again, and the removed row was never captured (final review C1, measured: the refresh succeeded with a count of 2 against SQLite's 1). The same holds after a refresh has already reported the added index: once the user drops it, the next refresh succeeded with a wrong count. So the unique-index set is **also latched at write time**, in `__ivm_tracked.broken` (§6.2, §6.3). `broken` is NULL until a capture trigger sees unique indexes other than the ones it was generated from; it then holds the reason, and nothing ever clears it.
 
 ## 4. Sharing a base table
 
@@ -124,7 +127,7 @@ A **literal default** is, as `pragma_table_info.dflt_value` reports it: `NULL` i
 
 Phase 3a's refusal of `ON CONFLICT REPLACE` in a table's DDL is **lifted**: such a table's REPLACE deletions are captured like statement-level ones.
 
-Because these rules live in the catalog, a unique index added later also makes the view's SQL fail to compile at connect, and the shape check catches it at refresh. Either way the view is broken, never silently wrong.
+Because these rules live in the catalog, a unique index added later also makes the view's SQL fail to compile at connect, and the shape check catches it at refresh while the index exists. An index that is added, written through and dropped again between two refreshes leaves nothing for either to see; the write-time latch (§6.2, §6.3) catches it instead. Together they keep the view broken, never silently wrong: every write that could remove a row through an index the triggers were not generated for runs a BEFORE trigger, and that trigger latches the change before the write happens.
 
 ### 6.2 The mechanism
 
@@ -143,6 +146,9 @@ Triggers, for a rowid table (`WITHOUT ROWID`: the identity comparisons use the p
 
 ```sql
 -- BEFORE INSERT (preins); BEFORE UPDATE (preupd) is the same with the exclusion above
+UPDATE __ivm_tracked SET broken = 'the unique indexes of <t> changed after its capture was generated'
+ WHERE tbl = '<t>' AND broken IS NULL
+   AND (<fingerprint of t's explicit unique indexes>) IS NOT <the fingerprint when t was tracked>;
 DELETE FROM pend;
 INSERT INTO probe(n) SELECT 0 WHERE EXISTS (<candidates>);
 INSERT INTO pend(__ivm_rid, C) SELECT * FROM (<candidates>) WHERE (SELECT count(*) FROM probe) = 2;
@@ -164,6 +170,7 @@ INSERT INTO delta(__ivm_w, C) VALUES (-1, OLD.C);
 
 (`delta`, `pend` and `probe` stand for `__ivm_delta_<t>`, `__ivm_pend_<t>` and `__ivm_probe`, unqualified as every trigger body requires. `t` is aliased `__ivm_b` and `pend` is aliased `__ivm_p`, as above.)
 
+- **The latch.** The fingerprint is `SELECT group_concat(sql, char(10)) FROM (SELECT sql FROM sqlite_schema WHERE type = 'index' AND tbl_name = '<t>' COLLATE NOCASE AND sql LIKE 'CREATE UNIQUE INDEX%' ORDER BY name)`: every explicit unique index's statement, in name order, or NULL for none. It is computed by running that query when `t` is tracked and embedded in the trigger as a literal; the trigger runs the same query and compares with `IS NOT`. SQLite stores every such statement with its prefix normalized to `CREATE UNIQUE INDEX ` (measured, for `create  unique index if not exists …` and for a leading comment), so the `LIKE` needs nothing more. Autoindexes (`sql IS NULL`) are left out: a table's `UNIQUE` and `PRIMARY KEY` constraints change only through a rebuild, which drops the triggers too. A trigger in `main` reads `main`'s `sqlite_schema` (measured, with an attached database holding a same-named table and unique index). The latch is conservative: dropping and recreating an index under another name, or with other whitespace, also latches, although the triggers would still be right. Non-unique indexes never latch, and neither does an index added and dropped with no write to `t` in between, since nothing ran without it.
 - **Recording.** With `recursive_triggers` OFF, BEFORE records the candidates.
 - **Confirmation.** AFTER confirms a candidate as removed when it is gone from `t`, or when the new row now holds its rowid (a rowid REPLACE, including one with identical values). That is when the −1 is recorded.
 - **Rows that are not written.** A row that `OR IGNORE`, `DO NOTHING` or an upsert's `DO UPDATE` path does not write fires no AFTER INSERT. Its candidates are never confirmed, and the next BEFORE discards them.
@@ -176,7 +183,8 @@ At every connect and refresh, and at every create over a tracked table, the view
 - all five capture triggers of each base table exist on that table (the `tbl_name` check from the 3c287f6 review);
 - `__ivm_probe_step` exists on `__ivm_probe`;
 - the table's pend table exists;
-- the shape equals `__ivm_tracked`'s.
+- the shape equals `__ivm_tracked`'s;
+- `__ivm_tracked.broken` is NULL: no capture trigger has latched a unique-index change (§6.2). It is checked first, and its text is the reason the view reports. A latched table also refuses every new view over it.
 
 ### 6.4 Support boundary
 
@@ -191,7 +199,7 @@ Because SQLite does not specify trigger firing order (§2), the re-entry differe
 
 The documentation says so plainly and recommends `PRAGMA recursive_triggers = ON` for any writer of a database whose tracked tables have triggers that write back to the same table. Triggers that write only to other tables are unaffected. A foreign-key cascade is not a re-entry (§2).
 
-**Write cost.** Every INSERT and UPDATE of a tracked table now runs the candidate lookup (one lookup per unique index, plus the rowid lookup) and a few statements on small tables. No performance claim is made here: Phase 4 measures it against Phase 3a's triggers.
+**Write cost.** Every INSERT and UPDATE of a tracked table now runs the candidate lookup (one lookup per unique index, plus the rowid lookup), the latch's read of `sqlite_schema` (a scan of the whole schema, once per written row) and a few statements on small tables. No performance claim is made here: Phase 4 measures it against Phase 3a's triggers.
 
 ## 7. Rename refusal
 
