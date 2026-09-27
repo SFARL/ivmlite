@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::{Agg, AggFn, Arrangement, Row, Value, ZSet};
+use crate::{Agg, AggFn, Arrangement, Row, StateError, Value, ZSet};
 
 /// One agg's accumulator.
 ///
@@ -76,26 +76,30 @@ impl GroupState {
     /// in-memory engine only ever stores rows `encode` produced; a state loaded
     /// from a persisted table may not be, and M1b Phase 3 turns this panic into
     /// an error (the plan's Ruling 3).
-    fn decode(row: &Row, aggs: usize) -> GroupState {
-        assert_eq!(
-            row.len(),
-            1 + 2 * aggs,
-            "corrupted aggregate state: expected {} values, found {row:?}",
-            1 + 2 * aggs
-        );
-        let int = |i: usize| match row.get(i) {
-            Value::Int(n) => *n,
-            other => panic!("corrupted aggregate state: value {i} is {other:?}, not an Int"),
-        };
-        GroupState {
-            rows: int(0),
-            accs: (0..aggs)
-                .map(|i| Acc {
-                    sum: int(1 + 2 * i),
-                    non_null: int(2 + 2 * i),
-                })
-                .collect(),
+    fn decode(row: &Row, aggs: usize) -> Result<GroupState, StateError> {
+        if row.len() != 1 + 2 * aggs {
+            return Err(StateError(format!(
+                "corrupted aggregate state: expected {} values, found {row:?}",
+                1 + 2 * aggs
+            )));
         }
+        let int = |i: usize| match row.get(i) {
+            Value::Int(n) => Ok(*n),
+            other => Err(StateError(format!(
+                "corrupted aggregate state: value {i} is {other:?}, not an Int"
+            ))),
+        };
+        let mut accs = Vec::with_capacity(aggs);
+        for i in 0..aggs {
+            accs.push(Acc {
+                sum: int(1 + 2 * i)?,
+                non_null: int(2 + 2 * i)?,
+            });
+        }
+        Ok(GroupState {
+            rows: int(0)?,
+            accs,
+        })
     }
 
     /// The row the group emits in this state, or `None` when it has no rows.
@@ -154,7 +158,7 @@ impl AggState {
     }
 
     /// Absorb one batch of input deltas, returning the delta this operator **emits**.
-    pub fn absorb(&mut self, input: &ZSet) -> ZSet {
+    pub fn absorb(&mut self, input: &ZSet) -> Result<ZSet, StateError> {
         // Phase one: fold the whole batch into one delta per touched group.
         // Emitting per input row would send out retraction pairs for
         // intermediate states, when only the batch's net change should be
@@ -194,7 +198,7 @@ impl AggState {
         // `ZSet::update`); see the matching n/a row in docs/mutation-gates.md.
         let mut out = ZSet::new();
         for (key, delta) in deltas {
-            let old = self.load(&key);
+            let old = self.load(&key)?;
             let new = old.plus(&delta);
             let old_out = old.output(&key, &self.aggs);
             let new_out = new.output(&key, &self.aggs);
@@ -206,36 +210,41 @@ impl AggState {
                     out.update(row, 1);
                 }
             }
-            self.store(&key, &old, &new);
+            self.store(&key, &old, &new)?;
         }
-        out
+        Ok(out)
     }
 
     /// The group's stored state, or the empty state if it has none.
-    fn load(&self, key: &Row) -> GroupState {
-        let mut values = self.state.get(key);
-        match (values.next(), values.next()) {
-            (None, _) => GroupState::empty(self.aggs.len()),
-            (Some((value, 1)), None) => GroupState::decode(&value, self.aggs.len()),
-            (first, second) => panic!(
+    fn load(&self, key: &Row) -> Result<GroupState, StateError> {
+        match self.state.get(key)?.as_slice() {
+            [] => Ok(GroupState::empty(self.aggs.len())),
+            [(value, 1)] => GroupState::decode(value, self.aggs.len()),
+            values => Err(StateError(format!(
                 "corrupted aggregate state for group {key:?}: expected at most one value \
-                 of weight 1, found {first:?} and {second:?}"
-            ),
+                 of weight 1, found {values:?}"
+            ))),
         }
     }
 
     /// Replace the group's stored state `old` with `new`. A group whose state
     /// is all zero is not stored at all (spec §5.1: no zombie entries).
-    fn store(&mut self, key: &Row, old: &GroupState, new: &GroupState) {
+    ///
+    /// The retraction and the insertion are two writes; if the second fails,
+    /// the arrangement is left without this group's state. Callers that
+    /// persist state must therefore make a failed batch roll back as a whole —
+    /// `ivmlite-sqlite`'s refresh runs inside one savepoint (M1b Phase 3a).
+    fn store(&mut self, key: &Row, old: &GroupState, new: &GroupState) -> Result<(), StateError> {
         if old == new {
-            return;
+            return Ok(());
         }
         if !old.is_empty() {
-            self.state.update(key, &old.encode(), -1);
+            self.state.update(key, &old.encode(), -1)?;
         }
         if !new.is_empty() {
-            self.state.update(key, &new.encode(), 1);
+            self.state.update(key, &new.encode(), 1)?;
         }
+        Ok(())
     }
 }
 
@@ -286,10 +295,14 @@ mod tests {
         // (key,100) w=-1 and (key,150) w=+1, not a single +1 row. This is IVM's
         // biggest source of bugs.
         let mut s = sum_state();
-        let first = s.absorb(&ZSet::from_rows([(row(vec![txt("a"), int(100)]), 1)]));
+        let first = s
+            .absorb(&ZSet::from_rows([(row(vec![txt("a"), int(100)]), 1)]))
+            .unwrap();
         assert_eq!(first, ZSet::from_rows([(row(vec![txt("a"), int(100)]), 1)]));
 
-        let second = s.absorb(&ZSet::from_rows([(row(vec![txt("a"), int(50)]), 1)]));
+        let second = s
+            .absorb(&ZSet::from_rows([(row(vec![txt("a"), int(50)]), 1)]))
+            .unwrap();
         assert_eq!(
             second,
             ZSet::from_rows([
@@ -322,12 +335,15 @@ mod tests {
         s.absorb(&ZSet::from_rows([
             (row(vec![txt("a"), int(1)]), 1),
             (row(vec![txt("a"), int(2)]), 1),
-        ]));
+        ]))
+        .unwrap();
         // Swap one of the group's rows: the rows change but their count does not, so COUNT's output does not change.
-        let d = s.absorb(&ZSet::from_rows([
-            (row(vec![txt("a"), int(3)]), 1),
-            (row(vec![txt("a"), int(1)]), -1),
-        ]));
+        let d = s
+            .absorb(&ZSet::from_rows([
+                (row(vec![txt("a"), int(3)]), 1),
+                (row(vec![txt("a"), int(1)]), -1),
+            ]))
+            .unwrap();
         assert!(
             d.is_empty(),
             "a group touched but with an unchanged output must not emit: {d:?}"
@@ -340,8 +356,11 @@ mod tests {
         // (unlike a global aggregate). When a group's count reaches zero, only
         // the retraction is emitted, with no new row.
         let mut s = count_state();
-        s.absorb(&ZSet::from_rows([(row(vec![txt("a"), int(1)]), 1)]));
-        let d = s.absorb(&ZSet::from_rows([(row(vec![txt("a"), int(1)]), -1)]));
+        s.absorb(&ZSet::from_rows([(row(vec![txt("a"), int(1)]), 1)]))
+            .unwrap();
+        let d = s
+            .absorb(&ZSet::from_rows([(row(vec![txt("a"), int(1)]), -1)]))
+            .unwrap();
         assert_eq!(
             d,
             ZSet::from_rows([(row(vec![txt("a"), int(1)]), -1)]),
@@ -356,10 +375,12 @@ mod tests {
         // NULL. An implementation keeping only the running sum outputs 0 and
         // silently disagrees with SQLite.
         let mut s = sum_state();
-        let d = s.absorb(&ZSet::from_rows([
-            (row(vec![txt("a"), Value::Null]), 1),
-            (row(vec![txt("a"), Value::Null]), 1),
-        ]));
+        let d = s
+            .absorb(&ZSet::from_rows([
+                (row(vec![txt("a"), Value::Null]), 1),
+                (row(vec![txt("a"), Value::Null]), 1),
+            ]))
+            .unwrap();
         assert_eq!(
             d,
             ZSet::from_rows([(row(vec![txt("a"), Value::Null]), 1)]),
@@ -373,10 +394,12 @@ mod tests {
         // exactly 0 it must be Int(0). An implementation that only asks "is the
         // sum 0" outputs NULL here.
         let mut s = sum_state();
-        let d = s.absorb(&ZSet::from_rows([
-            (row(vec![txt("a"), int(5)]), 1),
-            (row(vec![txt("a"), int(-5)]), 1),
-        ]));
+        let d = s
+            .absorb(&ZSet::from_rows([
+                (row(vec![txt("a"), int(5)]), 1),
+                (row(vec![txt("a"), int(-5)]), 1),
+            ]))
+            .unwrap();
         assert_eq!(d, ZSet::from_rows([(row(vec![txt("a"), int(0)]), 1)]));
     }
 
@@ -389,8 +412,11 @@ mod tests {
         s.absorb(&ZSet::from_rows([
             (row(vec![txt("a"), int(5)]), 1),
             (row(vec![txt("a"), Value::Null]), 1),
-        ]));
-        let d = s.absorb(&ZSet::from_rows([(row(vec![txt("a"), int(5)]), -1)]));
+        ]))
+        .unwrap();
+        let d = s
+            .absorb(&ZSet::from_rows([(row(vec![txt("a"), int(5)]), -1)]))
+            .unwrap();
         assert_eq!(
             d,
             ZSet::from_rows([
@@ -415,14 +441,18 @@ mod tests {
         // rule cannot mask them. Weights above ±1 are reachable in practice:
         // consolidation merges duplicate rows within a batch.
         let mut s = sum_state();
-        let first = s.absorb(&ZSet::from_rows([(row(vec![txt("a"), int(5)]), 3)]));
+        let first = s
+            .absorb(&ZSet::from_rows([(row(vec![txt("a"), int(5)]), 3)]))
+            .unwrap();
         assert_eq!(
             first,
             ZSet::from_rows([(row(vec![txt("a"), int(15)]), 1)]),
             "a row of weight 3 contributes 5*3=15, not 5"
         );
 
-        let second = s.absorb(&ZSet::from_rows([(row(vec![txt("a"), int(5)]), -1)]));
+        let second = s
+            .absorb(&ZSet::from_rows([(row(vec![txt("a"), int(5)]), -1)]))
+            .unwrap();
         assert_eq!(
             second,
             ZSet::from_rows([
@@ -464,10 +494,12 @@ mod tests {
             ],
             Box::new(MemArrangement::new()),
         );
-        let d = s.absorb(&ZSet::from_rows([
-            (row(vec![txt("a"), int(5)]), 1),
-            (row(vec![txt("a"), int(7)]), 1),
-        ]));
+        let d = s
+            .absorb(&ZSet::from_rows([
+                (row(vec![txt("a"), int(5)]), 1),
+                (row(vec![txt("a"), int(7)]), 1),
+            ]))
+            .unwrap();
         assert_eq!(
             d,
             ZSet::from_rows([(row(vec![txt("a"), int(2), int(12)]), 1)]),
@@ -481,8 +513,11 @@ mod tests {
         s.absorb(&ZSet::from_rows([
             (row(vec![txt("a"), int(1)]), 1),
             (row(vec![txt("b"), int(1)]), 1),
-        ]));
-        let d = s.absorb(&ZSet::from_rows([(row(vec![txt("a"), int(1)]), 1)]));
+        ]))
+        .unwrap();
+        let d = s
+            .absorb(&ZSet::from_rows([(row(vec![txt("a"), int(1)]), 1)]))
+            .unwrap();
         assert_eq!(
             d,
             ZSet::from_rows([
@@ -499,7 +534,9 @@ mod tests {
         // (unlike WHERE's three-valued logic). NULL is frequent in the
         // differential tests' value domain, so this path is certain to be hit.
         let mut s = count_state();
-        let d = s.absorb(&ZSet::from_rows([(row(vec![Value::Null, int(1)]), 1)]));
+        let d = s
+            .absorb(&ZSet::from_rows([(row(vec![Value::Null, int(1)]), 1)]))
+            .unwrap();
         assert_eq!(d, ZSet::from_rows([(row(vec![Value::Null, int(1)]), 1)]));
     }
 
@@ -509,7 +546,9 @@ mod tests {
         // always 1 in the final output. Weights appear only in internal deltas
         // and operator state.
         let mut s = count_state();
-        let d = s.absorb(&ZSet::from_rows([(row(vec![txt("a"), int(1)]), 5)]));
+        let d = s
+            .absorb(&ZSet::from_rows([(row(vec![txt("a"), int(1)]), 5)]))
+            .unwrap();
         assert_eq!(
             d,
             ZSet::from_rows([(row(vec![txt("a"), int(5)]), 1)]),
@@ -543,11 +582,14 @@ mod tests {
         // is derived from the stored accumulators rather than kept on the side
         // (the plan's Ruling 1).
         let mirrors = Mirrors::default();
-        let mut old = sum_state_on(mirrors.arrangement(groups_id()));
-        old.absorb(&ZSet::from_rows([(row(vec![txt("a"), int(100)]), 1)]));
+        let mut old = sum_state_on(mirrors.arrangement(groups_id()).unwrap());
+        old.absorb(&ZSet::from_rows([(row(vec![txt("a"), int(100)]), 1)]))
+            .unwrap();
 
         let mut rebuilt = sum_state_on(Box::new(mirrors.snapshot(groups_id())));
-        let d = rebuilt.absorb(&ZSet::from_rows([(row(vec![txt("a"), int(50)]), 1)]));
+        let d = rebuilt
+            .absorb(&ZSet::from_rows([(row(vec![txt("a"), int(50)]), 1)]))
+            .unwrap();
         assert_eq!(
             d,
             ZSet::from_rows([
@@ -562,10 +604,12 @@ mod tests {
         // Each group's state is a single value of weight 1: updating a group
         // must retract its old value, not add a second one.
         let mirrors = Mirrors::default();
-        let mut s = sum_state_on(mirrors.arrangement(groups_id()));
-        s.absorb(&ZSet::from_rows([(row(vec![txt("a"), int(1)]), 1)]));
-        s.absorb(&ZSet::from_rows([(row(vec![txt("a"), int(2)]), 1)]));
-        let stored: Vec<(Row, Row, i64)> = mirrors.snapshot(groups_id()).scan().collect();
+        let mut s = sum_state_on(mirrors.arrangement(groups_id()).unwrap());
+        s.absorb(&ZSet::from_rows([(row(vec![txt("a"), int(1)]), 1)]))
+            .unwrap();
+        s.absorb(&ZSet::from_rows([(row(vec![txt("a"), int(2)]), 1)]))
+            .unwrap();
+        let stored: Vec<(Row, Row, i64)> = mirrors.snapshot(groups_id()).scan().unwrap();
         assert_eq!(stored.len(), 1, "{stored:?}");
         assert_eq!(stored[0].0, row(vec![txt("a")]));
         assert_eq!(stored[0].2, 1);
@@ -576,35 +620,63 @@ mod tests {
         // Spec §5.1: no zombie entries. A group whose rows are all deleted must
         // disappear from the arrangement (and from the future shadow table).
         let mirrors = Mirrors::default();
-        let mut s = sum_state_on(mirrors.arrangement(groups_id()));
-        s.absorb(&ZSet::from_rows([(row(vec![txt("a"), int(1)]), 1)]));
-        s.absorb(&ZSet::from_rows([(row(vec![txt("a"), int(1)]), -1)]));
-        assert_eq!(mirrors.snapshot(groups_id()).scan().count(), 0);
+        let mut s = sum_state_on(mirrors.arrangement(groups_id()).unwrap());
+        s.absorb(&ZSet::from_rows([(row(vec![txt("a"), int(1)]), 1)]))
+            .unwrap();
+        s.absorb(&ZSet::from_rows([(row(vec![txt("a"), int(1)]), -1)]))
+            .unwrap();
+        assert_eq!(mirrors.snapshot(groups_id()).scan().unwrap().len(), 0);
     }
 
     #[test]
-    #[should_panic(expected = "corrupted aggregate state")]
     fn a_group_with_two_stored_values_is_reported_as_corrupted() {
-        // In memory this cannot happen; from a persisted table it can (M1b
-        // Phase 3 turns this panic into an error, per the plan's Ruling 3).
+        // In memory this cannot happen; from a persisted table it can, so it
+        // is a `StateError`, not a panic (M1b Phase 3a).
         let mut state = MemArrangement::new();
         let key = row(vec![txt("a")]);
-        state.update(&key, &row(vec![int(1), int(5), int(1)]), 1);
-        state.update(&key, &row(vec![int(1), int(6), int(1)]), 1);
+        state
+            .update(&key, &row(vec![int(1), int(5), int(1)]), 1)
+            .unwrap();
+        state
+            .update(&key, &row(vec![int(1), int(6), int(1)]), 1)
+            .unwrap();
         let mut s = sum_state_on(Box::new(state));
-        s.absorb(&ZSet::from_rows([(row(vec![txt("a"), int(1)]), 1)]));
+        let err = s
+            .absorb(&ZSet::from_rows([(row(vec![txt("a"), int(1)]), 1)]))
+            .expect_err("two stored values for one group is corrupted state");
+        assert!(err.0.contains("corrupted aggregate state"), "{err}");
     }
-
     #[test]
-    #[should_panic(expected = "corrupted aggregate state")]
     fn a_group_whose_one_stored_value_has_weight_two_is_reported_as_corrupted() {
         // One value, but with weight 2: `store` only ever writes a group's
         // state with weight 1, so this too is corrupted state, not a group
         // whose state counts twice. The previous test cannot see this case:
         // it has two values, and `load` rejects it for that alone.
         let mut state = MemArrangement::new();
-        state.update(&row(vec![txt("a")]), &row(vec![int(1), int(5), int(1)]), 2);
+        state
+            .update(&row(vec![txt("a")]), &row(vec![int(1), int(5), int(1)]), 2)
+            .unwrap();
         let mut s = sum_state_on(Box::new(state));
-        s.absorb(&ZSet::from_rows([(row(vec![txt("a"), int(1)]), 1)]));
+        let err = s
+            .absorb(&ZSet::from_rows([(row(vec![txt("a"), int(1)]), 1)]))
+            .expect_err("a stored value of weight 2 is corrupted state");
+        assert!(err.0.contains("corrupted aggregate state"), "{err}");
+    }
+    #[test]
+    fn a_stored_value_of_the_wrong_shape_is_reported_as_corrupted() {
+        // What a shadow table written by another plan, or damaged, could hold:
+        // too few values, or a TEXT where an accumulator should be.
+        for bad in [
+            row(vec![int(1), int(5)]),
+            row(vec![int(1), txt("x"), int(1)]),
+        ] {
+            let mut state = MemArrangement::new();
+            state.update(&row(vec![txt("a")]), &bad, 1).unwrap();
+            let mut s = sum_state_on(Box::new(state));
+            let err = s
+                .absorb(&ZSet::from_rows([(row(vec![txt("a"), int(1)]), 1)]))
+                .expect_err("a malformed stored value is corrupted state");
+            assert!(err.0.contains("corrupted aggregate state"), "{err}");
+        }
     }
 }

@@ -2,6 +2,7 @@ mod buggy;
 mod data;
 mod differential;
 mod engine;
+mod extension;
 mod incremental;
 mod invariants;
 mod naive;
@@ -23,6 +24,7 @@ pub use differential::{
     TestCase,
 };
 pub use engine::{Engine, EngineError};
+pub use extension::{extension_library, open_with_extension, SqliteExtensionEngine};
 pub use invariants::check_invariants;
 pub use ivmlite_core::{
     Agg, AggFn, CmpOp, Column, ColumnType, Database, IncrementalEngine, Join, Predicate, Schema,

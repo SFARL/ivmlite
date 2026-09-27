@@ -89,6 +89,8 @@ ivmlite/
 
 Dependencies run one way: `ivmlite-sqlite` → `ivmlite-sql` → `ivmlite-core`.
 
+> **Amended 2026-09-26, M1b Phase 3a:** `ivmlite-sqlite` is built **outside the Cargo workspace**, with its own `Cargo.lock` (`crates/ivmlite-sqlite/Cargo.toml` declares an empty `[workspace]` of its own, and the root `Cargo.toml` excludes the crate). The reason is feature unification: the extension needs `rusqlite`'s `loadable_extension` and `vtab` features, while the test host `ivmlite-test` needs `bundled` and `load_extension` to load the built library; Cargo unifies features across every member of one workspace build, and the two combinations do not compile together (measured 2026-09-26). See the Phase 3a spec §2 for the resulting two-build layout and its scripts.
+
 ### 4.2 Hard constraints
 
 > **`ivmlite-core` must not depend on `rusqlite` or `libsqlite3-sys`.**
@@ -172,6 +174,10 @@ The cost is speed. But v0's goals are correctness and architecture, and this has
 > - **A missing state table versus an empty one.** The test double `Mirrors::snapshot` returns an empty arrangement for an id that was never written. That is fine for a test, but as a real provider's policy it would turn a missing or misnamed table into a view that silently starts from nothing. How does the SQLite provider tell "this operator has no state yet" apart from "this table should exist and does not"?
 > - **Explicit names for `ArrangementRole` in table names.** Should `<op>` spell each role with a fixed string chosen for the table name rather than with the enum's `Debug` output, so that renaming a variant cannot rename a table?
 > - **Whether the provider itself can fail.** `Node::build`'s provider returns a `Box<dyn Arrangement>` and cannot fail, but opening a state table can. Should it return a `Result`, making `Node::build` fallible again (its doc comment already anticipates this)?
+>
+> **Amended 2026-09-26, M1b Phase 3a: every open question above is answered.** `Arrangement`'s three methods became fallible (`get`/`scan` return `Result<Vec<...>, StateError>`, `update` returns `Result<(), StateError>`), with reads collected **eagerly** into a `Vec` rather than through a lazy `Box<dyn Iterator>` — a lazy iterator borrowing a prepared statement would cost lifetimes and `unsafe` for no gain at this scale. The provider question is answered the same way: it is `&mut dyn FnMut(ArrangementId) -> Result<Box<dyn Arrangement>, StateError>`, so `Node::build` is fallible too. The plan-fingerprint question is answered: `Plan::canonical` renders a plan to stable text by hand, and `__ivm_view` stores it next to a view's SQL, comparing it against a fresh `lower` on every reopen. The numbering question is answered by **keeping** pre-order numbering over every plan node, not narrowing it to stateful operators only, with `ArrangementRole` spelled as a fixed string (`join_left`, `join_right`, `agg_groups`) in a state table's name rather than the enum's `Debug` output, so renaming a variant cannot rename a table. The missing-state-table question is answered: a state table that should exist and does not is an error from the provider, never an empty arrangement. **Point 2 above — the in-memory `view: ZSet` versus an on-disk table — is closed**: the materialized output lives in the plain table `__ivm_out_<view>`.
+>
+> The M1b Phase 2a review's open question about `node.rs`'s `passes` (below) is answered by two measures together: every value read out of a base or delta table is decoded strictly — one that is not INTEGER, TEXT or NULL is an error (the extension's own `String` error, which the failing create or refresh reports as an SQLite error), never silently coerced — and every extension callback runs inside `catch_unwind`, so a panic that still reaches `passes` becomes a reported SQLite error rather than a host-process abort. See the Phase 3a spec §3–§5 for the exact interfaces.
 
 > **Open question from the M1b Phase 2a final review**, recorded for M1b Phase 3:
 >
@@ -393,6 +399,8 @@ __ivm_progress(view TEXT, tbl TEXT, applied_seq INTEGER,
 
 `<op>` in `__ivm_state_<view>_<op>` corresponds to an `ArrangementId` (§4.4's M1b Phase 1 amendment): the operator's pre-order index in the `Plan` plus its role, one table per `(node, role)`. Both the ids and the aggregate's positional value layout (`[rows, sum_0, non_null_0, …]`, one pair per entry of `aggs`, in order) are meaningful only for one exact `Plan`. A view is stored as SQL and lowered again on load (§5.3), so a change to `lower` that moves a node or reorders `aggs` would point an existing view's state at the wrong tables or read it with the wrong layout — often silently, since state of the right shape read by the wrong operator (one join side's rows as another's), or aggregate values of the right length in the wrong order, still decode. M1b Phase 3 must guard this before any persisted state is read, for example with a plan fingerprint stored per view (§4.4's open questions).
 
+> **Amended 2026-09-26, M1b Phase 3a:** the table list above gains `declaration` in `__ivm_view` — the `CREATE TABLE` statement the virtual table was declared with, kept so a view whose stored SQL no longer compiles can still be reconnected to and dropped — and a new global table, `__ivm_meta`, recording the shadow-table format version. Each view also gets its own `__ivm_stage_<view>` table and an apply trigger on it: a refresh writes every state, output and watermark change there first, then applies them all with one `UPDATE ... SET armed = 1` statement, so they commit or roll back together. The exact column list of every table, including the delta table's own `__ivm_seq`/`__ivm_w` columns, is in the Phase 3a spec §4.
+
 ### 7.1 Two semantic traps in row encoding
 
 **Trap one: in SQLite `1 = 1.0` is true, but INTEGER and REAL are different storage classes.** If they encode to different BLOBs, a group key that is one value in SQL terms splits into two groups.
@@ -525,6 +533,8 @@ if only 20 regions are touched
 ```
 
 **This is what explicit refresh buys, and what row-level triggers structurally cannot have** — and it is the performance story most likely to hold up for this project. Consolidation is therefore explicitly M1 content, not an optimization.
+
+> **Amended 2026-09-26, M1b Phase 3a:** a refresh inside a transaction, as recommended above, is atomic by **one-statement apply, not a `SAVEPOINT`** — measured while prototyping that the obvious design does not work. Inside `xUpdate` a `SAVEPOINT` fails with `cannot open savepoint - SQL statements in progress`; and if `xUpdate` returns an error inside an explicit transaction, SQLite does not undo the writes the callback already made through its own statements. So a refresh instead buffers every state write in memory, overlaying it on what later reads see; writes every buffered state change, output change and new watermark into the view's stage table (emptied first); and applies them all with **one** statement, `UPDATE __ivm_stage_<view> SET armed = 1`, whose trigger performs each row's change. A single statement is atomic on its own — if any row of that step fails, SQLite rolls the whole statement back — so state, output and watermarks commit or roll back together whether or not the surrounding `BEGIN…COMMIT` itself succeeds. See the Phase 3a spec §5 for the full lifecycle.
 
 ### 8.3 Control surface: settled by M-1 — a virtual table plus a command channel (the FTS5 idiom)
 
@@ -965,3 +975,8 @@ TanStack DB is a browser-side JS library, with a different runtime and audience 
 13. Delta tables capture every column, wasting space on wide tables
 14. Every write pays the triggers' write amplification, even if the views are never read
 15. Cannot be loaded in browsers or the iOS system SQLite
+16. **A view's result columns may not be named like the view itself, or `__w`** (M1b Phase 3a): the view's name is its own command column, and `__w` is the output table's own weight column
+17. **Phase 3a maintains one view per base table**; several views sharing one base table's delta table is Phase 3b (§1)
+18. **`ALTER TABLE v RENAME TO w` on an ivmlite view leaves it undroppable** (M1b Phase 3a). rusqlite 0.40 exposes no `xRename`, so SQLite renames the table in `sqlite_schema` without telling the extension; `__ivm_view` still holds the row under the old name, so a later `DROP TABLE w` calls `xConnect` for `w`, finds no matching row, and fails with "ivmlite has no record of the view w". Phase 3b revisits this.
+19. **Statement-level REPLACE conflict resolution is captured only when the writing connection has `PRAGMA recursive_triggers = ON`** (M1b Phase 3a). `INSERT OR REPLACE`, `REPLACE INTO`, `UPDATE OR REPLACE` and `ON CONFLICT REPLACE` constraints remove the conflicting row without a DELETE statement, and SQLite fires the DELETE trigger for it only under that pragma; otherwise the view **silently diverges**. A base table whose DDL declares `ON CONFLICT REPLACE` is refused at create. Phase 3b addresses the rest; see the Phase 3a spec §5.
+20. **`ALTER TABLE t ADD COLUMN` on a base table breaks its views** (M1b Phase 3a): the scan's column list changes, so the view reports a different plan (and a different column shape) on every read and refresh and must be dropped and recreated.

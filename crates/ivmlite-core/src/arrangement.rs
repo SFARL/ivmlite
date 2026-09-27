@@ -4,20 +4,33 @@ use crate::Row;
 
 /// Spec §6.3: key → many (value, weight) pairs.
 ///
-/// `get` returns an iterator rather than an `Option`: v0's group-by stores one
-/// value per key and has no use for many, but each side of a join is key → many
-/// rows (§6.3 names this as the main place the rule "M0 may make no decision
-/// that forces rework for join" lands).
+/// `get` returns every value of a key rather than an `Option`: v0's group-by
+/// stores one value per key and has no use for many, but each side of a join
+/// is key → many rows (§6.3 names this as the main place the rule "M0 may make
+/// no decision that forces rework for join" lands).
 ///
-/// `Box<dyn Iterator>` rather than RPITIT is for object safety: operators need
-/// to hold a `dyn Arrangement` (M1b's implementation comes from
-/// `ivmlite-sqlite`), and RPITIT would make the trait not object-safe, forcing
-/// type parameters to propagate through the whole operator tree.
+/// Every method can fail (M1b Phase 3a): the SQLite implementation in
+/// `ivmlite-sqlite` reads and writes shadow tables. Reads return a `Vec`
+/// rather than a lazy iterator — an iterator borrowing a prepared statement
+/// would cost lifetimes and `unsafe` for no gain at v0's sizes. The trait stays
+/// object-safe: operators hold a `Box<dyn Arrangement>`.
 pub trait Arrangement {
-    fn get(&self, key: &Row) -> Box<dyn Iterator<Item = (Row, i64)> + '_>;
-    fn update(&mut self, key: &Row, val: &Row, weight_delta: i64);
-    fn scan(&self) -> Box<dyn Iterator<Item = (Row, Row, i64)> + '_>;
+    fn get(&self, key: &Row) -> Result<Vec<(Row, i64)>, StateError>;
+    fn update(&mut self, key: &Row, val: &Row, weight_delta: i64) -> Result<(), StateError>;
+    fn scan(&self) -> Result<Vec<(Row, Row, i64)>, StateError>;
 }
+
+/// Operator state could not be read or written, or what was read is corrupt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StateError(pub String);
+
+impl std::fmt::Display for StateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for StateError {}
 
 /// Which operator an arrangement belongs to, and which of its states it holds.
 ///
@@ -43,10 +56,10 @@ pub enum ArrangementRole {
     AggregateGroups,
 }
 
-/// The provider the engine passes to `Node::build` today: every arrangement
-/// starts empty, in memory.
-pub fn fresh_mem_arrangement(_id: ArrangementId) -> Box<dyn Arrangement> {
-    Box::new(MemArrangement::new())
+/// The provider `IncrementalEngine` passes to `Node::build`: every
+/// arrangement starts empty, in memory.
+pub fn fresh_mem_arrangement(_id: ArrangementId) -> Result<Box<dyn Arrangement>, StateError> {
+    Ok(Box::new(MemArrangement::new()))
 }
 
 /// M1a's in-memory implementation. M1b adds one backed by SQLite shadow tables.
@@ -66,16 +79,16 @@ impl MemArrangement {
 }
 
 impl Arrangement for MemArrangement {
-    fn get(&self, key: &Row) -> Box<dyn Iterator<Item = (Row, i64)> + '_> {
-        match self.inner.get(key) {
-            Some(vals) => Box::new(vals.iter().map(|(v, &w)| (v.clone(), w))),
-            None => Box::new(std::iter::empty()),
-        }
+    fn get(&self, key: &Row) -> Result<Vec<(Row, i64)>, StateError> {
+        Ok(match self.inner.get(key) {
+            Some(vals) => vals.iter().map(|(v, &w)| (v.clone(), w)).collect(),
+            None => Vec::new(),
+        })
     }
 
-    fn update(&mut self, key: &Row, val: &Row, weight_delta: i64) {
+    fn update(&mut self, key: &Row, val: &Row, weight_delta: i64) -> Result<(), StateError> {
         if weight_delta == 0 {
-            return;
+            return Ok(());
         }
         let vals = self.inner.entry(key.clone()).or_default();
         let w = vals.entry(val.clone()).or_insert(0);
@@ -95,14 +108,15 @@ impl Arrangement for MemArrangement {
                 self.inner.remove(key);
             }
         }
+        Ok(())
     }
 
-    fn scan(&self) -> Box<dyn Iterator<Item = (Row, Row, i64)> + '_> {
-        Box::new(
-            self.inner
-                .iter()
-                .flat_map(|(k, vals)| vals.iter().map(move |(v, &w)| (k.clone(), v.clone(), w))),
-        )
+    fn scan(&self) -> Result<Vec<(Row, Row, i64)>, StateError> {
+        Ok(self
+            .inner
+            .iter()
+            .flat_map(|(k, vals)| vals.iter().map(move |(v, &w)| (k.clone(), v.clone(), w)))
+            .collect())
     }
 }
 
@@ -121,9 +135,9 @@ mod tests {
         // of a join is key → many rows. v0's group-by has no use for it, but
         // the shape must hold now, which `JoinState` relies on.
         let mut a = MemArrangement::new();
-        a.update(&r(vec![1]), &r(vec![10]), 1);
-        a.update(&r(vec![1]), &r(vec![20]), 3);
-        let mut got: Vec<(Row, i64)> = a.get(&r(vec![1])).collect();
+        a.update(&r(vec![1]), &r(vec![10]), 1).unwrap();
+        a.update(&r(vec![1]), &r(vec![20]), 3).unwrap();
+        let mut got: Vec<(Row, i64)> = a.get(&r(vec![1])).unwrap();
         got.sort();
         assert_eq!(got, vec![(r(vec![10]), 1), (r(vec![20]), 3)]);
     }
@@ -132,14 +146,14 @@ mod tests {
     fn weights_accumulate_and_zero_removes_the_entry() {
         // Spec §5.1: a row whose weight reaches zero must be removed, leaving no zombie entry.
         let mut a = MemArrangement::new();
-        a.update(&r(vec![1]), &r(vec![10]), 2);
-        a.update(&r(vec![1]), &r(vec![10]), -2);
+        a.update(&r(vec![1]), &r(vec![10]), 2).unwrap();
+        a.update(&r(vec![1]), &r(vec![10]), -2).unwrap();
         assert_eq!(
-            a.get(&r(vec![1])).count(),
+            a.get(&r(vec![1])).unwrap().len(),
             0,
             "no entry may remain once the weight reaches zero"
         );
-        assert_eq!(a.scan().count(), 0, "scan must not see it either");
+        assert_eq!(a.scan().unwrap().len(), 0, "scan must not see it either");
     }
 
     #[test]
@@ -148,10 +162,10 @@ mod tests {
         // left behind as an empty shell, or `inner`'s entry count grows with
         // history rather than with the current state.
         let mut a = MemArrangement::new();
-        a.update(&r(vec![1]), &r(vec![10]), 1);
-        a.update(&r(vec![2]), &r(vec![20]), 1);
-        a.update(&r(vec![1]), &r(vec![10]), -1);
-        let keys: Vec<Row> = a.scan().map(|(k, _, _)| k).collect();
+        a.update(&r(vec![1]), &r(vec![10]), 1).unwrap();
+        a.update(&r(vec![2]), &r(vec![20]), 1).unwrap();
+        a.update(&r(vec![1]), &r(vec![10]), -1).unwrap();
+        let keys: Vec<Row> = a.scan().unwrap().into_iter().map(|(k, _, _)| k).collect();
         assert_eq!(keys, vec![r(vec![2])], "an emptied key must disappear");
         // White-box check: with only the
         // `if vals.is_empty() { self.inner.remove(key); }` line deleted, the
@@ -170,11 +184,8 @@ mod tests {
     fn negative_weights_are_representable() {
         // Negative weights are legal in intermediate deltas (spec §5.1); only the final materialized result must not have them.
         let mut a = MemArrangement::new();
-        a.update(&r(vec![1]), &r(vec![10]), -5);
-        assert_eq!(
-            a.get(&r(vec![1])).collect::<Vec<_>>(),
-            vec![(r(vec![10]), -5)]
-        );
+        a.update(&r(vec![1]), &r(vec![10]), -5).unwrap();
+        assert_eq!(a.get(&r(vec![1])).unwrap(), vec![(r(vec![10]), -5)]);
     }
 
     /// Spec §9.4: a failing case must replay exactly from its seed, so every
@@ -196,10 +207,10 @@ mod tests {
             let mut a = MemArrangement::new();
             for k in [3, 1, 2] {
                 for v in [30, 10, 20] {
-                    a.update(&r(vec![k]), &r(vec![v]), 1);
+                    a.update(&r(vec![k]), &r(vec![v]), 1).unwrap();
                 }
             }
-            a.scan().collect::<Vec<_>>()
+            a.scan().unwrap()
         };
         assert_eq!(build(), build());
         let keys: Vec<Row> = build().into_iter().map(|(k, _, _)| k).collect();
@@ -221,24 +232,24 @@ mod tests {
         // reached too.
         let ascending = {
             let mut a = MemArrangement::new();
-            a.update(&r(vec![1]), &r(vec![10]), 1);
-            a.update(&r(vec![1]), &r(vec![20]), 1);
-            a.update(&r(vec![1]), &r(vec![30]), 1);
-            a.scan().collect::<Vec<_>>()
+            a.update(&r(vec![1]), &r(vec![10]), 1).unwrap();
+            a.update(&r(vec![1]), &r(vec![20]), 1).unwrap();
+            a.update(&r(vec![1]), &r(vec![30]), 1).unwrap();
+            a.scan().unwrap()
         };
         let descending_with_a_detour = {
             let mut a = MemArrangement::new();
-            a.update(&r(vec![1]), &r(vec![30]), 1);
+            a.update(&r(vec![1]), &r(vec![30]), 1).unwrap();
             // Insert and then retract an unrelated value, so the two paths are
             // not merely reversed insertion sequences but genuinely different
             // histories (a container that appends in insertion order leaves or
             // frees a slot in the middle at the retraction, moving further from
             // the simple "just reversed" case).
-            a.update(&r(vec![1]), &r(vec![5]), 1);
-            a.update(&r(vec![1]), &r(vec![5]), -1);
-            a.update(&r(vec![1]), &r(vec![20]), 1);
-            a.update(&r(vec![1]), &r(vec![10]), 1);
-            a.scan().collect::<Vec<_>>()
+            a.update(&r(vec![1]), &r(vec![5]), 1).unwrap();
+            a.update(&r(vec![1]), &r(vec![5]), -1).unwrap();
+            a.update(&r(vec![1]), &r(vec![20]), 1).unwrap();
+            a.update(&r(vec![1]), &r(vec![10]), 1).unwrap();
+            a.scan().unwrap()
         };
         assert_eq!(
             ascending, descending_with_a_detour,
@@ -249,7 +260,7 @@ mod tests {
     #[test]
     fn get_on_a_missing_key_is_empty_not_a_panic() {
         let a = MemArrangement::new();
-        assert_eq!(a.get(&r(vec![99])).count(), 0);
+        assert_eq!(a.get(&r(vec![99])).unwrap().len(), 0);
     }
 
     #[test]
@@ -258,7 +269,7 @@ mod tests {
         // type parameters are forced through the operator tree. This test is
         // that constraint's compile-time gate.
         let mut a: Box<dyn Arrangement> = Box::new(MemArrangement::new());
-        a.update(&r(vec![1]), &r(vec![10]), 1);
-        assert_eq!(a.get(&r(vec![1])).count(), 1);
+        a.update(&r(vec![1]), &r(vec![10]), 1).unwrap();
+        assert_eq!(a.get(&r(vec![1])).unwrap().len(), 1);
     }
 }

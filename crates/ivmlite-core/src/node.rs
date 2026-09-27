@@ -1,6 +1,12 @@
 use crate::{
-    Arrangement, ArrangementId, ArrangementRole, JoinState, Plan, Predicate, Row, Value, ZSet,
+    Arrangement, ArrangementId, ArrangementRole, JoinState, Plan, Predicate, Row, StateError,
+    Value, ZSet,
 };
+
+/// Supplies an operator's arrangements by id: fresh in memory for
+/// `IncrementalEngine`, backed by shadow tables in `ivmlite-sqlite`.
+pub type ArrangementProvider<'a> =
+    dyn FnMut(ArrangementId) -> Result<Box<dyn Arrangement>, StateError> + 'a;
 
 /// The stateful operator tree. Built from a `Plan`, after which `delta` is called repeatedly.
 ///
@@ -35,24 +41,14 @@ pub enum Node {
 impl Node {
     /// Build the operator tree from a `Plan`, recursively.
     ///
-    /// It used to return `Result<Node, NodeError>`, but every arm of `build`
-    /// wrote `Ok(...)` from the start — `NodeError` was never constructed, and
-    /// the `.map_err` following it in `engine.rs` was dead code. M1a Phase 2
-    /// final review, Finding H: a signature that cannot fail is more honest than
-    /// a fake error path. When M1b needs a `build` that genuinely can fail (say,
-    /// rebuilding a node from the SQLite side), the compiler will point
-    /// mechanically at every call site that must handle the new `Err`, so adding
-    /// it back is a local change.
-    ///
     /// `arrangements` supplies every arrangement an operator needs, asked for
     /// by `ArrangementId`: the operator's pre-order position in `plan` and the
     /// arrangement's role (M1b Phase 1, Ruling 2). The engine passes
     /// `fresh_mem_arrangement`; a provider that returns non-empty arrangements
-    /// rebuilds a tree from persisted state.
-    pub fn build(
-        plan: &Plan,
-        arrangements: &mut dyn FnMut(ArrangementId) -> Box<dyn Arrangement>,
-    ) -> Node {
+    /// rebuilds a tree from persisted state. Building fails only when the
+    /// provider does — for instance a shadow table that should exist and does
+    /// not (M1b Phase 3a).
+    pub fn build(plan: &Plan, arrangements: &mut ArrangementProvider) -> Result<Node, StateError> {
         let mut next = 0;
         Node::build_at(plan, &mut next, arrangements)
     }
@@ -61,11 +57,11 @@ impl Node {
     fn build_at(
         plan: &Plan,
         next: &mut usize,
-        arrangements: &mut dyn FnMut(ArrangementId) -> Box<dyn Arrangement>,
-    ) -> Node {
+        arrangements: &mut ArrangementProvider,
+    ) -> Result<Node, StateError> {
         let node = *next;
         *next += 1;
-        match plan {
+        Ok(match plan {
             Plan::Scan { table, .. } => Node::Scan {
                 table: table.clone(),
             },
@@ -75,8 +71,8 @@ impl Node {
                 left_key,
                 right_key,
             } => {
-                let left = Node::build_at(left, next, arrangements);
-                let right = Node::build_at(right, next, arrangements);
+                let left = Node::build_at(left, next, arrangements)?;
+                let right = Node::build_at(right, next, arrangements)?;
                 Node::Join {
                     left: Box::new(left),
                     right: Box::new(right),
@@ -86,20 +82,20 @@ impl Node {
                         arrangements(ArrangementId {
                             node,
                             role: ArrangementRole::JoinLeft,
-                        }),
+                        })?,
                         arrangements(ArrangementId {
                             node,
                             role: ArrangementRole::JoinRight,
-                        }),
+                        })?,
                     ),
                 }
             }
             Plan::Filter { input, predicate } => Node::Filter {
-                input: Box::new(Node::build_at(input, next, arrangements)),
+                input: Box::new(Node::build_at(input, next, arrangements)?),
                 predicate: predicate.clone(),
             },
             Plan::Project { input, columns } => Node::Project {
-                input: Box::new(Node::build_at(input, next, arrangements)),
+                input: Box::new(Node::build_at(input, next, arrangements)?),
                 columns: columns.clone(),
             },
             Plan::Aggregate {
@@ -107,7 +103,7 @@ impl Node {
                 group_by,
                 aggs,
             } => {
-                let input = Node::build_at(input, next, arrangements);
+                let input = Node::build_at(input, next, arrangements)?;
                 Node::Aggregate {
                     input: Box::new(input),
                     state: crate::AggState::new(
@@ -116,19 +112,20 @@ impl Node {
                         arrangements(ArrangementId {
                             node,
                             role: ArrangementRole::AggregateGroups,
-                        }),
+                        })?,
                     ),
                 }
             }
-        }
+        })
     }
 
     /// Push one batch of deltas for some table through this node, returning the node's output delta.
     ///
     /// Spec §6.1: linear operators satisfy `Δ(f(R)) = f(ΔR)`, so Filter and
-    /// Project are stateless and deltas pass straight through.
-    pub fn delta(&mut self, table: &str, input: &ZSet) -> ZSet {
-        match self {
+    /// Project are stateless and deltas pass straight through. It fails only
+    /// when a stateful operator's arrangement does.
+    pub fn delta(&mut self, table: &str, input: &ZSet) -> Result<ZSet, StateError> {
+        Ok(match self {
             Node::Scan { table: own } => {
                 if own == table {
                     input.clone()
@@ -140,15 +137,15 @@ impl Node {
                 // Each child is a `Scan` routing by table name, so for one
                 // table's delta at most one of these is non-empty (v0 rejects
                 // self-joins in `lower`); `JoinState::absorb` is correct either way.
-                let left_delta = left.delta(table, input);
-                let right_delta = right.delta(table, input);
-                state.absorb(&left_delta, &right_delta)
+                let left_delta = left.delta(table, input)?;
+                let right_delta = right.delta(table, input)?;
+                state.absorb(&left_delta, &right_delta)?
             }
             Node::Filter {
                 input: child,
                 predicate,
             } => {
-                let upstream = child.delta(table, input);
+                let upstream = child.delta(table, input)?;
                 let mut out = ZSet::new();
                 for (row, &w) in upstream.iter() {
                     if passes(predicate, row) {
@@ -161,7 +158,7 @@ impl Node {
                 input: child,
                 columns,
             } => {
-                let upstream = child.delta(table, input);
+                let upstream = child.delta(table, input)?;
                 let mut out = ZSet::new();
                 for (row, &w) in upstream.iter() {
                     // After narrowing a row may coincide with another —
@@ -180,10 +177,10 @@ impl Node {
                 // operators (the join is the other). Compute the upstream
                 // delta first, then let `AggState` decide what to retract and
                 // what to emit.
-                let upstream = child.delta(table, input);
-                state.absorb(&upstream)
+                let upstream = child.delta(table, input)?;
+                state.absorb(&upstream)?
             }
-        }
+        })
     }
 }
 
@@ -217,6 +214,7 @@ fn passes(predicate: &Predicate, row: &Row) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{join_on_k, kv, kv_row};
     use crate::{lower_query, Agg, AggFn, CmpOp, Predicate, Value, ViewQuery, ZSet};
 
     /// `t(k TEXT, v INTEGER)` — matches the rows these tests actually push,
@@ -349,15 +347,16 @@ mod tests {
                 columns: vec![0, 1],
             },
             &mut crate::fresh_mem_arrangement,
-        );
+        )
+        .unwrap();
         let d = ZSet::from_rows([(row(vec![int(1), int(2)]), 1)]);
         assert_eq!(
-            n.delta("orders", &d),
+            n.delta("orders", &d).unwrap(),
             d,
             "its own table: passed through unchanged"
         );
         assert_eq!(
-            n.delta("customers", &d),
+            n.delta("customers", &d).unwrap(),
             ZSet::new(),
             "another table: empty"
         );
@@ -382,9 +381,10 @@ mod tests {
                 },
             },
             &mut crate::fresh_mem_arrangement,
-        );
+        )
+        .unwrap();
         let d = ZSet::from_rows([(row(vec![int(5)]), 1), (row(vec![int(9)]), -2)]);
-        assert_eq!(n.delta("t", &d), d);
+        assert_eq!(n.delta("t", &d).unwrap(), d);
     }
 
     #[test]
@@ -402,9 +402,13 @@ mod tests {
                 },
             },
             &mut crate::fresh_mem_arrangement,
-        );
+        )
+        .unwrap();
         let d = ZSet::from_rows([(row(vec![int(1)]), 1), (row(vec![int(5)]), 1)]);
-        assert_eq!(n.delta("t", &d), ZSet::from_rows([(row(vec![int(5)]), 1)]));
+        assert_eq!(
+            n.delta("t", &d).unwrap(),
+            ZSet::from_rows([(row(vec![int(5)]), 1)])
+        );
     }
 
     #[test]
@@ -426,13 +430,14 @@ mod tests {
                 },
             },
             &mut crate::fresh_mem_arrangement,
-        );
+        )
+        .unwrap();
         let d = ZSet::from_rows([
             (row(vec![int(1)]), 1),
             (row(vec![Value::Null]), 1),
             (row(vec![int(5)]), 1),
         ]);
-        let got = n.delta("t", &d);
+        let got = n.delta("t", &d).unwrap();
         assert_eq!(got, ZSet::from_rows([(row(vec![int(5)]), 1)]));
         assert_eq!(
             got.weight_of(&row(vec![Value::Null])),
@@ -452,9 +457,13 @@ mod tests {
                 predicate: Predicate::IsNotNull { column: 0 },
             },
             &mut crate::fresh_mem_arrangement,
-        );
+        )
+        .unwrap();
         let d = ZSet::from_rows([(row(vec![Value::Null]), 1), (row(vec![int(5)]), 1)]);
-        assert_eq!(n.delta("t", &d), ZSet::from_rows([(row(vec![int(5)]), 1)]));
+        assert_eq!(
+            n.delta("t", &d).unwrap(),
+            ZSet::from_rows([(row(vec![int(5)]), 1)])
+        );
     }
 
     #[test]
@@ -468,10 +477,11 @@ mod tests {
                 columns: vec![2, 0],
             },
             &mut crate::fresh_mem_arrangement,
-        );
+        )
+        .unwrap();
         let d = ZSet::from_rows([(row(vec![int(1), int(2), int(3)]), 4)]);
         assert_eq!(
-            n.delta("t", &d),
+            n.delta("t", &d).unwrap(),
             ZSet::from_rows([(row(vec![int(3), int(1)]), 4)]),
             "columns reordered as `columns` gives them, weights preserved"
         );
@@ -491,12 +501,16 @@ mod tests {
                 columns: vec![0],
             },
             &mut crate::fresh_mem_arrangement,
-        );
+        )
+        .unwrap();
         let d = ZSet::from_rows([
             (row(vec![int(7), int(1)]), 2),
             (row(vec![int(7), int(2)]), 3),
         ]);
-        assert_eq!(n.delta("t", &d), ZSet::from_rows([(row(vec![int(7)]), 5)]));
+        assert_eq!(
+            n.delta("t", &d).unwrap(),
+            ZSet::from_rows([(row(vec![int(7)]), 5)])
+        );
     }
 
     #[test]
@@ -511,13 +525,14 @@ mod tests {
                 columns: vec![0],
             },
             &mut crate::fresh_mem_arrangement,
-        );
+        )
+        .unwrap();
         let d = ZSet::from_rows([
             (row(vec![int(7), int(1)]), 2),
             (row(vec![int(7), int(2)]), -2),
         ]);
         assert!(
-            n.delta("t", &d).is_empty(),
+            n.delta("t", &d).unwrap().is_empty(),
             "must be empty once the weights cancel"
         );
     }
@@ -542,13 +557,13 @@ mod tests {
             &crate::Database::single(text_then_int()),
         )
         .unwrap();
-        let mut n = Node::build(&plan, &mut crate::fresh_mem_arrangement);
+        let mut n = Node::build(&plan, &mut crate::fresh_mem_arrangement).unwrap();
         let d = ZSet::from_rows([
             (row(vec![Value::Text("a".into()), int(9)]), 1),
             (row(vec![Value::Text("a".into()), int(1)]), 1), // stopped by the Filter
         ]);
         assert_eq!(
-            n.delta("t", &d),
+            n.delta("t", &d).unwrap(),
             ZSet::from_rows([(row(vec![Value::Text("a".into()), int(1)]), 1)]),
             "only the row that passes the predicate is counted"
         );
@@ -587,12 +602,14 @@ mod tests {
             &crate::Database::single(text_then_int()),
         )
         .unwrap();
-        let mut n = Node::build(&plan, &mut crate::fresh_mem_arrangement);
+        let mut n = Node::build(&plan, &mut crate::fresh_mem_arrangement).unwrap();
 
-        let first = n.delta(
-            "t",
-            &ZSet::from_rows([(row(vec![Value::Text("a".into()), int(9)]), 1)]),
-        );
+        let first = n
+            .delta(
+                "t",
+                &ZSet::from_rows([(row(vec![Value::Text("a".into()), int(9)]), 1)]),
+            )
+            .unwrap();
         assert_eq!(
             first,
             ZSet::from_rows([(row(vec![Value::Text("a".into()), int(1)]), 1)]),
@@ -602,10 +619,12 @@ mod tests {
         // The second batch goes through the **same** Node. Group a's COUNT goes
         // from 1 to 2, so the row the first batch emitted must be retracted
         // before the new one is emitted — not a single +1 row.
-        let second = n.delta(
-            "t",
-            &ZSet::from_rows([(row(vec![Value::Text("a".into()), int(5)]), 1)]),
-        );
+        let second = n
+            .delta(
+                "t",
+                &ZSet::from_rows([(row(vec![Value::Text("a".into()), int(5)]), 1)]),
+            )
+            .unwrap();
         assert_eq!(
             second,
             ZSet::from_rows([
@@ -659,14 +678,14 @@ mod tests {
         // Task 3 had no Aggregate node yet (Task 4 added it), so the Node is
         // built from the Aggregate's input — the real Filter/Project subtree
         // lower() produces — rather than a hand-written tree of similar shape.
-        let mut n = Node::build(&input, &mut crate::fresh_mem_arrangement);
+        let mut n = Node::build(&input, &mut crate::fresh_mem_arrangement).unwrap();
 
         // Column 0 = the predicate's column (narrowed away), column 1 = the SUM column, column 2 = the group key.
         let d = ZSet::from_rows([
             (row(vec![int(100), int(5), int(1)]), 1), // base column 0: 100 > 3 → passes
             (row(vec![int(1), int(5), int(200)]), 1), // base column 0: 1, not > 3 → fails
         ]);
-        let got = n.delta("t", &d);
+        let got = n.delta("t", &d).unwrap();
         assert_eq!(
             got,
             ZSet::from_rows([(row(vec![int(1), int(5)]), 1)]),
@@ -695,11 +714,14 @@ mod tests {
 
     #[test]
     fn a_join_tree_routes_each_tables_delta_to_its_own_side() {
-        let mut n = Node::build(&join_plan(), &mut crate::fresh_mem_arrangement);
+        let mut n = Node::build(&join_plan(), &mut crate::fresh_mem_arrangement).unwrap();
         let right_row = Row::new(vec![Value::Text("a".into()), Value::Int(10)]);
         let left_row = Row::new(vec![Value::Text("a".into()), Value::Int(1)]);
-        assert!(n.delta("t1", &ZSet::from_rows([(right_row, 1)])).is_empty());
-        let out = n.delta("t0", &ZSet::from_rows([(left_row, 1)]));
+        assert!(n
+            .delta("t1", &ZSet::from_rows([(right_row, 1)]))
+            .unwrap()
+            .is_empty());
+        let out = n.delta("t0", &ZSet::from_rows([(left_row, 1)])).unwrap();
         assert_eq!(
             out,
             ZSet::from_rows([(
@@ -824,19 +846,23 @@ mod tests {
         let plan = crate::lower_query(&join_on_k(), &db).expect("a legal join query must lower");
 
         let mirrors = Mirrors::default();
-        let mut old = Node::build(&plan, &mut |id| mirrors.arrangement(id));
-        old.delta("t0", &ZSet::from_rows([(kv_row("a", 1), 1)]));
+        let mut old = Node::build(&plan, &mut |id| mirrors.arrangement(id)).unwrap();
+        old.delta("t0", &ZSet::from_rows([(kv_row("a", 1), 1)]))
+            .unwrap();
         old.delta(
             "t1",
             &ZSet::from_rows([(kv_row("a", 10), 1), (kv_row("a", 20), 1)]),
-        );
+        )
+        .unwrap();
 
-        let mut rebuilt = Node::build(&plan, &mut |id| -> Box<dyn crate::Arrangement> {
-            Box::new(mirrors.snapshot(id))
-        });
+        let mut rebuilt = Node::build(&plan, &mut |id| -> Result<
+            Box<dyn crate::Arrangement>,
+            crate::StateError,
+        > { Ok(Box::new(mirrors.snapshot(id))) })
+        .unwrap();
         let next = ZSet::from_rows([(kv_row("a", 5), 1)]);
-        let from_rebuilt = rebuilt.delta("t1", &next);
-        let from_old = old.delta("t1", &next);
+        let from_rebuilt = rebuilt.delta("t1", &next).unwrap();
+        let from_old = old.delta("t1", &next).unwrap();
 
         let out = |count: i64, sum: i64| {
             Row::new(vec![
@@ -855,8 +881,8 @@ mod tests {
         // is what reads the right one. (a, 2) meets the three right rows
         // 10, 20 and 5: COUNT goes from 3 to 6 and SUM from 35 to 70.
         let next_left = ZSet::from_rows([(kv_row("a", 2), 1)]);
-        let left_from_rebuilt = rebuilt.delta("t0", &next_left);
-        let left_from_old = old.delta("t0", &next_left);
+        let left_from_rebuilt = rebuilt.delta("t0", &next_left).unwrap();
+        let left_from_old = old.delta("t0", &next_left).unwrap();
         assert_eq!(
             left_from_old,
             ZSet::from_rows([(out(3, 35), -1), (out(6, 70), 1)])
@@ -867,8 +893,8 @@ mod tests {
         // The steps below continue them through deletes on both sides, the
         // group emptying and coming back, and SUM falling back to NULL.
         let mut step = |table: &str, delta: ZSet| {
-            let from_rebuilt = rebuilt.delta(table, &delta);
-            let from_old = old.delta(table, &delta);
+            let from_rebuilt = rebuilt.delta(table, &delta).unwrap();
+            let from_old = old.delta(table, &delta).unwrap();
             assert_eq!(
                 from_rebuilt, from_old,
                 "the rebuilt tree must agree with the old one on {table} {delta:?}"
@@ -921,5 +947,96 @@ mod tests {
                 ),
             ])
         );
+    }
+
+    #[test]
+    fn a_provider_that_fails_fails_the_build() {
+        // M1b Phase 3a: a shadow table that should exist and does not is an
+        // error from `build`, not an empty arrangement — proven for **each**
+        // operator that asks the provider for one, not just the first. A
+        // provider that fails unconditionally cannot tell them apart: an
+        // earlier, still-correct `?` in the recursion (e.g. the join's own,
+        // asked for before the aggregate's) would mask a later one that a
+        // mutation silently swallowed. Failing one role at a time, with every
+        // other role served a fresh `MemArrangement`, isolates each call site.
+        let plan = crate::lower_query(
+            &join_on_k(),
+            &crate::Database::new(vec![kv("t0"), kv("t1")]),
+        )
+        .unwrap();
+        for failing in [
+            ArrangementRole::JoinLeft,
+            ArrangementRole::JoinRight,
+            ArrangementRole::AggregateGroups,
+        ] {
+            let err = Node::build(&plan, &mut |id| -> Result<
+                Box<dyn crate::Arrangement>,
+                crate::StateError,
+            > {
+                if id.role == failing {
+                    Err(crate::StateError(format!("no {failing:?} table")))
+                } else {
+                    Ok(Box::new(crate::MemArrangement::new()))
+                }
+            })
+            .expect_err("the provider's error must reach the caller");
+            assert_eq!(err.0, format!("no {failing:?} table"), "{failing:?}");
+        }
+    }
+
+    #[test]
+    fn a_state_error_inside_the_tree_reaches_the_caller() {
+        // Both stateful operators pass their arrangement's error up through
+        // `delta` rather than swallowing it or panicking. The two pushes are
+        // deliberately **not** chained: which push must fail differs by role,
+        // and chaining them would let a later push's own, unrelated failure
+        // stand in for an earlier one that a mutation silently bypassed.
+        use crate::test_support::Failing;
+        let db = crate::Database::new(vec![kv("t0"), kv("t1")]);
+        let plan = crate::lower_query(&join_on_k(), &db).unwrap();
+
+        // JoinRight failing: the first push (`t0`, ΔR) probes the right
+        // arrangement's `get` directly (the ΔR⋈S term), so it must fail on
+        // its own — nothing later in that same push touches the right
+        // arrangement (the right delta is empty, so neither the `get` in the
+        // (R+ΔR)⋈ΔS term nor the right-side `update` ever run).
+        let mut tree = Node::build(&plan, &mut |id| -> Result<
+            Box<dyn crate::Arrangement>,
+            crate::StateError,
+        > {
+            if id.role == ArrangementRole::JoinRight {
+                Ok(Box::new(Failing))
+            } else {
+                Ok(Box::new(crate::MemArrangement::new()))
+            }
+        })
+        .unwrap();
+        let err = tree
+            .delta("t0", &ZSet::from_rows([(kv_row("a", 1), 1)]))
+            .expect_err("JoinRight: the first push alone must fail");
+        assert!(err.0.starts_with("injected"), "{err}");
+
+        // AggregateGroups failing: the first push (`t0`) must **succeed** —
+        // the right side is still empty, so the join emits nothing and the
+        // aggregate's `absorb` never touches a group, so it never calls
+        // `load`. Only the second push (`t1`), which completes the join and
+        // reaches the aggregate with a non-empty delta, must fail.
+        let mut tree = Node::build(&plan, &mut |id| -> Result<
+            Box<dyn crate::Arrangement>,
+            crate::StateError,
+        > {
+            if id.role == ArrangementRole::AggregateGroups {
+                Ok(Box::new(Failing))
+            } else {
+                Ok(Box::new(crate::MemArrangement::new()))
+            }
+        })
+        .unwrap();
+        tree.delta("t0", &ZSet::from_rows([(kv_row("a", 1), 1)]))
+            .expect("AggregateGroups: the first push must succeed — the join emits nothing yet");
+        let err = tree
+            .delta("t1", &ZSet::from_rows([(kv_row("a", 2), 1)]))
+            .expect_err("AggregateGroups: the second push must fail");
+        assert!(err.0.starts_with("injected"), "{err}");
     }
 }

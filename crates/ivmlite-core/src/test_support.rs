@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use crate::{
     Agg, AggFn, Arrangement, ArrangementId, Column, ColumnType, MemArrangement, Predicate, Row,
-    Schema, Value, ViewQuery,
+    Schema, StateError, Value, ViewQuery,
 };
 
 /// An arrangement provider that records every update, by `ArrangementId`.
@@ -20,12 +20,15 @@ use crate::{
 pub(crate) struct Mirrors(Rc<RefCell<BTreeMap<ArrangementId, MemArrangement>>>);
 
 impl Mirrors {
-    pub(crate) fn arrangement(&self, id: ArrangementId) -> Box<dyn Arrangement> {
-        Box::new(Mirrored {
+    pub(crate) fn arrangement(
+        &self,
+        id: ArrangementId,
+    ) -> Result<Box<dyn Arrangement>, StateError> {
+        Ok(Box::new(Mirrored {
             id,
             inner: MemArrangement::new(),
             mirrors: self.clone(),
-        })
+        }))
     }
 
     /// A copy of what the arrangement `id` holds now; empty if it was never updated.
@@ -41,22 +44,40 @@ struct Mirrored {
 }
 
 impl Arrangement for Mirrored {
-    fn get(&self, key: &Row) -> Box<dyn Iterator<Item = (Row, i64)> + '_> {
+    fn get(&self, key: &Row) -> Result<Vec<(Row, i64)>, StateError> {
         self.inner.get(key)
     }
 
-    fn update(&mut self, key: &Row, val: &Row, weight_delta: i64) {
-        self.inner.update(key, val, weight_delta);
+    fn update(&mut self, key: &Row, val: &Row, weight_delta: i64) -> Result<(), StateError> {
+        self.inner.update(key, val, weight_delta)?;
         self.mirrors
             .0
             .borrow_mut()
             .entry(self.id)
             .or_default()
-            .update(key, val, weight_delta);
+            .update(key, val, weight_delta)
     }
 
-    fn scan(&self) -> Box<dyn Iterator<Item = (Row, Row, i64)> + '_> {
+    fn scan(&self) -> Result<Vec<(Row, Row, i64)>, StateError> {
         self.inner.scan()
+    }
+}
+
+/// An arrangement whose every read and write fails, as a shadow table that
+/// SQLite cannot read would (M1b Phase 3a).
+pub(crate) struct Failing;
+
+impl Arrangement for Failing {
+    fn get(&self, _key: &Row) -> Result<Vec<(Row, i64)>, StateError> {
+        Err(StateError("injected read failure".into()))
+    }
+
+    fn update(&mut self, _key: &Row, _val: &Row, _weight_delta: i64) -> Result<(), StateError> {
+        Err(StateError("injected write failure".into()))
+    }
+
+    fn scan(&self) -> Result<Vec<(Row, Row, i64)>, StateError> {
+        Err(StateError("injected read failure".into()))
     }
 }
 
