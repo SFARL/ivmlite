@@ -708,6 +708,43 @@ fn an_upsert_is_captured_without_recursive_triggers() {
     assert_matches_oracle(&c, "kv_sums", q);
 }
 
+/// Phase 3b spec §7: renaming a view fails, and leaves it working and droppable.
+#[test]
+fn a_view_cannot_be_renamed() {
+    for explicit_transaction in [false, true] {
+        let c = open_with_extension(None).unwrap();
+        setup(&c);
+        let user_objects = objects(&c);
+        create(&c, "sums", SUMS).unwrap();
+        if explicit_transaction {
+            c.execute_batch("BEGIN").unwrap();
+        }
+        let err = c
+            .execute_batch("ALTER TABLE sums RENAME TO totals")
+            .expect_err("rename");
+        assert!(
+            err.to_string().contains("ivmlite views cannot be renamed"),
+            "{err}"
+        );
+        if explicit_transaction {
+            c.execute_batch("COMMIT").unwrap();
+        }
+        assert_eq!(
+            count(
+                &c,
+                "SELECT count(*) FROM sqlite_schema WHERE name = 'totals'"
+            ),
+            0
+        );
+        c.execute_batch("INSERT INTO orders VALUES ('a', 5)")
+            .unwrap();
+        refresh(&c, "sums").unwrap();
+        assert_matches_oracle(&c, "sums", SUMS);
+        c.execute_batch("DROP TABLE sums").unwrap();
+        assert_eq!(objects(&c), user_objects);
+    }
+}
+
 /// A base table with columns named `w` and `seq` is maintained correctly: the
 /// delta table's own columns are `__ivm_seq` / `__ivm_w`, so they do not
 /// shadow same-named base columns (Task 3 controller ruling).

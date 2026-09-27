@@ -4,7 +4,7 @@
 //! instead of unwinding across the FFI boundary (Phase 3a spec §5).
 
 use std::borrow::Cow;
-use std::ffi::{c_int, CStr, CString};
+use std::ffi::{c_char, c_int, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::rc::Rc;
 
@@ -228,6 +228,36 @@ fn read_only() -> Error {
         "an ivmlite view is read-only; bring it up to date with INSERT INTO v(v) VALUES('refresh')"
             .to_string(),
     )
+}
+
+/// `xRename` (Phase 3b spec §7): an ivmlite view cannot be renamed — its
+/// shadow tables, triggers and metadata all carry its name — so the rename
+/// is refused and SQLite leaves the schema unchanged. Nothing here can
+/// panic (no allocation through Rust, no indexing), so it needs no `guard`.
+///
+/// # Safety
+/// Called by SQLite with the view's live `sqlite3_vtab`.
+pub unsafe extern "C" fn refuse_rename(
+    vtab: *mut ffi::sqlite3_vtab,
+    _new_name: *const c_char,
+) -> c_int {
+    const MESSAGE: &[u8] =
+        b"ivmlite views cannot be renamed; drop the view and create it again under the new name\0";
+    // SAFETY: `vtab` is live for this call. SQLite frees `zErrMsg` with
+    // `sqlite3_free`, so it must come from SQLite's allocator; an earlier
+    // message is freed first.
+    unsafe {
+        if !(*vtab).zErrMsg.is_null() {
+            ffi::sqlite3_free((*vtab).zErrMsg.cast());
+        }
+        let buf = ffi::sqlite3_malloc64(MESSAGE.len() as u64).cast::<c_char>();
+        (*vtab).zErrMsg = buf;
+        if buf.is_null() {
+            return ffi::SQLITE_NOMEM;
+        }
+        std::ptr::copy_nonoverlapping(MESSAGE.as_ptr().cast::<c_char>(), buf, MESSAGE.len());
+    }
+    ffi::SQLITE_ERROR
 }
 
 #[repr(C)]
