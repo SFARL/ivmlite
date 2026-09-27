@@ -10,7 +10,7 @@ use ivmlite_sql::{compile, Catalog, CompiledView};
 use rusqlite::types::ValueRef;
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::catalog::{require_utf8, SqliteCatalog};
+use crate::catalog::{require_utf8, CaptureInfo, SqliteCatalog};
 use crate::names::{
     apply_trigger, delta_table, has_reserved_prefix, literal, main_qualified, out_table, quote,
     stage_table, state_table, trigger, CAPTURE_EVENTS, DELTA_SEQ, DELTA_W, DEPS, META, PREFIX,
@@ -126,18 +126,54 @@ fn sql_type(column: &ivmlite_core::Column) -> &'static str {
     }
 }
 
-/// A base table's column shape — its columns' names and types, in order, as
-/// the catalog reports them — stored in `__ivm_dep` at create and compared on
-/// every connect and refresh. A table dropped and recreated with other
+/// Everything the capture triggers depend on (Phase 3b spec §3): the
+/// columns' names and types in order, whether the table is WITHOUT ROWID,
+/// and every unique index — its key columns with collation, `NOT NULL` and
+/// default, and its partial and expression flags — in a canonical order,
+/// so an index's name never matters. Stored in `__ivm_tracked` when the
+/// table is first tracked and compared on every later create over it, every
+/// connect and every refresh. A table dropped and recreated with other
 /// column types can compile to the same plan, since the plan names columns
 /// by position only.
-fn shape(schema: &Schema) -> String {
-    schema
+fn shape(schema: &Schema, capture: &CaptureInfo) -> String {
+    let columns: Vec<String> = schema
         .columns
         .iter()
         .map(|c| format!("{} {}", quote(&c.name), sql_type(c)))
-        .collect::<Vec<_>>()
-        .join(", ")
+        .collect();
+    let mut keys: Vec<String> = capture
+        .unique_keys
+        .iter()
+        .map(|k| {
+            let cols: Vec<String> = k
+                .columns
+                .iter()
+                .map(|c| {
+                    let mut text = format!("{} {}", quote(&c.name), c.collation);
+                    if c.not_null {
+                        text.push_str(" NOT NULL");
+                    }
+                    if let Some(d) = &c.default {
+                        text.push_str(&format!(" DEFAULT {d}"));
+                    }
+                    text
+                })
+                .collect();
+            format!(
+                "({}){}{}",
+                cols.join(", "),
+                if k.partial { " partial" } else { "" },
+                if k.expression { " expression" } else { "" }
+            )
+        })
+        .collect();
+    keys.sort();
+    format!(
+        "{}; without rowid: {}; unique: [{}]",
+        columns.join(", "),
+        capture.without_rowid,
+        keys.join("; ")
+    )
 }
 
 /// The `CREATE TABLE` statement SQLite is given for the virtual table: the
@@ -277,12 +313,13 @@ fn track(conn: &Connection, schema: &Schema) -> Result<()> {
         ));
     }
     exec(conn, &sql)?;
+    let capture = SqliteCatalog { conn }.capture(t)?;
     conn.execute(
         &format!(
             "INSERT INTO {}(tbl, shape) VALUES (?1, ?2)",
             main_qualified(TRACKED)
         ),
-        params![t, shape(schema)],
+        params![t, shape(schema, &capture)],
     )
     .map_err(sql_error)?;
     Ok(())
@@ -356,7 +393,8 @@ fn check_table_capture(conn: &Connection, table: &str) -> Result<()> {
         .optional()
         .map_err(sql_error)?;
     let recorded = recorded.ok_or_else(|| format!("table {table} is not tracked"))?;
-    let now = shape(&base_schema(conn, table)?);
+    let capture = SqliteCatalog { conn }.capture(table)?;
+    let now = shape(&base_schema(conn, table)?, &capture);
     if now != recorded {
         return Err(format!(
             "base table {table} changed shape since it was first tracked \

@@ -175,6 +175,12 @@ fn what_v0_cannot_maintain_is_rejected_by_name() {
         ("CREATE TABLE t(k TEXT UNIQUE ON CONFLICT REPLACE, v INTEGER) STRICT", q, "ON CONFLICT REPLACE"),
         ("CREATE TABLE t(id INTEGER PRIMARY KEY ON CONFLICT REPLACE, k TEXT) STRICT", q, "ON CONFLICT REPLACE"),
         ("CREATE TABLE t(k TEXT, v INTEGER, UNIQUE(k) on /* spaced */ conflict\n replace) STRICT", q, "ON CONFLICT REPLACE"),
+        // Phase 3b spec §6.1: what REPLACE capture cannot look up.
+        ("CREATE TABLE t(k TEXT, v INTEGER) STRICT; CREATE UNIQUE INDEX uk ON t(k COLLATE NOCASE)", q, "collation NOCASE"),
+        ("CREATE TABLE t(k TEXT, v INTEGER) STRICT; CREATE UNIQUE INDEX up ON t(v) WHERE v > 0", q, "partial"),
+        ("CREATE TABLE t(k TEXT, v INTEGER) STRICT; CREATE UNIQUE INDEX ue ON t(v + 1)", q, "expression"),
+        ("CREATE TABLE t(k TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP UNIQUE, v INTEGER) STRICT", q, "default CURRENT_TIMESTAMP"),
+        ("CREATE TABLE t(k TEXT, RowId INTEGER) STRICT", q, "RowId"),
     ];
     for (setup_sql, sql, expected) in cases {
         let c = open_with_extension(None).unwrap();
