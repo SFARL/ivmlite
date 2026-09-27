@@ -1,6 +1,6 @@
 # M1b Phase 3b: shared capture, delta GC, REPLACE capture, rename refusal
 
-**Status:** approved 2026-09-27. Amended 2026-09-27 after implementation: §2, §4, §6.2, §6.4, §8 (see below); and after the final review: §3, §6.1, §6.2, §6.3, §6.4 (the unique-index latch, final review C1), §4 and §6.3 (dropping views whose shared capture is broken, final review I2). **Parent specs:** [2026-09-18-ivmlite-design.md](2026-09-18-ivmlite-design.md) (§7.2 GC, §7.3 bootstrap watermark, §8.1 triggers) and [2026-09-26-m1b-phase3a-sqlite-extension-design.md](2026-09-26-m1b-phase3a-sqlite-extension-design.md), whose conventions (§4: quoting, `"main"` qualification, unqualified names inside trigger bodies; §5: one-statement apply, broken views still connect, every callback guarded) all still hold. Where this document and Phase 3a disagree, this document is newer and wins.
+**Status:** approved 2026-09-27. Amended 2026-09-27 after implementation: §2, §4, §6.2, §6.4, §8 (see below); and after the final review: §3, §6.1, §6.2, §6.3, §6.4 (the unique-index latch, final review C1), §4 and §6.3 (dropping views whose shared capture is broken, final review I2); §3, §6.1 and §9 (final review minors). **Parent specs:** [2026-09-18-ivmlite-design.md](2026-09-18-ivmlite-design.md) (§7.2 GC, §7.3 bootstrap watermark, §8.1 triggers) and [2026-09-26-m1b-phase3a-sqlite-extension-design.md](2026-09-26-m1b-phase3a-sqlite-extension-design.md), whose conventions (§4: quoting, `"main"` qualification, unqualified names inside trigger bodies; §5: one-statement apply, broken views still connect, every callback guarded) all still hold. Where this document and Phase 3a disagree, this document is newer and wins.
 
 ## 1. Scope
 
@@ -70,8 +70,7 @@ The shape moves from `__ivm_dep` to `__ivm_tracked` because the capture triggers
 
 - the columns' names and types in order (Phase 3a's shape);
 - whether the table is `WITHOUT ROWID`;
-- every unique index — every `pragma_index_list` row with `unique = 1`, whatever its `origin` (`pk`, `u` or `c`) — as the list of its key columns, each with its collation, plus the index's partial flag and whether any key is an expression. Indexes are listed in a canonical order (sorted by that text), so an index's name never matters;
-- for each `NOT NULL` column that is a key of some unique index, its default's text as `pragma_table_info` reports it (absent → none).
+- every unique index — every `pragma_index_list` row with `unique = 1`, whatever its `origin` (`pk`, `u` or `c`) — as the list of its key columns, each with its collation, whether it is `NOT NULL`, and its default's text as `pragma_table_xinfo` reports it (absent → none), plus the index's partial flag and whether any key is an expression. Every key column carries its `NOT NULL` flag and its default, not only the `NOT NULL` ones: the candidate lookup substitutes the default only for a `NOT NULL` key (§6.2), so making a key `NOT NULL` or changing its default both change the triggers' meaning. Indexes are listed in a canonical order (sorted by that text), so an index's name never matters.
 
 The shape is text so a mismatch can be printed. Any difference makes every view of the table a broken view (Phase 3a §5), including a unique index added after the view was created: triggers built without it would miss its REPLACE deletions.
 
@@ -124,6 +123,7 @@ The catalog (`SqliteCatalog::table`) additionally refuses:
 | a unique index with an expression key (`cid = -2`) | no candidate lookup can be generated |
 | a `NOT NULL` column that is a key of a unique index, with a default that is not a literal | REPLACE substitutes the default for a NULL (§2); a literal can be substituted in the lookup, and anything else (`CURRENT_TIMESTAMP`, `random()`, …) cannot be re-evaluated deterministically |
 | a base column named `rowid`, `oid` or `_rowid_` (any case) | the triggers address rows by `rowid` |
+| a unique index with a generated column as a key (final review) | v0 does not support generated columns in unique keys; the refusal names the index and the column (before, it failed with "reading the catalog: Query returned no rows", since `pragma_table_info` does not list generated columns) |
 
 A **literal default** is, as `pragma_table_info.dflt_value` reports it: `NULL` in any case, an optionally signed decimal integer, a hexadecimal integer (`0x…`), or a single-quoted string whose embedded quotes are doubled. `DEFAULT (5)` is reported as `5` and is accepted.
 
@@ -248,3 +248,4 @@ Every new check gets a row in `docs/mutation-gates.md`, verified with `scripts/t
 - A retraction scans the output table (unchanged; Phase 4 measures it).
 - A never-refreshed view holds back GC of its tables (§5).
 - `sqlite_sequence` stays after the last view is dropped (unchanged).
+- A user AFTER trigger on a tracked table that runs `RAISE(IGNORE)` abandons every trigger that would fire after it for that row. Since the trigger created most recently fires first (§2), one created **after** the view fires before ivmlite's AFTER trigger and abandons it, so the row the statement did write is never captured and the view silently diverges (measured, final review: `AFTER INSERT … WHEN NEW.x = 9 BEGIN SELECT RAISE(IGNORE); END` created after the view left the view empty, with the row in `t`; created before the view, it was harmless). Pre-existing since Phase 3a; ivmlite cannot detect it.

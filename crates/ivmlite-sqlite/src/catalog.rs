@@ -7,13 +7,16 @@ use rusqlite::{params, Connection, OptionalExtension};
 use crate::names::{has_reserved_prefix, literal, PREFIX};
 
 /// One key column of a unique index, as `pragma_index_xinfo` and
-/// `pragma_table_info` report it.
+/// `pragma_table_xinfo` report it.
 pub struct KeyColumn {
     pub name: String,
     pub collation: String,
     pub not_null: bool,
-    /// `pragma_table_info.dflt_value`: the default's SQL text, if any.
+    /// `pragma_table_xinfo.dflt_value`: the default's SQL text, if any.
     pub default: Option<String>,
+    /// A generated column (`pragma_table_xinfo.hidden` 2 or 3), which
+    /// `pragma_table_info` does not list at all.
+    pub generated: bool,
 }
 
 /// A unique index: every `pragma_index_list` row with `unique = 1` (origin
@@ -154,6 +157,12 @@ impl Catalog for SqliteCatalog<'_> {
                 return refuse(&format!("unique index {index} has an expression key; ivmlite cannot look up what REPLACE would remove (Phase 3b spec §6.1)"));
             }
             for column in &key.columns {
+                if column.generated {
+                    return refuse(&format!(
+                        "unique index {index} has the generated column {} as a key; ivmlite does not support generated columns in unique keys",
+                        column.name
+                    ));
+                }
                 if !column.collation.eq_ignore_ascii_case("BINARY") {
                     return refuse(&format!(
                         "unique index {index} uses collation {} on column {}; v0 supports only BINARY (Phase 3b spec §6.1)",
@@ -187,7 +196,10 @@ impl SqliteCatalog<'_> {
         let without_rowid: bool = self
             .conn
             .query_row(
-                "SELECT wr FROM pragma_table_list WHERE schema = 'main' AND name = ?1",
+                // COLLATE NOCASE, as in `table`: SQLite matches table names
+                // case-insensitively.
+                "SELECT wr FROM pragma_table_list \
+                 WHERE schema = 'main' AND name = ?1 COLLATE NOCASE",
                 [table],
                 |r| r.get(0),
             )
@@ -228,13 +240,16 @@ impl SqliteCatalog<'_> {
                 let name = name.ok_or_else(|| {
                     format!("index {index}: a key column has no name (cid {cid})")
                 })?;
-                let (not_null, default): (bool, Option<String>) = self
+                // pragma_table_xinfo, not pragma_table_info: the latter
+                // leaves generated columns out, and a unique index over one
+                // then failed with "Query returned no rows" (final review).
+                let (not_null, default, hidden): (bool, Option<String>, i64) = self
                     .conn
                     .query_row(
-                        "SELECT \"notnull\", dflt_value FROM pragma_table_info(?1, 'main') \
+                        "SELECT \"notnull\", dflt_value, hidden FROM pragma_table_xinfo(?1, 'main') \
                          WHERE name = ?2",
                         params![table, name],
-                        |r| Ok((r.get(0)?, r.get(1)?)),
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                     )
                     .map_err(err)?;
                 columns.push(KeyColumn {
@@ -242,6 +257,7 @@ impl SqliteCatalog<'_> {
                     collation,
                     not_null,
                     default,
+                    generated: matches!(hidden, 2 | 3),
                 });
             }
             unique_keys.push(UniqueKey {

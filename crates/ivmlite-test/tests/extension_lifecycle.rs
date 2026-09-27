@@ -174,6 +174,20 @@ fn what_v0_cannot_maintain_is_rejected_by_name() {
         ("CREATE TABLE t(k TEXT, v INTEGER) STRICT; CREATE UNIQUE INDEX ue ON t(v + 1)", q, "expression"),
         ("CREATE TABLE t(k TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP UNIQUE, v INTEGER) STRICT", q, "default CURRENT_TIMESTAMP"),
         ("CREATE TABLE t(k TEXT, RowId INTEGER) STRICT", q, "RowId"),
+        // A generated column as a unique key, through an explicit index or
+        // a UNIQUE constraint's autoindex (final review, minor 3: this used
+        // to fail with "reading the catalog: Query returned no rows").
+        (
+            "CREATE TABLE t(k TEXT, v INTEGER, g INTEGER GENERATED ALWAYS AS (v * 2) VIRTUAL) STRICT; \
+             CREATE UNIQUE INDEX ug ON t(g)",
+            q,
+            "unique index ug has the generated column g as a key",
+        ),
+        (
+            "CREATE TABLE t(k TEXT, v INTEGER, g INTEGER GENERATED ALWAYS AS (v * 2) STORED UNIQUE) STRICT",
+            q,
+            "has the generated column g as a key",
+        ),
     ];
     for (setup_sql, sql, expected) in cases {
         let c = open_with_extension(None).unwrap();
@@ -231,6 +245,12 @@ fn a_broken_view_reports_why_and_can_still_be_dropped() {
     for (breakage, expected) in [
         ("UPDATE __ivm_view SET plan = 'tampered'", "different plan"),
         ("DROP TABLE __ivm_state_sums_0_agg_groups", "is missing"),
+        // Phase 3b spec §6.3: without its pend table, every write to
+        // `orders` fails, and REPLACE capture has nowhere to record.
+        (
+            "DROP TABLE __ivm_pend_orders",
+            "its shadow table __ivm_pend_orders is missing",
+        ),
     ] {
         let file = TempFile::new("broken");
         {
@@ -542,8 +562,9 @@ fn temp_tables_named_like_the_shadow_tables_are_never_touched() {
          CREATE TEMP TABLE __ivm_progress(view TEXT NOT NULL, tbl TEXT NOT NULL,
              applied_seq INTEGER NOT NULL, PRIMARY KEY(view, tbl));
          INSERT INTO temp.__ivm_progress VALUES ('temp', 'x', 0);
-         CREATE TEMP TABLE __ivm_tracked(tbl TEXT PRIMARY KEY, shape TEXT NOT NULL);
-         INSERT INTO temp.__ivm_tracked VALUES ('temp', 'x');
+         CREATE TEMP TABLE __ivm_tracked(tbl TEXT PRIMARY KEY, shape TEXT NOT NULL,
+             broken TEXT);
+         INSERT INTO temp.__ivm_tracked VALUES ('temp', 'x', NULL);
          CREATE TEMP TABLE __ivm_probe(n INTEGER NOT NULL);
          INSERT INTO temp.__ivm_probe VALUES (1000);
          CREATE TEMP TABLE __ivm_delta_orders(__ivm_seq INTEGER PRIMARY KEY,
@@ -590,6 +611,65 @@ fn temp_tables_named_like_the_shadow_tables_are_never_touched() {
         ),
         Vec::<Vec<Value>>::new(),
         "DROP TABLE left a shadow object in main"
+    );
+}
+
+/// On the connection that owns the view, TEMP tables named like the shadow
+/// tables REPLACE capture writes — `__ivm_probe`, `__ivm_pend_<t>`,
+/// `__ivm_delta_<t>` and `__ivm_tracked` — are never touched, on a table
+/// whose unique key makes every conflicting write run the probe and fill
+/// the pend table (final review, minor 2: `orders` above has no unique key,
+/// so its writes never had a candidate to probe or record). A trigger body
+/// that resolved to the TEMP `__ivm_probe` would count its extra row and
+/// record nothing; one that resolved to the TEMP `__ivm_tracked` would fail
+/// on its missing `broken` column.
+#[test]
+fn temp_tables_named_like_the_capture_tables_are_never_touched_by_replace_capture() {
+    let q = "SELECT k, v, COUNT(*) FROM u GROUP BY k, v";
+    let by_v = "SELECT v, COUNT(*) FROM u GROUP BY v";
+    let c = open_with_extension(None).unwrap();
+    c.execute_batch(
+        "CREATE TABLE u(id INTEGER PRIMARY KEY, k TEXT UNIQUE, v INTEGER) STRICT;
+         INSERT INTO u VALUES (1, 'a', 1), (2, 'b', 1), (3, 'c', 2);
+         CREATE TEMP TABLE __ivm_probe(n INTEGER NOT NULL);
+         INSERT INTO temp.__ivm_probe VALUES (1000);
+         CREATE TEMP TABLE __ivm_pend_u(__ivm_rid INTEGER, id INTEGER, k TEXT, v INTEGER);
+         INSERT INTO temp.__ivm_pend_u VALUES (1000, 1000, 'temp', 1000);
+         CREATE TEMP TABLE __ivm_delta_u(__ivm_seq INTEGER PRIMARY KEY,
+             __ivm_w INTEGER NOT NULL, id INTEGER, k TEXT, v INTEGER);
+         INSERT INTO temp.__ivm_delta_u VALUES (1000, 1, 1000, 'temp', 1000);
+         CREATE TEMP TABLE __ivm_tracked(tbl TEXT PRIMARY KEY, shape TEXT NOT NULL);
+         INSERT INTO temp.__ivm_tracked VALUES ('u', 'temp');",
+    )
+    .unwrap();
+    let shadows = [
+        "__ivm_probe",
+        "__ivm_pend_u",
+        "__ivm_delta_u",
+        "__ivm_tracked",
+    ];
+    let temp_before = temp_contents(&c, &shadows);
+    create(&c, "everything", q).unwrap();
+    create(&c, "by_v", by_v).unwrap();
+    c.execute_batch(
+        "PRAGMA recursive_triggers = OFF;
+         INSERT OR REPLACE INTO u VALUES (4, 'a', 5);
+         UPDATE OR REPLACE u SET k = 'c' WHERE k = 'b';
+         REPLACE INTO u VALUES (2, 'z', 1);",
+    )
+    .unwrap();
+    for (view, sql) in [("everything", q), ("by_v", by_v)] {
+        refresh(&c, view).unwrap();
+        assert_matches_oracle(&c, view, sql);
+    }
+    assert_eq!(temp_contents(&c, &shadows), temp_before);
+    for view in ["everything", "by_v"] {
+        c.execute_batch(&format!("DROP TABLE {view}")).unwrap();
+    }
+    assert_eq!(
+        temp_contents(&c, &shadows),
+        temp_before,
+        "DROP TABLE touched a TEMP table"
     );
 }
 
