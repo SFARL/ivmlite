@@ -2,112 +2,12 @@
 //! capture from any connection, failure and retry, atomic create, rejections,
 //! broken views, and drop.
 
-use std::path::{Path, PathBuf};
+mod common;
+use common::*;
 
 use ivmlite_test::open_with_extension;
 use rusqlite::types::Value;
 use rusqlite::Connection;
-
-const SUMS: &str = "SELECT region, SUM(amount), COUNT(*) FROM orders GROUP BY region";
-const JOIN: &str = "SELECT r.manager, SUM(o.amount) FROM orders o JOIN regions r \
-                    ON o.region = r.name GROUP BY r.manager";
-
-fn setup(c: &Connection) {
-    c.execute_batch(
-        "CREATE TABLE orders(region TEXT, amount INTEGER) STRICT;
-         CREATE TABLE regions(name TEXT, manager TEXT) STRICT;
-         INSERT INTO orders VALUES ('a', 1), ('a', 2), ('b', 5), (NULL, 4);
-         INSERT INTO regions VALUES ('a', 'ann'), ('b', 'bob'), ('c', 'bob');",
-    )
-    .unwrap();
-}
-
-fn create(c: &Connection, name: &str, sql: &str) -> rusqlite::Result<()> {
-    c.execute_batch(&format!(
-        "CREATE VIRTUAL TABLE {name} USING ivm('{}')",
-        sql.replace('\'', "''")
-    ))
-}
-
-fn refresh(c: &Connection, name: &str) -> rusqlite::Result<()> {
-    c.execute_batch(&format!("INSERT INTO {name}({name}) VALUES ('refresh')"))
-}
-
-/// Every row `sql` returns, sorted, so results compare as multisets.
-fn rows(c: &Connection, sql: &str) -> Vec<Vec<Value>> {
-    let mut stmt = c.prepare(sql).unwrap();
-    let n = stmt.column_count();
-    let mut out: Vec<Vec<Value>> = stmt
-        .query_map([], |r| (0..n).map(|i| r.get::<_, Value>(i)).collect())
-        .unwrap()
-        .map(|r| r.unwrap())
-        .collect();
-    out.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
-    out
-}
-
-/// The view agrees with SQLite computing its SELECT from scratch.
-fn assert_matches_oracle(c: &Connection, name: &str, sql: &str) {
-    assert_eq!(
-        rows(c, &format!("SELECT * FROM {name}")),
-        rows(c, sql),
-        "view {name}"
-    );
-}
-
-/// The names of the database's objects other than SQLite's own. The
-/// `NOT LIKE 'sqlite_%'` filter also hides `sqlite_sequence`: the delta
-/// tables' AUTOINCREMENT creates it, and SQLite never drops it, so it stays
-/// after the last view is dropped (Phase 3a spec §6, scenario 6).
-fn objects(c: &Connection) -> Vec<Vec<Value>> {
-    rows(
-        c,
-        "SELECT type, name FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'",
-    )
-}
-
-/// Everything a refresh may change: every state table, the output table and
-/// the watermarks.
-fn durable_state(c: &Connection, name: &str) -> Vec<Vec<Vec<Value>>> {
-    let tables: Vec<String> = rows(
-        c,
-        &format!(
-            "SELECT name FROM sqlite_schema WHERE type = 'table' \
-             AND (name LIKE '__ivm_state_{name}_%' OR name = '__ivm_out_{name}')"
-        ),
-    )
-    .into_iter()
-    .map(|r| match &r[0] {
-        Value::Text(t) => t.clone(),
-        other => panic!("{other:?}"),
-    })
-    .collect();
-    let mut all: Vec<Vec<Vec<Value>>> = tables
-        .iter()
-        .map(|t| rows(c, &format!("SELECT * FROM \"{t}\"")))
-        .collect();
-    all.push(rows(c, "SELECT * FROM __ivm_progress"));
-    all
-}
-
-struct TempFile(PathBuf);
-
-impl TempFile {
-    fn new(tag: &str) -> Self {
-        let p = std::env::temp_dir().join(format!("ivmlite-{tag}-{}.db", std::process::id()));
-        let _ = std::fs::remove_file(&p);
-        TempFile(p)
-    }
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TempFile {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
-}
 
 #[test]
 fn writes_from_any_connection_are_captured_and_survive_a_reopen() {
@@ -258,7 +158,6 @@ fn what_v0_cannot_maintain_is_rejected_by_name() {
         // A virtual table (here another ivmlite view): pragma_table_list
         // reports its type as `virtual`.
         ("CREATE TABLE t(k TEXT) STRICT; CREATE VIRTUAL TABLE a USING ivm('SELECT k, COUNT(*) FROM t GROUP BY k')", "SELECT k, COUNT(*) FROM a GROUP BY k", "is a virtual"),
-        ("CREATE TABLE t(k TEXT) STRICT; CREATE VIRTUAL TABLE a USING ivm('SELECT k, COUNT(*) FROM t GROUP BY k')", q, "already tracked"),
         ("CREATE TABLE t(k TEXT) STRICT", "SELECT k, COUNT(*) AS w FROM t GROUP BY k", "like the view"),
         ("CREATE TABLE t(k TEXT) STRICT", "SELECT k FROM t", "GROUP BY"),
         // A result column named like SQLite's rowid aliases is rejected by

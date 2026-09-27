@@ -10,11 +10,14 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::SystemTime;
 
-use ivmlite_core::{Database, Row, Value, ZSet};
+use ivmlite_core::{Database, Row, Schema, Value, ZSet};
 use rusqlite::types::Value as SqlValue;
 use rusqlite::Connection;
 
-use crate::{create_table_sql, view_query_to_sql, Engine, EngineError, ViewQuery};
+use crate::{
+    create_table_sql, enumerate, recompute_via_sqlite, view_query_to_sql, Engine, EngineError,
+    ViewQuery,
+};
 
 /// The view every engine instance creates.
 /// Not `v`: the harness's tables have a column `v`, and a view may not share its
@@ -147,6 +150,16 @@ impl Drop for TempDb {
     }
 }
 
+/// A view created beside the one under test (Phase 3b spec §8 scenario 1).
+/// It shares the base tables' capture, refreshes at every second harness
+/// refresh so it lags behind, and is checked against SQLite evaluating its
+/// own SQL each time it refreshes.
+struct Sibling {
+    name: String,
+    db: Database,
+    query: ViewQuery,
+}
+
 /// Drives the loaded extension through SQL: base-table writes are captured by
 /// its triggers, `refresh` is the command channel, `materialize` reads the
 /// virtual table.
@@ -157,6 +170,13 @@ pub struct SqliteExtensionEngine {
     file: Option<TempDb>,
     conn: Option<Connection>,
     db: Option<Database>,
+    /// Whether `create_view` and `refresh` also drive the sibling-view mode
+    /// (Phase 3b spec §8 scenario 1).
+    siblings_enabled: bool,
+    siblings: Vec<Sibling>,
+    /// How many times `refresh` has been called; siblings lag by refreshing
+    /// only on even counts, and the same-SQL sibling is dropped at the second.
+    refreshes: usize,
 }
 
 impl SqliteExtensionEngine {
@@ -166,6 +186,9 @@ impl SqliteExtensionEngine {
             file: None,
             conn: None,
             db: None,
+            siblings_enabled: false,
+            siblings: Vec::new(),
+            refreshes: 0,
         }
     }
 
@@ -177,10 +200,146 @@ impl SqliteExtensionEngine {
         }
     }
 
+    /// Beside the view under test: a sibling with the same SQL (dropped
+    /// after the second refresh, so a view is dropped while others still
+    /// read its tables) and one single-table sibling per base table.
+    pub fn with_siblings() -> Self {
+        SqliteExtensionEngine {
+            siblings_enabled: true,
+            ..SqliteExtensionEngine::new()
+        }
+    }
+
+    /// The reopening engine, with the sibling-view mode also enabled.
+    pub fn reopening_with_siblings() -> Self {
+        SqliteExtensionEngine {
+            siblings_enabled: true,
+            ..SqliteExtensionEngine::reopening()
+        }
+    }
+
+    fn create_siblings(&mut self, db: &Database, query: &ViewQuery) -> Result<(), EngineError> {
+        let main_sql = view_query_to_sql(query, db);
+        let pick = main_sql.bytes().map(usize::from).sum::<usize>();
+        let mut siblings = vec![Sibling {
+            name: "ivm_sib_same".to_string(),
+            db: db.clone(),
+            query: query.clone(),
+        }];
+        for (i, schema) in db.tables().iter().enumerate() {
+            let queries = enumerate(schema);
+            siblings.push(Sibling {
+                name: format!("ivm_sib_{i}"),
+                db: Database::new(vec![schema.clone()]),
+                query: queries[(pick + i) % queries.len()].clone(),
+            });
+        }
+        for s in &siblings {
+            let sql = view_query_to_sql(&s.query, &s.db).replace('\'', "''");
+            self.conn()?
+                .execute_batch(&format!(
+                    "CREATE VIRTUAL TABLE {} USING ivm('{sql}')",
+                    s.name
+                ))
+                .map_err(err)?;
+        }
+        self.siblings = siblings;
+        Ok(())
+    }
+
+    /// Every row of `schema`'s table as SQLite holds it now, one weight-1
+    /// entry per occurrence (built like `read_view`, over a base table
+    /// instead of the view's output).
+    fn read_table(&self, schema: &Schema) -> Result<ZSet, EngineError> {
+        let cols = self.columns(&schema.table)?;
+        let mut stmt = self
+            .conn()?
+            .prepare(&format!(
+                "SELECT {} FROM \"{}\"",
+                cols.join(", "),
+                schema.table
+            ))
+            .map_err(err)?;
+        let n = stmt.column_count();
+        let rows = stmt
+            .query_map([], |r| {
+                let mut values = Vec::with_capacity(n);
+                for i in 0..n {
+                    values.push(match r.get::<_, SqlValue>(i)? {
+                        SqlValue::Null => Value::Null,
+                        SqlValue::Integer(v) => Value::Int(v),
+                        SqlValue::Text(s) => Value::Text(s),
+                        other => Value::Text(format!("unexpected {other:?}")),
+                    });
+                }
+                Ok(Row::new(values))
+            })
+            .map_err(err)?;
+        let mut z = ZSet::new();
+        for row in rows {
+            z.update(row.map_err(err)?, 1);
+        }
+        Ok(z)
+    }
+
+    /// Refresh every remaining sibling and check it against SQLite evaluating
+    /// its SQL directly over the base tables' current contents.
+    fn refresh_siblings(&mut self) -> Result<(), EngineError> {
+        for s in &self.siblings {
+            self.conn()?
+                .execute_batch(&format!("INSERT INTO {0}({0}) VALUES ('refresh')", s.name))
+                .map_err(err)?;
+            let mut bases = BTreeMap::new();
+            for schema in s.db.tables() {
+                bases.insert(schema.table.clone(), self.read_table(schema)?);
+            }
+            let want = recompute_via_sqlite(&s.db, &s.query, &bases)?;
+            let got = self.read_view(&s.name)?;
+            if got != want {
+                return Err(EngineError(format!(
+                    "sibling view {} disagrees with the oracle\n  query: {}\n  view: {got:?}\n  oracle: {want:?}",
+                    s.name,
+                    view_query_to_sql(&s.query, &s.db)
+                )));
+            }
+        }
+        Ok(())
+    }
+
     fn conn(&self) -> Result<&Connection, EngineError> {
         self.conn
             .as_ref()
             .ok_or_else(|| EngineError("create_view has not been called".into()))
+    }
+
+    /// Every row of the virtual table `name` holds, one weight-1 entry per
+    /// occurrence. `materialize` calls this on the view under test;
+    /// `refresh_siblings` calls it on each sibling.
+    fn read_view(&self, name: &str) -> Result<ZSet, EngineError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(&format!("SELECT * FROM {name}"))
+            .map_err(err)?;
+        let n = stmt.column_count();
+        let rows = stmt
+            .query_map([], |r| {
+                let mut values = Vec::with_capacity(n);
+                for i in 0..n {
+                    values.push(match r.get::<_, SqlValue>(i)? {
+                        SqlValue::Null => Value::Null,
+                        SqlValue::Integer(v) => Value::Int(v),
+                        SqlValue::Text(s) => Value::Text(s),
+                        other => Value::Text(format!("unexpected {other:?}")),
+                    });
+                }
+                Ok(Row::new(values))
+            })
+            .map_err(err)?;
+        let mut z = ZSet::new();
+        for row in rows {
+            z.update(row.map_err(err)?, 1);
+        }
+        Ok(z)
     }
 
     fn columns(&self, table: &str) -> Result<Vec<String>, EngineError> {
@@ -273,7 +432,11 @@ impl Engine for SqliteExtensionEngine {
         let sql = view_query_to_sql(query, db).replace('\'', "''");
         self.conn()?
             .execute_batch(&format!("CREATE VIRTUAL TABLE {VIEW} USING ivm('{sql}')"))
-            .map_err(err)
+            .map_err(err)?;
+        if self.siblings_enabled {
+            self.create_siblings(db, query)?;
+        }
+        Ok(())
     }
 
     fn apply(&mut self, table: &str, raw: &[(Row, i64)]) -> Result<(), EngineError> {
@@ -297,34 +460,22 @@ impl Engine for SqliteExtensionEngine {
         }
         self.conn()?
             .execute_batch(&format!("INSERT INTO {VIEW}({VIEW}) VALUES ('refresh')"))
-            .map_err(err)
+            .map_err(err)?;
+        self.refreshes += 1;
+        if self.siblings_enabled && self.refreshes.is_multiple_of(2) {
+            self.refresh_siblings()?;
+        }
+        if self.siblings_enabled && self.refreshes == 2 {
+            self.conn()?
+                .execute_batch("DROP TABLE ivm_sib_same")
+                .map_err(err)?;
+            self.siblings.retain(|s| s.name != "ivm_sib_same");
+        }
+        Ok(())
     }
 
     fn materialize(&mut self) -> Result<ZSet, EngineError> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(&format!("SELECT * FROM {VIEW}"))
-            .map_err(err)?;
-        let n = stmt.column_count();
-        let rows = stmt
-            .query_map([], |r| {
-                let mut values = Vec::with_capacity(n);
-                for i in 0..n {
-                    values.push(match r.get::<_, SqlValue>(i)? {
-                        SqlValue::Null => Value::Null,
-                        SqlValue::Integer(v) => Value::Int(v),
-                        SqlValue::Text(s) => Value::Text(s),
-                        other => Value::Text(format!("unexpected {other:?}")),
-                    });
-                }
-                Ok(Row::new(values))
-            })
-            .map_err(err)?;
-        let mut z = ZSet::new();
-        for row in rows {
-            z.update(row.map_err(err)?, 1);
-        }
-        Ok(z)
+        self.read_view(VIEW)
     }
 }
 

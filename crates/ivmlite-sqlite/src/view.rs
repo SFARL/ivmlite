@@ -13,12 +13,19 @@ use rusqlite::{params, Connection, OptionalExtension};
 use crate::catalog::{require_utf8, SqliteCatalog};
 use crate::names::{
     apply_trigger, delta_table, has_reserved_prefix, literal, main_qualified, out_table, quote,
-    stage_table, state_table, trigger, DELTA_SEQ, DELTA_W, DEPS, META, PREFIX, PROGRESS, VIEWS,
+    stage_table, state_table, trigger, CAPTURE_EVENTS, DELTA_SEQ, DELTA_W, DEPS, META, PREFIX,
+    PROGRESS, TRACKED, VIEWS,
 };
 use crate::state::{BufferedArrangement, Pending};
 
 /// The shadow-table layout's version, stored in `__ivm_meta` and with each view.
-pub const FORMAT: i64 = 1;
+///
+/// Format 2 (Phase 3b spec §3) moves a base table's shape from `__ivm_dep`
+/// into the new `__ivm_tracked` table, one row per table rather than one per
+/// (view, table) pair: several views can now share a table's capture, and the
+/// shape is a property of the table's triggers, not of any one view that
+/// reads them.
+pub const FORMAT: i64 = 2;
 
 /// The column of the view's output table that holds each row's weight.
 const WEIGHT: &str = "__w";
@@ -176,12 +183,14 @@ fn create_global_tables(conn: &Connection) -> Result<()> {
             "CREATE TABLE IF NOT EXISTS {meta}(key TEXT PRIMARY KEY, value);
              CREATE TABLE IF NOT EXISTS {}(name TEXT PRIMARY KEY, sql TEXT NOT NULL,
                  plan TEXT NOT NULL, declaration TEXT NOT NULL, format INTEGER NOT NULL);
+             CREATE TABLE IF NOT EXISTS {}(tbl TEXT PRIMARY KEY, shape TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS {}(view TEXT NOT NULL, tbl TEXT NOT NULL,
-                 shape TEXT NOT NULL, PRIMARY KEY(view, tbl));
+                 PRIMARY KEY(view, tbl));
              CREATE TABLE IF NOT EXISTS {}(view TEXT NOT NULL, tbl TEXT NOT NULL,
                  applied_seq INTEGER NOT NULL, PRIMARY KEY(view, tbl));
              INSERT OR IGNORE INTO {meta}(key, value) VALUES ('format', {FORMAT});",
             main_qualified(VIEWS),
+            main_qualified(TRACKED),
             main_qualified(DEPS),
             main_qualified(PROGRESS),
         ),
@@ -201,7 +210,11 @@ fn create_global_tables(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn create_delta_table(conn: &Connection, schema: &Schema) -> Result<()> {
+/// Start capturing `table`'s writes (Phase 3a §8.1, shared since Phase 3b
+/// §4): its delta table, its `CAPTURE_EVENTS` triggers, and the
+/// `__ivm_tracked` row that every later view of it, and every connect and
+/// refresh, checks its capture against.
+fn track(conn: &Connection, schema: &Schema) -> Result<()> {
     let t = &schema.table;
     let delta = main_qualified(&delta_table(t));
     // Measured: SQLite rejects a schema-qualified table name on an INSERT
@@ -225,32 +238,146 @@ fn create_delta_table(conn: &Connection, schema: &Schema) -> Result<()> {
     // below is qualified to `main` instead, which SQLite requires to bind to
     // an `ON` table in that same schema — never a same-named TEMP table.
     let base = quote(t);
+    // AUTOINCREMENT: once Phase 3b's GC deletes consumed deltas, a reused
+    // `seq` would fall below a watermark. The delta table's own columns are
+    // `DELTA_SEQ`/`DELTA_W` (`__ivm_seq`/`__ivm_w`), not `seq`/`w`, so a base
+    // column named `seq` or `w` is not shadowed by them.
+    let mut sql = format!(
+        "CREATE TABLE {delta}({DELTA_SEQ} INTEGER PRIMARY KEY AUTOINCREMENT, \
+         {DELTA_W} INTEGER NOT NULL, {});",
+        defs.join(", ")
+    );
     // Spec §8.1: an UPDATE is a retraction of OLD plus an insertion of NEW, so
-    // the delta table already holds a Z-set. AUTOINCREMENT: once Phase 3b
-    // deletes consumed deltas, a reused `seq` would fall below a watermark.
-    // The delta table's own columns are `DELTA_SEQ`/`DELTA_W`
-    // (`__ivm_seq`/`__ivm_w`), not `seq`/`w`, so a base column named `seq` or
-    // `w` is not shadowed by them.
+    // the delta table already holds a Z-set. Every loop over a table's
+    // capture triggers uses `CAPTURE_EVENTS`, so a later phase that grows it
+    // (Task 4: REPLACE capture adds two more) needs no change here beyond the
+    // constant and this match.
+    for event in CAPTURE_EVENTS {
+        let (on, body) = match event {
+            "ins" => (
+                "INSERT",
+                format!("INSERT INTO {delta_body}({DELTA_W}, {cols}) VALUES (1, {new});"),
+            ),
+            "del" => (
+                "DELETE",
+                format!("INSERT INTO {delta_body}({DELTA_W}, {cols}) VALUES (-1, {old});"),
+            ),
+            "upd" => (
+                "UPDATE",
+                format!(
+                    "INSERT INTO {delta_body}({DELTA_W}, {cols}) VALUES (-1, {old});
+                     INSERT INTO {delta_body}({DELTA_W}, {cols}) VALUES (1, {new});"
+                ),
+            ),
+            other => unreachable!("CAPTURE_EVENTS names only ins/del/upd, not {other}"),
+        };
+        sql.push_str(&format!(
+            "\n             CREATE TRIGGER {} AFTER {on} ON {base} BEGIN\n                 {body}\n             END;",
+            main_qualified(&trigger(t, event)),
+        ));
+    }
+    exec(conn, &sql)?;
+    conn.execute(
+        &format!(
+            "INSERT INTO {}(tbl, shape) VALUES (?1, ?2)",
+            main_qualified(TRACKED)
+        ),
+        params![t, shape(schema)],
+    )
+    .map_err(sql_error)?;
+    Ok(())
+}
+
+/// Whether `table` already has a delta table and capture triggers, shared
+/// with whatever view or views created them.
+fn is_tracked(conn: &Connection, table: &str) -> Result<bool> {
+    conn.query_row(
+        &format!("SELECT 1 FROM {} WHERE tbl = ?1", main_qualified(TRACKED)),
+        [table],
+        |_| Ok(()),
+    )
+    .optional()
+    .map(|found| found.is_some())
+    .map_err(sql_error)
+}
+
+/// The views that read `table`, by name.
+fn readers(conn: &Connection, table: &str) -> Result<Vec<String>> {
+    conn.prepare(&format!(
+        "SELECT view FROM {} WHERE tbl = ?1 ORDER BY view",
+        main_qualified(DEPS)
+    ))
+    .and_then(|mut s| s.query_map([table], |r| r.get(0))?.collect())
+    .map_err(sql_error)
+}
+
+/// The highest sequence number `table`'s delta table has ever handed out
+/// (spec §4). Not `MAX(__ivm_seq)`: GC can empty the delta table, and
+/// AUTOINCREMENT never reuses a number it handed out.
+fn high_watermark(conn: &Connection, table: &str) -> Result<i64> {
+    conn.query_row(
+        "SELECT seq FROM \"main\".sqlite_sequence WHERE name = ?1",
+        [delta_table(table)],
+        |r| r.get(0),
+    )
+    .optional()
+    .map(|seq| seq.unwrap_or(0))
+    .map_err(sql_error)
+}
+
+/// `table`'s capture as every view of it relies on: the shape its triggers
+/// were generated from, and every capture trigger on `table` itself.
+fn check_table_capture(conn: &Connection, table: &str) -> Result<()> {
+    let recorded: Option<String> = conn
+        .query_row(
+            &format!(
+                "SELECT shape FROM {} WHERE tbl = ?1",
+                main_qualified(TRACKED)
+            ),
+            [table],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(sql_error)?;
+    let recorded = recorded.ok_or_else(|| format!("table {table} is not tracked"))?;
+    let now = shape(&base_schema(conn, table)?);
+    if now != recorded {
+        return Err(format!(
+            "base table {table} changed shape since it was first tracked \
+             (was ({recorded}), now ({now}))"
+        ));
+    }
+    for event in CAPTURE_EVENTS {
+        check_trigger(conn, &trigger(table, event), table)
+            .map_err(|why| format!("its capture trigger {why}"))?;
+    }
+    Ok(())
+}
+
+/// Stop capturing `table`: triggers first, so it stays writable.
+fn untrack(conn: &Connection, table: &str) -> Result<()> {
+    for event in CAPTURE_EVENTS {
+        exec(
+            conn,
+            &format!(
+                "DROP TRIGGER IF EXISTS {}",
+                main_qualified(&trigger(table, event))
+            ),
+        )?;
+    }
     exec(
         conn,
         &format!(
-            "CREATE TABLE {delta}({DELTA_SEQ} INTEGER PRIMARY KEY AUTOINCREMENT, {DELTA_W} INTEGER NOT NULL, {defs});
-             CREATE TRIGGER {ins} AFTER INSERT ON {base} BEGIN
-                 INSERT INTO {delta_body}({DELTA_W}, {cols}) VALUES (1, {new});
-             END;
-             CREATE TRIGGER {del} AFTER DELETE ON {base} BEGIN
-                 INSERT INTO {delta_body}({DELTA_W}, {cols}) VALUES (-1, {old});
-             END;
-             CREATE TRIGGER {upd} AFTER UPDATE ON {base} BEGIN
-                 INSERT INTO {delta_body}({DELTA_W}, {cols}) VALUES (-1, {old});
-                 INSERT INTO {delta_body}({DELTA_W}, {cols}) VALUES (1, {new});
-             END;",
-            defs = defs.join(", "),
-            ins = main_qualified(&trigger(t, "ins")),
-            del = main_qualified(&trigger(t, "del")),
-            upd = main_qualified(&trigger(t, "upd")),
+            "DROP TABLE IF EXISTS {}",
+            main_qualified(&delta_table(table))
         ),
+    )?;
+    conn.execute(
+        &format!("DELETE FROM {} WHERE tbl = ?1", main_qualified(TRACKED)),
+        [table],
     )
+    .map_err(sql_error)?;
+    Ok(())
 }
 
 fn create_out_table(conn: &Connection, name: &str, view: &CompiledView) -> Result<()> {
@@ -567,15 +694,18 @@ pub fn create(conn: &Rc<Connection>, name: &str, sql: &str) -> Result<CompiledVi
         .map(|t| base_schema(conn, t))
         .collect::<Result<_>>()?;
     for schema in &schemas {
-        if table_exists(conn, &delta_table(&schema.table))? {
-            return Err(format!(
-                "table {} is already tracked by another ivmlite view; Phase 3a supports one view per base table",
-                schema.table
-            ));
+        let t = &schema.table;
+        if is_tracked(conn, t)? {
+            check_table_capture(conn, t).map_err(|why| {
+                format!(
+                    "table {t} is tracked but its capture is broken: {why}; drop the views \
+                     that read it ({}) and create this view again",
+                    readers(conn, t).unwrap_or_default().join(", ")
+                )
+            })?;
+        } else {
+            track(conn, schema)?;
         }
-    }
-    for schema in &schemas {
-        create_delta_table(conn, schema)?;
     }
     let ids = arrangement_ids(&view.plan);
     for id in &ids {
@@ -598,21 +728,25 @@ pub fn create(conn: &Rc<Connection>, name: &str, sql: &str) -> Result<CompiledVi
         params![name, sql, view.plan.canonical(), declared, FORMAT],
     )
     .map_err(sql_error)?;
-    for (t, schema) in view.tables.iter().zip(&schemas) {
+    for t in &view.tables {
         conn.execute(
             &format!(
-                "INSERT INTO {}(view, tbl, shape) VALUES (?1, ?2, ?3)",
+                "INSERT INTO {}(view, tbl) VALUES (?1, ?2)",
                 main_qualified(DEPS)
             ),
-            params![name, t, shape(schema)],
+            params![name, t],
         )
         .map_err(sql_error)?;
     }
 
-    // Bootstrap. The delta tables and triggers were created above, in this
-    // same transaction: every write from now on is captured, and no write so
-    // far is in a delta table, so the snapshot read here is exactly the state
-    // at watermark 0 (spec §7.3).
+    // Bootstrap. `CREATE VIRTUAL TABLE` runs this whole function inside one
+    // write transaction, so no other connection can write between the
+    // watermark read below and the base-table scan here: together they are
+    // exactly the state as of that watermark (spec §4), whether the table was
+    // just tracked above (watermark 0) or was already tracked with deltas
+    // some other view has not yet consumed (a positive watermark — replaying
+    // those older rows would double-count them, since this scan already
+    // includes them).
     let batches: Vec<(String, ZSet)> = schemas
         .iter()
         .map(|s| Ok((s.table.clone(), read_base(conn, s)?)))
@@ -620,10 +754,10 @@ pub fn create(conn: &Rc<Connection>, name: &str, sql: &str) -> Result<CompiledVi
     for schema in &schemas {
         conn.execute(
             &format!(
-                "INSERT INTO {}(view, tbl, applied_seq) VALUES (?1, ?2, 0)",
+                "INSERT INTO {}(view, tbl, applied_seq) VALUES (?1, ?2, ?3)",
                 main_qualified(PROGRESS)
             ),
-            params![name, schema.table],
+            params![name, schema.table, high_watermark(conn, &schema.table)?],
         )
         .map_err(sql_error)?;
     }
@@ -712,18 +846,20 @@ fn verify(
     Ok(view)
 }
 
-/// Checked on every connect and every refresh: each base table still has the
-/// column shape recorded at create and its three capture triggers, and the
-/// view still has its apply trigger, each on the table it was created on. `DROP TABLE t` drops `t`'s triggers but
-/// not its delta table, so a recreated `t` would otherwise leave every later
-/// write uncaptured; without the apply trigger, a refresh would apply
-/// nothing. Either way the view would go stale with no error.
+/// Checked on every connect and every refresh: each base table the view
+/// reads is still tracked with its recorded shape and its capture triggers
+/// (now `__ivm_tracked`'s concern, shared across every view of the table —
+/// Phase 3b spec §3), and the view still has its apply trigger, each on the
+/// table it was created on. `DROP TABLE t` drops `t`'s triggers but not its
+/// delta table, so a recreated `t` would otherwise leave every later write
+/// uncaptured; without the apply trigger, a refresh would apply nothing.
+/// Either way the view would go stale with no error.
 fn check_capture(conn: &Connection, name: &str, view: &CompiledView) -> Result<()> {
     for table in &view.tables {
-        let recorded: Option<String> = conn
+        let recorded: Option<i64> = conn
             .query_row(
                 &format!(
-                    "SELECT shape FROM {} WHERE view = ?1 AND tbl = ?2",
+                    "SELECT 1 FROM {} WHERE view = ?1 AND tbl = ?2",
                     main_qualified(DEPS)
                 ),
                 params![name, table],
@@ -731,19 +867,10 @@ fn check_capture(conn: &Connection, name: &str, view: &CompiledView) -> Result<(
             )
             .optional()
             .map_err(sql_error)?;
-        let recorded =
-            recorded.ok_or_else(|| format!("its dependency on table {table} is not recorded"))?;
-        let now = shape(&base_schema(conn, table)?);
-        if now != recorded {
-            return Err(format!(
-                "base table {table} changed shape since the view was created \
-                 (was ({recorded}), now ({now}))"
-            ));
+        if recorded.is_none() {
+            return Err(format!("its dependency on table {table} is not recorded"));
         }
-        for event in ["ins", "del", "upd"] {
-            check_trigger(conn, &trigger(table, event), table)
-                .map_err(|why| format!("its capture trigger {why}"))?;
-        }
+        check_table_capture(conn, table)?;
     }
     check_trigger(conn, &apply_trigger(name), &stage_table(name))
         .map_err(|why| format!("its apply trigger {why}"))
@@ -802,10 +929,11 @@ fn is_state_table_of(table: &str, view: &str) -> bool {
         && ["join_left", "join_right", "agg_groups"].contains(&role)
 }
 
-/// `DROP TABLE v`: triggers first, so the base tables stay writable (M-1
-/// scenario 9), then every shadow table and the view's metadata. It uses only
-/// what is recorded, not the compiled view, so a view that can no longer be
-/// maintained can still be dropped.
+/// `DROP TABLE v`: the view's own shadow tables and metadata first, then —
+/// for each base table it read — its capture too, but only once no other
+/// view still reads it (Phase 3b spec §4; Task 2 adds the "readers remain"
+/// branch's GC). It uses only what is recorded, not the compiled view, so a
+/// view that can no longer be maintained can still be dropped.
 pub fn destroy(conn: &Connection, name: &str) -> Result<()> {
     let tables: Vec<String> = conn
         .prepare(&format!(
@@ -814,20 +942,13 @@ pub fn destroy(conn: &Connection, name: &str) -> Result<()> {
         ))
         .and_then(|mut s| s.query_map([name], |r| r.get(0))?.collect())
         .map_err(sql_error)?;
-    for t in &tables {
-        for event in ["ins", "del", "upd"] {
-            exec(
-                conn,
-                &format!(
-                    "DROP TRIGGER IF EXISTS {}",
-                    main_qualified(&trigger(t, event))
-                ),
-            )?;
-        }
-        exec(
-            conn,
-            &format!("DROP TABLE IF EXISTS {}", main_qualified(&delta_table(t))),
-        )?;
+    for table in [VIEWS, DEPS, PROGRESS] {
+        let column = if table == VIEWS { "name" } else { "view" };
+        conn.execute(
+            &format!("DELETE FROM {} WHERE {column} = ?1", main_qualified(table)),
+            [name],
+        )
+        .map_err(sql_error)?;
     }
     let state: Vec<String> = conn
         .prepare("SELECT name FROM \"main\".sqlite_schema WHERE type = 'table'")
@@ -853,13 +974,12 @@ pub fn destroy(conn: &Connection, name: &str) -> Result<()> {
             main_qualified(&stage_table(name))
         ),
     )?;
-    for table in [VIEWS, DEPS, PROGRESS] {
-        let column = if table == VIEWS { "name" } else { "view" };
-        conn.execute(
-            &format!("DELETE FROM {} WHERE {column} = ?1", main_qualified(table)),
-            [name],
-        )
-        .map_err(sql_error)?;
+    // This view's own `__ivm_dep` row was already deleted above, so `readers`
+    // now reports only the views, if any, still reading `t` — never this one.
+    for t in &tables {
+        if readers(conn, t)?.is_empty() {
+            untrack(conn, t)?;
+        }
     }
     let left: i64 = conn
         .query_row(
@@ -869,7 +989,7 @@ pub fn destroy(conn: &Connection, name: &str) -> Result<()> {
         )
         .map_err(sql_error)?;
     if left == 0 {
-        for table in [META, VIEWS, DEPS, PROGRESS] {
+        for table in [META, VIEWS, TRACKED, DEPS, PROGRESS] {
             exec(conn, &format!("DROP TABLE {}", main_qualified(table)))?;
         }
     }

@@ -32,6 +32,17 @@ pub const VIEWS: &str = "__ivm_view";
 pub const DEPS: &str = "__ivm_dep";
 pub const PROGRESS: &str = "__ivm_progress";
 
+/// One row per tracked base table: its shape, as generated once when the
+/// table was first tracked (Phase 3b spec §3). Every view that reads the
+/// table relies on that same shape and the triggers built from it.
+pub const TRACKED: &str = "__ivm_tracked";
+
+/// Every capture trigger event a tracked base table gets. Every loop over a
+/// table's capture triggers uses this constant, not a literal list, so a
+/// later phase that adds events (Task 4 raises it to five, for REPLACE
+/// capture) changes it in one place.
+pub const CAPTURE_EVENTS: [&str; 3] = ["ins", "del", "upd"];
+
 /// Every name the extension creates starts with this; the catalog refuses a
 /// view over such a table, and refuses a base column with this prefix too (a
 /// delta table's own columns are prefixed with it — see `DELTA_SEQ`/`DELTA_W`

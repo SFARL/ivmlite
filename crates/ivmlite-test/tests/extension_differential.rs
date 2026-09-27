@@ -1,6 +1,6 @@
 //! M1b Phase 3a spec §6, scenarios 1 and 2: the differential harness against
 //! the real loaded extension, with and without reopening the database before
-//! every refresh.
+//! every refresh — and, Phase 3b, with sibling views sharing the capture.
 //!
 //! Strides are set from measured cost (debug build, 2026-09-26): about 9 ms a
 //! single-table case and 14 ms a join case in memory, about 60 ms a case when
@@ -67,5 +67,46 @@ fn the_extension_resumes_from_persisted_state_on_every_refresh() {
     for db in [gen_database(2), gen_database_with_swapped_right_table()] {
         let joins = enumerate_join(&db.tables()[0], &db.tables()[1]);
         sweep(&db, &joins, 25, SqliteExtensionEngine::reopening);
+    }
+}
+
+/// Phase 3b spec §8 scenario 1: sibling views share each base table's
+/// capture, lag behind the view under test, and one is dropped mid-case.
+#[test]
+fn sibling_views_share_capture_across_the_single_table_space() {
+    let db = gen_database(2);
+    sweep(
+        &db,
+        &enumerate(&db.tables()[0]),
+        2,
+        SqliteExtensionEngine::with_siblings,
+    );
+}
+
+#[test]
+fn sibling_views_share_capture_across_the_join_space() {
+    for db in [gen_database(2), gen_database_with_swapped_right_table()] {
+        let joins = enumerate_join(&db.tables()[0], &db.tables()[1]);
+        sweep(&db, &joins, 10, SqliteExtensionEngine::with_siblings);
+    }
+}
+
+#[test]
+fn sibling_views_resume_from_persisted_state() {
+    let db = gen_database(2);
+    sweep(
+        &db,
+        &enumerate(&db.tables()[0]),
+        6,
+        SqliteExtensionEngine::reopening_with_siblings,
+    );
+    for db in [gen_database(2), gen_database_with_swapped_right_table()] {
+        let joins = enumerate_join(&db.tables()[0], &db.tables()[1]);
+        sweep(
+            &db,
+            &joins,
+            50,
+            SqliteExtensionEngine::reopening_with_siblings,
+        );
     }
 }
