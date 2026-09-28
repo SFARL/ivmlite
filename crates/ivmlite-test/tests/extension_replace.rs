@@ -63,11 +63,12 @@ fn a_unique_index_added_after_create_breaks_the_view() {
 }
 
 /// What every view of `t` reports once its capture triggers have run
-/// against a unique-index set other than the one they were generated from
-/// (spec §6.3, the unique-index latch).
-const LATCHED: &str = "the unique indexes of t changed after its capture was generated";
+/// against a definition or unique-index set of `t` other than the one they
+/// were generated from (spec §6.3, the latch).
+const LATCHED: &str =
+    "the definition or unique indexes of t changed after its capture was generated";
 
-/// How many tracked tables have latched a unique-index change.
+/// How many tracked tables have latched a change.
 const LATCHES: &str = "SELECT count(*) FROM __ivm_tracked WHERE broken IS NOT NULL";
 
 /// `ks` over `t(id INTEGER PRIMARY KEY, k INTEGER, v TEXT)`, in a file, with
@@ -151,8 +152,8 @@ fn a_view_that_reported_an_added_unique_index_stays_broken_after_it_is_dropped()
     assert_latched_and_droppable(c, &file, "reverted unique index");
 }
 
-/// The latch covers the explicit unique indexes only, and only while a
-/// write sees them: a non-unique index added and dropped around writes,
+/// Of `t`'s indexes, the latch covers the explicit unique ones only, and
+/// only while a write sees them: a non-unique index added and dropped around writes,
 /// and a unique index added and dropped with no write in between, leave
 /// the triggers exactly as correct as before, and the view keeps working.
 #[test]
@@ -208,6 +209,79 @@ fn dropping_a_unique_index_the_capture_was_generated_with_breaks_the_view() {
     )
     .unwrap();
     assert_latched_and_droppable(c, &file, "dropped and recreated unique index");
+}
+
+/// `ks` over `t(id INTEGER PRIMARY KEY, k INTEGER DEFAULT 5, v TEXT)` with a
+/// unique index on the nullable `k`, in a file, with one row; the connection
+/// writes with recursive_triggers OFF. The capture triggers are generated
+/// for a nullable `k`, so they never substitute its default for a NULL.
+fn nullable_default_key_setup(file: &TempFile) -> Connection {
+    let c = open_with_extension(Some(file.path())).unwrap();
+    c.execute_batch(
+        "CREATE TABLE t(id INTEGER PRIMARY KEY, k INTEGER DEFAULT 5, v TEXT) STRICT;
+         CREATE UNIQUE INDEX i ON t(k);
+         INSERT INTO t VALUES (1, 5, 'a');
+         PRAGMA recursive_triggers = OFF;",
+    )
+    .unwrap();
+    create(&c, "ks", KS).unwrap();
+    c
+}
+
+/// Final re-review, residual (rr2 R1): `ALTER COLUMN k SET NOT NULL` makes
+/// a REPLACE of a NULL `k` substitute the default 5 and remove row 1, which
+/// the triggers never looked up; `DROP NOT NULL` then restored the shape,
+/// and the refresh succeeded with a wrong view. The latch fingerprints t's
+/// own `CREATE TABLE` text too, so the write latches the change.
+#[test]
+fn a_not_null_set_used_by_a_replace_and_dropped_again_breaks_the_view() {
+    let file = TempFile::new("transient-not-null");
+    let c = nullable_default_key_setup(&file);
+    c.execute_batch(
+        "ALTER TABLE t ALTER COLUMN k SET NOT NULL;
+         INSERT OR REPLACE INTO t VALUES (2, NULL, 'b');
+         ALTER TABLE t ALTER COLUMN k DROP NOT NULL;",
+    )
+    .unwrap();
+    assert_latched_and_droppable(c, &file, "transient NOT NULL");
+}
+
+/// Final re-review, residual: once a refresh has reported the NOT NULL
+/// constraint as a changed shape, dropping it again must not make the view
+/// maintainable: the REPLACE it let through is still missing from the deltas.
+#[test]
+fn a_view_that_reported_a_set_not_null_stays_broken_after_it_is_dropped() {
+    let file = TempFile::new("reverted-not-null");
+    let c = nullable_default_key_setup(&file);
+    c.execute_batch(
+        "ALTER TABLE t ALTER COLUMN k SET NOT NULL;
+         INSERT OR REPLACE INTO t VALUES (2, NULL, 'b');",
+    )
+    .unwrap();
+    let err = refresh(&c, "ks").expect_err("k is NOT NULL");
+    assert!(err.to_string().contains("cannot be maintained"), "{err}");
+    c.execute_batch("ALTER TABLE t ALTER COLUMN k DROP NOT NULL")
+        .unwrap();
+    assert_latched_and_droppable(c, &file, "reverted NOT NULL");
+}
+
+/// The latch reads t's definition only when a write runs: a NOT NULL set
+/// and dropped again with no write in between leaves the triggers exactly
+/// as correct as before, and the view keeps working.
+#[test]
+fn a_not_null_set_and_dropped_with_no_write_between_keeps_the_view_working() {
+    let file = TempFile::new("unused-not-null");
+    let c = nullable_default_key_setup(&file);
+    c.execute_batch(
+        "ALTER TABLE t ALTER COLUMN k SET NOT NULL;
+         ALTER TABLE t ALTER COLUMN k DROP NOT NULL;
+         INSERT OR REPLACE INTO t VALUES (2, 5, 'b');
+         INSERT INTO t VALUES (3, NULL, 'c');",
+    )
+    .unwrap();
+    refresh(&c, "ks").unwrap();
+    assert_matches_oracle(&c, "ks", KS);
+    assert_eq!(count(&c, LATCHES), 0);
 }
 
 /// Spec §2's three table variants: each has a `NOT NULL DEFAULT 'd'` unique
