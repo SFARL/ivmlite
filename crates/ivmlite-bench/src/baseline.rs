@@ -3,36 +3,6 @@ use std::time::Instant;
 use ivmlite_workload::{TraceOp, ViewSpec, Workload};
 use rusqlite::{Connection, Statement};
 
-/// The three same-host control baselines of spec §10.2.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Baseline {
-    /// Lower bound: write the base table and maintain no views at all. Pure write cost.
-    NoMaintenance,
-    /// The skeptic: hand-written triggers maintain summary tables. Spec §10.2's
-    /// bar has three tiers and is **not** "must beat this": ivmlite **must** be
-    /// far faster than full recompute; it is **expected** to come close to
-    /// hand-written triggers; and it would be a **bonus** to beat row-level
-    /// triggers on large deltas, the structural advantage consolidation brings.
-    /// A hand-written trigger is one of the best implementations of this query
-    /// compiled by hand, and a general engine pays for its generality (a
-    /// generic delta representation, serialization, arrangement lookups,
-    /// operator dispatch, progress tracking). Not beating it does not mean
-    /// having no value.
-    HandWrittenTrigger,
-    /// Baseline: re-run every view's SQL after each batch of deltas. The crossover is measured against this.
-    NaiveRecompute,
-}
-
-impl Baseline {
-    pub fn label(self) -> &'static str {
-        match self {
-            Baseline::NoMaintenance => "no_maintenance",
-            Baseline::HandWrittenTrigger => "hand_written_trigger",
-            Baseline::NaiveRecompute => "naive_recompute",
-        }
-    }
-}
-
 /// Create the base table and load its initial data. Untimed.
 ///
 /// The table definition comes from the workload, and `id INTEGER PRIMARY KEY`

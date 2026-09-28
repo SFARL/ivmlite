@@ -1,15 +1,20 @@
 mod baseline;
+mod engine;
+// M1b Phase 4 task 1 stops calling `plot::write_svg` here (the M0 chart
+// writing moves to Task 6, spec §3), so the module is temporarily unreachable
+// outside its own tests; Task 6 restores the call and this `allow` with it.
+#[allow(dead_code)]
 mod plot;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use baseline::{
-    apply, install_trigger_view, recompute_all, seed_base, ApplyStatements, Baseline,
-    RecomputeStatements,
-};
+use engine::{engine_order, run_cell, Engine, Measurement};
+use ivmlite_test::{extension_library_for, Profile};
 use ivmlite_workload::Workload;
-use rusqlite::Connection;
 
+/// One row of an M0 chart's data (Task 6 draws the M1b chart from `Row`
+/// instead). Kept here because `plot.rs` still reads `Record`s in its own
+/// tests; `main.rs` no longer constructs any.
 #[derive(Debug, Clone)]
 pub struct Record {
     pub baseline: &'static str,
@@ -21,99 +26,158 @@ pub struct Record {
     pub maintain_ms: f64,
 }
 
-/// Run one fully materialized matrix cell. `cell` comes from `Workload::cells()`
-/// and is not modified here: all four dimensions — `base_rows`,
-/// `group_cardinality`, `batch_size`, `views` — are decided by
-/// `ivmlite-workload` (spec §10.3 item 7). `main.rs` only runs the cell under
-/// each baseline, times it, and records the result.
-fn run_one(b: Baseline, cell: &Workload) -> rusqlite::Result<Record> {
-    let conn = Connection::open_in_memory()?;
+const CSV_HEADER: &str = "engine,views,base_rows,batch_size,group_cardinality,bootstrap_ms,apply_ms,maintain_ms,page_size,base_pages,base_free,bootstrapped_pages,bootstrapped_free,written_pages,written_free,maintained_pages,maintained_free";
 
-    // ---- untimed: build the initial state ----
-    seed_base(&conn, cell)?;
-    if b == Baseline::HandWrittenTrigger {
-        for v in &cell.views {
-            install_trigger_view(&conn, &cell.schema.table, v)?;
+/// One matrix row: the cell's four dimensions (spec §3.4's "The cell (as M0)"
+/// group) plus the `Measurement` `run_cell` produced for it.
+struct Row {
+    engine: Engine,
+    views: usize,
+    base_rows: usize,
+    batch_size: usize,
+    group_cardinality: usize,
+    m: Measurement,
+}
+
+impl Row {
+    fn sort_key(&self) -> (&'static str, usize, usize, usize, usize) {
+        (
+            self.engine.label(),
+            self.views,
+            self.base_rows,
+            self.batch_size,
+            self.group_cardinality,
+        )
+    }
+}
+
+fn print_csv(mut rows: Vec<Row>) {
+    // Sorted by (engine label, views, base_rows, batch_size, group_cardinality)
+    // so the file diffs stably across runs (spec §3.4).
+    rows.sort_by(|a, b| a.sort_key().cmp(&b.sort_key()));
+    println!("{CSV_HEADER}");
+    for r in &rows {
+        let m = &r.m;
+        println!(
+            "{},{},{},{},{},{:.3},{:.3},{:.3},{},{},{},{},{},{},{},{},{}",
+            r.engine.label(),
+            r.views,
+            r.base_rows,
+            r.batch_size,
+            r.group_cardinality,
+            m.bootstrap_ms,
+            m.apply_ms,
+            m.maintain_ms,
+            m.page_size,
+            m.base.page_count,
+            m.base.freelist_count,
+            m.bootstrapped.page_count,
+            m.bootstrapped.freelist_count,
+            m.written.page_count,
+            m.written.freelist_count,
+            m.maintained.page_count,
+            m.maintained.freelist_count,
+        );
+    }
+}
+
+/// The full matrix: cells in the outer loop, engines in the inner loop,
+/// engine order rotating with the cell index (spec §3.3). `Workload::cells()`
+/// is the same derivation M0 used, unchanged (spec §3.5).
+fn run_matrix(workload_path: &Path, lib: &Path) -> Result<(), String> {
+    let base = Workload::load(workload_path).map_err(|e| e.to_string())?;
+    let cells = base.cells();
+    let mut rows = Vec::with_capacity(cells.len() * engine::ENGINES.len());
+
+    for (i, cell) in cells.iter().enumerate() {
+        for engine in engine_order(i) {
+            let m = run_cell(engine, cell, lib).map_err(|e| {
+                format!(
+                    "cell {i} (views={} base_rows={} batch_size={} group_cardinality={}) engine {}: {e}",
+                    cell.views.len(),
+                    cell.data.base_rows,
+                    cell.updates.batch_size,
+                    cell.data.group_cardinality,
+                    engine.label(),
+                )
+            })?;
+            assert_eq!(
+                m.engine, engine,
+                "run_cell returned a Measurement for a different engine than it was asked to run"
+            );
+            rows.push(Row {
+                engine,
+                views: cell.views.len(),
+                base_rows: cell.data.base_rows,
+                batch_size: cell.updates.batch_size,
+                group_cardinality: cell.data.group_cardinality,
+                m,
+            });
         }
     }
-    let ops = cell.update_trace();
 
-    // Compile every statement the timed region runs, now that all triggers
-    // exist. See `ApplyStatements` for why this must not happen under the timer.
-    let mut apply_stmts = ApplyStatements::prepare(&conn, &cell.schema.table)?;
-    let mut recompute_stmts = match b {
-        Baseline::NaiveRecompute => Some(RecomputeStatements::prepare(&conn, cell)?),
-        Baseline::NoMaintenance | Baseline::HandWrittenTrigger => None,
-    };
+    print_csv(rows);
+    Ok(())
+}
 
-    // ---- timed region ----
-    let apply_ms = apply(&conn, &mut apply_stmts, &ops)?;
-    let maintain_ms = match recompute_stmts.as_mut() {
-        Some(stmts) => recompute_all(stmts)?,
-        // The trigger's cost is already in apply_ms: that is the write amplification.
-        None => 0.0,
-    };
+/// Parsed command line: the mode (Tasks 2 and 5 add `confirm`, `ablation` and
+/// `write-amp`; `matrix` is today's only mode and also the default), plus the
+/// two shared overrides.
+struct Args {
+    mode: String,
+    extension: Option<PathBuf>,
+    workload: PathBuf,
+}
 
-    Ok(Record {
-        baseline: b.label(),
-        views: cell.views.len(),
-        base_rows: cell.data.base_rows,
-        batch: cell.updates.batch_size,
-        cardinality: cell.data.group_cardinality,
-        apply_ms,
-        maintain_ms,
+fn parse_args(raw: impl Iterator<Item = String>) -> Result<Args, String> {
+    let mut mode: Option<String> = None;
+    let mut extension: Option<PathBuf> = None;
+    let mut workload = PathBuf::from("workloads/m0-baseline.toml");
+
+    let mut it = raw;
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--extension" => {
+                let v = it.next().ok_or("--extension needs a path")?;
+                extension = Some(PathBuf::from(v));
+            }
+            "--workload" => {
+                let v = it.next().ok_or("--workload needs a path")?;
+                workload = PathBuf::from(v);
+            }
+            other if mode.is_none() => mode = Some(other.to_string()),
+            other => return Err(format!("unexpected argument: {other}")),
+        }
+    }
+
+    Ok(Args {
+        mode: mode.unwrap_or_else(|| "matrix".to_string()),
+        extension,
+        workload,
     })
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let base = Workload::load(Path::new("workloads/m0-baseline.toml"))?;
-    let cells = base.cells();
-    let mut records: Vec<Record> = Vec::new();
+    let args = parse_args(std::env::args().skip(1))?;
 
-    let baselines = [
-        Baseline::NoMaintenance,
-        Baseline::HandWrittenTrigger,
-        Baseline::NaiveRecompute,
-    ];
+    let lib = match args.extension {
+        // The staleness check is skipped for an explicit path (spec §3.1):
+        // the ablation (Task 5) points this at a library built without a fix
+        // under test, which is older than the fixed sources on purpose.
+        Some(p) => p,
+        None => extension_library_for(Profile::Release).unwrap_or_else(|why| {
+            eprintln!("{why}");
+            std::process::exit(1);
+        }),
+    };
 
-    // The matrix's structure — the two sweeps, the `card > base_rows` skip rule,
-    // the view-threshold formula — lives entirely in `Workload::cells()`
-    // (spec §10.3 item 7); this loop only walks the cells it produces under each
-    // baseline. Skipped cells are not logged to stderr here: `cells()` simply
-    // does not produce them, and `main.rs` has no `card > rows` check with which
-    // to recognise a cell that "should have been there". Adding one would
-    // re-implement, here, a rule that was deliberately moved out.
-    // `docs/bench/README.md` already records the skip (`card=100000 >
-    // base_rows=10000`).
-    for b in baselines {
-        for cell in &cells {
-            records.push(run_one(b, cell)?);
-        }
-    }
-
-    println!("baseline,views,base_rows,batch_size,group_cardinality,apply_ms,maintain_ms");
-    for r in &records {
-        println!(
-            "{},{},{},{},{},{:.3},{:.3}",
-            r.baseline, r.views, r.base_rows, r.batch, r.cardinality, r.apply_ms, r.maintain_ms
-        );
-    }
-
-    // One chart per group cardinality: the crossover moves sharply with it, so
-    // publishing a single chart would amount to picking a flattering point
-    // (spec §10.1). Cardinalities and the fixed view count come from `[matrix]`,
-    // not from constants here.
-    let matrix = base
-        .matrix
-        .as_ref()
-        .expect("workloads/m0-baseline.toml has no [matrix] section");
-    for card in matrix.group_cardinalities.clone() {
-        let path = format!("docs/bench/m0-baseline-card{card}.svg");
-        match plot::write_svg(Path::new(&path), &records, matrix.fixed_views, 100, card) {
-            Ok(()) => eprintln!("wrote chart {path}"),
-            // A group cardinality skipped at every base-table size has no data
-            // points. That is not an error: say so and carry on.
-            Err(e) => eprintln!("skipping the chart for card={card}: {e}"),
+    match args.mode.as_str() {
+        "matrix" => run_matrix(&args.workload, &lib)?,
+        other => {
+            return Err(format!(
+                "unknown mode {other:?} (Tasks 2 and 5 add confirm, ablation and write-amp)"
+            )
+            .into())
         }
     }
 
@@ -234,5 +298,32 @@ mod tests {
             derived.len(),
             published.len()
         );
+    }
+
+    #[test]
+    fn parse_args_defaults_to_matrix_and_the_m0_workload() {
+        let a = parse_args(std::iter::empty()).unwrap();
+        assert_eq!(a.mode, "matrix");
+        assert_eq!(a.extension, None);
+        assert_eq!(a.workload, PathBuf::from("workloads/m0-baseline.toml"));
+    }
+
+    #[test]
+    fn parse_args_reads_mode_and_overrides() {
+        let a = parse_args(
+            [
+                "confirm",
+                "--extension",
+                "/tmp/lib.dylib",
+                "--workload",
+                "/tmp/w.toml",
+            ]
+            .into_iter()
+            .map(String::from),
+        )
+        .unwrap();
+        assert_eq!(a.mode, "confirm");
+        assert_eq!(a.extension, Some(PathBuf::from("/tmp/lib.dylib")));
+        assert_eq!(a.workload, PathBuf::from("/tmp/w.toml"));
     }
 }

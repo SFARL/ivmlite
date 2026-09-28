@@ -28,30 +28,74 @@ fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
+/// Which build of the extension to locate: the test host always uses `Debug`;
+/// the benchmark (M1b Phase 4) uses `Release`, since debug-build timings are
+/// not representative.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Profile {
+    Debug,
+    Release,
+}
+
+impl Profile {
+    fn dir_name(self) -> &'static str {
+        match self {
+            Profile::Debug => "debug",
+            Profile::Release => "release",
+        }
+    }
+}
+
+/// The three crate directories the extension is built from, rooted at `repo`.
+fn crate_dirs(repo: &Path) -> Vec<PathBuf> {
+    [
+        "crates/ivmlite-sqlite",
+        "crates/ivmlite-core",
+        "crates/ivmlite-sql",
+    ]
+    .iter()
+    .map(|dir| repo.join(dir))
+    .collect()
+}
+
+/// `extension_library_for`, but `repo` is caller-supplied rather than computed
+/// from this crate's own location — the same reason `check_library` already
+/// takes an explicit library path and crate directories instead of computing
+/// them, so a test can point it at a fake repository layout.
+fn library_for(repo: &Path, profile: Profile) -> Result<PathBuf, String> {
+    let name = if cfg!(target_os = "macos") {
+        "libivmlite_sqlite.dylib"
+    } else {
+        "libivmlite_sqlite.so"
+    };
+    let lib = repo
+        .join("crates/ivmlite-sqlite/target")
+        .join(profile.dir_name())
+        .join(name);
+    check_library(&lib, &crate_dirs(repo)).map_err(|why| match profile {
+        Profile::Debug => why,
+        // `check_library`'s message always names the debug-build script; for
+        // the release profile the instruction must point at the script that
+        // actually builds it (spec §3.1).
+        Profile::Release => why.replace("scripts/build-extension.sh", "scripts/bench.sh"),
+    })?;
+    Ok(lib)
+}
+
+/// The extension library of `profile` under `crates/ivmlite-sqlite/target/`,
+/// or why it cannot be used (missing, or older than any source, manifest or
+/// lock file of `ivmlite-sqlite`, `ivmlite-core` or `ivmlite-sql`).
+pub fn extension_library_for(profile: Profile) -> Result<PathBuf, String> {
+    library_for(&repo(), profile)
+}
+
 /// The extension's dynamic library, checked to be at least as new as every
 /// source file it is built from.
 ///
 /// # Panics
 /// If the library is missing or stale; run `scripts/build-extension.sh`.
 pub fn extension_library() -> PathBuf {
-    let name = if cfg!(target_os = "macos") {
-        "libivmlite_sqlite.dylib"
-    } else {
-        "libivmlite_sqlite.so"
-    };
-    let lib = repo().join("crates/ivmlite-sqlite/target/debug").join(name);
-    let crates: Vec<PathBuf> = [
-        "crates/ivmlite-sqlite",
-        "crates/ivmlite-core",
-        "crates/ivmlite-sql",
-    ]
-    .iter()
-    .map(|dir| repo().join(dir))
-    .collect();
-    if let Err(why) = check_library(&lib, &crates) {
-        panic!("{why}");
-    }
-    lib
+    extension_library_for(Profile::Debug).unwrap_or_else(|why| panic!("{why}"))
 }
 
 /// `Ok` if `lib` exists and is at least as new as every source file of
@@ -105,8 +149,8 @@ fn sources(dir: &Path) -> Vec<SystemTime> {
     out
 }
 
-/// Open `path` (or an in-memory database) with the extension loaded.
-pub fn open_with_extension(path: Option<&Path>) -> rusqlite::Result<Connection> {
+/// Open `path` (or an in-memory database) with the extension at `lib` loaded.
+pub fn open_with_extension_at(path: Option<&Path>, lib: &Path) -> rusqlite::Result<Connection> {
     let conn = match path {
         Some(p) => Connection::open(p)?,
         None => Connection::open_in_memory()?,
@@ -115,10 +159,15 @@ pub fn open_with_extension(path: Option<&Path>) -> rusqlite::Result<Connection> 
     // `ivm` module.
     unsafe {
         conn.load_extension_enable()?;
-        conn.load_extension(extension_library(), Some("sqlite3_ivmlite_init"))?;
+        conn.load_extension(lib, Some("sqlite3_ivmlite_init"))?;
         conn.load_extension_disable()?;
     }
     Ok(conn)
+}
+
+/// Open `path` (or an in-memory database) with the debug-build extension loaded.
+pub fn open_with_extension(path: Option<&Path>) -> rusqlite::Result<Connection> {
+    open_with_extension_at(path, &extension_library())
 }
 
 fn err(e: rusqlite::Error) -> EngineError {
@@ -566,5 +615,20 @@ mod tests {
         b.sources_at(10);
         b.touch(&b.lib(), 20);
         assert_eq!(check_library(&b.lib(), &[b.krate()]), Ok(()));
+    }
+
+    /// The release profile's error must point at `scripts/bench.sh`, the
+    /// script that actually builds a release library, not at
+    /// `scripts/build-extension.sh` (spec §3.1).
+    #[test]
+    fn release_profile_names_bench_sh_when_the_library_is_missing() {
+        let dir = std::env::temp_dir().join(format!(
+            "ivmlite-libcheck-release-missing-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let err = library_for(&dir, Profile::Release).unwrap_err();
+        assert!(err.contains("scripts/bench.sh"), "{err}");
+        assert!(!err.contains("scripts/build-extension.sh"), "{err}");
     }
 }

@@ -24,7 +24,10 @@ pub use differential::{
     TestCase,
 };
 pub use engine::{Engine, EngineError};
-pub use extension::{extension_library, open_with_extension, SqliteExtensionEngine};
+pub use extension::{
+    extension_library, extension_library_for, open_with_extension, open_with_extension_at, Profile,
+    SqliteExtensionEngine,
+};
 pub use invariants::check_invariants;
 pub use ivmlite_core::{
     Agg, AggFn, CmpOp, Column, ColumnType, Database, IncrementalEngine, Join, Predicate, Schema,
