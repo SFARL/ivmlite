@@ -908,3 +908,55 @@ fn base_tables_named_like_the_trigger_aliases_are_captured_exactly() {
     }
     assert!(diverged.is_empty(), "diverged:\n{}", diverged.join("\n"));
 }
+
+/// A self-referencing foreign key whose action writes the same table is a
+/// same-table re-entry (spec §6.4). `ON DELETE CASCADE` only deletes, and
+/// each cascaded delete fires the DELETE trigger, so a REPLACE that removes
+/// a parent is captured exactly with `recursive_triggers` OFF and ON alike.
+#[test]
+fn a_self_referencing_on_delete_cascade_is_captured_exactly() {
+    for recursive in ["OFF", "ON"] {
+        let c = open_with_extension(None).unwrap();
+        c.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             CREATE TABLE t(id INTEGER PRIMARY KEY, k TEXT UNIQUE,
+                 parent INTEGER REFERENCES t(id) ON DELETE CASCADE) STRICT;
+             INSERT INTO t VALUES (1, 'a', NULL), (2, 'b', 1), (3, 'c', 2);",
+        )
+        .unwrap();
+        create(&c, "ks", KS).unwrap();
+        c.execute_batch(&format!(
+            "PRAGMA recursive_triggers = {recursive};
+             INSERT OR REPLACE INTO t VALUES (4, 'a', NULL);"
+        ))
+        .unwrap();
+        refresh(&c, "ks").unwrap();
+        assert_matches_oracle(&c, "ks", KS);
+    }
+}
+
+/// `ON DELETE SET NULL` on a self-referencing foreign key UPDATEs the child
+/// row inside the REPLACE that removes its parent: a same-table re-entry,
+/// supported only with `recursive_triggers` ON (spec §6.4). With it OFF the
+/// child's BEFORE UPDATE empties the candidate table and the parent's −1 is
+/// lost (external review of bc0c891, reproduced); that case stays a
+/// documented limitation, not a test.
+#[test]
+fn a_self_referencing_on_delete_set_null_is_captured_with_recursive_triggers_on() {
+    let c = open_with_extension(None).unwrap();
+    c.execute_batch(
+        "PRAGMA foreign_keys = ON;
+         CREATE TABLE t(id INTEGER PRIMARY KEY, k TEXT UNIQUE,
+             parent INTEGER REFERENCES t(id) ON DELETE SET NULL) STRICT;
+         INSERT INTO t VALUES (1, 'a', NULL), (2, 'b', 1);",
+    )
+    .unwrap();
+    create(&c, "ks", KS).unwrap();
+    c.execute_batch(
+        "PRAGMA recursive_triggers = ON;
+         INSERT OR REPLACE INTO t VALUES (3, 'a', NULL);",
+    )
+    .unwrap();
+    refresh(&c, "ks").unwrap();
+    assert_matches_oracle(&c, "ks", KS);
+}

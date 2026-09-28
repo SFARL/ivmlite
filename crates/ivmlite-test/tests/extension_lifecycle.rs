@@ -174,6 +174,13 @@ fn what_v0_cannot_maintain_is_rejected_by_name() {
         ("CREATE TABLE t(k TEXT, v INTEGER) STRICT; CREATE UNIQUE INDEX ue ON t(v + 1)", q, "expression"),
         ("CREATE TABLE t(k TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP UNIQUE, v INTEGER) STRICT", q, "default CURRENT_TIMESTAMP"),
         ("CREATE TABLE t(k TEXT, RowId INTEGER) STRICT", q, "RowId"),
+        // A generated column is missing from pragma_table_info but still
+        // shadows the rowid (and could shadow a shadow column) in the
+        // capture triggers (external review of bc0c891: a generated `rowid`
+        // made a plain INSERT retract an unrelated row).
+        ("CREATE TABLE t(k TEXT, x INTEGER, rowid INTEGER GENERATED ALWAYS AS (0) VIRTUAL) STRICT", q, "rowid"),
+        ("CREATE TABLE t(k TEXT, x INTEGER, OID INTEGER GENERATED ALWAYS AS (x) STORED) STRICT", q, "OID"),
+        ("CREATE TABLE t(k TEXT, x INTEGER, __ivm_g INTEGER GENERATED ALWAYS AS (x) VIRTUAL) STRICT", q, "__ivm_g"),
         // A generated column as a unique key, through an explicit index or
         // a UNIQUE constraint's autoindex (final review, minor 3: this used
         // to fail with "reading the catalog: Query returned no rows").

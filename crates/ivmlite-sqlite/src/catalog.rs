@@ -93,6 +93,32 @@ impl Catalog for SqliteCatalog<'_> {
                 "declares a COLLATE clause; v0 supports only the BINARY collation (spec §7.1)",
             );
         }
+        // Reserved names are checked over every column, generated ones
+        // included: `pragma_table_info` omits a generated column, but inside
+        // the capture triggers its name still shadows the rowid (or a shadow
+        // column) — a generated `rowid` made a plain INSERT retract an
+        // unrelated row (external review of bc0c891, reproduced).
+        const ROWID_ALIASES: [&str; 3] = ["rowid", "oid", "_rowid_"];
+        let every_column: Vec<String> = self
+            .conn
+            .prepare(&format!(
+                "SELECT name FROM pragma_table_xinfo({}, 'main')",
+                literal(&declared)
+            ))
+            .and_then(|mut s| s.query_map([], |r| r.get(0))?.collect())
+            .map_err(err)?;
+        for name in &every_column {
+            if ROWID_ALIASES.iter().any(|a| name.eq_ignore_ascii_case(a)) {
+                return refuse(&format!(
+                    "column {name} is named like the rowid, which ivmlite's capture triggers address rows by (Phase 3b spec §6.1)"
+                ));
+            }
+            if has_reserved_prefix(name) {
+                return refuse(&format!(
+                    "column {name} starts with {PREFIX}, which ivmlite reserves for its own shadow columns (e.g. the delta table's)"
+                ));
+            }
+        }
         let mut stmt = self
             .conn
             .prepare(&format!(
@@ -115,11 +141,6 @@ impl Catalog for SqliteCatalog<'_> {
         let mut columns = Vec::new();
         for row in rows {
             let (column, ty, not_null, pk) = row.map_err(err)?;
-            if has_reserved_prefix(&column) {
-                return refuse(&format!(
-                    "column {column} starts with {PREFIX}, which ivmlite reserves for its own shadow columns (e.g. the delta table's)"
-                ));
-            }
             let ty = match ty.to_ascii_uppercase().as_str() {
                 "INTEGER" | "INT" => ColumnType::Integer,
                 "TEXT" => ColumnType::Text,
@@ -136,16 +157,6 @@ impl Catalog for SqliteCatalog<'_> {
                 ty,
                 nullable: !not_null && !rowid,
             });
-        }
-        const ROWID_ALIASES: [&str; 3] = ["rowid", "oid", "_rowid_"];
-        if let Some(c) = columns
-            .iter()
-            .find(|c| ROWID_ALIASES.iter().any(|a| c.name.eq_ignore_ascii_case(a)))
-        {
-            return refuse(&format!(
-                "column {} is named like the rowid, which ivmlite's capture triggers address rows by (Phase 3b spec §6.1)",
-                c.name
-            ));
         }
         let capture = self.capture(&declared).map_err(CatalogError)?;
         for key in &capture.unique_keys {
