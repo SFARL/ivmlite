@@ -63,10 +63,10 @@ fn a_unique_index_added_after_create_breaks_the_view() {
 }
 
 /// What every view of `t` reports once its capture triggers have run
-/// against a definition or unique-index set of `t` other than the one they
-/// were generated from (spec §6.3, the latch).
-const LATCHED: &str =
-    "the definition or unique indexes of t changed after its capture was generated";
+/// against a definition, unique-index set or capture-trigger placement of
+/// `t` other than the one they were generated with (spec §6.3, the latch).
+const LATCHED: &str = "the definition, unique indexes or capture triggers of t changed \
+                       after its capture was generated";
 
 /// How many tracked tables have latched a change.
 const LATCHES: &str = "SELECT count(*) FROM __ivm_tracked WHERE broken IS NOT NULL";
@@ -277,6 +277,91 @@ fn a_not_null_set_and_dropped_with_no_write_between_keeps_the_view_working() {
          ALTER TABLE t ALTER COLUMN k DROP NOT NULL;
          INSERT OR REPLACE INTO t VALUES (2, 5, 'b');
          INSERT INTO t VALUES (3, NULL, 'c');",
+    )
+    .unwrap();
+    refresh(&c, "ks").unwrap();
+    assert_matches_oracle(&c, "ks", KS);
+    assert_eq!(count(&c, LATCHES), 0);
+}
+
+/// `ks` over `"t"(id INTEGER PRIMARY KEY, k INTEGER DEFAULT 5, v TEXT)`, in a
+/// file, with one row, then `extra` (DDL run before the view is created);
+/// the connection writes with recursive_triggers OFF. The name is quoted in
+/// the DDL, so a rename round trip restores `t`'s text exactly.
+fn quoted_table_setup(file: &TempFile, extra: &str) -> Connection {
+    let c = open_with_extension(Some(file.path())).unwrap();
+    c.execute_batch(&format!(
+        "CREATE TABLE \"t\"(id INTEGER PRIMARY KEY, k INTEGER DEFAULT 5, v TEXT) STRICT;
+         {extra}
+         INSERT INTO t VALUES (1, 5, 'a');
+         PRAGMA recursive_triggers = OFF;"
+    ))
+    .unwrap();
+    create(&c, "ks", KS).unwrap();
+    c
+}
+
+/// Final re-review, Ruling 17 (P7): the fingerprint looked `t` up by name.
+/// `t` renamed to `u`, a decoy `t` with `t`'s exact text in its place, a
+/// unique index added to `u` and used by a REPLACE, then everything undone
+/// and `u` renamed back: the shape and the looked-up text were equal again,
+/// and the refresh succeeded with a wrong view. The fingerprint now also
+/// names the capture triggers on `t`, which sit on `u` while it is renamed
+/// away, so the write latches.
+#[test]
+fn a_unique_index_used_while_t_is_renamed_behind_a_decoy_breaks_the_view() {
+    let file = TempFile::new("decoy-unique");
+    let c = quoted_table_setup(&file, "");
+    c.execute_batch(
+        "ALTER TABLE t RENAME TO u;
+         CREATE TABLE \"t\"(id INTEGER PRIMARY KEY, k INTEGER DEFAULT 5, v TEXT) STRICT;
+         CREATE UNIQUE INDEX j ON u(k);
+         INSERT OR REPLACE INTO u VALUES (2, 5, 'b');
+         DROP INDEX j;
+         DROP TABLE t;
+         ALTER TABLE u RENAME TO t;",
+    )
+    .unwrap();
+    assert_latched_and_droppable(c, &file, "unique index behind a decoy");
+}
+
+/// Final re-review, Ruling 17 (P7d): the same round trip, with `t`'s own
+/// unique index moved onto the decoy and a NOT NULL set on `u`, used by a
+/// REPLACE of a NULL key and dropped again.
+#[test]
+fn a_not_null_used_while_t_is_renamed_behind_a_decoy_breaks_the_view() {
+    let file = TempFile::new("decoy-not-null");
+    let c = quoted_table_setup(&file, "CREATE UNIQUE INDEX \"i\" ON \"t\"(k);");
+    c.execute_batch(
+        "ALTER TABLE t RENAME TO u;
+         DROP INDEX i;
+         CREATE TABLE \"t\"(id INTEGER PRIMARY KEY, k INTEGER DEFAULT 5, v TEXT) STRICT;
+         CREATE UNIQUE INDEX \"i\" ON \"t\"(k);
+         CREATE UNIQUE INDEX i2 ON u(k);
+         ALTER TABLE u ALTER COLUMN k SET NOT NULL;
+         INSERT OR REPLACE INTO u VALUES (2, NULL, 'b');
+         ALTER TABLE u ALTER COLUMN k DROP NOT NULL;
+         DROP INDEX i2;
+         DROP TABLE t;
+         ALTER TABLE u RENAME TO t;
+         CREATE UNIQUE INDEX \"i\" ON \"t\"(k);",
+    )
+    .unwrap();
+    assert_latched_and_droppable(c, &file, "NOT NULL behind a decoy");
+}
+
+/// The capture triggers are looked up only when a write runs: `t` renamed
+/// away and back with no write in between is back exactly as generated,
+/// and the view keeps working.
+#[test]
+fn a_rename_round_trip_with_no_write_between_keeps_the_view_working() {
+    let file = TempFile::new("rename-round-trip");
+    let c = quoted_table_setup(&file, "CREATE UNIQUE INDEX \"i\" ON \"t\"(k);");
+    c.execute_batch(
+        "ALTER TABLE t RENAME TO u;
+         ALTER TABLE u RENAME TO t;
+         INSERT OR REPLACE INTO t VALUES (2, 5, 'b');
+         UPDATE t SET v = 'c' WHERE id = 2;",
     )
     .unwrap();
     refresh(&c, "ks").unwrap();

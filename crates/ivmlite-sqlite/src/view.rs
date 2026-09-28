@@ -351,40 +351,57 @@ fn candidates(schema: &Schema, capture: &CaptureInfo, exclude_old: bool) -> Stri
         .join(" UNION ")
 }
 
-/// A query for the fingerprint of `table`'s capture (spec §6.3): its own
-/// `CREATE TABLE` statement, then its explicit unique indexes'
-/// `CREATE UNIQUE INDEX` statements in name order, one per line. `schema`
-/// is `"main".` outside a trigger and empty inside one, where a trigger in
-/// `main` reads `main`'s `sqlite_schema` (measured, with an attached
-/// database holding a same-named table and unique index). `table` is an SQL
-/// expression.
+/// A query for the fingerprint of `table`'s capture (spec §6.3), one entry
+/// per line: its own `CREATE TABLE` statement, its explicit unique indexes'
+/// `CREATE UNIQUE INDEX` statements, and the names of its capture triggers
+/// that sit on it. `schema` is `"main".` outside a trigger and empty inside
+/// one, where a trigger in `main` reads `main`'s `sqlite_schema` (measured,
+/// with an attached database holding a same-named table and unique index).
+/// Tracking and every capture trigger run this same query.
 ///
-/// The table's own text covers every in-place change to its columns:
-/// SQLite 3.53 rewrites it for `ALTER COLUMN ... SET/DROP NOT NULL` (measured:
-/// `k INTEGER DEFAULT 5` becomes `k INTEGER DEFAULT 5 NOT NULL` and back), and
-/// the triggers were generated for one definition of each column's
-/// constraints and default. SQLite stores every unique index's statement
-/// with the prefix normalized to `CREATE UNIQUE INDEX ` (measured:
-/// `create  unique index if not exists` and a leading comment are both
-/// stored that way), so the `LIKE` needs no more than that prefix.
-/// Autoindexes have no `sql` and are left out: they change only when the
-/// table is rebuilt, which drops the triggers too.
+/// - The table's own text covers every in-place change to its columns:
+///   SQLite 3.53 rewrites it for `ALTER COLUMN ... SET/DROP NOT NULL`
+///   (measured: `k INTEGER DEFAULT 5` becomes `k INTEGER DEFAULT 5 NOT NULL`
+///   and back), and the triggers were generated for one definition of each
+///   column's constraints and default.
+/// - SQLite stores every unique index's statement with the prefix normalized
+///   to `CREATE UNIQUE INDEX ` (measured: `create  unique index if not
+///   exists` and a leading comment are both stored that way), so the `LIKE`
+///   needs no more than that prefix. Autoindexes have no `sql` and are left
+///   out: they change only when the table is rebuilt, which drops the
+///   triggers too.
+/// - The triggers tie the text and indexes to the table being written: the
+///   lookup is by name, so while `table` is renamed away and a decoy with
+///   its exact text stands in its place, the triggers sit on the renamed
+///   table and are missing here (final re-review, Ruling 17). It takes
+///   their names, not their `sql`, which embeds this fingerprint.
+///
+/// The aggregate's own `ORDER BY` (SQLite 3.44 or later) fixes the order.
 fn capture_fingerprint(schema: &str, table: &str) -> String {
+    let triggers: Vec<String> = CAPTURE_EVENTS
+        .iter()
+        .map(|event| literal(&trigger(table, event)))
+        .collect();
+    let (triggers, table) = (triggers.join(", "), literal(table));
     format!(
-        "SELECT group_concat(sql, char(10)) FROM (
-             SELECT sql FROM {schema}sqlite_schema
-             WHERE (type = 'table' AND name = {table} COLLATE NOCASE)
-                OR (type = 'index' AND tbl_name = {table} COLLATE NOCASE
-                    AND sql LIKE 'CREATE UNIQUE INDEX%')
-             ORDER BY type DESC, name)"
+        "SELECT group_concat(iif(type = 'trigger', name, sql), char(10) ORDER BY type, name)
+         FROM {schema}sqlite_schema
+         WHERE (type = 'table' AND name = {table} COLLATE NOCASE)
+            OR (type = 'index' AND tbl_name = {table} COLLATE NOCASE
+                AND sql LIKE 'CREATE UNIQUE INDEX%')
+            OR (type = 'trigger' AND tbl_name = {table} COLLATE NOCASE
+                AND name IN ({triggers}))"
     )
 }
 
 /// What `__ivm_tracked.broken` says once a capture trigger of `table` has
-/// run against a definition or unique indexes other than the ones it was
-/// generated from.
+/// run against a definition, unique indexes or capture triggers other than
+/// the ones it was generated with.
 fn capture_changed(table: &str) -> String {
-    format!("the definition or unique indexes of {table} changed after its capture was generated")
+    format!(
+        "the definition, unique indexes or capture triggers of {table} changed \
+         after its capture was generated"
+    )
 }
 
 /// The `CREATE TRIGGER` statements for every one of `CAPTURE_EVENTS`
@@ -419,20 +436,21 @@ fn capture_triggers(schema: &Schema, capture: &CaptureInfo, fingerprint: &str) -
     // triggers OFF: with them ON, SQLite's own DELETE trigger captures every
     // row REPLACE removes, as in Phase 3a.
     //
-    // Before anything else, latch a change to `t`'s definition or unique
-    // indexes (spec §6.3): the candidate lookup below was generated from the
-    // columns and indexes that existed when `t` was tracked, so under any
-    // other definition or index set a REPLACE may remove a row it never
-    // looks up (a NOT NULL set on a nullable unique key with a default, for
-    // one). The shape check alone cannot see a change that was made and
-    // undone between two refreshes; this sees every write, and `broken` is
-    // never cleared.
+    // Before anything else, latch a change to `t`'s definition, unique
+    // indexes or capture triggers (spec §6.3): the candidate lookup below
+    // was generated from the columns and indexes that existed when `t` was
+    // tracked, so under any other definition or index set a REPLACE may
+    // remove a row it never looks up (a NOT NULL set on a nullable unique
+    // key with a default, for one), and the triggers must sit on the table
+    // that was looked up. The shape check alone cannot see a change that
+    // was made and undone between two refreshes; this sees every write, and
+    // `broken` is never cleared.
     let latch = format!(
         "UPDATE {} SET broken = {} WHERE tbl = {} AND broken IS NULL AND ({}) IS NOT {};",
         quote(TRACKED),
         literal(&capture_changed(t)),
         literal(t),
-        capture_fingerprint("", &literal(t)),
+        capture_fingerprint("", t),
         literal(fingerprint),
     );
     let fill = |exclude_old: bool| {
@@ -520,18 +538,24 @@ fn track(conn: &Connection, schema: &Schema) -> Result<()> {
     // `seq` would fall below a watermark. The delta table's own columns are
     // `DELTA_SEQ`/`DELTA_W` (`__ivm_seq`/`__ivm_w`), not `seq`/`w`, so a base
     // column named `seq` or `w` is not shadowed by them.
-    let mut sql = format!(
+    let sql = format!(
         "CREATE TABLE {}({DELTA_SEQ} INTEGER PRIMARY KEY AUTOINCREMENT, \
          {DELTA_W} INTEGER NOT NULL, {defs});
          CREATE TABLE {}(__ivm_rid INTEGER, {defs});",
         main_qualified(&delta_table(t)),
         main_qualified(&pend_table(t)),
     );
-    let fingerprint: String = conn
-        .query_row(&capture_fingerprint("\"main\".", "?1"), [t], |r| r.get(0))
-        .map_err(sql_error)?;
-    sql.push_str(&capture_triggers(schema, &capture, &fingerprint));
     exec(conn, &sql)?;
+    // The fingerprint names the capture triggers, so it can be read only
+    // once they exist on `t`: create them with a placeholder, read it with
+    // the query they run, and create them again with its value. Nothing
+    // writes `t` in between.
+    exec(conn, &capture_triggers(schema, &capture, ""))?;
+    let fingerprint: String = conn
+        .query_row(&capture_fingerprint("\"main\".", t), [], |r| r.get(0))
+        .map_err(sql_error)?;
+    drop_capture_triggers(conn, t)?;
+    exec(conn, &capture_triggers(schema, &capture, &fingerprint))?;
     conn.execute(
         &format!(
             "INSERT INTO {}(tbl, shape) VALUES (?1, ?2)",
@@ -597,9 +621,9 @@ fn collect_garbage(conn: &Connection, table: &str) -> Result<()> {
 }
 
 /// `table`'s capture as every view of it relies on: no capture trigger has
-/// latched a change to its definition or unique indexes, the shape its
-/// triggers were generated from, and every capture trigger on `table`
-/// itself.
+/// latched a change to its definition, unique indexes or capture triggers,
+/// the shape its triggers were generated from, and every capture trigger on
+/// `table` itself.
 fn check_table_capture(conn: &Connection, table: &str) -> Result<()> {
     let recorded: Option<(String, Option<String>)> = conn
         .query_row(
@@ -641,8 +665,8 @@ fn check_table_capture(conn: &Connection, table: &str) -> Result<()> {
     Ok(())
 }
 
-/// Stop capturing `table`: triggers first, so it stays writable.
-fn untrack(conn: &Connection, table: &str) -> Result<()> {
+/// Drop `table`'s capture triggers, those that still exist.
+fn drop_capture_triggers(conn: &Connection, table: &str) -> Result<()> {
     for event in CAPTURE_EVENTS {
         exec(
             conn,
@@ -652,6 +676,12 @@ fn untrack(conn: &Connection, table: &str) -> Result<()> {
             ),
         )?;
     }
+    Ok(())
+}
+
+/// Stop capturing `table`: triggers first, so it stays writable.
+fn untrack(conn: &Connection, table: &str) -> Result<()> {
+    drop_capture_triggers(conn, table)?;
     for shadow in [delta_table(table), pend_table(table)] {
         exec(
             conn,

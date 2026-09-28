@@ -393,7 +393,10 @@ fn a_view_whose_capture_is_broken_reports_why_and_can_still_be_dropped() {
 /// but leaves the trigger names alone, so a new `t` with the same shape
 /// passes a check by name. The check must also verify which table each
 /// trigger is on. Otherwise the view keeps following the old table, with
-/// no error.
+/// no error. Nothing writes the renamed table here: that would run its
+/// capture triggers, whose latch reports the move first (Phase 3b spec
+/// §6.2; `extension_replace`'s decoy tests), and this test isolates the
+/// check of where the triggers are.
 #[test]
 fn a_capture_trigger_left_on_a_renamed_table_breaks_the_view() {
     let file = TempFile::new("renamed-base");
@@ -403,8 +406,7 @@ fn a_capture_trigger_left_on_a_renamed_table_breaks_the_view() {
     c.execute_batch(
         "ALTER TABLE orders RENAME TO old_orders;
          CREATE TABLE orders(region TEXT, amount INTEGER) STRICT;
-         INSERT INTO orders VALUES ('b', 10);
-         INSERT INTO old_orders VALUES ('a', 1);",
+         INSERT INTO orders VALUES ('b', 10);",
     )
     .unwrap();
     let expected = "__ivm_trig_orders_ins is on table old_orders";
