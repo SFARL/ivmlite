@@ -41,7 +41,7 @@ pub struct UpdateSpec {
     pub locality: Locality,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ViewSpec {
     pub id: usize,
     pub threshold: i64,
@@ -119,6 +119,30 @@ pub struct Workload {
     /// test code that builds `Workload` literals) keep leaving it out.
     #[serde(default)]
     pub matrix: Option<MatrixSpec>,
+    /// The fixed set of cells `ivmlite-bench ablation` measures (M1b Phase 4
+    /// Task 2, spec §6). Like `matrix`, only the workload file that is the
+    /// ablation's starting point (`workloads/m0-baseline.toml`) needs this
+    /// section; `#[serde(default)]` keeps every other workload file and test
+    /// literal from needing one.
+    #[serde(default)]
+    pub ablation: Option<AblationSpec>,
+}
+
+/// One row of spec §6's ablation table: a representative combination of the
+/// same four dimensions `cells()` sweeps, held fixed rather than derived.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AblationCell {
+    pub base_rows: usize,
+    pub group_cardinality: usize,
+    pub views: usize,
+    pub batch_size: usize,
+}
+
+/// Spec §6's ablation: a fixed set of cells, each repeated `repeats` times.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AblationSpec {
+    pub cells: Vec<AblationCell>,
+    pub repeats: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -316,7 +340,7 @@ impl Workload {
                     continue;
                 }
                 for &batch in &m.batch_sizes {
-                    cells.push(self.cell(rows, card, m.fixed_views, batch, m));
+                    cells.push(self.with_cell(rows, card, m.fixed_views, batch));
                 }
             }
         }
@@ -331,7 +355,7 @@ impl Workload {
                     continue;
                 }
                 for &batch in &m.batch_sizes {
-                    cells.push(self.cell(rows, m.fixed_cardinality, views, batch, m));
+                    cells.push(self.with_cell(rows, m.fixed_cardinality, views, batch));
                 }
             }
         }
@@ -339,22 +363,35 @@ impl Workload {
         cells
     }
 
-    /// Build one cell for `cells()`: clone self, change the four dimensions
-    /// `base_rows` / `group_cardinality` / `batch_size` / `views`, and call
+    /// Build one concrete cell: clone self, change the four dimensions
+    /// `base_rows` / `group_cardinality` / `batch_size` / `views` (the latter
+    /// expanded through the matrix's view-threshold formula), and call
     /// `validate()` explicitly before returning — building by clone + field
     /// mutation bypasses the `validate()` inside `load()`, so it is called again
     /// here, keeping `validate()` the only place the `group_cardinality >
     /// base_rows` rule is enforced. A derived cell is already a concrete
     /// configuration with the matrix evaluated, so its `matrix` field is cleared
     /// to `None` — it needs no evaluation rules of its own.
-    fn cell(
+    ///
+    /// `cells()` calls this for every point of the M0 matrix, and Task 2's
+    /// `confirm` and `ablation` modes call it for cells selected or fixed
+    /// outside the matrix — the two can never disagree on how a cell is built
+    /// from its four dimensions, because there is only one implementation.
+    ///
+    /// # Panics
+    /// If `self.matrix` is `None` (the view-threshold formula lives there), or
+    /// if the resulting cell fails `validate()`.
+    pub fn with_cell(
         &self,
         base_rows: usize,
         group_cardinality: usize,
         views: usize,
         batch_size: usize,
-        m: &MatrixSpec,
     ) -> Workload {
+        let m = self
+            .matrix
+            .as_ref()
+            .expect("with_cell needs a [matrix] section in the workload");
         let mut w = self.clone();
         w.data.base_rows = base_rows;
         w.data.group_cardinality = group_cardinality;
@@ -362,7 +399,7 @@ impl Workload {
         w.views = m.views(views);
         w.matrix = None;
         w.validate()
-            .unwrap_or_else(|e| panic!("cells() built an invalid workload: {e}"));
+            .unwrap_or_else(|e| panic!("with_cell built an invalid workload: {e}"));
         w
     }
 }
@@ -396,6 +433,7 @@ mod tests {
                 ViewSpec { id: 1, threshold: 10 },
             ],
             matrix: None,
+            ablation: None,
         }
     }
 
@@ -667,6 +705,74 @@ mod tests {
                 c.data.base_rows
             );
         }
+    }
+
+    /// Task 2's requirement in its own words: `with_cell` must be able to
+    /// reproduce every cell `cells()` returns, called with exactly that cell's
+    /// own four dimensions — so `cells()` and `with_cell` (which `confirm` and
+    /// `ablation` call directly) can never disagree, because `cells()` is
+    /// implemented in terms of `with_cell` rather than a second copy of the
+    /// same derivation.
+    #[test]
+    fn with_cell_reproduces_every_cell_cells_returns() {
+        let w = spec_with_matrix();
+        for c in w.cells() {
+            let reproduced = w.with_cell(
+                c.data.base_rows,
+                c.data.group_cardinality,
+                c.views.len(),
+                c.updates.batch_size,
+            );
+            assert_eq!(reproduced.data.base_rows, c.data.base_rows);
+            assert_eq!(reproduced.data.group_cardinality, c.data.group_cardinality);
+            assert_eq!(reproduced.updates.batch_size, c.updates.batch_size);
+            assert_eq!(reproduced.views, c.views);
+            assert!(reproduced.matrix.is_none());
+        }
+    }
+
+    /// The shipped `workloads/m0-baseline.toml` gains a `[ablation]` section
+    /// (Task 2, spec §6 / §8): exactly the four cells of the spec's table, with
+    /// `repeats = 5`. This is the only test that pins the table's actual
+    /// numbers against the committed file.
+    #[test]
+    fn shipped_workload_file_has_the_spec_6_ablation_section() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../workloads/m0-baseline.toml");
+        let w = Workload::load(&path).expect("the shipped workload file must parse");
+        let ablation = w
+            .ablation
+            .expect("workloads/m0-baseline.toml must have an [ablation] section");
+        assert_eq!(ablation.repeats, 5);
+        assert_eq!(
+            ablation.cells,
+            vec![
+                AblationCell {
+                    base_rows: 100_000,
+                    group_cardinality: 1_000,
+                    views: 10,
+                    batch_size: 1_000
+                },
+                AblationCell {
+                    base_rows: 100_000,
+                    group_cardinality: 100_000,
+                    views: 10,
+                    batch_size: 1_000
+                },
+                AblationCell {
+                    base_rows: 100_000,
+                    group_cardinality: 1_000,
+                    views: 200,
+                    batch_size: 1_000
+                },
+                AblationCell {
+                    base_rows: 100_000,
+                    group_cardinality: 100_000,
+                    views: 200,
+                    batch_size: 100
+                },
+            ]
+        );
     }
 
     /// The skip rule really takes effect: compared with the size of the naive

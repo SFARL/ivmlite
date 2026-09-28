@@ -1,4 +1,6 @@
+mod ablation;
 mod baseline;
+mod confirm;
 mod engine;
 // M1b Phase 4 task 1 stops calling `plot::write_svg` here (the M0 chart
 // writing moves to Task 6, spec §3), so the module is temporarily unreachable
@@ -51,32 +53,117 @@ impl Row {
     }
 }
 
+/// One data row's fields after `engine`, formatted exactly as `CSV_HEADER`
+/// orders them. Shared by every mode's printer (`matrix`, `confirm`,
+/// `ablation`) so the 17 Task 1 columns are written in one place, with each
+/// mode only adding its own leading columns (`repeat`, or `label,repeat`).
+fn measurement_csv(
+    engine: &str,
+    views: usize,
+    base_rows: usize,
+    batch_size: usize,
+    group_cardinality: usize,
+    m: &Measurement,
+) -> String {
+    format!(
+        "{},{},{},{},{},{:.3},{:.3},{:.3},{},{},{},{},{},{},{},{},{}",
+        engine,
+        views,
+        base_rows,
+        batch_size,
+        group_cardinality,
+        m.bootstrap_ms,
+        m.apply_ms,
+        m.maintain_ms,
+        m.page_size,
+        m.base.page_count,
+        m.base.freelist_count,
+        m.bootstrapped.page_count,
+        m.bootstrapped.freelist_count,
+        m.written.page_count,
+        m.written.freelist_count,
+        m.maintained.page_count,
+        m.maintained.freelist_count,
+    )
+}
+
 fn print_csv(mut rows: Vec<Row>) {
     // Sorted by (engine label, views, base_rows, batch_size, group_cardinality)
     // so the file diffs stably across runs (spec §3.4).
     rows.sort_by(|a, b| a.sort_key().cmp(&b.sort_key()));
     println!("{CSV_HEADER}");
     for r in &rows {
-        let m = &r.m;
         println!(
-            "{},{},{},{},{},{:.3},{:.3},{:.3},{},{},{},{},{},{},{},{},{}",
-            r.engine.label(),
-            r.views,
-            r.base_rows,
-            r.batch_size,
-            r.group_cardinality,
-            m.bootstrap_ms,
-            m.apply_ms,
-            m.maintain_ms,
-            m.page_size,
-            m.base.page_count,
-            m.base.freelist_count,
-            m.bootstrapped.page_count,
-            m.bootstrapped.freelist_count,
-            m.written.page_count,
-            m.written.freelist_count,
-            m.maintained.page_count,
-            m.maintained.freelist_count,
+            "{}",
+            measurement_csv(
+                r.engine.label(),
+                r.views,
+                r.base_rows,
+                r.batch_size,
+                r.group_cardinality,
+                &r.m,
+            )
+        );
+    }
+}
+
+/// `confirm` mode's rows: each is one repetition of a selected cell (spec
+/// §3.5). Printed with `repeat` as an extra leading column before Task 1's
+/// own header.
+fn print_confirm_csv(mut rows: Vec<(usize, Row)>) {
+    rows.sort_by(|a, b| (a.0, a.1.sort_key()).cmp(&(b.0, b.1.sort_key())));
+    println!("repeat,{CSV_HEADER}");
+    for (repeat, r) in &rows {
+        println!(
+            "{repeat},{}",
+            measurement_csv(
+                r.engine.label(),
+                r.views,
+                r.base_rows,
+                r.batch_size,
+                r.group_cardinality,
+                &r.m,
+            )
+        );
+    }
+}
+
+/// `ablation` mode's rows: printed with `label,repeat` as two extra leading
+/// columns before Task 1's own header (spec §6). `label` names which build of
+/// the extension produced these rows — the same for every row of one run, so
+/// `scripts/bench-ablation.sh` can append several runs' output into one file.
+fn print_ablation_csv(label: &str, mut rows: Vec<ablation::AblationRow>) {
+    rows.sort_by(|a, b| {
+        (
+            a.repeat,
+            a.engine.label(),
+            a.views,
+            a.base_rows,
+            a.batch_size,
+            a.group_cardinality,
+        )
+            .cmp(&(
+                b.repeat,
+                b.engine.label(),
+                b.views,
+                b.base_rows,
+                b.batch_size,
+                b.group_cardinality,
+            ))
+    });
+    println!("label,repeat,{CSV_HEADER}");
+    for r in &rows {
+        println!(
+            "{label},{},{}",
+            r.repeat,
+            measurement_csv(
+                r.engine.label(),
+                r.views,
+                r.base_rows,
+                r.batch_size,
+                r.group_cardinality,
+                &r.m,
+            )
         );
     }
 }
@@ -120,19 +207,83 @@ fn run_matrix(workload_path: &Path, lib: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Parsed command line: the mode (Tasks 2 and 5 add `confirm`, `ablation` and
-/// `write-amp`; `matrix` is today's only mode and also the default), plus the
-/// two shared overrides.
+/// `confirm` mode (spec §3.5): read the exploration CSV at `from`, select the
+/// cells worth confirming, and re-run each `confirm::REPEATS` times — a fresh
+/// database and a rotated engine order each time, exactly like `run_matrix`'s
+/// inner loop, just over the selected cells instead of the whole matrix, with
+/// the rotation offset by the cell's position among the selected cells (so
+/// two different selections do not happen to share the same rotation).
+fn run_confirm(from: &Path, workload_path: &Path, lib: &Path) -> Result<(), String> {
+    let text = std::fs::read_to_string(from).map_err(|e| format!("{}: {e}", from.display()))?;
+    let exploration = confirm::parse_csv(&text)?;
+    let keys = confirm::select(&exploration);
+    let base = Workload::load(workload_path).map_err(|e| e.to_string())?;
+
+    let mut rows: Vec<(usize, Row)> = Vec::new();
+    for (i, &(views, base_rows, batch_size, group_cardinality)) in keys.iter().enumerate() {
+        let cell = base.with_cell(base_rows, group_cardinality, views, batch_size);
+        for r in 0..confirm::REPEATS {
+            for engine in engine_order(r + i) {
+                let m = run_cell(engine, &cell, lib).map_err(|e| {
+                    format!(
+                        "confirm cell {i} (views={views} base_rows={base_rows} batch_size={batch_size} group_cardinality={group_cardinality}) repeat {r} engine {}: {e}",
+                        engine.label(),
+                    )
+                })?;
+                rows.push((
+                    r,
+                    Row {
+                        engine,
+                        views,
+                        base_rows,
+                        batch_size,
+                        group_cardinality,
+                        m,
+                    },
+                ));
+            }
+        }
+    }
+
+    print_confirm_csv(rows);
+    Ok(())
+}
+
+/// `ablation` mode (spec §6): run `workload_path`'s `[ablation]` cells against
+/// `lib`, and print the rows labelled `label` so several runs (one per build
+/// under test) can be told apart once appended into one file.
+fn run_ablation_mode(workload_path: &Path, lib: &Path, label: &str) -> Result<(), String> {
+    let base = Workload::load(workload_path).map_err(|e| e.to_string())?;
+    let spec = base.ablation.clone().ok_or_else(|| {
+        format!(
+            "{} has no [ablation] section (spec §6, §8)",
+            workload_path.display()
+        )
+    })?;
+    let rows = ablation::run_ablation(&base, &spec, lib)?;
+    print_ablation_csv(label, rows);
+    Ok(())
+}
+
+/// Parsed command line: the mode (Task 5 adds `write-amp`; `matrix`,
+/// `confirm` and `ablation` are today's modes, with `matrix` the default),
+/// plus the shared overrides.
 struct Args {
     mode: String,
     extension: Option<PathBuf>,
     workload: PathBuf,
+    /// `confirm`'s exploration CSV (`--from`).
+    from: Option<PathBuf>,
+    /// `ablation`'s build label (`--label`).
+    label: Option<String>,
 }
 
 fn parse_args(raw: impl Iterator<Item = String>) -> Result<Args, String> {
     let mut mode: Option<String> = None;
     let mut extension: Option<PathBuf> = None;
     let mut workload = PathBuf::from("workloads/m0-baseline.toml");
+    let mut from: Option<PathBuf> = None;
+    let mut label: Option<String> = None;
 
     let mut it = raw;
     while let Some(arg) = it.next() {
@@ -145,6 +296,14 @@ fn parse_args(raw: impl Iterator<Item = String>) -> Result<Args, String> {
                 let v = it.next().ok_or("--workload needs a path")?;
                 workload = PathBuf::from(v);
             }
+            "--from" => {
+                let v = it.next().ok_or("--from needs a path")?;
+                from = Some(PathBuf::from(v));
+            }
+            "--label" => {
+                let v = it.next().ok_or("--label needs a name")?;
+                label = Some(v);
+            }
             other if mode.is_none() => mode = Some(other.to_string()),
             other => return Err(format!("unexpected argument: {other}")),
         }
@@ -154,6 +313,8 @@ fn parse_args(raw: impl Iterator<Item = String>) -> Result<Args, String> {
         mode: mode.unwrap_or_else(|| "matrix".to_string()),
         extension,
         workload,
+        from,
+        label,
     })
 }
 
@@ -173,12 +334,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match args.mode.as_str() {
         "matrix" => run_matrix(&args.workload, &lib)?,
-        other => {
-            return Err(format!(
-                "unknown mode {other:?} (Tasks 2 and 5 add confirm, ablation and write-amp)"
-            )
-            .into())
+        "confirm" => {
+            let from = args
+                .from
+                .ok_or("confirm mode needs --from <exploration CSV path>")?;
+            run_confirm(&from, &args.workload, &lib)?;
         }
+        "ablation" => {
+            let label = args.label.ok_or("ablation mode needs --label <name>")?;
+            run_ablation_mode(&args.workload, &lib, &label)?;
+        }
+        other => return Err(format!("unknown mode {other:?} (Task 5 adds write-amp)").into()),
     }
 
     Ok(())
