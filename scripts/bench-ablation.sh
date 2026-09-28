@@ -42,11 +42,17 @@ echo "building the release bench..." >&2
 cargo build --release -p ivmlite-bench --locked
 bench_bin="$repo_root/target/release/ivmlite-bench"
 
-# Worktrees still pending removal; the trap below removes whatever is left
-# here if the script exits early (an error, or Ctrl-C).
+# Worktrees still pending removal, and the current run's scratch CSV (if
+# any); the trap below removes whatever is left of either if the script
+# exits early (an error, or Ctrl-C) — including a mid-run bench failure,
+# which used to leak `$tmp_csv` because the `rm -f` right after it never ran.
 pending_worktrees=()
+current_tmp_csv=""
 
 cleanup() {
+    if [ -n "$current_tmp_csv" ]; then
+        rm -f "$current_tmp_csv"
+    fi
     for wt in "${pending_worktrees[@]:-}"; do
         [ -n "$wt" ] || continue
         git worktree remove --force "$wt" >/dev/null 2>&1 || true
@@ -81,8 +87,10 @@ for pair in "$@"; do
     lib="$wt/target/release/$lib_name"
 
     # Step 3: run the ablation and append its rows to $out, writing the
-    # header only for the very first build.
+    # header only for the very first build. $tmp_csv is registered with the
+    # exit trap before the bench runs, so a failed run still gets it removed.
     tmp_csv="$(mktemp)"
+    current_tmp_csv="$tmp_csv"
     "$bench_bin" ablation --extension "$lib" --label "$label" --workload "$workload" >"$tmp_csv"
     if [ "$header_written" -eq 0 ]; then
         cat "$tmp_csv" >>"$out"
@@ -91,6 +99,7 @@ for pair in "$@"; do
         tail -n +2 "$tmp_csv" >>"$out"
     fi
     rm -f "$tmp_csv"
+    current_tmp_csv=""
 
     # Step 4: remove the worktree now that this label is done, rather than
     # waiting for every label to finish — a later label's failure still

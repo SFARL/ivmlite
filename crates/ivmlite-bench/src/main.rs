@@ -28,7 +28,10 @@ pub struct Record {
     pub maintain_ms: f64,
 }
 
-const CSV_HEADER: &str = "engine,views,base_rows,batch_size,group_cardinality,bootstrap_ms,apply_ms,maintain_ms,page_size,base_pages,base_free,bootstrapped_pages,bootstrapped_free,written_pages,written_free,maintained_pages,maintained_free";
+/// The Task 1 CSV header (spec §3.4). `pub(crate)` so `confirm.rs`'s
+/// `parse_csv` reads exploration CSVs against this exact string too, rather
+/// than keeping its own copy that could quietly drift from this one.
+pub(crate) const CSV_HEADER: &str = "engine,views,base_rows,batch_size,group_cardinality,bootstrap_ms,apply_ms,maintain_ms,page_size,base_pages,base_free,bootstrapped_pages,bootstrapped_free,written_pages,written_free,maintained_pages,maintained_free";
 
 /// One matrix row: the cell's four dimensions (spec §3.4's "The cell (as M0)"
 /// group) plus the `Measurement` `run_cell` produced for it.
@@ -209,10 +212,9 @@ fn run_matrix(workload_path: &Path, lib: &Path) -> Result<(), String> {
 
 /// `confirm` mode (spec §3.5): read the exploration CSV at `from`, select the
 /// cells worth confirming, and re-run each `confirm::REPEATS` times — a fresh
-/// database and a rotated engine order each time, exactly like `run_matrix`'s
-/// inner loop, just over the selected cells instead of the whole matrix, with
-/// the rotation offset by the cell's position among the selected cells (so
-/// two different selections do not happen to share the same rotation).
+/// database and a rotated engine order each time (`confirm::order`), exactly
+/// like `run_matrix`'s inner loop, just over the selected cells instead of
+/// the whole matrix.
 fn run_confirm(from: &Path, workload_path: &Path, lib: &Path) -> Result<(), String> {
     let text = std::fs::read_to_string(from).map_err(|e| format!("{}: {e}", from.display()))?;
     let exploration = confirm::parse_csv(&text)?;
@@ -223,7 +225,7 @@ fn run_confirm(from: &Path, workload_path: &Path, lib: &Path) -> Result<(), Stri
     for (i, &(views, base_rows, batch_size, group_cardinality)) in keys.iter().enumerate() {
         let cell = base.with_cell(base_rows, group_cardinality, views, batch_size);
         for r in 0..confirm::REPEATS {
-            for engine in engine_order(r + i) {
+            for engine in confirm::order(i, r) {
                 let m = run_cell(engine, &cell, lib).map_err(|e| {
                     format!(
                         "confirm cell {i} (views={views} base_rows={base_rows} batch_size={batch_size} group_cardinality={group_cardinality}) repeat {r} engine {}: {e}",
