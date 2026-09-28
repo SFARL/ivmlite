@@ -369,6 +369,60 @@ fn a_rename_round_trip_with_no_write_between_keeps_the_view_working() {
     assert_eq!(count(&c, LATCHES), 0);
 }
 
+/// Spec §6.2: the latch compares the unique-index set, not only its size.
+/// `t`'s unique index on `k` swapped for one on `v` keeps the count at one,
+/// and a REPLACE through `v` removes a row the triggers never looked up;
+/// the original index recreated with its exact text restores the shape.
+#[test]
+fn a_unique_index_swapped_for_another_breaks_the_view() {
+    let file = TempFile::new("swapped-unique");
+    let c = quoted_table_setup(&file, "CREATE UNIQUE INDEX \"i\" ON \"t\"(k);");
+    c.execute_batch(
+        "DROP INDEX i;
+         CREATE UNIQUE INDEX j ON t(v);
+         INSERT OR REPLACE INTO t VALUES (2, 6, 'a');
+         DROP INDEX j;
+         CREATE UNIQUE INDEX \"i\" ON \"t\"(k);",
+    )
+    .unwrap();
+    assert_latched_and_droppable(c, &file, "swapped unique index");
+}
+
+/// Final re-review, Ruling 18: the capture triggers live in the user's
+/// schema, so every SQLite that opens the database parses them, with the
+/// extension loaded or not. An aggregate `ORDER BY` (SQLite 3.44) in the
+/// latch made the file unreadable to SQLite 3.42 ("malformed database
+/// schema"). No ivmlite trigger may use one, nor `group_concat` at all.
+#[test]
+fn ivmlite_triggers_use_no_aggregate_order_by() {
+    let c = open_with_extension(None).unwrap();
+    c.execute_batch(
+        "CREATE TABLE t(id INTEGER PRIMARY KEY, k INTEGER, v TEXT) STRICT;
+         CREATE UNIQUE INDEX i ON t(k);",
+    )
+    .unwrap();
+    create(&c, "ks", KS).unwrap();
+    let triggers: Vec<(String, String)> = c
+        .prepare(
+            "SELECT name, sql FROM sqlite_schema
+             WHERE type = 'trigger' AND name LIKE '\\_\\_ivm\\_%' ESCAPE '\\'",
+        )
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    // Five capture triggers, the probe step and the view's apply trigger.
+    assert_eq!(triggers.len(), 7, "{triggers:?}");
+    for (name, sql) in &triggers {
+        let sql = sql.to_ascii_lowercase();
+        assert!(
+            !sql.contains("group_concat") && !sql.contains("order by"),
+            "{name}: {sql}"
+        );
+    }
+}
+
 /// Spec §2's three table variants: each has a `NOT NULL DEFAULT 'd'` unique
 /// key, a nullable unique column and a composite unique key.
 struct Variant {
