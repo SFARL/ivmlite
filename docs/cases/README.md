@@ -2,7 +2,9 @@
 
 Collected on 2026-09-25. These are original problem reports and implementation
 materials, collected before deciding which ivmlite phase could support them.
-They are **not yet replayed or evaluated against ivmlite**.
+The source archive itself is unchanged; the first separate
+[ivmlite evaluation](evaluation/README.md) now records executable slices,
+unsupported original SQL and initial performance measurements.
 
 | Case | Original problem | Materials captured | Main missing material |
 |---|---|---|---|
