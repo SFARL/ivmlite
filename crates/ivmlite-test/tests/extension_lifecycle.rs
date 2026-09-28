@@ -2,112 +2,12 @@
 //! capture from any connection, failure and retry, atomic create, rejections,
 //! broken views, and drop.
 
-use std::path::{Path, PathBuf};
+mod common;
+use common::*;
 
 use ivmlite_test::open_with_extension;
 use rusqlite::types::Value;
 use rusqlite::Connection;
-
-const SUMS: &str = "SELECT region, SUM(amount), COUNT(*) FROM orders GROUP BY region";
-const JOIN: &str = "SELECT r.manager, SUM(o.amount) FROM orders o JOIN regions r \
-                    ON o.region = r.name GROUP BY r.manager";
-
-fn setup(c: &Connection) {
-    c.execute_batch(
-        "CREATE TABLE orders(region TEXT, amount INTEGER) STRICT;
-         CREATE TABLE regions(name TEXT, manager TEXT) STRICT;
-         INSERT INTO orders VALUES ('a', 1), ('a', 2), ('b', 5), (NULL, 4);
-         INSERT INTO regions VALUES ('a', 'ann'), ('b', 'bob'), ('c', 'bob');",
-    )
-    .unwrap();
-}
-
-fn create(c: &Connection, name: &str, sql: &str) -> rusqlite::Result<()> {
-    c.execute_batch(&format!(
-        "CREATE VIRTUAL TABLE {name} USING ivm('{}')",
-        sql.replace('\'', "''")
-    ))
-}
-
-fn refresh(c: &Connection, name: &str) -> rusqlite::Result<()> {
-    c.execute_batch(&format!("INSERT INTO {name}({name}) VALUES ('refresh')"))
-}
-
-/// Every row `sql` returns, sorted, so results compare as multisets.
-fn rows(c: &Connection, sql: &str) -> Vec<Vec<Value>> {
-    let mut stmt = c.prepare(sql).unwrap();
-    let n = stmt.column_count();
-    let mut out: Vec<Vec<Value>> = stmt
-        .query_map([], |r| (0..n).map(|i| r.get::<_, Value>(i)).collect())
-        .unwrap()
-        .map(|r| r.unwrap())
-        .collect();
-    out.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
-    out
-}
-
-/// The view agrees with SQLite computing its SELECT from scratch.
-fn assert_matches_oracle(c: &Connection, name: &str, sql: &str) {
-    assert_eq!(
-        rows(c, &format!("SELECT * FROM {name}")),
-        rows(c, sql),
-        "view {name}"
-    );
-}
-
-/// The names of the database's objects other than SQLite's own. The
-/// `NOT LIKE 'sqlite_%'` filter also hides `sqlite_sequence`: the delta
-/// tables' AUTOINCREMENT creates it, and SQLite never drops it, so it stays
-/// after the last view is dropped (Phase 3a spec §6, scenario 6).
-fn objects(c: &Connection) -> Vec<Vec<Value>> {
-    rows(
-        c,
-        "SELECT type, name FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'",
-    )
-}
-
-/// Everything a refresh may change: every state table, the output table and
-/// the watermarks.
-fn durable_state(c: &Connection, name: &str) -> Vec<Vec<Vec<Value>>> {
-    let tables: Vec<String> = rows(
-        c,
-        &format!(
-            "SELECT name FROM sqlite_schema WHERE type = 'table' \
-             AND (name LIKE '__ivm_state_{name}_%' OR name = '__ivm_out_{name}')"
-        ),
-    )
-    .into_iter()
-    .map(|r| match &r[0] {
-        Value::Text(t) => t.clone(),
-        other => panic!("{other:?}"),
-    })
-    .collect();
-    let mut all: Vec<Vec<Vec<Value>>> = tables
-        .iter()
-        .map(|t| rows(c, &format!("SELECT * FROM \"{t}\"")))
-        .collect();
-    all.push(rows(c, "SELECT * FROM __ivm_progress"));
-    all
-}
-
-struct TempFile(PathBuf);
-
-impl TempFile {
-    fn new(tag: &str) -> Self {
-        let p = std::env::temp_dir().join(format!("ivmlite-{tag}-{}.db", std::process::id()));
-        let _ = std::fs::remove_file(&p);
-        TempFile(p)
-    }
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TempFile {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
-}
 
 #[test]
 fn writes_from_any_connection_are_captured_and_survive_a_reopen() {
@@ -258,7 +158,6 @@ fn what_v0_cannot_maintain_is_rejected_by_name() {
         // A virtual table (here another ivmlite view): pragma_table_list
         // reports its type as `virtual`.
         ("CREATE TABLE t(k TEXT) STRICT; CREATE VIRTUAL TABLE a USING ivm('SELECT k, COUNT(*) FROM t GROUP BY k')", "SELECT k, COUNT(*) FROM a GROUP BY k", "is a virtual"),
-        ("CREATE TABLE t(k TEXT) STRICT; CREATE VIRTUAL TABLE a USING ivm('SELECT k, COUNT(*) FROM t GROUP BY k')", q, "already tracked"),
         ("CREATE TABLE t(k TEXT) STRICT", "SELECT k, COUNT(*) AS w FROM t GROUP BY k", "like the view"),
         ("CREATE TABLE t(k TEXT) STRICT", "SELECT k FROM t", "GROUP BY"),
         // A result column named like SQLite's rowid aliases is rejected by
@@ -269,13 +168,33 @@ fn what_v0_cannot_maintain_is_rejected_by_name() {
         // A base column whose name starts with `__ivm_` is refused: the
         // prefix is reserved for ivmlite's own shadow columns.
         ("CREATE TABLE t(k TEXT, __ivm_x INTEGER) STRICT", "SELECT k, COUNT(*) FROM t GROUP BY k", "__ivm_"),
-        // A table that declares REPLACE conflict resolution: SQLite fires no
-        // DELETE trigger for the rows REPLACE removes unless the writing
-        // connection has PRAGMA recursive_triggers ON, so every plain INSERT
-        // could silently lose a retraction (final review, Critical 1).
-        ("CREATE TABLE t(k TEXT UNIQUE ON CONFLICT REPLACE, v INTEGER) STRICT", q, "ON CONFLICT REPLACE"),
-        ("CREATE TABLE t(id INTEGER PRIMARY KEY ON CONFLICT REPLACE, k TEXT) STRICT", q, "ON CONFLICT REPLACE"),
-        ("CREATE TABLE t(k TEXT, v INTEGER, UNIQUE(k) on /* spaced */ conflict\n replace) STRICT", q, "ON CONFLICT REPLACE"),
+        // Phase 3b spec §6.1: what REPLACE capture cannot look up.
+        ("CREATE TABLE t(k TEXT, v INTEGER) STRICT; CREATE UNIQUE INDEX uk ON t(k COLLATE NOCASE)", q, "collation NOCASE"),
+        ("CREATE TABLE t(k TEXT, v INTEGER) STRICT; CREATE UNIQUE INDEX up ON t(v) WHERE v > 0", q, "partial"),
+        ("CREATE TABLE t(k TEXT, v INTEGER) STRICT; CREATE UNIQUE INDEX ue ON t(v + 1)", q, "expression"),
+        ("CREATE TABLE t(k TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP UNIQUE, v INTEGER) STRICT", q, "default CURRENT_TIMESTAMP"),
+        ("CREATE TABLE t(k TEXT, RowId INTEGER) STRICT", q, "RowId"),
+        // A generated column is missing from pragma_table_info but still
+        // shadows the rowid (and could shadow a shadow column) in the
+        // capture triggers (external review of bc0c891: a generated `rowid`
+        // made a plain INSERT retract an unrelated row).
+        ("CREATE TABLE t(k TEXT, x INTEGER, rowid INTEGER GENERATED ALWAYS AS (0) VIRTUAL) STRICT", q, "rowid"),
+        ("CREATE TABLE t(k TEXT, x INTEGER, OID INTEGER GENERATED ALWAYS AS (x) STORED) STRICT", q, "OID"),
+        ("CREATE TABLE t(k TEXT, x INTEGER, __ivm_g INTEGER GENERATED ALWAYS AS (x) VIRTUAL) STRICT", q, "__ivm_g"),
+        // A generated column as a unique key, through an explicit index or
+        // a UNIQUE constraint's autoindex (final review, minor 3: this used
+        // to fail with "reading the catalog: Query returned no rows").
+        (
+            "CREATE TABLE t(k TEXT, v INTEGER, g INTEGER GENERATED ALWAYS AS (v * 2) VIRTUAL) STRICT; \
+             CREATE UNIQUE INDEX ug ON t(g)",
+            q,
+            "unique index ug has the generated column g as a key",
+        ),
+        (
+            "CREATE TABLE t(k TEXT, v INTEGER, g INTEGER GENERATED ALWAYS AS (v * 2) STORED UNIQUE) STRICT",
+            q,
+            "has the generated column g as a key",
+        ),
     ];
     for (setup_sql, sql, expected) in cases {
         let c = open_with_extension(None).unwrap();
@@ -333,6 +252,12 @@ fn a_broken_view_reports_why_and_can_still_be_dropped() {
     for (breakage, expected) in [
         ("UPDATE __ivm_view SET plan = 'tampered'", "different plan"),
         ("DROP TABLE __ivm_state_sums_0_agg_groups", "is missing"),
+        // Phase 3b spec §6.3: without its pend table, every write to
+        // `orders` fails, and REPLACE capture has nowhere to record.
+        (
+            "DROP TABLE __ivm_pend_orders",
+            "its shadow table __ivm_pend_orders is missing",
+        ),
     ] {
         let file = TempFile::new("broken");
         {
@@ -365,6 +290,45 @@ fn a_broken_view_reports_why_and_can_still_be_dropped() {
         );
         c.execute_batch("INSERT INTO orders VALUES ('a', 1)")
             .unwrap();
+    }
+}
+
+/// Final review, I2: two views share `orders`' capture, and the user drops
+/// one of its shared shadow tables — the delta table, or `__ivm_tracked`.
+/// Both views report why, and both still drop, in either order; after the
+/// last drop only the user's objects remain and `orders` is writable. The
+/// first drop used to fail with "SQL logic error" in `collect_garbage`
+/// (no delta table), and the last one in `untrack` (no `__ivm_tracked`).
+#[test]
+fn two_views_sharing_a_broken_capture_can_both_still_be_dropped() {
+    let counts = "SELECT region, COUNT(*) FROM orders GROUP BY region";
+    for breakage in ["DROP TABLE __ivm_delta_orders", "DROP TABLE __ivm_tracked"] {
+        for order in [["sums", "counts"], ["counts", "sums"]] {
+            let c = open_with_extension(None).unwrap();
+            setup(&c);
+            let user_objects = objects(&c);
+            create(&c, "sums", SUMS).unwrap();
+            create(&c, "counts", counts).unwrap();
+            c.execute_batch(breakage).unwrap();
+            for view in order {
+                let err = refresh(&c, view).expect_err(breakage);
+                assert!(
+                    err.to_string().contains("cannot be maintained"),
+                    "{breakage} / {view}: {err}"
+                );
+            }
+            for view in order {
+                c.execute_batch(&format!("DROP TABLE {view}"))
+                    .unwrap_or_else(|e| panic!("{breakage} / DROP TABLE {view}: {e}"));
+            }
+            assert_eq!(
+                objects(&c),
+                user_objects,
+                "{breakage}: DROP TABLE left objects"
+            );
+            c.execute_batch("INSERT INTO orders VALUES ('a', 1)")
+                .unwrap();
+        }
     }
 }
 
@@ -436,7 +400,10 @@ fn a_view_whose_capture_is_broken_reports_why_and_can_still_be_dropped() {
 /// but leaves the trigger names alone, so a new `t` with the same shape
 /// passes a check by name. The check must also verify which table each
 /// trigger is on. Otherwise the view keeps following the old table, with
-/// no error.
+/// no error. Nothing writes the renamed table here: that would run its
+/// capture triggers, whose latch reports the move first (Phase 3b spec
+/// §6.2; `extension_replace`'s decoy tests), and this test isolates the
+/// check of where the triggers are.
 #[test]
 fn a_capture_trigger_left_on_a_renamed_table_breaks_the_view() {
     let file = TempFile::new("renamed-base");
@@ -446,8 +413,7 @@ fn a_capture_trigger_left_on_a_renamed_table_breaks_the_view() {
     c.execute_batch(
         "ALTER TABLE orders RENAME TO old_orders;
          CREATE TABLE orders(region TEXT, amount INTEGER) STRICT;
-         INSERT INTO orders VALUES ('b', 10);
-         INSERT INTO old_orders VALUES ('a', 1);",
+         INSERT INTO orders VALUES ('b', 10);",
     )
     .unwrap();
     let expected = "__ivm_trig_orders_ins is on table old_orders";
@@ -569,7 +535,7 @@ fn a_temp_table_named_like_a_base_table_is_never_read_or_captured() {
 }
 
 /// On the connection that owns the view, TEMP tables named like every table
-/// ivmlite creates — the global tables, the delta, output, stage and state
+/// ivmlite creates — the global tables, the delta, pend, output, stage and state
 /// tables — are never read, written or dropped by a create, a refresh, a
 /// read or a drop (final review, Important 3 and Minor 5: a TEMP
 /// `__ivm_out_<view>` used to make `SELECT * FROM v` read the TEMP rows).
@@ -582,7 +548,10 @@ fn temp_tables_named_like_the_shadow_tables_are_never_touched() {
         "__ivm_view",
         "__ivm_dep",
         "__ivm_progress",
+        "__ivm_tracked",
+        "__ivm_probe",
         "__ivm_delta_orders",
+        "__ivm_pend_orders",
         "__ivm_out_sums",
         "__ivm_stage_sums",
         "__ivm_state_sums_0_agg_groups",
@@ -602,9 +571,16 @@ fn temp_tables_named_like_the_shadow_tables_are_never_touched() {
          CREATE TEMP TABLE __ivm_progress(view TEXT NOT NULL, tbl TEXT NOT NULL,
              applied_seq INTEGER NOT NULL, PRIMARY KEY(view, tbl));
          INSERT INTO temp.__ivm_progress VALUES ('temp', 'x', 0);
+         CREATE TEMP TABLE __ivm_tracked(tbl TEXT PRIMARY KEY, shape TEXT NOT NULL,
+             broken TEXT);
+         INSERT INTO temp.__ivm_tracked VALUES ('temp', 'x', NULL);
+         CREATE TEMP TABLE __ivm_probe(n INTEGER NOT NULL);
+         INSERT INTO temp.__ivm_probe VALUES (1000);
          CREATE TEMP TABLE __ivm_delta_orders(__ivm_seq INTEGER PRIMARY KEY,
              __ivm_w INTEGER NOT NULL, region TEXT, amount INTEGER);
          INSERT INTO temp.__ivm_delta_orders VALUES (1000, 1, 'temp', 1000);
+         CREATE TEMP TABLE __ivm_pend_orders(__ivm_rid INTEGER, region TEXT, amount INTEGER);
+         INSERT INTO temp.__ivm_pend_orders VALUES (1000, 'temp', 1000);
          CREATE TEMP TABLE __ivm_out_sums AS
              SELECT region, SUM(amount), COUNT(*), 1 AS __w FROM orders WHERE 0 GROUP BY region;
          INSERT INTO temp.__ivm_out_sums VALUES ('temp', 1000, 1000, 1);
@@ -644,6 +620,65 @@ fn temp_tables_named_like_the_shadow_tables_are_never_touched() {
         ),
         Vec::<Vec<Value>>::new(),
         "DROP TABLE left a shadow object in main"
+    );
+}
+
+/// On the connection that owns the view, TEMP tables named like the shadow
+/// tables REPLACE capture writes — `__ivm_probe`, `__ivm_pend_<t>`,
+/// `__ivm_delta_<t>` and `__ivm_tracked` — are never touched, on a table
+/// whose unique key makes every conflicting write run the probe and fill
+/// the pend table (final review, minor 2: `orders` above has no unique key,
+/// so its writes never had a candidate to probe or record). A trigger body
+/// that resolved to the TEMP `__ivm_probe` would count its extra row and
+/// record nothing; one that resolved to the TEMP `__ivm_tracked` would fail
+/// on its missing `broken` column.
+#[test]
+fn temp_tables_named_like_the_capture_tables_are_never_touched_by_replace_capture() {
+    let q = "SELECT k, v, COUNT(*) FROM u GROUP BY k, v";
+    let by_v = "SELECT v, COUNT(*) FROM u GROUP BY v";
+    let c = open_with_extension(None).unwrap();
+    c.execute_batch(
+        "CREATE TABLE u(id INTEGER PRIMARY KEY, k TEXT UNIQUE, v INTEGER) STRICT;
+         INSERT INTO u VALUES (1, 'a', 1), (2, 'b', 1), (3, 'c', 2);
+         CREATE TEMP TABLE __ivm_probe(n INTEGER NOT NULL);
+         INSERT INTO temp.__ivm_probe VALUES (1000);
+         CREATE TEMP TABLE __ivm_pend_u(__ivm_rid INTEGER, id INTEGER, k TEXT, v INTEGER);
+         INSERT INTO temp.__ivm_pend_u VALUES (1000, 1000, 'temp', 1000);
+         CREATE TEMP TABLE __ivm_delta_u(__ivm_seq INTEGER PRIMARY KEY,
+             __ivm_w INTEGER NOT NULL, id INTEGER, k TEXT, v INTEGER);
+         INSERT INTO temp.__ivm_delta_u VALUES (1000, 1, 1000, 'temp', 1000);
+         CREATE TEMP TABLE __ivm_tracked(tbl TEXT PRIMARY KEY, shape TEXT NOT NULL);
+         INSERT INTO temp.__ivm_tracked VALUES ('u', 'temp');",
+    )
+    .unwrap();
+    let shadows = [
+        "__ivm_probe",
+        "__ivm_pend_u",
+        "__ivm_delta_u",
+        "__ivm_tracked",
+    ];
+    let temp_before = temp_contents(&c, &shadows);
+    create(&c, "everything", q).unwrap();
+    create(&c, "by_v", by_v).unwrap();
+    c.execute_batch(
+        "PRAGMA recursive_triggers = OFF;
+         INSERT OR REPLACE INTO u VALUES (4, 'a', 5);
+         UPDATE OR REPLACE u SET k = 'c' WHERE k = 'b';
+         REPLACE INTO u VALUES (2, 'z', 1);",
+    )
+    .unwrap();
+    for (view, sql) in [("everything", q), ("by_v", by_v)] {
+        refresh(&c, view).unwrap();
+        assert_matches_oracle(&c, view, sql);
+    }
+    assert_eq!(temp_contents(&c, &shadows), temp_before);
+    for view in ["everything", "by_v"] {
+        c.execute_batch(&format!("DROP TABLE {view}")).unwrap();
+    }
+    assert_eq!(
+        temp_contents(&c, &shadows),
+        temp_before,
+        "DROP TABLE touched a TEMP table"
     );
 }
 
@@ -747,9 +782,10 @@ fn a_column_named_collateral_is_not_a_collate_clause() {
 /// DELETE. SQLite fires the DELETE triggers for them only when the writing
 /// connection has `PRAGMA recursive_triggers = ON` (measured: with it off,
 /// only the new row's +1 reaches the delta table). With it on, a rowid
-/// conflict and a UNIQUE conflict are both captured and the view stays equal
-/// to the oracle (final review, Critical 1; a known v0 limitation otherwise,
-/// Phase 3a spec §5).
+/// conflict and a UNIQUE conflict are both captured by those DELETE triggers
+/// and the view stays equal to the oracle (final review, Critical 1). With it
+/// off, Phase 3b's REPLACE capture records them instead (spec §6.2;
+/// `extension_replace.rs`).
 #[test]
 fn replace_conflicts_are_captured_when_the_writer_has_recursive_triggers_on() {
     let c = open_with_extension(None).unwrap();
@@ -798,6 +834,43 @@ fn an_upsert_is_captured_without_recursive_triggers() {
     .unwrap();
     refresh(&c, "kv_sums").unwrap();
     assert_matches_oracle(&c, "kv_sums", q);
+}
+
+/// Phase 3b spec §7: renaming a view fails, and leaves it working and droppable.
+#[test]
+fn a_view_cannot_be_renamed() {
+    for explicit_transaction in [false, true] {
+        let c = open_with_extension(None).unwrap();
+        setup(&c);
+        let user_objects = objects(&c);
+        create(&c, "sums", SUMS).unwrap();
+        if explicit_transaction {
+            c.execute_batch("BEGIN").unwrap();
+        }
+        let err = c
+            .execute_batch("ALTER TABLE sums RENAME TO totals")
+            .expect_err("rename");
+        assert!(
+            err.to_string().contains("ivmlite views cannot be renamed"),
+            "{err}"
+        );
+        if explicit_transaction {
+            c.execute_batch("COMMIT").unwrap();
+        }
+        assert_eq!(
+            count(
+                &c,
+                "SELECT count(*) FROM sqlite_schema WHERE name = 'totals'"
+            ),
+            0
+        );
+        c.execute_batch("INSERT INTO orders VALUES ('a', 5)")
+            .unwrap();
+        refresh(&c, "sums").unwrap();
+        assert_matches_oracle(&c, "sums", SUMS);
+        c.execute_batch("DROP TABLE sums").unwrap();
+        assert_eq!(objects(&c), user_objects);
+    }
 }
 
 /// A base table with columns named `w` and `seq` is maintained correctly: the

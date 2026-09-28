@@ -10,15 +10,22 @@ use ivmlite_sql::{compile, Catalog, CompiledView};
 use rusqlite::types::ValueRef;
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::catalog::{require_utf8, SqliteCatalog};
+use crate::catalog::{require_utf8, CaptureInfo, SqliteCatalog};
 use crate::names::{
-    apply_trigger, delta_table, has_reserved_prefix, literal, main_qualified, out_table, quote,
-    stage_table, state_table, trigger, DELTA_SEQ, DELTA_W, DEPS, META, PREFIX, PROGRESS, VIEWS,
+    apply_trigger, delta_table, has_reserved_prefix, literal, main_qualified, out_table,
+    pend_table, quote, stage_table, state_table, trigger, CAPTURE_EVENTS, DELTA_SEQ, DELTA_W, DEPS,
+    META, PREFIX, PROBE, PROBE_STEP, PROGRESS, TRACKED, VIEWS,
 };
 use crate::state::{BufferedArrangement, Pending};
 
 /// The shadow-table layout's version, stored in `__ivm_meta` and with each view.
-pub const FORMAT: i64 = 1;
+///
+/// Format 2 (Phase 3b spec §3) moves a base table's shape from `__ivm_dep`
+/// into the new `__ivm_tracked` table, one row per table rather than one per
+/// (view, table) pair: several views can now share a table's capture, and the
+/// shape is a property of the table's triggers, not of any one view that
+/// reads them.
+pub const FORMAT: i64 = 2;
 
 /// The column of the view's output table that holds each row's weight.
 const WEIGHT: &str = "__w";
@@ -119,18 +126,54 @@ fn sql_type(column: &ivmlite_core::Column) -> &'static str {
     }
 }
 
-/// A base table's column shape — its columns' names and types, in order, as
-/// the catalog reports them — stored in `__ivm_dep` at create and compared on
-/// every connect and refresh. A table dropped and recreated with other
+/// Everything the capture triggers depend on (Phase 3b spec §3): the
+/// columns' names and types in order, whether the table is WITHOUT ROWID,
+/// and every unique index — its key columns with collation, `NOT NULL` and
+/// default, and its partial and expression flags — in a canonical order,
+/// so an index's name never matters. Stored in `__ivm_tracked` when the
+/// table is first tracked and compared on every later create over it, every
+/// connect and every refresh. A table dropped and recreated with other
 /// column types can compile to the same plan, since the plan names columns
 /// by position only.
-fn shape(schema: &Schema) -> String {
-    schema
+fn shape(schema: &Schema, capture: &CaptureInfo) -> String {
+    let columns: Vec<String> = schema
         .columns
         .iter()
         .map(|c| format!("{} {}", quote(&c.name), sql_type(c)))
-        .collect::<Vec<_>>()
-        .join(", ")
+        .collect();
+    let mut keys: Vec<String> = capture
+        .unique_keys
+        .iter()
+        .map(|k| {
+            let cols: Vec<String> = k
+                .columns
+                .iter()
+                .map(|c| {
+                    let mut text = format!("{} {}", quote(&c.name), c.collation);
+                    if c.not_null {
+                        text.push_str(" NOT NULL");
+                    }
+                    if let Some(d) = &c.default {
+                        text.push_str(&format!(" DEFAULT {d}"));
+                    }
+                    text
+                })
+                .collect();
+            format!(
+                "({}){}{}",
+                cols.join(", "),
+                if k.partial { " partial" } else { "" },
+                if k.expression { " expression" } else { "" }
+            )
+        })
+        .collect();
+    keys.sort();
+    format!(
+        "{}; without rowid: {}; unique: [{}]",
+        columns.join(", "),
+        capture.without_rowid,
+        keys.join("; ")
+    )
 }
 
 /// The `CREATE TABLE` statement SQLite is given for the virtual table: the
@@ -176,14 +219,33 @@ fn create_global_tables(conn: &Connection) -> Result<()> {
             "CREATE TABLE IF NOT EXISTS {meta}(key TEXT PRIMARY KEY, value);
              CREATE TABLE IF NOT EXISTS {}(name TEXT PRIMARY KEY, sql TEXT NOT NULL,
                  plan TEXT NOT NULL, declaration TEXT NOT NULL, format INTEGER NOT NULL);
+             CREATE TABLE IF NOT EXISTS {}(tbl TEXT PRIMARY KEY, shape TEXT NOT NULL,
+                 broken TEXT);
              CREATE TABLE IF NOT EXISTS {}(view TEXT NOT NULL, tbl TEXT NOT NULL,
-                 shape TEXT NOT NULL, PRIMARY KEY(view, tbl));
+                 PRIMARY KEY(view, tbl));
              CREATE TABLE IF NOT EXISTS {}(view TEXT NOT NULL, tbl TEXT NOT NULL,
                  applied_seq INTEGER NOT NULL, PRIMARY KEY(view, tbl));
              INSERT OR IGNORE INTO {meta}(key, value) VALUES ('format', {FORMAT});",
             main_qualified(VIEWS),
+            main_qualified(TRACKED),
             main_qualified(DEPS),
             main_qualified(PROGRESS),
+        ),
+    )?;
+    // The recursive-triggers probe (spec §6.2): `PROBE_STEP` re-inserts into
+    // `PROBE` while `n < 2`. With `recursive_triggers` OFF it does not fire
+    // for its own insert, so inserting a 0 leaves 2 rows; with it ON, 3. As
+    // in `track`, the `ON` table and the body's table stay unqualified and
+    // the trigger's own name binds it to `main`.
+    let probe_body = quote(PROBE);
+    exec(
+        conn,
+        &format!(
+            "CREATE TABLE IF NOT EXISTS {}(n INTEGER NOT NULL);
+             CREATE TRIGGER IF NOT EXISTS {} AFTER INSERT ON {probe_body} WHEN NEW.n < 2
+             BEGIN INSERT INTO {probe_body}(n) VALUES (NEW.n + 1); END;",
+            main_qualified(PROBE),
+            main_qualified(PROBE_STEP),
         ),
     )?;
     let format: i64 = conn
@@ -201,56 +263,502 @@ fn create_global_tables(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn create_delta_table(conn: &Connection, schema: &Schema) -> Result<()> {
+/// How the capture triggers name a row of `t` (spec §6.2): its rowid, or
+/// for a WITHOUT ROWID table its primary-key columns.
+fn identity(capture: &CaptureInfo) -> Option<Vec<String>> {
+    capture.without_rowid.then(|| {
+        capture
+            .unique_keys
+            .iter()
+            .find(|k| k.primary)
+            .expect("a WITHOUT ROWID table has a primary key")
+            .columns
+            .iter()
+            .map(|c| quote(&c.name))
+            .collect()
+    })
+}
+
+/// `a = b AND …` over the identity: `rowid`, or the primary-key columns.
+fn same_row(pk: &Option<Vec<String>>, left: &str, right: &str) -> String {
+    match pk {
+        None => format!("{left}rowid = {right}rowid"),
+        Some(cols) => cols
+            .iter()
+            .map(|c| format!("{left}{c} = {right}{c}"))
+            .collect::<Vec<_>>()
+            .join(" AND "),
+    }
+}
+
+/// The alias every generated subquery gives the base table, and the one the
+/// confirmation gives the pend table. The base table's own name cannot be
+/// used: a table named `p`, `old` or `new` (in any case) would capture
+/// `p.`, `OLD.` or `NEW.` references meant for the pend table or the
+/// trigger's pseudo-rows, and REPLACE deletions would silently go
+/// uncaptured (task review, measured). The catalog refuses base tables with
+/// the reserved `__ivm_` prefix, so these aliases cannot collide.
+const BASE_ALIAS: &str = "__ivm_b";
+const PEND_ALIAS: &str = "__ivm_p";
+
+/// The existing rows a new row could replace (spec §6.2), one `UNION`
+/// branch per unique index plus the rowid, each able to use its own index.
+/// `exclude_old`: in BEFORE UPDATE, never the row being updated.
+fn candidates(schema: &Schema, capture: &CaptureInfo, exclude_old: bool) -> String {
+    let base = quote(&schema.table);
+    let b = format!("{BASE_ALIAS}.");
+    let cols = column_list(schema, &b);
+    let pk = identity(capture);
+    let rid = if pk.is_some() {
+        "NULL".to_string()
+    } else {
+        format!("{b}rowid")
+    };
+    let mut branches = Vec::new();
+    if pk.is_none() {
+        branches.push(format!("{b}rowid = NEW.rowid"));
+    }
+    for key in &capture.unique_keys {
+        let terms: Vec<String> = key
+            .columns
+            .iter()
+            .map(|c| {
+                let q = quote(&c.name);
+                // REPLACE substitutes a NOT NULL key's default for a NULL
+                // (spec §2). `d` is a literal: the catalog refuses any other
+                // default on such a key (spec §6.1), so it is safe to splice.
+                match (&c.default, c.not_null) {
+                    (Some(d), true) if !d.eq_ignore_ascii_case("NULL") => {
+                        format!("{b}{q} = COALESCE(NEW.{q}, {d})")
+                    }
+                    _ => format!("{b}{q} = NEW.{q}"),
+                }
+            })
+            .collect();
+        branches.push(terms.join(" AND "));
+    }
+    let exclude = match (&pk, exclude_old) {
+        (_, false) => String::new(),
+        (None, true) => format!(" AND {b}rowid <> OLD.rowid"),
+        (Some(_), true) => format!(" AND NOT ({})", same_row(&pk, &b, "OLD.")),
+    };
+    branches
+        .iter()
+        .map(|branch| {
+            format!("SELECT {rid}, {cols} FROM {base} AS {BASE_ALIAS} WHERE ({branch}){exclude}")
+        })
+        .collect::<Vec<_>>()
+        .join(" UNION ")
+}
+
+/// `table`'s own `sqlite_schema` row, as a `FROM … WHERE` clause. `schema`
+/// is `"main".` outside a trigger and empty inside one, where a trigger in
+/// `main` reads `main`'s `sqlite_schema` (measured, with an attached
+/// database holding a same-named table and unique index).
+fn table_row(schema: &str, table: &str) -> String {
+    format!(
+        "FROM {schema}sqlite_schema WHERE type = 'table' AND name = {} COLLATE NOCASE",
+        literal(table)
+    )
+}
+
+/// The `sqlite_schema` rows of `table`'s explicit unique indexes, as a
+/// `FROM … WHERE` clause; `schema` as for `table_row`. SQLite stores every
+/// such statement with the prefix normalized to `CREATE UNIQUE INDEX `
+/// (measured: `create  unique index if not exists` and a leading comment
+/// are both stored that way), so the `LIKE` needs no more than that prefix.
+/// Autoindexes have no `sql` and are left out: they change only when the
+/// table is rebuilt, which drops the triggers too.
+fn unique_index_rows(schema: &str, table: &str) -> String {
+    format!(
+        "FROM {schema}sqlite_schema WHERE type = 'index' AND tbl_name = {} COLLATE NOCASE \
+         AND sql LIKE 'CREATE UNIQUE INDEX%'",
+        literal(table)
+    )
+}
+
+/// The `sqlite_schema` rows of `table`'s capture triggers that sit on the
+/// table named `table`, as a `FROM … WHERE` clause read inside a trigger.
+fn capture_trigger_rows(table: &str) -> String {
+    let names: Vec<String> = CAPTURE_EVENTS
+        .iter()
+        .map(|event| literal(&trigger(table, event)))
+        .collect();
+    format!(
+        "FROM sqlite_schema WHERE type = 'trigger' AND tbl_name = {} COLLATE NOCASE \
+         AND name IN ({})",
+        literal(table),
+        names.join(", ")
+    )
+}
+
+/// What `table`'s capture triggers were generated for (spec §6.2): its own
+/// `CREATE TABLE` statement and its explicit unique indexes' statements, as
+/// `sqlite_schema` held them when `table` was first tracked.
+struct Fingerprint {
+    table_sql: String,
+    unique_indexes: Vec<String>,
+}
+
+impl Fingerprint {
+    /// Read with the same `table_row` and `unique_index_rows` the latch
+    /// compares against.
+    fn read(conn: &Connection, table: &str) -> Result<Fingerprint> {
+        let main = "\"main\".";
+        let table_sql = conn
+            .query_row(&format!("SELECT sql {}", table_row(main, table)), [], |r| {
+                r.get(0)
+            })
+            .map_err(sql_error)?;
+        let unique_indexes = conn
+            .prepare(&format!("SELECT sql {}", unique_index_rows(main, table)))
+            .and_then(|mut s| s.query_map([], |r| r.get(0))?.collect())
+            .map_err(sql_error)?;
+        Ok(Fingerprint {
+            table_sql,
+            unique_indexes,
+        })
+    }
+
+    /// A condition, for a capture trigger's body, that holds when `table`'s
+    /// capture differs from this fingerprint (spec §6.2, Rulings 17 and 18).
+    /// Each part compares without any order, so the trigger needs no
+    /// aggregate `ORDER BY` (SQLite 3.44), which would make the database
+    /// unreadable to an older SQLite, with or without the extension:
+    ///
+    /// - the table's own text covers every in-place change to its columns:
+    ///   SQLite 3.53 rewrites it for `ALTER COLUMN ... SET/DROP NOT NULL`
+    ///   (measured: `k INTEGER DEFAULT 5` becomes `k INTEGER DEFAULT 5 NOT
+    ///   NULL` and back);
+    /// - all five capture triggers sit on the table named `table`: the other
+    ///   parts look `table` up by name, so while it is renamed away and a
+    ///   decoy with its exact text stands in its place, the triggers sit on
+    ///   the renamed table and are missing here. Trigger names are unique in
+    ///   a schema, so no decoy can carry them;
+    /// - the unique indexes are as many as recorded, and each one's text is
+    ///   among the recorded ones. Index names are unique in a schema and
+    ///   every text contains its name, so together these compare the sets.
+    ///   With none recorded the count alone does, and `NOT IN ()` is left
+    ///   out.
+    fn changed(&self, table: &str) -> String {
+        let mut parts = vec![
+            format!(
+                "(SELECT sql {}) IS NOT {}",
+                table_row("", table),
+                literal(&self.table_sql)
+            ),
+            format!(
+                "(SELECT count(*) {}) <> {}",
+                capture_trigger_rows(table),
+                CAPTURE_EVENTS.len()
+            ),
+            format!(
+                "(SELECT count(*) {}) <> {}",
+                unique_index_rows("", table),
+                self.unique_indexes.len()
+            ),
+        ];
+        if !self.unique_indexes.is_empty() {
+            let recorded: Vec<String> = self.unique_indexes.iter().map(|s| literal(s)).collect();
+            parts.push(format!(
+                "EXISTS (SELECT 1 {} AND sql NOT IN ({}))",
+                unique_index_rows("", table),
+                recorded.join(", ")
+            ));
+        }
+        parts.join(" OR ")
+    }
+}
+
+/// What `__ivm_tracked.broken` says once a capture trigger of `table` has
+/// run against a definition, unique indexes or capture triggers other than
+/// the ones it was generated with.
+fn capture_changed(table: &str) -> String {
+    format!(
+        "the definition, unique indexes or capture triggers of {table} changed \
+         after its capture was generated"
+    )
+}
+
+/// The `CREATE TRIGGER` statements for every one of `CAPTURE_EVENTS`
+/// (Phase 3a §8.1, Phase 3b §6.2). `fingerprint` is what the table held
+/// when it was tracked.
+fn capture_triggers(schema: &Schema, capture: &CaptureInfo, fingerprint: &Fingerprint) -> String {
     let t = &schema.table;
-    let delta = main_qualified(&delta_table(t));
     // Measured: SQLite rejects a schema-qualified table name on an INSERT
     // inside a trigger body ("qualified table names are not allowed on
     // INSERT, UPDATE, and DELETE statements within triggers"), so the bodies
-    // below reference the delta table unqualified. This still resolves to
-    // `main`, not a same-named TEMP table: a non-TEMP trigger's body resolves
-    // an unqualified name in the schema the trigger itself lives in, and the
-    // trigger's own name is qualified to `main` below.
-    let delta_body = quote(&delta_table(t));
-    let defs: Vec<String> = schema
-        .columns
-        .iter()
-        .map(|c| format!("{} {}", quote(&c.name), sql_type(c)))
-        .collect();
-    let cols = column_list(schema, "");
-    let new = column_list(schema, "NEW.");
-    let old = column_list(schema, "OLD.");
+    // below reference the delta, pend and probe tables unqualified. This
+    // still resolves to `main`, not a same-named TEMP table: a non-TEMP
+    // trigger's body resolves an unqualified name in the schema the trigger
+    // itself lives in, and the trigger's own name is qualified to `main`
+    // below.
+    let delta = quote(&delta_table(t));
+    let pend = quote(&pend_table(t));
+    let probe = quote(PROBE);
     // The ON clause of CREATE TRIGGER cannot be schema-qualified (SQL forbids
     // it), so this stays an unqualified reference; the trigger's own name
     // below is qualified to `main` instead, which SQLite requires to bind to
     // an `ON` table in that same schema — never a same-named TEMP table.
     let base = quote(t);
-    // Spec §8.1: an UPDATE is a retraction of OLD plus an insertion of NEW, so
-    // the delta table already holds a Z-set. AUTOINCREMENT: once Phase 3b
-    // deletes consumed deltas, a reused `seq` would fall below a watermark.
-    // The delta table's own columns are `DELTA_SEQ`/`DELTA_W`
-    // (`__ivm_seq`/`__ivm_w`), not `seq`/`w`, so a base column named `seq` or
-    // `w` is not shadowed by them.
-    exec(
-        conn,
-        &format!(
-            "CREATE TABLE {delta}({DELTA_SEQ} INTEGER PRIMARY KEY AUTOINCREMENT, {DELTA_W} INTEGER NOT NULL, {defs});
-             CREATE TRIGGER {ins} AFTER INSERT ON {base} BEGIN
-                 INSERT INTO {delta_body}({DELTA_W}, {cols}) VALUES (1, {new});
-             END;
-             CREATE TRIGGER {del} AFTER DELETE ON {base} BEGIN
-                 INSERT INTO {delta_body}({DELTA_W}, {cols}) VALUES (-1, {old});
-             END;
-             CREATE TRIGGER {upd} AFTER UPDATE ON {base} BEGIN
-                 INSERT INTO {delta_body}({DELTA_W}, {cols}) VALUES (-1, {old});
-                 INSERT INTO {delta_body}({DELTA_W}, {cols}) VALUES (1, {new});
-             END;",
-            defs = defs.join(", "),
-            ins = main_qualified(&trigger(t, "ins")),
-            del = main_qualified(&trigger(t, "del")),
-            upd = main_qualified(&trigger(t, "upd")),
+    let cols = column_list(schema, "");
+    let new = column_list(schema, "NEW.");
+    let old = column_list(schema, "OLD.");
+    let p = format!("{PEND_ALIAS}.");
+    let b = format!("{BASE_ALIAS}.");
+    let p_cols = column_list(schema, &p);
+    let pk = identity(capture);
+    // Record the candidates, but only when the probe shows recursive
+    // triggers OFF: with them ON, SQLite's own DELETE trigger captures every
+    // row REPLACE removes, as in Phase 3a.
+    //
+    // Before anything else, latch a change to `t`'s definition, unique
+    // indexes or capture triggers (spec §6.3): the candidate lookup below
+    // was generated from the columns and indexes that existed when `t` was
+    // tracked, so under any other definition or index set a REPLACE may
+    // remove a row it never looks up (a NOT NULL set on a nullable unique
+    // key with a default, for one), and the triggers must sit on the table
+    // that was looked up. The shape check alone cannot see a change that
+    // was made and undone between two refreshes; this sees every write, and
+    // `broken` is never cleared.
+    let latch = format!(
+        "UPDATE {} SET broken = {} WHERE tbl = {} AND broken IS NULL AND ({});",
+        quote(TRACKED),
+        literal(&capture_changed(t)),
+        literal(t),
+        fingerprint.changed(t),
+    );
+    let fill = |exclude_old: bool| {
+        let c = candidates(schema, capture, exclude_old);
+        format!(
+            "{latch}
+                 DELETE FROM {pend};
+                 INSERT INTO {probe}(n) SELECT 0 WHERE EXISTS ({c});
+                 INSERT INTO {pend}(__ivm_rid, {cols}) SELECT * FROM ({c}) WHERE (SELECT count(*) FROM {probe}) = 2;
+                 DELETE FROM {probe};"
+        )
+    };
+    // A candidate was removed when it is gone from `t`, or when the new row
+    // now holds its rowid (a rowid REPLACE, even with identical values).
+    let gone = match &pk {
+        None => format!(
+            "{p}__ivm_rid = NEW.rowid OR NOT EXISTS \
+             (SELECT 1 FROM {base} AS {BASE_ALIAS} WHERE {b}rowid = {p}__ivm_rid)"
         ),
+        Some(_) => format!(
+            "({}) OR NOT EXISTS (SELECT 1 FROM {base} AS {BASE_ALIAS} WHERE {})",
+            same_row(&pk, &p, "NEW."),
+            same_row(&pk, &b, &p)
+        ),
+    };
+    let confirm = format!(
+        "INSERT INTO {delta}({DELTA_W}, {cols}) SELECT -1, {p_cols} FROM {pend} AS {PEND_ALIAS} WHERE {gone};
+                 DELETE FROM {pend};"
+    );
+    // A deleted row is never also counted as a confirmed candidate.
+    let forget = match &pk {
+        None => format!("DELETE FROM {pend} WHERE __ivm_rid = OLD.rowid;"),
+        Some(_) => format!("DELETE FROM {pend} WHERE {};", same_row(&pk, "", "OLD.")),
+    };
+    let plus_new = format!("INSERT INTO {delta}({DELTA_W}, {cols}) VALUES (1, {new});");
+    let minus_old = format!("INSERT INTO {delta}({DELTA_W}, {cols}) VALUES (-1, {old});");
+    let mut sql = String::new();
+    for event in CAPTURE_EVENTS {
+        let (when, body) = match event {
+            // Spec §6.2: record what this INSERT could replace.
+            "preins" => ("BEFORE INSERT", fill(false)),
+            // Spec §6.2: record what this UPDATE could replace, never the
+            // row being updated itself.
+            "preupd" => ("BEFORE UPDATE", fill(true)),
+            // Spec §6.2: confirm the removed candidates, then the new row.
+            "ins" => (
+                "AFTER INSERT",
+                format!("{confirm}\n                 {plus_new}"),
+            ),
+            // Spec §6.2 and §8.1: confirm the removed candidates, then the
+            // update as a retraction of OLD plus an insertion of NEW.
+            "upd" => (
+                "AFTER UPDATE",
+                format!("{confirm}\n                 {minus_old}\n                 {plus_new}"),
+            ),
+            // Spec §6.2: forget the row's candidate, then retract it.
+            "del" => (
+                "AFTER DELETE",
+                format!("{forget}\n                 {minus_old}"),
+            ),
+            other => unreachable!("CAPTURE_EVENTS has no trigger body for {other}"),
+        };
+        sql.push_str(&format!(
+            "\n             CREATE TRIGGER {} {when} ON {base} BEGIN\n                 {body}\n             END;",
+            main_qualified(&trigger(t, event)),
+        ));
+    }
+    sql
+}
+
+/// Start capturing `table`'s writes (Phase 3a §8.1, shared since Phase 3b
+/// §4): its delta and pend tables, its `CAPTURE_EVENTS` triggers, and the
+/// `__ivm_tracked` row that every later view of it, and every connect and
+/// refresh, checks its capture against.
+fn track(conn: &Connection, schema: &Schema) -> Result<()> {
+    let t = &schema.table;
+    let capture = SqliteCatalog { conn }.capture(t)?;
+    let defs: Vec<String> = schema
+        .columns
+        .iter()
+        .map(|c| format!("{} {}", quote(&c.name), sql_type(c)))
+        .collect();
+    let defs = defs.join(", ");
+    // AUTOINCREMENT: once Phase 3b's GC deletes consumed deltas, a reused
+    // `seq` would fall below a watermark. The delta table's own columns are
+    // `DELTA_SEQ`/`DELTA_W` (`__ivm_seq`/`__ivm_w`), not `seq`/`w`, so a base
+    // column named `seq` or `w` is not shadowed by them.
+    let mut sql = format!(
+        "CREATE TABLE {}({DELTA_SEQ} INTEGER PRIMARY KEY AUTOINCREMENT, \
+         {DELTA_W} INTEGER NOT NULL, {defs});
+         CREATE TABLE {}(__ivm_rid INTEGER, {defs});",
+        main_qualified(&delta_table(t)),
+        main_qualified(&pend_table(t)),
+    );
+    let fingerprint = Fingerprint::read(conn, t)?;
+    sql.push_str(&capture_triggers(schema, &capture, &fingerprint));
+    exec(conn, &sql)?;
+    conn.execute(
+        &format!(
+            "INSERT INTO {}(tbl, shape) VALUES (?1, ?2)",
+            main_qualified(TRACKED)
+        ),
+        params![t, shape(schema, &capture)],
     )
+    .map_err(sql_error)?;
+    Ok(())
+}
+
+/// Whether `table` already has a delta table and capture triggers, shared
+/// with whatever view or views created them.
+fn is_tracked(conn: &Connection, table: &str) -> Result<bool> {
+    conn.query_row(
+        &format!("SELECT 1 FROM {} WHERE tbl = ?1", main_qualified(TRACKED)),
+        [table],
+        |_| Ok(()),
+    )
+    .optional()
+    .map(|found| found.is_some())
+    .map_err(sql_error)
+}
+
+/// The views that read `table`, by name.
+fn readers(conn: &Connection, table: &str) -> Result<Vec<String>> {
+    conn.prepare(&format!(
+        "SELECT view FROM {} WHERE tbl = ?1 ORDER BY view",
+        main_qualified(DEPS)
+    ))
+    .and_then(|mut s| s.query_map([table], |r| r.get(0))?.collect())
+    .map_err(sql_error)
+}
+
+/// The highest sequence number `table`'s delta table has ever handed out
+/// (spec §4). Not `MAX(__ivm_seq)`: GC can empty the delta table, and
+/// AUTOINCREMENT never reuses a number it handed out.
+fn high_watermark(conn: &Connection, table: &str) -> Result<i64> {
+    conn.query_row(
+        "SELECT seq FROM \"main\".sqlite_sequence WHERE name = ?1",
+        [delta_table(table)],
+        |r| r.get(0),
+    )
+    .optional()
+    .map(|seq| seq.unwrap_or(0))
+    .map_err(sql_error)
+}
+
+/// Delete `table`'s delta rows that every reader has consumed (spec §5).
+/// Used when a view is dropped while others still read `table`: the dropped
+/// view may have been the slowest.
+fn collect_garbage(conn: &Connection, table: &str) -> Result<()> {
+    conn.execute(
+        &format!(
+            "DELETE FROM {} WHERE {DELTA_SEQ} <= (SELECT MIN(applied_seq) FROM {} WHERE tbl = ?1)",
+            main_qualified(&delta_table(table)),
+            main_qualified(PROGRESS)
+        ),
+        [table],
+    )
+    .map(|_| ())
+    .map_err(sql_error)
+}
+
+/// `table`'s capture as every view of it relies on: no capture trigger has
+/// latched a change to its definition, unique indexes or capture triggers,
+/// the shape its triggers were generated from, and every capture trigger on
+/// `table` itself.
+fn check_table_capture(conn: &Connection, table: &str) -> Result<()> {
+    let recorded: Option<(String, Option<String>)> = conn
+        .query_row(
+            &format!(
+                "SELECT shape, broken FROM {} WHERE tbl = ?1",
+                main_qualified(TRACKED)
+            ),
+            [table],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(sql_error)?;
+    let (recorded, latched) = recorded.ok_or_else(|| format!("table {table} is not tracked"))?;
+    if let Some(why) = latched {
+        return Err(why);
+    }
+    let capture = SqliteCatalog { conn }.capture(table)?;
+    let now = shape(&base_schema(conn, table)?, &capture);
+    if now != recorded {
+        return Err(format!(
+            "base table {table} changed shape since it was first tracked \
+             (was ({recorded}), now ({now}))"
+        ));
+    }
+    for event in CAPTURE_EVENTS {
+        check_trigger(conn, &trigger(table, event), table)
+            .map_err(|why| format!("its capture trigger {why}"))?;
+    }
+    check_trigger(conn, PROBE_STEP, PROBE)
+        .map_err(|why| format!("its recursive-triggers probe {why}"))?;
+    // The delta table too, not only at connect (`verify`): a refresh on a
+    // connection that is already connected would otherwise fail with a bare
+    // "no such table" rather than as a broken view.
+    for shadow in [delta_table(table), pend_table(table)] {
+        if !table_exists(conn, &shadow)? {
+            return Err(format!("its shadow table {shadow} is missing"));
+        }
+    }
+    Ok(())
+}
+
+/// Stop capturing `table`: triggers first, so it stays writable.
+fn untrack(conn: &Connection, table: &str) -> Result<()> {
+    for event in CAPTURE_EVENTS {
+        exec(
+            conn,
+            &format!(
+                "DROP TRIGGER IF EXISTS {}",
+                main_qualified(&trigger(table, event))
+            ),
+        )?;
+    }
+    for shadow in [delta_table(table), pend_table(table)] {
+        exec(
+            conn,
+            &format!("DROP TABLE IF EXISTS {}", main_qualified(&shadow)),
+        )?;
+    }
+    // A view whose `__ivm_tracked` the user dropped is broken, and must
+    // still be droppable (Phase 3a §5).
+    if table_exists(conn, TRACKED)? {
+        conn.execute(
+            &format!("DELETE FROM {} WHERE tbl = ?1", main_qualified(TRACKED)),
+            [table],
+        )
+        .map_err(sql_error)?;
+    }
+    Ok(())
 }
 
 fn create_out_table(conn: &Connection, name: &str, view: &CompiledView) -> Result<()> {
@@ -415,6 +923,17 @@ fn create_stage(
          WHERE NEW.op = 'progress' AND view = {} AND tbl = NEW.tbl;",
         literal(name)
     ));
+    // Spec §5: once this view's watermark for `t` moves, delete every delta
+    // row of `t` that every reader has consumed. Only on the stage row that
+    // moves `t`'s watermark, inside the one arming statement.
+    for t in &view.tables {
+        body.push(format!(
+            "DELETE FROM {delta} WHERE NEW.op = 'progress' AND NEW.tbl = {lit} \
+             AND {DELTA_SEQ} <= (SELECT MIN(applied_seq) FROM {progress} WHERE tbl = {lit});",
+            delta = quote(&delta_table(t)),
+            lit = literal(t),
+        ));
+    }
     exec(
         conn,
         &format!(
@@ -567,15 +1086,18 @@ pub fn create(conn: &Rc<Connection>, name: &str, sql: &str) -> Result<CompiledVi
         .map(|t| base_schema(conn, t))
         .collect::<Result<_>>()?;
     for schema in &schemas {
-        if table_exists(conn, &delta_table(&schema.table))? {
-            return Err(format!(
-                "table {} is already tracked by another ivmlite view; Phase 3a supports one view per base table",
-                schema.table
-            ));
+        let t = &schema.table;
+        if is_tracked(conn, t)? {
+            check_table_capture(conn, t).map_err(|why| {
+                format!(
+                    "table {t} is tracked but its capture is broken: {why}; drop the views \
+                     that read it ({}) and create this view again",
+                    readers(conn, t).unwrap_or_default().join(", ")
+                )
+            })?;
+        } else {
+            track(conn, schema)?;
         }
-    }
-    for schema in &schemas {
-        create_delta_table(conn, schema)?;
     }
     let ids = arrangement_ids(&view.plan);
     for id in &ids {
@@ -598,21 +1120,25 @@ pub fn create(conn: &Rc<Connection>, name: &str, sql: &str) -> Result<CompiledVi
         params![name, sql, view.plan.canonical(), declared, FORMAT],
     )
     .map_err(sql_error)?;
-    for (t, schema) in view.tables.iter().zip(&schemas) {
+    for t in &view.tables {
         conn.execute(
             &format!(
-                "INSERT INTO {}(view, tbl, shape) VALUES (?1, ?2, ?3)",
+                "INSERT INTO {}(view, tbl) VALUES (?1, ?2)",
                 main_qualified(DEPS)
             ),
-            params![name, t, shape(schema)],
+            params![name, t],
         )
         .map_err(sql_error)?;
     }
 
-    // Bootstrap. The delta tables and triggers were created above, in this
-    // same transaction: every write from now on is captured, and no write so
-    // far is in a delta table, so the snapshot read here is exactly the state
-    // at watermark 0 (spec §7.3).
+    // Bootstrap. `CREATE VIRTUAL TABLE` runs this whole function inside one
+    // write transaction, so no other connection can write between the
+    // watermark read below and the base-table scan here: together they are
+    // exactly the state as of that watermark (spec §4), whether the table was
+    // just tracked above (watermark 0) or was already tracked with deltas
+    // some other view has not yet consumed (a positive watermark — replaying
+    // those older rows would double-count them, since this scan already
+    // includes them).
     let batches: Vec<(String, ZSet)> = schemas
         .iter()
         .map(|s| Ok((s.table.clone(), read_base(conn, s)?)))
@@ -620,10 +1146,10 @@ pub fn create(conn: &Rc<Connection>, name: &str, sql: &str) -> Result<CompiledVi
     for schema in &schemas {
         conn.execute(
             &format!(
-                "INSERT INTO {}(view, tbl, applied_seq) VALUES (?1, ?2, 0)",
+                "INSERT INTO {}(view, tbl, applied_seq) VALUES (?1, ?2, ?3)",
                 main_qualified(PROGRESS)
             ),
-            params![name, schema.table],
+            params![name, schema.table, high_watermark(conn, &schema.table)?],
         )
         .map_err(sql_error)?;
     }
@@ -712,18 +1238,20 @@ fn verify(
     Ok(view)
 }
 
-/// Checked on every connect and every refresh: each base table still has the
-/// column shape recorded at create and its three capture triggers, and the
-/// view still has its apply trigger, each on the table it was created on. `DROP TABLE t` drops `t`'s triggers but
-/// not its delta table, so a recreated `t` would otherwise leave every later
-/// write uncaptured; without the apply trigger, a refresh would apply
-/// nothing. Either way the view would go stale with no error.
+/// Checked on every connect and every refresh: each base table the view
+/// reads is still tracked with its recorded shape and its capture triggers
+/// (now `__ivm_tracked`'s concern, shared across every view of the table —
+/// Phase 3b spec §3), and the view still has its apply trigger, each on the
+/// table it was created on. `DROP TABLE t` drops `t`'s triggers but not its
+/// delta table, so a recreated `t` would otherwise leave every later write
+/// uncaptured; without the apply trigger, a refresh would apply nothing.
+/// Either way the view would go stale with no error.
 fn check_capture(conn: &Connection, name: &str, view: &CompiledView) -> Result<()> {
     for table in &view.tables {
-        let recorded: Option<String> = conn
+        let recorded: Option<i64> = conn
             .query_row(
                 &format!(
-                    "SELECT shape FROM {} WHERE view = ?1 AND tbl = ?2",
+                    "SELECT 1 FROM {} WHERE view = ?1 AND tbl = ?2",
                     main_qualified(DEPS)
                 ),
                 params![name, table],
@@ -731,19 +1259,10 @@ fn check_capture(conn: &Connection, name: &str, view: &CompiledView) -> Result<(
             )
             .optional()
             .map_err(sql_error)?;
-        let recorded =
-            recorded.ok_or_else(|| format!("its dependency on table {table} is not recorded"))?;
-        let now = shape(&base_schema(conn, table)?);
-        if now != recorded {
-            return Err(format!(
-                "base table {table} changed shape since the view was created \
-                 (was ({recorded}), now ({now}))"
-            ));
+        if recorded.is_none() {
+            return Err(format!("its dependency on table {table} is not recorded"));
         }
-        for event in ["ins", "del", "upd"] {
-            check_trigger(conn, &trigger(table, event), table)
-                .map_err(|why| format!("its capture trigger {why}"))?;
-        }
+        check_table_capture(conn, table)?;
     }
     check_trigger(conn, &apply_trigger(name), &stage_table(name))
         .map_err(|why| format!("its apply trigger {why}"))
@@ -802,10 +1321,11 @@ fn is_state_table_of(table: &str, view: &str) -> bool {
         && ["join_left", "join_right", "agg_groups"].contains(&role)
 }
 
-/// `DROP TABLE v`: triggers first, so the base tables stay writable (M-1
-/// scenario 9), then every shadow table and the view's metadata. It uses only
-/// what is recorded, not the compiled view, so a view that can no longer be
-/// maintained can still be dropped.
+/// `DROP TABLE v`: the view's own shadow tables and metadata first, then —
+/// for each base table it read — its capture too, but only once no other
+/// view still reads it (Phase 3b spec §4; Task 2 adds the "readers remain"
+/// branch's GC). It uses only what is recorded, not the compiled view, so a
+/// view that can no longer be maintained can still be dropped.
 pub fn destroy(conn: &Connection, name: &str) -> Result<()> {
     let tables: Vec<String> = conn
         .prepare(&format!(
@@ -814,20 +1334,13 @@ pub fn destroy(conn: &Connection, name: &str) -> Result<()> {
         ))
         .and_then(|mut s| s.query_map([name], |r| r.get(0))?.collect())
         .map_err(sql_error)?;
-    for t in &tables {
-        for event in ["ins", "del", "upd"] {
-            exec(
-                conn,
-                &format!(
-                    "DROP TRIGGER IF EXISTS {}",
-                    main_qualified(&trigger(t, event))
-                ),
-            )?;
-        }
-        exec(
-            conn,
-            &format!("DROP TABLE IF EXISTS {}", main_qualified(&delta_table(t))),
-        )?;
+    for table in [VIEWS, DEPS, PROGRESS] {
+        let column = if table == VIEWS { "name" } else { "view" };
+        conn.execute(
+            &format!("DELETE FROM {} WHERE {column} = ?1", main_qualified(table)),
+            [name],
+        )
+        .map_err(sql_error)?;
     }
     let state: Vec<String> = conn
         .prepare("SELECT name FROM \"main\".sqlite_schema WHERE type = 'table'")
@@ -853,13 +1366,16 @@ pub fn destroy(conn: &Connection, name: &str) -> Result<()> {
             main_qualified(&stage_table(name))
         ),
     )?;
-    for table in [VIEWS, DEPS, PROGRESS] {
-        let column = if table == VIEWS { "name" } else { "view" };
-        conn.execute(
-            &format!("DELETE FROM {} WHERE {column} = ?1", main_qualified(table)),
-            [name],
-        )
-        .map_err(sql_error)?;
+    // This view's own `__ivm_dep` row was already deleted above, so `readers`
+    // now reports only the views, if any, still reading `t` — never this one.
+    // A delta table the user dropped leaves nothing to collect, and the
+    // views that still read it are broken and must stay droppable.
+    for t in &tables {
+        if readers(conn, t)?.is_empty() {
+            untrack(conn, t)?;
+        } else if table_exists(conn, &delta_table(t))? {
+            collect_garbage(conn, t)?;
+        }
     }
     let left: i64 = conn
         .query_row(
@@ -869,8 +1385,14 @@ pub fn destroy(conn: &Connection, name: &str) -> Result<()> {
         )
         .map_err(sql_error)?;
     if left == 0 {
-        for table in [META, VIEWS, DEPS, PROGRESS] {
-            exec(conn, &format!("DROP TABLE {}", main_qualified(table)))?;
+        // `PROBE`'s trigger goes with it.
+        // IF EXISTS: a view whose global table the user dropped (the probe,
+        // say) is broken, and must still be droppable.
+        for table in [META, VIEWS, TRACKED, DEPS, PROGRESS, PROBE] {
+            exec(
+                conn,
+                &format!("DROP TABLE IF EXISTS {}", main_qualified(table)),
+            )?;
         }
     }
     Ok(())

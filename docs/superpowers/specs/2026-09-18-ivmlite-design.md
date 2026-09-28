@@ -451,6 +451,8 @@ This query is the sole reason `__ivm_dep` exists: without it there is no way to 
 
 **When no view depends on a tracked table any more** (the last view was dropped), that table's triggers and delta table are dropped with it, rather than letting deltas accumulate forever.
 
+> **Amended 2026-09-27, M1b Phase 3b §5:** GC is not a separate step. It is one `DELETE` added directly inside the view's apply trigger (§8.1's `__ivm_apply_<view>`, amended by the Phase 3a §5 note below), run against `MIN(applied_seq)` over `__ivm_progress` for that base table, so it commits atomically with that refresh's state, output and watermark or not at all. See the Phase 3b spec §5 for the exact statement.
+
 ### 7.3 Bootstrap must be atomic with the delta watermark
 
 When a view is created on a table that already has data, getting the order wrong loses updates or applies them twice:
@@ -491,6 +493,8 @@ UPDATE is split into a retract plus an insert, so **what is written to the delta
 **The key property of pure-SQL triggers: even a process that never loaded this extension has its writes captured.** The delta table keeps accumulating, and the next connection that has the extension loaded can catch up. Hooks cannot do this.
 
 v0 captures **every column** of a table and does no pruning. That wastes space on wide tables, but avoids "adding a view requires changing the delta table's structure".
+
+> **Amended 2026-09-27, M1b Phase 3b §6:** these three triggers become five, shared by every view of the table rather than owned by one, and gain a REPLACE-conflict capture mechanism that needs no `PRAGMA recursive_triggers`: a BEFORE trigger records the rows a write could replace in a shadow "pend" table, and the matching AFTER trigger confirms which of them are actually gone. See the Phase 3b spec §6 for the exact mechanism, its schema rules and its support boundary.
 
 ### 8.2 When maintenance happens: v0 uses explicit refresh
 
@@ -977,6 +981,7 @@ TanStack DB is a browser-side JS library, with a different runtime and audience 
 15. Cannot be loaded in browsers or the iOS system SQLite
 16. **A view's result columns may not be named like the view itself, or `__w`** (M1b Phase 3a): the view's name is its own command column, and `__w` is the output table's own weight column
 17. **Phase 3a maintains one view per base table**; several views sharing one base table's delta table is Phase 3b (§1)
-18. **`ALTER TABLE v RENAME TO w` on an ivmlite view leaves it undroppable** (M1b Phase 3a). rusqlite 0.40 exposes no `xRename`, so SQLite renames the table in `sqlite_schema` without telling the extension; `__ivm_view` still holds the row under the old name, so a later `DROP TABLE w` calls `xConnect` for `w`, finds no matching row, and fails with "ivmlite has no record of the view w". Phase 3b revisits this.
-19. **Statement-level REPLACE conflict resolution is captured only when the writing connection has `PRAGMA recursive_triggers = ON`** (M1b Phase 3a). `INSERT OR REPLACE`, `REPLACE INTO`, `UPDATE OR REPLACE` and `ON CONFLICT REPLACE` constraints remove the conflicting row without a DELETE statement, and SQLite fires the DELETE trigger for it only under that pragma; otherwise the view **silently diverges**. A base table whose DDL declares `ON CONFLICT REPLACE` is refused at create. Phase 3b addresses the rest; see the Phase 3a spec §5.
+18. **`ALTER TABLE v RENAME TO w` on an ivmlite view leaves it undroppable** (M1b Phase 3a). rusqlite 0.40 exposes no `xRename`, so SQLite renames the table in `sqlite_schema` without telling the extension; `__ivm_view` still holds the row under the old name, so a later `DROP TABLE w` calls `xConnect` for `w`, finds no matching row, and fails with "ivmlite has no record of the view w". **Superseded by M1b Phase 3b §7**: `ALTER TABLE v RENAME` on an ivmlite view now fails outright with a message, instead of leaving the view undroppable.
+19. **Statement-level REPLACE conflict resolution is captured only when the writing connection has `PRAGMA recursive_triggers = ON`** (M1b Phase 3a). `INSERT OR REPLACE`, `REPLACE INTO`, `UPDATE OR REPLACE` and `ON CONFLICT REPLACE` constraints remove the conflicting row without a DELETE statement, and SQLite fires the DELETE trigger for it only under that pragma; otherwise the view **silently diverges**. A base table whose DDL declares `ON CONFLICT REPLACE` is refused at create. **Superseded by M1b Phase 3b §6.4**: REPLACE conflict resolution is now captured without `PRAGMA recursive_triggers`, within the support boundary of Phase 3b §6.4 (see item 21 below); a table declaring `ON CONFLICT REPLACE` is now accepted and maintained.
 20. **`ALTER TABLE t ADD COLUMN` on a base table breaks its views** (M1b Phase 3a): the scan's column list changes, so the view reports a different plan (and a different column shape) on every read and refresh and must be dropped and recreated.
+21. **A writer with `PRAGMA recursive_triggers = OFF` whose REPLACE-style deletion happens during same-table re-entry (a trigger that writes the same base table again, directly or through triggers on other tables) is not supported** (M1b Phase 3b §6.4): the view may silently diverge. Recommended mitigation: `PRAGMA recursive_triggers = ON` for any writer of a database whose tracked tables have triggers that write back to the same table. A foreign-key cascade is not a re-entry.

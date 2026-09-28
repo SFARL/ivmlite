@@ -2,9 +2,43 @@
 
 use ivmlite_core::{Column, ColumnType, Schema};
 use ivmlite_sql::{Catalog, CatalogError};
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::names::{has_reserved_prefix, literal, PREFIX};
+
+/// One key column of a unique index, as `pragma_index_xinfo` and
+/// `pragma_table_xinfo` report it.
+pub struct KeyColumn {
+    pub name: String,
+    pub collation: String,
+    pub not_null: bool,
+    /// `pragma_table_xinfo.dflt_value`: the default's SQL text, if any.
+    pub default: Option<String>,
+    /// A generated column (`pragma_table_xinfo.hidden` 2 or 3), which
+    /// `pragma_table_info` does not list at all.
+    pub generated: bool,
+}
+
+/// A unique index: every `pragma_index_list` row with `unique = 1` (origin
+/// `pk`, `u` or `c`).
+pub struct UniqueKey {
+    pub index: String,
+    /// `origin = 'pk'`: for a `WITHOUT ROWID` table, this key's columns are
+    /// the primary key, which the capture triggers name its rows by in place
+    /// of a rowid (Phase 3b spec §6.2).
+    pub primary: bool,
+    pub partial: bool,
+    /// Some key is an expression (`pragma_index_xinfo.cid = -2`).
+    pub expression: bool,
+    /// The key columns in index order; an expression key is omitted.
+    pub columns: Vec<KeyColumn>,
+}
+
+/// What the capture triggers depend on beyond the columns (spec §3, §6).
+pub struct CaptureInfo {
+    pub without_rowid: bool,
+    pub unique_keys: Vec<UniqueKey>,
+}
 
 /// Reads a table's shape from `pragma_table_list`, `pragma_table_info` and its
 /// `CREATE` statement, and refuses what v0 cannot represent.
@@ -59,13 +93,31 @@ impl Catalog for SqliteCatalog<'_> {
                 "declares a COLLATE clause; v0 supports only the BINARY collation (spec §7.1)",
             );
         }
-        if declares_on_conflict_replace(&ddl) {
-            return refuse(
-                "declares ON CONFLICT REPLACE; SQLite fires no DELETE trigger for a row that \
-                 REPLACE removes unless the writing connection has PRAGMA recursive_triggers ON, \
-                 so ivmlite v0 would miss the removal and the view would silently diverge \
-                 (Phase 3a spec §5)",
-            );
+        // Reserved names are checked over every column, generated ones
+        // included: `pragma_table_info` omits a generated column, but inside
+        // the capture triggers its name still shadows the rowid (or a shadow
+        // column) — a generated `rowid` made a plain INSERT retract an
+        // unrelated row (external review of bc0c891, reproduced).
+        const ROWID_ALIASES: [&str; 3] = ["rowid", "oid", "_rowid_"];
+        let every_column: Vec<String> = self
+            .conn
+            .prepare(&format!(
+                "SELECT name FROM pragma_table_xinfo({}, 'main')",
+                literal(&declared)
+            ))
+            .and_then(|mut s| s.query_map([], |r| r.get(0))?.collect())
+            .map_err(err)?;
+        for name in &every_column {
+            if ROWID_ALIASES.iter().any(|a| name.eq_ignore_ascii_case(a)) {
+                return refuse(&format!(
+                    "column {name} is named like the rowid, which ivmlite's capture triggers address rows by (Phase 3b spec §6.1)"
+                ));
+            }
+            if has_reserved_prefix(name) {
+                return refuse(&format!(
+                    "column {name} starts with {PREFIX}, which ivmlite reserves for its own shadow columns (e.g. the delta table's)"
+                ));
+            }
         }
         let mut stmt = self
             .conn
@@ -89,11 +141,6 @@ impl Catalog for SqliteCatalog<'_> {
         let mut columns = Vec::new();
         for row in rows {
             let (column, ty, not_null, pk) = row.map_err(err)?;
-            if has_reserved_prefix(&column) {
-                return refuse(&format!(
-                    "column {column} starts with {PREFIX}, which ivmlite reserves for its own shadow columns (e.g. the delta table's)"
-                ));
-            }
             let ty = match ty.to_ascii_uppercase().as_str() {
                 "INTEGER" | "INT" => ColumnType::Integer,
                 "TEXT" => ColumnType::Text,
@@ -111,11 +158,157 @@ impl Catalog for SqliteCatalog<'_> {
                 nullable: !not_null && !rowid,
             });
         }
+        let capture = self.capture(&declared).map_err(CatalogError)?;
+        for key in &capture.unique_keys {
+            let index = &key.index;
+            if key.partial {
+                return refuse(&format!("unique index {index} is partial; ivmlite v0 needs full unique indexes to capture REPLACE (Phase 3b spec §6.1)"));
+            }
+            if key.expression {
+                return refuse(&format!("unique index {index} has an expression key; ivmlite cannot look up what REPLACE would remove (Phase 3b spec §6.1)"));
+            }
+            for column in &key.columns {
+                if column.generated {
+                    return refuse(&format!(
+                        "unique index {index} has the generated column {} as a key; ivmlite does not support generated columns in unique keys",
+                        column.name
+                    ));
+                }
+                if !column.collation.eq_ignore_ascii_case("BINARY") {
+                    return refuse(&format!(
+                        "unique index {index} uses collation {} on column {}; v0 supports only BINARY (Phase 3b spec §6.1)",
+                        column.collation, column.name
+                    ));
+                }
+                if let (true, Some(default)) = (column.not_null, &column.default) {
+                    if !is_literal_default(default) {
+                        return refuse(&format!(
+                            "column {} is NOT NULL in unique index {index} with default {default}, which is not a literal; \
+                             REPLACE substitutes the default, and ivmlite cannot re-evaluate it (Phase 3b spec §6.1)",
+                            column.name
+                        ));
+                    }
+                }
+            }
+        }
         Ok(Some(Schema {
             table: declared,
             columns,
         }))
     }
+}
+
+impl SqliteCatalog<'_> {
+    /// `table`'s capture metadata (Phase 3b spec §3, §6.1): whether it is
+    /// `WITHOUT ROWID`, and every unique index with its key columns'
+    /// collation, `NOT NULL` and default, and its partial/expression flags.
+    pub fn capture(&self, table: &str) -> Result<CaptureInfo, String> {
+        let err = |e: rusqlite::Error| format!("reading the catalog: {e}");
+        let without_rowid: bool = self
+            .conn
+            .query_row(
+                // COLLATE NOCASE, as in `table`: SQLite matches table names
+                // case-insensitively.
+                "SELECT wr FROM pragma_table_list \
+                 WHERE schema = 'main' AND name = ?1 COLLATE NOCASE",
+                [table],
+                |r| r.get(0),
+            )
+            .map_err(err)?;
+        let mut index_stmt = self
+            .conn
+            .prepare(
+                "SELECT name, origin, partial FROM pragma_index_list(?1, 'main') \
+                 WHERE \"unique\" = 1 ORDER BY name",
+            )
+            .map_err(err)?;
+        let index_rows: Vec<(String, String, bool)> = index_stmt
+            .query_map([table], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .map_err(err)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(err)?;
+        let mut unique_keys = Vec::with_capacity(index_rows.len());
+        for (index, origin, partial) in index_rows {
+            let mut xinfo_stmt = self
+                .conn
+                .prepare(
+                    "SELECT cid, name, coll FROM pragma_index_xinfo(?1, 'main') \
+                     WHERE key = 1 ORDER BY seqno",
+                )
+                .map_err(err)?;
+            let xinfo: Vec<(i64, Option<String>, String)> = xinfo_stmt
+                .query_map([&index], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .map_err(err)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(err)?;
+            let mut expression = false;
+            let mut columns = Vec::new();
+            for (cid, name, collation) in xinfo {
+                if cid == -2 {
+                    expression = true;
+                    continue;
+                }
+                let name = name.ok_or_else(|| {
+                    format!("index {index}: a key column has no name (cid {cid})")
+                })?;
+                // pragma_table_xinfo, not pragma_table_info: the latter
+                // leaves generated columns out, and a unique index over one
+                // then failed with "Query returned no rows" (final review).
+                let (not_null, default, hidden): (bool, Option<String>, i64) = self
+                    .conn
+                    .query_row(
+                        "SELECT \"notnull\", dflt_value, hidden FROM pragma_table_xinfo(?1, 'main') \
+                         WHERE name = ?2",
+                        params![table, name],
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                    )
+                    .map_err(err)?;
+                columns.push(KeyColumn {
+                    name,
+                    collation,
+                    not_null,
+                    default,
+                    generated: matches!(hidden, 2 | 3),
+                });
+            }
+            unique_keys.push(UniqueKey {
+                index,
+                primary: origin == "pk",
+                partial,
+                expression,
+                columns,
+            });
+        }
+        Ok(CaptureInfo {
+            without_rowid,
+            unique_keys,
+        })
+    }
+}
+
+/// A literal default, as `pragma_table_info.dflt_value` reports it (spec
+/// §6.1): `NULL` in any case, an optionally signed decimal integer, a
+/// hexadecimal integer (`0x…`), or a single-quoted string whose embedded
+/// quotes are doubled. `DEFAULT (5)` is reported as `5` and is accepted;
+/// anything else (`CURRENT_TIMESTAMP`, `random()`, an expression) is not,
+/// since REPLACE substitutes the default for a NULL and ivmlite must be able
+/// to re-evaluate it deterministically in the candidate lookup.
+pub fn is_literal_default(text: &str) -> bool {
+    if text.eq_ignore_ascii_case("NULL") {
+        return true;
+    }
+    if let Some(inner) = text.strip_prefix('\'').and_then(|t| t.strip_suffix('\'')) {
+        // Every quote inside must be a doubled one.
+        return !inner.replace("''", "").contains('\'');
+    }
+    let unsigned = text.strip_prefix(['+', '-']).unwrap_or(text);
+    if let Some(hex) = unsigned
+        .strip_prefix("0x")
+        .or_else(|| unsigned.strip_prefix("0X"))
+    {
+        return !hex.is_empty() && hex.bytes().all(|b| b.is_ascii_hexdigit());
+    }
+    !unsigned.is_empty() && unsigned.bytes().all(|b| b.is_ascii_digit())
 }
 
 /// The tokens of a `CREATE TABLE` statement, in order: each keyword or bare
@@ -187,14 +380,6 @@ fn declares_collate(ddl: &[String]) -> bool {
     ddl.iter().any(|t| t == "COLLATE")
 }
 
-/// A column or table constraint's `ON CONFLICT REPLACE` (final review,
-/// Critical 1): with it, every plain INSERT or UPDATE that conflicts silently
-/// removes the old row.
-fn declares_on_conflict_replace(ddl: &[String]) -> bool {
-    ddl.windows(3)
-        .any(|w| w[0] == "ON" && w[1] == "CONFLICT" && w[2] == "REPLACE")
-}
-
 /// Fails unless the database is UTF-8: TEXT compares by UTF-8 byte order in
 /// the engine, which is SQLite's BINARY collation only for UTF-8 (Phase 3a
 /// spec §5; measured, `'Ā' > 'a'` differs between UTF-8 and UTF-16LE).
@@ -233,18 +418,25 @@ mod tests {
     }
 
     #[test]
-    fn on_conflict_replace_is_matched_across_whitespace_and_comments() {
-        assert!(declares_on_conflict_replace(&tokens(
-            "CREATE TABLE t(k TEXT UNIQUE ON CONFLICT REPLACE)"
-        )));
-        assert!(declares_on_conflict_replace(&tokens(
-            "CREATE TABLE t(k TEXT, UNIQUE(k) on /* x */ conflict -- y\n replace)"
-        )));
-        assert!(!declares_on_conflict_replace(&tokens(
-            "CREATE TABLE t(k TEXT UNIQUE ON CONFLICT IGNORE, \"on conflict replace\" TEXT)"
-        )));
-        assert!(!declares_on_conflict_replace(&tokens(
-            "CREATE TABLE t(k TEXT DEFAULT 'on conflict replace', [on conflict replace] TEXT)"
-        )));
+    fn literal_defaults_are_numbers_strings_and_null() {
+        for yes in [
+            "NULL", "null", "5", "-5", "+3", "0x10", "-0X1f", "'d'", "'x''y'", "''",
+        ] {
+            assert!(is_literal_default(yes), "{yes}");
+        }
+        for no in [
+            "CURRENT_TIMESTAMP",
+            "random()",
+            "5.0",
+            "1e3",
+            "'a' || 'b'",
+            "'unterminated",
+            "x",
+            "0x",
+            "-",
+            "(5)",
+        ] {
+            assert!(!is_literal_default(no), "{no}");
+        }
     }
 }
