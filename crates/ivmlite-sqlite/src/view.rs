@@ -355,44 +355,46 @@ fn candidates(schema: &Schema, capture: &CaptureInfo, exclude_old: bool) -> Stri
         .join(" UNION ")
 }
 
-/// `table`'s own `sqlite_schema` row, as a `FROM … WHERE` clause. `schema`
-/// is `"main".` outside a trigger and empty inside one, where a trigger in
-/// `main` reads `main`'s `sqlite_schema` (measured, with an attached
-/// database holding a same-named table and unique index).
-fn table_row(schema: &str, table: &str) -> String {
+/// The `sqlite_schema` rows that concern `table`, as a `WHERE` condition:
+/// the table itself, its indexes and the triggers on it. The latch scans
+/// exactly these, once (Phase 4 spec §5).
+fn rows_of(table: &str) -> String {
+    format!("tbl_name = {} COLLATE NOCASE", literal(table))
+}
+
+/// Among `rows_of(table)`, `table`'s own row.
+fn is_table_row(table: &str) -> String {
     format!(
-        "FROM {schema}sqlite_schema WHERE type = 'table' AND name = {} COLLATE NOCASE",
+        "type = 'table' AND name = {} COLLATE NOCASE",
         literal(table)
     )
 }
 
-/// The `sqlite_schema` rows of `table`'s explicit unique indexes, as a
-/// `FROM … WHERE` clause; `schema` as for `table_row`. SQLite stores every
+/// Among `rows_of(table)`, an explicit unique index. SQLite stores every
 /// such statement with the prefix normalized to `CREATE UNIQUE INDEX `
 /// (measured: `create  unique index if not exists` and a leading comment
 /// are both stored that way), so the `LIKE` needs no more than that prefix.
 /// Autoindexes have no `sql` and are left out: they change only when the
 /// table is rebuilt, which drops the triggers too.
-fn unique_index_rows(schema: &str, table: &str) -> String {
+const IS_UNIQUE_INDEX: &str = "type = 'index' AND sql LIKE 'CREATE UNIQUE INDEX%'";
+
+/// `table`'s own row of `main`'s `sqlite_schema`, as a `FROM … WHERE`
+/// clause, built from the predicates the latch counts with.
+fn table_row(table: &str) -> String {
     format!(
-        "FROM {schema}sqlite_schema WHERE type = 'index' AND tbl_name = {} COLLATE NOCASE \
-         AND sql LIKE 'CREATE UNIQUE INDEX%'",
-        literal(table)
+        "FROM \"main\".sqlite_schema WHERE {} AND {}",
+        rows_of(table),
+        is_table_row(table)
     )
 }
 
-/// The `sqlite_schema` rows of `table`'s capture triggers that sit on the
-/// table named `table`, as a `FROM … WHERE` clause read inside a trigger.
-fn capture_trigger_rows(table: &str) -> String {
-    let names: Vec<String> = CAPTURE_EVENTS
-        .iter()
-        .map(|event| literal(&trigger(table, event)))
-        .collect();
+/// The rows of `table`'s explicit unique indexes in `main`'s
+/// `sqlite_schema`, as a `FROM … WHERE` clause, built from the predicates
+/// the latch counts with.
+fn unique_index_rows(table: &str) -> String {
     format!(
-        "FROM sqlite_schema WHERE type = 'trigger' AND tbl_name = {} COLLATE NOCASE \
-         AND name IN ({})",
-        literal(table),
-        names.join(", ")
+        "FROM \"main\".sqlite_schema WHERE {} AND {IS_UNIQUE_INDEX}",
+        rows_of(table)
     )
 }
 
@@ -405,17 +407,16 @@ struct Fingerprint {
 }
 
 impl Fingerprint {
-    /// Read with the same `table_row` and `unique_index_rows` the latch
-    /// compares against.
+    /// Read with the same `rows_of`, `is_table_row` and `IS_UNIQUE_INDEX`
+    /// predicates the latch counts with, qualified to `main`.
     fn read(conn: &Connection, table: &str) -> Result<Fingerprint> {
-        let main = "\"main\".";
         let table_sql = conn
-            .query_row(&format!("SELECT sql {}", table_row(main, table)), [], |r| {
+            .query_row(&format!("SELECT sql {}", table_row(table)), [], |r| {
                 r.get(0)
             })
             .map_err(sql_error)?;
         let unique_indexes = conn
-            .prepare(&format!("SELECT sql {}", unique_index_rows(main, table)))
+            .prepare(&format!("SELECT sql {}", unique_index_rows(table)))
             .and_then(|mut s| s.query_map([], |r| r.get(0))?.collect())
             .map_err(sql_error)?;
         Ok(Fingerprint {
@@ -439,38 +440,54 @@ impl Fingerprint {
     ///   decoy with its exact text stands in its place, the triggers sit on
     ///   the renamed table and are missing here. Trigger names are unique in
     ///   a schema, so no decoy can carry them;
-    /// - the unique indexes are as many as recorded, and each one's text is
-    ///   among the recorded ones. Index names are unique in a schema and
-    ///   every text contains its name, so together these compare the sets.
-    ///   With none recorded the count alone does, and `NOT IN ()` is left
-    ///   out.
+    /// - the unique indexes are as many as recorded, and as many of them
+    ///   have a recorded text. Index names are unique in a schema and every
+    ///   text contains its name, so together these compare the sets. With
+    ///   none recorded the first count alone does, and the second is left
+    ///   out, since `IN ()` is invalid.
+    ///
+    /// Every part concerns a row whose `tbl_name` is `table`, so they are
+    /// one aggregate over a single scan of `sqlite_schema` (Phase 4 spec
+    /// §5), not one subquery each: the latch runs for every written row.
+    /// Each part counts with `count(CASE WHEN … THEN 1 END)`, which is 0 on
+    /// empty input, never with `sum(…)`, which is NULL there: while `table`
+    /// is renamed away the scan finds no row at all, and a NULL condition
+    /// would silently not latch. `FILTER` and window functions stay out for
+    /// the same old-SQLite reason as `ORDER BY`. The `sqlite_schema` read is
+    /// unqualified: a trigger in `main` reads `main`'s (measured, with an
+    /// attached database holding a same-named table and unique index).
     fn changed(&self, table: &str) -> String {
+        let table_row = is_table_row(table);
+        let names: Vec<String> = CAPTURE_EVENTS
+            .iter()
+            .map(|event| literal(&trigger(table, event)))
+            .collect();
+        let recorded = self.unique_indexes.len();
         let mut parts = vec![
+            format!("count(CASE WHEN {table_row} THEN 1 END) <> 1"),
             format!(
-                "(SELECT sql {}) IS NOT {}",
-                table_row("", table),
+                "count(CASE WHEN {table_row} AND sql IS {} THEN 1 END) <> 1",
                 literal(&self.table_sql)
             ),
             format!(
-                "(SELECT count(*) {}) <> {}",
-                capture_trigger_rows(table),
+                "count(CASE WHEN type = 'trigger' AND name IN ({}) THEN 1 END) <> {}",
+                names.join(", "),
                 CAPTURE_EVENTS.len()
             ),
-            format!(
-                "(SELECT count(*) {}) <> {}",
-                unique_index_rows("", table),
-                self.unique_indexes.len()
-            ),
+            format!("count(CASE WHEN {IS_UNIQUE_INDEX} THEN 1 END) <> {recorded}"),
         ];
-        if !self.unique_indexes.is_empty() {
-            let recorded: Vec<String> = self.unique_indexes.iter().map(|s| literal(s)).collect();
+        if recorded > 0 {
+            let texts: Vec<String> = self.unique_indexes.iter().map(|s| literal(s)).collect();
             parts.push(format!(
-                "EXISTS (SELECT 1 {} AND sql NOT IN ({}))",
-                unique_index_rows("", table),
-                recorded.join(", ")
+                "count(CASE WHEN {IS_UNIQUE_INDEX} AND sql IN ({}) THEN 1 END) <> {recorded}",
+                texts.join(", ")
             ));
         }
-        parts.join(" OR ")
+        format!(
+            "(SELECT {} FROM sqlite_schema WHERE {})",
+            parts.join(" OR "),
+            rows_of(table)
+        )
     }
 }
 

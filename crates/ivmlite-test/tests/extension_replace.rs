@@ -420,7 +420,51 @@ fn ivmlite_triggers_use_no_aggregate_order_by() {
             !sql.contains("group_concat") && !sql.contains("order by"),
             "{name}: {sql}"
         );
+        // Phase 4 spec §5: nor an aggregate `FILTER` (3.30) or a window
+        // function (3.25), which the single-scan latch might be tempted to use.
+        assert!(
+            !sql.contains("filter (") && !sql.contains(" over ("),
+            "{name}: {sql}"
+        );
     }
+}
+
+/// Phase 4 spec §5: the latch is one aggregate over sqlite_schema. With the
+/// table renamed away the scan finds no rows, and the latch must still fire
+/// (count() is 0 on empty input where sum() would be NULL).
+#[test]
+fn the_latch_fires_when_the_scan_finds_no_row_for_the_table() {
+    let c = open_with_extension(None).unwrap();
+    c.execute_batch("CREATE TABLE t(k TEXT, x INTEGER) STRICT; INSERT INTO t VALUES ('a', 1);")
+        .unwrap();
+    create(&c, "ks", KS).unwrap();
+    c.execute_batch(
+        "ALTER TABLE t RENAME TO u; INSERT INTO u VALUES ('b', 2); ALTER TABLE u RENAME TO t;",
+    )
+    .unwrap();
+    let err = refresh(&c, "ks").expect_err("the write while renamed away latched");
+    assert!(
+        err.to_string()
+            .contains("changed after its capture was generated"),
+        "{err}"
+    );
+}
+
+/// Phase 4 spec §5: one scan of sqlite_schema per written row, not four.
+#[test]
+fn the_latch_reads_sqlite_schema_once() {
+    let c = open_with_extension(None).unwrap();
+    c.execute_batch("CREATE TABLE t(k TEXT UNIQUE, x INTEGER) STRICT;")
+        .unwrap();
+    create(&c, "ks", KS).unwrap();
+    let body: String = c
+        .query_row(
+            "SELECT sql FROM sqlite_schema WHERE name = '__ivm_trig_t_preins'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(body.matches("sqlite_schema").count(), 1, "{body}");
 }
 
 /// Spec §2's three table variants: each has a `NOT NULL DEFAULT 'd'` unique
