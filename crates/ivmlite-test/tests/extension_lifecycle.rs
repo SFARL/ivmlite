@@ -258,6 +258,12 @@ fn a_broken_view_reports_why_and_can_still_be_dropped() {
             "DROP TABLE __ivm_pend_orders",
             "its shadow table __ivm_pend_orders is missing",
         ),
+        // Phase 4 spec §4: without its output index, a refresh would fall
+        // back to a full scan rather than fail — so it must be checked too.
+        (
+            "DROP INDEX __ivm_outidx_sums",
+            "its shadow index __ivm_outidx_sums is missing",
+        ),
     ] {
         let file = TempFile::new("broken");
         {
@@ -491,6 +497,18 @@ fn temp_contents(c: &Connection, names: &[&str]) -> Vec<Vec<Vec<Value>>> {
         .collect()
 }
 
+/// Whether a TEMP index named `name` still exists. An index has no rows of
+/// its own to read back the way `temp_contents` does for a table, so its
+/// mere presence is what stands in for "untouched".
+fn temp_index_exists(c: &Connection, name: &str) -> bool {
+    count(
+        c,
+        &format!(
+            "SELECT count(*) FROM sqlite_temp_schema WHERE type = 'index' AND name = '{name}'"
+        ),
+    ) == 1
+}
+
 /// On the connection that owns the view, a TEMP table named like a base
 /// table is neither read by the catalog, the bootstrap or a refresh, nor
 /// given the capture triggers: SQLite resolves an unqualified name against
@@ -584,6 +602,7 @@ fn temp_tables_named_like_the_shadow_tables_are_never_touched() {
          CREATE TEMP TABLE __ivm_out_sums AS
              SELECT region, SUM(amount), COUNT(*), 1 AS __w FROM orders WHERE 0 GROUP BY region;
          INSERT INTO temp.__ivm_out_sums VALUES ('temp', 1000, 1000, 1);
+         CREATE INDEX __ivm_outidx_sums ON __ivm_out_sums(region);
          CREATE TEMP TABLE __ivm_stage_sums(op TEXT NOT NULL, arr INTEGER, key BLOB, val BLOB,
              w INTEGER, tbl TEXT, seq INTEGER, c0 TEXT, c1 INTEGER, c2 INTEGER,
              armed INTEGER NOT NULL DEFAULT 0);
@@ -606,12 +625,20 @@ fn temp_tables_named_like_the_shadow_tables_are_never_touched() {
     refresh(&c, "sums").unwrap();
     assert_matches_oracle(&c, "sums", SUMS);
     assert_eq!(temp_contents(&c, &shadows), temp_before);
+    assert!(
+        temp_index_exists(&c, "__ivm_outidx_sums"),
+        "refresh touched the TEMP __ivm_outidx_sums index"
+    );
 
     c.execute_batch("DROP TABLE sums").unwrap();
     assert_eq!(
         temp_contents(&c, &shadows),
         temp_before,
         "DROP TABLE touched a TEMP table"
+    );
+    assert!(
+        temp_index_exists(&c, "__ivm_outidx_sums"),
+        "DROP TABLE touched a TEMP index"
     );
     assert_eq!(
         rows(
@@ -896,4 +923,104 @@ fn base_columns_named_w_and_seq_are_not_shadowed_by_the_delta_table() {
     .unwrap();
     refresh(&c, "sums").unwrap();
     assert_matches_oracle(&c, "sums", q);
+}
+
+/// Phase 4 spec §4: creating a view creates its output table's index too,
+/// non-unique, over every output column, in the output table's own column
+/// order.
+#[test]
+fn a_view_creates_its_output_index() {
+    let c = open_with_extension(None).unwrap();
+    setup(&c);
+    create(&c, "sums", SUMS).unwrap();
+    let sql: String = c
+        .query_row(
+            "SELECT sql FROM sqlite_schema WHERE type = 'index' AND name = '__ivm_outidx_sums'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(sql.contains("\"__ivm_out_sums\""), "{sql}");
+    for col in ["\"region\"", "\"SUM(amount)\"", "\"COUNT(*)\""] {
+        assert!(sql.contains(col), "{sql}: missing {col}");
+    }
+}
+
+/// Phase 4 spec §4: the apply trigger's retraction lookup is a SEARCH on the
+/// output index, not a SCAN — checked directly with `EXPLAIN QUERY PLAN`
+/// against the view's own, really-created output table and index.
+///
+/// `view.rs`'s own crate cannot check this itself: it builds `rusqlite` with
+/// only the `loadable_extension` feature, which is never linked to a real
+/// SQLite (see that crate's Cargo.toml's own comment), so
+/// `Connection::open_in_memory` there panics with "SQLite API not
+/// initialized" instead of opening a database. `retraction_lookup`'s exact
+/// generated text is pinned by a connection-free unit test in `view.rs`
+/// instead (`the_retraction_lookup_names_every_column_by_position`); this
+/// test proves that exact text actually plans as a search, against the
+/// extension's own index.
+#[test]
+fn the_retraction_lookup_searches_the_output_index() {
+    let c = open_with_extension(None).unwrap();
+    setup(&c);
+    create(&c, "sums", SUMS).unwrap();
+    let lookup = "SELECT rowid FROM \"__ivm_out_sums\" WHERE \"region\" IS ?1 \
+                  AND \"SUM(amount)\" IS ?2 AND \"COUNT(*)\" IS ?3";
+    let plan: Vec<String> = c
+        .prepare(&format!("EXPLAIN QUERY PLAN {lookup}"))
+        .unwrap()
+        .query_map(
+            rusqlite::params![
+                Option::<String>::None,
+                Option::<i64>::None,
+                Option::<i64>::None
+            ],
+            |r| r.get::<_, String>(3),
+        )
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert!(
+        plan.iter()
+            .any(|d| d.contains("SEARCH") && d.contains("__ivm_outidx_sums")),
+        "{plan:?}"
+    );
+}
+
+/// Phase 4 spec §4: a NULL group key and a SUM over only NULLs are retracted
+/// through the output index.
+#[test]
+fn null_output_values_are_retracted() {
+    let c = open_with_extension(None).unwrap();
+    c.execute_batch(
+        "CREATE TABLE t(k TEXT, x INTEGER) STRICT;
+         INSERT INTO t VALUES (NULL, 1), ('a', NULL), ('b', 2);",
+    )
+    .unwrap();
+    let q = "SELECT k, SUM(x), COUNT(*) FROM t GROUP BY k";
+    create(&c, "v", q).unwrap();
+    c.execute_batch("INSERT INTO t VALUES (NULL, 5), ('a', NULL); DELETE FROM t WHERE k = 'b';")
+        .unwrap();
+    refresh(&c, "v").unwrap();
+    assert_matches_oracle(&c, "v", q);
+}
+
+/// Phase 4 spec §4: one staged out- removes exactly one of two identical
+/// output rows. v0 cannot produce duplicates through SQL, so this writes the
+/// output and stage tables directly (white-box).
+#[test]
+fn one_retraction_removes_one_copy_of_a_duplicated_output_row() {
+    let c = open_with_extension(None).unwrap();
+    c.execute_batch("CREATE TABLE t(k TEXT, x INTEGER) STRICT; INSERT INTO t VALUES ('a', 1);")
+        .unwrap();
+    create(&c, "v", "SELECT k, COUNT(*) FROM t GROUP BY k").unwrap();
+    refresh(&c, "v").unwrap(); // empties the stage
+    c.execute_batch(
+        "INSERT INTO __ivm_out_v SELECT * FROM __ivm_out_v;
+         DELETE FROM __ivm_stage_v;
+         INSERT INTO __ivm_stage_v(op, c0, c1) VALUES ('out-', 'a', 1);
+         UPDATE __ivm_stage_v SET armed = 1;",
+    )
+    .unwrap();
+    assert_eq!(count(&c, "SELECT count(*) FROM __ivm_out_v"), 1);
 }

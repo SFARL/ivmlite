@@ -114,6 +114,15 @@ pub fn out_table(view: &str) -> String {
     format!("__ivm_out_{view}")
 }
 
+/// The output table's index (Phase 4 spec §4): non-unique, over every output
+/// column, so a retraction's existence check and its `DELETE` are a search
+/// rather than a full scan. Created with the output table and dropped with
+/// it — SQLite drops a table's indexes when the table itself is dropped, so
+/// nothing else needs to name this index.
+pub fn out_index(view: &str) -> String {
+    format!("__ivm_outidx_{view}")
+}
+
 /// One table per `(node, role)` (spec §7). The role is a fixed string, never
 /// the enum's `Debug` output, so renaming a variant cannot rename a table.
 pub fn state_table(view: &str, id: ArrangementId) -> String {

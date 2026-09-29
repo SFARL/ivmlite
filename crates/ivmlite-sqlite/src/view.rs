@@ -12,7 +12,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::catalog::{require_utf8, CaptureInfo, SqliteCatalog};
 use crate::names::{
-    apply_trigger, delta_table, has_reserved_prefix, literal, main_qualified, out_table,
+    apply_trigger, delta_table, has_reserved_prefix, literal, main_qualified, out_index, out_table,
     pend_table, quote, stage_table, state_table, trigger, CAPTURE_EVENTS, DELTA_SEQ, DELTA_W, DEPS,
     META, PREFIX, PROBE, PROBE_STEP, PROGRESS, TRACKED, VIEWS,
 };
@@ -25,7 +25,11 @@ use crate::state::{BufferedArrangement, Pending};
 /// (view, table) pair: several views can now share a table's capture, and the
 /// shape is a property of the table's triggers, not of any one view that
 /// reads them.
-pub const FORMAT: i64 = 2;
+///
+/// Format 3 (Phase 4 spec §4) adds the output table's index, `out_index`: a
+/// database built in format 2 has no such index, and no release ever wrote
+/// format 2, so it is refused rather than migrated.
+pub const FORMAT: i64 = 3;
 
 /// The column of the view's output table that holds each row's weight.
 const WEIGHT: &str = "__w";
@@ -65,8 +69,8 @@ fn arrangement_ids(plan: &Plan) -> Vec<ArrangementId> {
     ids
 }
 
-/// Whether the main schema holds an object of `kind` (`table`, `trigger`)
-/// named exactly `name`.
+/// Whether the main schema holds an object of `kind` (`table`, `index`,
+/// `trigger`) named exactly `name`.
 fn object_exists(conn: &Connection, kind: &str, name: &str) -> Result<bool> {
     conn.query_row(
         "SELECT 1 FROM \"main\".sqlite_schema WHERE type = ?1 AND name = ?2",
@@ -80,6 +84,10 @@ fn object_exists(conn: &Connection, kind: &str, name: &str) -> Result<bool> {
 
 fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
     object_exists(conn, "table", name)
+}
+
+fn index_exists(conn: &Connection, name: &str) -> Result<bool> {
+    object_exists(conn, "index", name)
 }
 
 /// `trigger` must exist and be on `table`. Its name alone proves nothing:
@@ -776,12 +784,23 @@ fn create_out_table(conn: &Connection, name: &str, view: &CompiledView) -> Resul
         .iter()
         .map(|c| format!("{} {}", quote(&c.name), sql_type(c)))
         .collect();
+    let cols: Vec<String> = view.columns.iter().map(|c| quote(&c.name)).collect();
+    // Non-unique (spec §4): v0's root aggregate makes output rows distinct,
+    // but the apply trigger's semantics are per-copy — one `out-` removes
+    // one row (see `one_retraction_removes_one_copy_of_a_duplicated_output_row`).
+    // A unique index would refuse the duplicate that white-box test creates,
+    // or worse, silently collapse it. Dropped with the output table itself:
+    // SQLite drops a table's indexes when the table is dropped.
     exec(
         conn,
         &format!(
-            "CREATE TABLE {}({}, {WEIGHT} INTEGER NOT NULL)",
+            "CREATE TABLE {}({}, {WEIGHT} INTEGER NOT NULL);
+             CREATE INDEX {} ON {}({});",
             main_qualified(&out_table(name)),
-            defs.join(", ")
+            defs.join(", "),
+            main_qualified(&out_index(name)),
+            quote(&out_table(name)),
+            cols.join(", "),
         ),
     )
 }
@@ -860,6 +879,23 @@ fn read_deltas(conn: &Connection, schema: &Schema, after: i64) -> Result<(ZSet, 
     Ok((z, last))
 }
 
+/// The lookup a retraction (`out-`) uses to find the one output row it
+/// removes (Phase 4 spec §4): `SELECT rowid FROM <out> WHERE <c0> IS
+/// <operand(0)> AND <c1> IS <operand(1)> AND …`. `cols` must be every output
+/// column, quoted, in the output table's own order — the same order
+/// `create_out_table` indexed them in — so SQLite can plan this as a SEARCH
+/// on `out_index`, not a SCAN. `operand` gives each column's `IS`
+/// comparison's right-hand side: `NEW.cN` inside the apply trigger, `?N` in
+/// the unit test that inspects the trigger's own query plan.
+fn retraction_lookup(out: &str, cols: &[String], operand: impl Fn(usize) -> String) -> String {
+    let terms: Vec<String> = cols
+        .iter()
+        .enumerate()
+        .map(|(i, c)| format!("{c} IS {}", operand(i)))
+        .collect();
+    format!("SELECT rowid FROM {out} WHERE {}", terms.join(" AND "))
+}
+
 /// The stage table and the trigger that applies it (see `apply`). One stage
 /// row is one change: `op` is `state` (a weight change of arrangement `arr`),
 /// `out+` / `out-` (an output row, in `c0`, `c1`, …), or `progress` (table
@@ -886,12 +922,7 @@ fn create_stage(
         .collect();
     let cols: Vec<String> = view.columns.iter().map(|c| quote(&c.name)).collect();
     let new_cols: Vec<String> = (0..n).map(|i| format!("NEW.c{i}")).collect();
-    let same: Vec<String> = cols
-        .iter()
-        .enumerate()
-        .map(|(i, c)| format!("{c} IS NEW.c{i}"))
-        .collect();
-    let same = same.join(" AND ");
+    let lookup = retraction_lookup(&out, &cols, |i| format!("NEW.c{i}"));
     let mut body = Vec::new();
     for (i, id) in ids.iter().enumerate() {
         let t = quote(&state_table(name, *id));
@@ -907,11 +938,11 @@ fn create_stage(
     }
     body.push(format!(
         "SELECT RAISE(ABORT, 'ivmlite broken invariant: the view retracted a row its output table does not hold') \
-         WHERE NEW.op = 'out-' AND NOT EXISTS (SELECT 1 FROM {out} WHERE {same});"
+         WHERE NEW.op = 'out-' AND NOT EXISTS ({lookup});"
     ));
     body.push(format!(
         "DELETE FROM {out} WHERE NEW.op = 'out-' \
-         AND rowid = (SELECT rowid FROM {out} WHERE {same} LIMIT 1);"
+         AND rowid = ({lookup} LIMIT 1);"
     ));
     body.push(format!(
         "INSERT INTO {out}({}, {WEIGHT}) SELECT {}, 1 WHERE NEW.op = 'out+';",
@@ -1222,16 +1253,24 @@ fn verify(
              (stored {plan}, now {now})"
         ));
     }
-    let mut needed: Vec<String> = arrangement_ids(&view.plan)
+    let mut needed: Vec<(String, &str)> = arrangement_ids(&view.plan)
         .into_iter()
-        .map(|id| state_table(name, id))
+        .map(|id| (state_table(name, id), "table"))
         .collect();
-    needed.push(out_table(name));
-    needed.push(stage_table(name));
-    needed.extend(view.tables.iter().map(|t| delta_table(t)));
-    for table in needed {
-        if !table_exists(conn, &table)? {
-            return Err(format!("its shadow table {table} is missing"));
+    needed.push((out_table(name), "table"));
+    // Phase 4 spec §4: the output index too, so a view whose index the user
+    // dropped is broken rather than silently falling back to a full scan.
+    needed.push((out_index(name), "index"));
+    needed.push((stage_table(name), "table"));
+    needed.extend(view.tables.iter().map(|t| (delta_table(t), "table")));
+    for (object, kind) in needed {
+        let exists = match kind {
+            "table" => table_exists(conn, &object)?,
+            "index" => index_exists(conn, &object)?,
+            _ => unreachable!("every `needed` entry names its own kind"),
+        };
+        if !exists {
+            return Err(format!("its shadow {kind} {object} is missing"));
         }
     }
     check_capture(conn, name, &view)?;
@@ -1456,5 +1495,25 @@ mod tests {
         assert!(!is_state_table_of("__ivm_state_v_x_agg_groups", "v"));
         assert!(!is_state_table_of("__ivm_state_v__agg_groups", "v"));
         assert!(!is_state_table_of("__ivm_out_v", "v"));
+    }
+
+    // This crate builds `rusqlite` with only the `loadable_extension`
+    // feature (see this crate's Cargo.toml): it is never linked to a real
+    // SQLite, only loaded into one at runtime, so `Connection::open_in_memory`
+    // panics with "SQLite API not initialized" here (confirmed: that is
+    // exactly what happens if this test opens one). `EXPLAIN QUERY PLAN`
+    // therefore cannot be run from this crate's own tests; instead this
+    // test pins `retraction_lookup`'s exact generated text, and
+    // `ivmlite-test`'s `the_retraction_lookup_searches_the_output_index`
+    // (`extension_lifecycle.rs`) proves that exact text plans as a SEARCH
+    // on `__ivm_outidx_<view>`, against the real extension's own index.
+    #[test]
+    fn the_retraction_lookup_names_every_column_by_position() {
+        let cols = vec![quote("k"), quote("s")];
+        let lookup = retraction_lookup(&quote("__ivm_out_v"), &cols, |i| format!("?{}", i + 1));
+        assert_eq!(
+            lookup,
+            "SELECT rowid FROM \"__ivm_out_v\" WHERE \"k\" IS ?1 AND \"s\" IS ?2"
+        );
     }
 }

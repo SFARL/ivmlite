@@ -150,20 +150,24 @@ fn a_tracked_table_whose_capture_is_broken_refuses_a_new_view() {
     );
 }
 
+/// Phase 4 spec §4: format 3 adds the output index. Format 2 predates it and
+/// is refused like any other older format — no release ever wrote format 2,
+/// so this only pins that an older format is refused, not that 2 specifically
+/// ever existed in the wild.
 #[test]
-fn a_database_in_format_1_is_refused_by_create_and_by_connect() {
-    let file = TempFile::new("format1");
+fn a_database_in_an_older_format_is_refused_by_create_and_by_connect() {
+    let file = TempFile::new("format2");
     {
         let c = open_with_extension(Some(file.path())).unwrap();
         setup(&c);
         create(&c, "sums", SUMS).unwrap();
-        c.execute_batch("UPDATE __ivm_meta SET value = 1; UPDATE __ivm_view SET format = 1;")
+        c.execute_batch("UPDATE __ivm_meta SET value = 2; UPDATE __ivm_view SET format = 2;")
             .unwrap();
-        let err = create(&c, "counts", COUNTS).expect_err("format 1");
-        assert!(err.to_string().contains("format 1"), "{err}");
+        let err = create(&c, "counts", COUNTS).expect_err("format 2");
+        assert!(err.to_string().contains("format 2"), "{err}");
     }
     let c = open_with_extension(Some(file.path())).unwrap();
-    let err = c.execute_batch("SELECT * FROM sums").expect_err("format 1");
-    assert!(err.to_string().contains("format 1"), "{err}");
+    let err = c.execute_batch("SELECT * FROM sums").expect_err("format 2");
+    assert!(err.to_string().contains("format 2"), "{err}");
     c.execute_batch("DROP TABLE sums").unwrap();
 }
