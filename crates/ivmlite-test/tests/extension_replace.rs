@@ -423,10 +423,36 @@ fn ivmlite_triggers_use_no_aggregate_order_by() {
         // Phase 4 spec §5: nor an aggregate `FILTER` (3.30) or a window
         // function (3.25), which the single-scan latch might be tempted to use.
         assert!(
-            !sql.contains("filter (") && !sql.contains(" over ("),
+            !word_before_paren(&sql, "filter") && !word_before_paren(&sql, "over"),
             "{name}: {sql}"
         );
     }
+    // The scan itself, on the spellings it must catch and the words it must not.
+    for caught in ["filter (", "filter(", "x) over\n  (", "over\t(w)"] {
+        assert!(
+            word_before_paren(caught, "filter") || word_before_paren(caught, "over"),
+            "{caught:?}"
+        );
+    }
+    for missed in ["overflow(", "x_over (", "filtered (", "over", "over x ("] {
+        assert!(
+            !word_before_paren(missed, "filter") && !word_before_paren(missed, "over"),
+            "{missed:?}"
+        );
+    }
+}
+
+/// Whether `sql` holds `word` as a whole word (no letter, digit or `_` on
+/// either side), followed by optional whitespace and `(`.
+fn word_before_paren(sql: &str, word: &str) -> bool {
+    let is_word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    sql.match_indices(word).any(|(at, _)| {
+        let before = sql[..at].chars().next_back();
+        let rest = &sql[at + word.len()..];
+        !before.is_some_and(is_word)
+            && !rest.chars().next().is_some_and(is_word)
+            && rest.trim_start().starts_with('(')
+    })
 }
 
 /// Phase 4 spec §5: the latch is one aggregate over sqlite_schema. With the
@@ -454,17 +480,24 @@ fn the_latch_fires_when_the_scan_finds_no_row_for_the_table() {
 #[test]
 fn the_latch_reads_sqlite_schema_once() {
     let c = open_with_extension(None).unwrap();
-    c.execute_batch("CREATE TABLE t(k TEXT UNIQUE, x INTEGER) STRICT;")
-        .unwrap();
+    c.execute_batch(
+        "CREATE TABLE t(k TEXT UNIQUE, x INTEGER) STRICT;
+         CREATE UNIQUE INDEX i ON t(x);",
+    )
+    .unwrap();
     create(&c, "ks", KS).unwrap();
-    let body: String = c
-        .query_row(
-            "SELECT sql FROM sqlite_schema WHERE name = '__ivm_trig_t_preins'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(body.matches("sqlite_schema").count(), 1, "{body}");
+    for name in ["__ivm_trig_t_preins", "__ivm_trig_t_preupd"] {
+        let body: String = c
+            .query_row(
+                "SELECT sql FROM sqlite_schema WHERE name = ?1",
+                [name],
+                |r| r.get(0),
+            )
+            .unwrap();
+        // The explicit index is recorded, so the text part is present too.
+        assert!(body.contains("CREATE UNIQUE INDEX i ON t(x)"), "{body}");
+        assert_eq!(body.matches("sqlite_schema").count(), 1, "{name}: {body}");
+    }
 }
 
 /// Spec §2's three table variants: each has a `NOT NULL DEFAULT 'd'` unique

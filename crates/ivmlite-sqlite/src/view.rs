@@ -443,8 +443,8 @@ impl Fingerprint {
     /// - the unique indexes are as many as recorded, and as many of them
     ///   have a recorded text. Index names are unique in a schema and every
     ///   text contains its name, so together these compare the sets. With
-    ///   none recorded the first count alone does, and the second is left
-    ///   out, since `IN ()` is invalid.
+    ///   none recorded, the count alone covers it, so the text part is left
+    ///   out.
     ///
     /// Every part concerns a row whose `tbl_name` is `table`, so they are
     /// one aggregate over a single scan of `sqlite_schema` (Phase 4 spec
@@ -453,7 +453,10 @@ impl Fingerprint {
     /// empty input, never with `sum(…)`, which is NULL there: while `table`
     /// is renamed away the scan finds no row at all, and a NULL condition
     /// would silently not latch. `FILTER` and window functions stay out for
-    /// the same old-SQLite reason as `ORDER BY`. The `sqlite_schema` read is
+    /// the same old-SQLite reason as `ORDER BY`. The table part counts only
+    /// the rows with the recorded text: a schema cannot hold two tables of
+    /// the same name (in any case), so exactly one such row means `table`'s
+    /// row exists and is unchanged. The `sqlite_schema` read is
     /// unqualified: a trigger in `main` reads `main`'s (measured, with an
     /// attached database holding a same-named table and unique index).
     fn changed(&self, table: &str) -> String {
@@ -464,7 +467,6 @@ impl Fingerprint {
             .collect();
         let recorded = self.unique_indexes.len();
         let mut parts = vec![
-            format!("count(CASE WHEN {table_row} THEN 1 END) <> 1"),
             format!(
                 "count(CASE WHEN {table_row} AND sql IS {} THEN 1 END) <> 1",
                 literal(&self.table_sql)
