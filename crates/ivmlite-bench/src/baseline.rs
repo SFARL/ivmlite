@@ -68,6 +68,49 @@ pub fn install_trigger_view(conn: &Connection, table: &str, v: &ViewSpec) -> rus
     ))
 }
 
+/// Add an `AFTER UPDATE` trigger to a view `install_trigger_view` already
+/// installed: it retracts `OLD`'s contribution (if `OLD.amount` crossed the
+/// threshold) and adds `NEW`'s (if `NEW.amount` crosses it), one trigger
+/// firing once per updated row.
+///
+/// A single `AFTER UPDATE` trigger body cannot branch (SQLite trigger bodies
+/// have no `IF`), so each of the three statements below carries its own
+/// guard in a `WHERE`/`SELECT ... WHERE` clause instead of the trigger's own
+/// `WHEN` clause — one `WHEN` could gate the whole body, but not the retract
+/// and the add independently. Written in this order (retract, then its
+/// cleanup, then add), the three statements are correct regardless of
+/// whether `OLD.region` and `NEW.region` are the same key: if they are, the
+/// retract's decrement, the cleanup's possible deletion, and the add's
+/// insert-or-increment run as one sequential pipeline on that key, so a
+/// row's count never observes a spurious zero from the other half of the
+/// same update.
+///
+/// M1b Phase 4 Task 5 (spec §7): `write_amp.rs` uses this for the
+/// `hand_written_trigger` engine, which has INSERT, DELETE and UPDATE
+/// triggers; `engine.rs`'s matrix keeps using `install_trigger_view`
+/// unchanged, since the m0 update trace never updates a row in place.
+pub fn install_trigger_view_with_update(
+    conn: &Connection,
+    table: &str,
+    v: &ViewSpec,
+) -> rusqlite::Result<()> {
+    install_trigger_view(conn, table, v)?;
+    let t = v.table();
+    let k = v.threshold;
+    conn.execute_batch(&format!(
+        r#"
+        CREATE TRIGGER "{t}_upd" AFTER UPDATE ON "{table}" BEGIN
+            UPDATE "{t}" SET s = s - OLD.amount, c = c - 1
+                WHERE k = OLD.region AND OLD.amount > {k};
+            DELETE FROM "{t}" WHERE k = OLD.region AND c = 0 AND OLD.amount > {k};
+            INSERT INTO "{t}"(k, s, c)
+                SELECT NEW.region, NEW.amount, 1 WHERE NEW.amount > {k}
+                ON CONFLICT(k) DO UPDATE SET s = s + NEW.amount, c = c + 1;
+        END;
+        "#
+    ))
+}
+
 /// The statements `apply` executes, compiled before the timer starts.
 ///
 /// They must be prepared **after every trigger exists**. Creating a trigger
@@ -312,6 +355,67 @@ mod tests {
         assert!(
             without_bootstrap.is_empty(),
             "without the bootstrap statement, the three rows that existed before the triggers are never counted"
+        );
+    }
+
+    /// M1b Phase 4 Task 5 (spec §7): `install_trigger_view_with_update`'s
+    /// `AFTER UPDATE` trigger must retract `OLD`'s contribution and add
+    /// `NEW`'s, matching a direct evaluation of the view's SQL — covering an
+    /// update that keeps the same region, one that moves to a different
+    /// region, and one that crosses the threshold in each direction.
+    #[test]
+    fn update_trigger_matches_direct_query_across_region_moves_and_threshold_crossings() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(DDL).unwrap();
+        let seed_rows = [(0i64, "a", 10i64), (1, "a", 20), (2, "b", 50), (3, "c", 5)];
+        {
+            let tx = conn.unchecked_transaction().unwrap();
+            {
+                let mut ins = tx
+                    .prepare("INSERT INTO orders(id, region, amount) VALUES (?1, ?2, ?3)")
+                    .unwrap();
+                for (id, region, amount) in seed_rows {
+                    ins.execute((id, region, amount)).unwrap();
+                }
+            }
+            tx.commit().unwrap();
+        }
+
+        let view = ViewSpec {
+            id: 0,
+            threshold: 8,
+        };
+        install_trigger_view_with_update(&conn, "orders", &view).unwrap();
+
+        // Same region, amount stays above the threshold (a plain retract+add
+        // on the same key).
+        conn.execute("UPDATE orders SET amount = 30 WHERE id = 0", [])
+            .unwrap();
+        // Different region, amount stays above the threshold (retract from
+        // "b", add to "c").
+        conn.execute(
+            "UPDATE orders SET region = 'c', amount = 60 WHERE id = 2",
+            [],
+        )
+        .unwrap();
+        // Crosses the threshold downward: was counted (20 > 8), now is not.
+        conn.execute("UPDATE orders SET amount = 1 WHERE id = 1", [])
+            .unwrap();
+        // Crosses the threshold upward: was not counted (5 <= 8), now is.
+        conn.execute("UPDATE orders SET amount = 50 WHERE id = 3", [])
+            .unwrap();
+
+        let got = trigger_rows(&conn, &view);
+        let want = direct_query_rows(&conn, &view, "orders");
+        assert_eq!(
+            got, want,
+            "the update-maintained summary table must equal a direct evaluation of the view SQL"
+        );
+        // Pin the concrete numbers too, so the two sides cannot "confirm"
+        // each other by sharing the same (possibly wrong) SQL.
+        assert_eq!(
+            got,
+            vec![("a".to_string(), 30, 1), ("c".to_string(), 110, 2),]
         );
     }
 }

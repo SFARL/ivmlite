@@ -7,12 +7,13 @@ mod engine;
 // outside its own tests; Task 6 restores the call and this `allow` with it.
 #[allow(dead_code)]
 mod plot;
+mod write_amp;
 
 use std::path::{Path, PathBuf};
 
 use engine::{engine_order, run_cell, Engine, Measurement};
 use ivmlite_test::{extension_library_for, Profile};
-use ivmlite_workload::Workload;
+use ivmlite_workload::{Workload, WriteAmpWorkload};
 
 /// One row of an M0 chart's data (Task 6 draws the M1b chart from `Row`
 /// instead). Kept here because `plot.rs` still reads `Record`s in its own
@@ -129,6 +130,76 @@ fn print_confirm_csv(mut rows: Vec<(usize, Row)>) {
             )
         );
     }
+}
+
+/// The write-amp CSV header (spec §7). A completely different shape from
+/// `CSV_HEADER` (no `base_rows`/`batch_size`/`group_cardinality` — those are
+/// fixed by the workload file, not swept — and `op`/`recursive_triggers`/
+/// `rows`/`us_per_row` in their place), so it gets its own constant rather
+/// than sharing `measurement_csv`'s formatter.
+const WRITE_AMP_CSV_HEADER: &str = "engine,views,op,recursive_triggers,rows,apply_ms,us_per_row,page_size,base_pages,base_free,bootstrapped_pages,bootstrapped_free,written_pages,written_free,maintained_pages,maintained_free";
+
+fn write_amp_row_csv(r: &write_amp::WriteAmpRow) -> String {
+    let us_per_row = r.apply_ms * 1000.0 / r.rows as f64;
+    format!(
+        "{},{},{},{},{},{:.3},{:.3},{},{},{},{},{},{},{},{},{}",
+        r.engine.label(),
+        r.views,
+        r.op.label(),
+        r.recursive_triggers,
+        r.rows,
+        r.apply_ms,
+        us_per_row,
+        r.page_size,
+        r.base_pages,
+        r.base_free,
+        r.bootstrapped_pages,
+        r.bootstrapped_free,
+        r.written_pages,
+        r.written_free,
+        r.maintained_pages,
+        r.maintained_free,
+    )
+}
+
+/// Sorted by (op, views, recursive_triggers, engine label) so the file diffs
+/// stably across runs, the same rationale as `print_csv`.
+fn print_write_amp_csv(mut rows: Vec<write_amp::WriteAmpRow>) {
+    rows.sort_by(|a, b| {
+        (
+            a.op.label(),
+            a.views,
+            a.recursive_triggers,
+            a.engine.label(),
+        )
+            .cmp(&(
+                b.op.label(),
+                b.views,
+                b.recursive_triggers,
+                b.engine.label(),
+            ))
+    });
+    println!("{WRITE_AMP_CSV_HEADER}");
+    for r in &rows {
+        println!("{}", write_amp_row_csv(r));
+    }
+}
+
+/// `write-amp` mode (spec §7): load `workload_path` (default
+/// `workloads/write-amp.toml`), optionally override its view counts, run
+/// every combination over the three write-amp engines, and print the CSV.
+fn run_write_amp_mode(
+    workload_path: &Path,
+    lib: &Path,
+    views_override: Option<Vec<usize>>,
+) -> Result<(), String> {
+    let mut w = WriteAmpWorkload::load(workload_path).map_err(|e| e.to_string())?;
+    if let Some(views) = views_override {
+        w.view_counts = views;
+    }
+    let rows = write_amp::run_write_amp(&w, lib)?;
+    print_write_amp_csv(rows);
+    Ok(())
 }
 
 /// `ablation` mode's rows: printed with `label,repeat` as two extra leading
@@ -267,9 +338,9 @@ fn run_ablation_mode(workload_path: &Path, lib: &Path, label: &str) -> Result<()
     Ok(())
 }
 
-/// Parsed command line: the mode (Task 5 adds `write-amp`; `matrix`,
-/// `confirm` and `ablation` are today's modes, with `matrix` the default),
-/// plus the shared overrides.
+/// Parsed command line: the mode (`matrix`, `confirm`, `ablation` and
+/// `write-amp`, with `matrix` the default), plus the shared overrides.
+#[derive(Debug)]
 struct Args {
     mode: String,
     extension: Option<PathBuf>,
@@ -278,14 +349,19 @@ struct Args {
     from: Option<PathBuf>,
     /// `ablation`'s build label (`--label`).
     label: Option<String>,
+    /// `write-amp`'s view-count override (`--views`), a comma-separated
+    /// list; Task 6's ablation script uses this to run write-amp at a fixed
+    /// pair of view counts instead of the workload file's full sweep.
+    views: Option<Vec<usize>>,
 }
 
 fn parse_args(raw: impl Iterator<Item = String>) -> Result<Args, String> {
     let mut mode: Option<String> = None;
     let mut extension: Option<PathBuf> = None;
-    let mut workload = PathBuf::from("workloads/m0-baseline.toml");
+    let mut workload: Option<PathBuf> = None;
     let mut from: Option<PathBuf> = None;
     let mut label: Option<String> = None;
+    let mut views: Option<Vec<usize>> = None;
 
     let mut it = raw;
     while let Some(arg) = it.next() {
@@ -296,7 +372,7 @@ fn parse_args(raw: impl Iterator<Item = String>) -> Result<Args, String> {
             }
             "--workload" => {
                 let v = it.next().ok_or("--workload needs a path")?;
-                workload = PathBuf::from(v);
+                workload = Some(PathBuf::from(v));
             }
             "--from" => {
                 let v = it.next().ok_or("--from needs a path")?;
@@ -306,10 +382,33 @@ fn parse_args(raw: impl Iterator<Item = String>) -> Result<Args, String> {
                 let v = it.next().ok_or("--label needs a name")?;
                 label = Some(v);
             }
+            "--views" => {
+                let v = it.next().ok_or("--views needs a comma-separated list")?;
+                let parsed = v
+                    .split(',')
+                    .map(|s| {
+                        s.trim()
+                            .parse::<usize>()
+                            .map_err(|e| format!("--views: invalid view count {s:?}: {e}"))
+                    })
+                    .collect::<Result<Vec<usize>, String>>()?;
+                views = Some(parsed);
+            }
             other if mode.is_none() => mode = Some(other.to_string()),
             other => return Err(format!("unexpected argument: {other}")),
         }
     }
+
+    // `write-amp`'s own default workload file differs from the other three
+    // modes' (spec §7): only applied when `--workload` was not given
+    // explicitly, so an explicit override always wins regardless of mode.
+    let workload = workload.unwrap_or_else(|| {
+        if mode.as_deref() == Some("write-amp") {
+            PathBuf::from("workloads/write-amp.toml")
+        } else {
+            PathBuf::from("workloads/m0-baseline.toml")
+        }
+    });
 
     Ok(Args {
         mode: mode.unwrap_or_else(|| "matrix".to_string()),
@@ -317,6 +416,7 @@ fn parse_args(raw: impl Iterator<Item = String>) -> Result<Args, String> {
         workload,
         from,
         label,
+        views,
     })
 }
 
@@ -346,7 +446,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let label = args.label.ok_or("ablation mode needs --label <name>")?;
             run_ablation_mode(&args.workload, &lib, &label)?;
         }
-        other => return Err(format!("unknown mode {other:?} (Task 5 adds write-amp)").into()),
+        "write-amp" => run_write_amp_mode(&args.workload, &lib, args.views)?,
+        other => {
+            return Err(format!(
+                "unknown mode {other:?} (expected matrix, confirm, ablation or write-amp)"
+            )
+            .into())
+        }
     }
 
     Ok(())
@@ -493,5 +599,49 @@ mod tests {
         assert_eq!(a.mode, "confirm");
         assert_eq!(a.extension, Some(PathBuf::from("/tmp/lib.dylib")));
         assert_eq!(a.workload, PathBuf::from("/tmp/w.toml"));
+    }
+
+    /// `write-amp` mode's own default workload file (spec §7): applied only
+    /// when `--workload` was not given explicitly.
+    #[test]
+    fn parse_args_defaults_write_amp_to_its_own_workload_file() {
+        let a = parse_args(["write-amp"].into_iter().map(String::from)).unwrap();
+        assert_eq!(a.mode, "write-amp");
+        assert_eq!(a.workload, PathBuf::from("workloads/write-amp.toml"));
+        assert_eq!(a.views, None);
+    }
+
+    /// An explicit `--workload` always wins, regardless of mode.
+    #[test]
+    fn parse_args_lets_an_explicit_workload_override_write_amps_default() {
+        let a = parse_args(
+            ["write-amp", "--workload", "/tmp/w.toml"]
+                .into_iter()
+                .map(String::from),
+        )
+        .unwrap();
+        assert_eq!(a.workload, PathBuf::from("/tmp/w.toml"));
+    }
+
+    #[test]
+    fn parse_args_reads_the_views_override_as_a_comma_separated_list() {
+        let a = parse_args(
+            ["write-amp", "--views", "0, 1, 10"]
+                .into_iter()
+                .map(String::from),
+        )
+        .unwrap();
+        assert_eq!(a.views, Some(vec![0, 1, 10]));
+    }
+
+    #[test]
+    fn parse_args_rejects_a_non_numeric_views_entry() {
+        let err = parse_args(
+            ["write-amp", "--views", "0,x"]
+                .into_iter()
+                .map(String::from),
+        )
+        .unwrap_err();
+        assert!(err.contains("--views"), "{err}");
     }
 }
