@@ -199,6 +199,18 @@ impl<'c> RecomputeStatements<'c> {
             .collect::<rusqlite::Result<Vec<_>>>()
             .map(Self)
     }
+
+    fn assert_not_reprepared(&self) -> Result<(), String> {
+        for (i, stmt) in self.0.iter().enumerate() {
+            let n = stmt.get_status(rusqlite::StatementStatus::RePrepare);
+            if n != 0 {
+                return Err(format!(
+                    "the recompute view {i} statement was recompiled {n} time(s) during a timed region"
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Naive recompute: run every view's SQL once and drain its result set.
@@ -206,13 +218,15 @@ impl<'c> RecomputeStatements<'c> {
 /// The results are deliberately **not** written back to a table. That biases
 /// the comparison toward naive recompute on purpose: if incremental maintenance
 /// cannot beat a recompute that only reads, the conclusion is beyond dispute.
-pub fn recompute_all(stmts: &mut RecomputeStatements<'_>) -> rusqlite::Result<f64> {
+pub fn recompute_all(stmts: &mut RecomputeStatements<'_>) -> Result<f64, String> {
     let start = Instant::now();
     for stmt in &mut stmts.0 {
-        let mut rows = stmt.query([])?;
-        while rows.next()?.is_some() {}
+        let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+        while rows.next().map_err(|e| e.to_string())?.is_some() {}
     }
-    Ok(start.elapsed().as_secs_f64() * 1000.0)
+    let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+    stmts.assert_not_reprepared()?;
+    Ok(elapsed_ms)
 }
 
 #[cfg(test)]
@@ -481,6 +495,27 @@ mod tests {
         .unwrap();
         let err = stmts.assert_not_reprepared().unwrap_err();
         assert!(err.contains("insert"), "{err}");
+        assert!(err.contains("recompiled"), "{err}");
+    }
+
+    /// The matrix's naive-recompute statements are timed too. A flag pragma
+    /// after preparation must therefore be detected by the real
+    /// `recompute_all` path, not only by an isolated status helper.
+    #[test]
+    fn recompute_all_detects_an_intervening_pragma() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(DDL).unwrap();
+        let workload = Workload::load(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../workloads/m0-baseline.toml"),
+        )
+        .unwrap()
+        .with_cell(10, 1, 1, 1);
+        let mut stmts = RecomputeStatements::prepare(&conn, &workload).unwrap();
+        conn.execute_batch("PRAGMA recursive_triggers = 1").unwrap();
+
+        let err = recompute_all(&mut stmts).unwrap_err();
+        assert!(err.contains("recompute view 0"), "{err}");
         assert!(err.contains("recompiled"), "{err}");
     }
 }

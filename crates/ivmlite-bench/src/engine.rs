@@ -234,7 +234,7 @@ pub fn run_cell(engine: Engine, cell: &Workload, lib: &Path) -> Result<Measureme
             let stmts = recompute_stmts
                 .as_mut()
                 .expect("prepared above for NaiveRecompute");
-            recompute_all(stmts).map_err(|e| e.to_string())?;
+            recompute_all(stmts)?;
         }
         Engine::Ivmlite => {
             for stmt in &mut refresh_stmts {

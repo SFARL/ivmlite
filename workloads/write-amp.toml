@@ -21,7 +21,7 @@ tx_rows = 1000
 # recursive_triggers OFF and ON (spec §7): with the pragma OFF, an AFTER
 # DELETE trigger does not fire for a row removed by REPLACE's conflict
 # resolution, so hand_written_trigger's replace-op numbers are cost-only in
-# both modes (see the comment in ivmlite-bench/src/write_amp.rs).
+# that mode. With the pragma ON, its view is checked against the oracle.
 recursive_triggers = [false, true]
 
 # The threshold of view i = (i * view_threshold_stride) % view_threshold_modulus,

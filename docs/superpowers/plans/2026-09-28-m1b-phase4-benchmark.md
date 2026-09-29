@@ -682,16 +682,17 @@ In `ivmlite-bench/src/write_amp.rs`: add a test that runs a tiny workload (`base
 - **`baseline.rs`:** add `install_trigger_view_with_update(conn, table, view)`, the M0 hand-written view plus an `AFTER UPDATE` trigger that retracts OLD and adds NEW. `write_amp.rs` uses it; the matrix keeps using `install_trigger_view` unchanged.
 - **`write_amp.rs`:** for each `(views, kind, mode, engine)`, with engines ordered by `engine_order` over `[NoMaintenance, HandWrittenTrigger, Ivmlite]` and rotated by the combination index:
   1. open a fresh in-memory database, loading the extension for `Ivmlite`;
-  2. seed the base rows and sample space;
-  3. bootstrap the views (timed) and sample space;
-  4. prepare one statement per `WriteOp` variant, then `PRAGMA recursive_triggers = <mode>`;
-  5. **timed apply:** execute the trace in transactions of `tx_rows`. After each op, check its effect using `changes()` and a row count kept outside the timer only when cheap:
+  2. immediately set `PRAGMA recursive_triggers = <mode>`. A flag PRAGMA expires every prepared statement, so it must precede preparation or compilation leaks into the timed apply;
+  3. seed the base rows and sample space;
+  4. bootstrap the views (untimed), sample space, and verify their initial state;
+  5. prepare one statement per `WriteOp` variant;
+  6. **timed apply:** execute the trace in transactions of `tx_rows`. After each op, check its effect using `changes()` and a row count kept outside the timer only when cheap:
      - for `Delete` and `Update`, `execute` must return 1;
      - for a `Replace`, check once per trace, after the timer, that the table's `count(*)` equals the expected net total, `base − Σ expect_removed + M`.
 
      Sample space.
-  6. **untimed:** refresh every view (`Ivmlite` only), verify every view against the oracle (`Ivmlite` and `HandWrittenTrigger` for insert, delete and update; for the replace ops, `HandWrittenTrigger` is cost-only, since its triggers do not see REPLACE deletions with recursive_triggers OFF; say so in a comment), and sample space.
-- **CSV** to stdout: `engine,views,op,recursive_triggers,rows,apply_ms,us_per_row,page_size,base_pages,base_free,bootstrapped_pages,bootstrapped_free,written_pages,written_free,maintained_pages,maintained_free`.
+  7. **untimed:** refresh every view (`Ivmlite` only), sample space, then verify every view against the oracle (`Ivmlite`, plus `HandWrittenTrigger` for insert/delete/update and for REPLACE when `recursive_triggers` is ON; with it OFF, the trigger's REPLACE rows are cost-only).
+- **CSV** to stdout: `engine,views,op,recursive_triggers,rows,apply_ms,us_per_row,extra_us_per_row,page_size,base_pages,base_free,bootstrapped_pages,bootstrapped_free,written_pages,written_free,maintained_pages,maintained_free`.
 - **`main.rs`:** add the `write-amp [--workload workloads/write-amp.toml]` mode, plus `--views <list>` to override the view counts. The ablation script (Task 6) uses that override.
 
 - [ ] **Step 4: Run to verify**

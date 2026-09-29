@@ -181,13 +181,11 @@ fn expected_replace_total(base_rows: usize, ops: &[WriteOp]) -> i64 {
 }
 
 /// Check the net row count for a replace trace (ruling 3): a miss aborts the
-/// run, exactly like a per-op effect miss. This check is trace-wide, not
-/// per op, but that is sufficient here: `trace()` draws every op's target
-/// row(s) disjointly (no two ops in one trace touch the same existing row),
-/// so a single op that actually removed the wrong number of rows shifts the
-/// aggregate total by exactly that op's own error — there is no way for two
-/// ops' errors to cancel out through a row they share, because they never
-/// share one.
+/// run, exactly like a per-op effect miss. This is deliberately a whole-trace
+/// check, not proof that every individual REPLACE removed exactly the claimed
+/// number of rows. `trace()` keeps targets disjoint, so operations cannot
+/// interact through a shared row, but opposing per-op count errors could still
+/// cancel in the final total.
 fn check_replace_net_count(conn: &Connection, table: &str, expected: i64) -> Result<(), String> {
     let got: i64 = conn
         .query_row(&format!("SELECT COUNT(*) FROM \"{table}\""), [], |r| {
@@ -246,7 +244,7 @@ fn apply_trace(
     is_replace: bool,
 ) -> Result<f64, String> {
     let start = Instant::now();
-    for chunk in ops.chunks(tx_rows.max(1)) {
+    for chunk in ops.chunks(tx_rows) {
         let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
         for op in chunk {
             execute_op(stmts, op)?;
@@ -265,9 +263,9 @@ fn apply_trace(
 /// Set the connection's `recursive_triggers` pragma to `mode` (spec §7 step
 /// 4). Factored out of `run_one` so the wiring — "the workload's
 /// `recursive_triggers` value actually reaches the connection" — is directly
-/// testable on its own, rather than only observable through a whole cell's
-/// behavior (and for a replace op, `hand_written_trigger`'s view is never
-/// even checked, so a bug here could otherwise go unnoticed).
+/// testable on its own. The whole-cell test separately guards the call site:
+/// with REPLACE and the mode ON, deleting the call leaves SQLite's default
+/// OFF and makes the hand-written view disagree with the oracle.
 fn set_recursive_triggers(conn: &Connection, mode: bool) -> rusqlite::Result<()> {
     conn.execute_batch(&format!(
         "PRAGMA recursive_triggers = {}",
