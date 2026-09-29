@@ -307,7 +307,81 @@ impl WriteAmpWorkload {
         let text = fs::read_to_string(path).map_err(WorkloadError::Io)?;
         let w: WriteAmpWorkload =
             toml::from_str(&text).map_err(|e| WorkloadError::Parse(e.to_string()))?;
+        w.validate()?;
         Ok(w)
+    }
+
+    /// Reject every configuration `rows()`/`trace()`/`views()` cannot make
+    /// sense of (M1b Phase 4 Task 5 fix round, ruling 9). `load` calls this,
+    /// and so must anything that mutates a loaded `WriteAmpWorkload` before
+    /// running it (`ivmlite-bench`'s `--views` override re-validates after
+    /// replacing `view_counts`, for exactly this reason).
+    ///
+    /// `rows()` and `trace()` no longer clamp `group_cardinality` or
+    /// `amount_max` to a minimum of 1 themselves — this is now the one place
+    /// that rule lives, exactly as `Workload::validate` is the one place
+    /// `group_cardinality > base_rows` is rejected.
+    pub fn validate(&self) -> Result<(), WorkloadError> {
+        if self.rows_per_op == 0 {
+            return Err(WorkloadError::Invalid("rows_per_op must not be 0".into()));
+        }
+        if self.tx_rows == 0 {
+            return Err(WorkloadError::Invalid("tx_rows must not be 0".into()));
+        }
+        // `replace_two` draws 2 * rows_per_op distinct existing rows per
+        // trace (a pair per op); every other kind draws at most rows_per_op.
+        let needs_two_rows_per_op = self.ops.contains(&WriteOpKind::ReplaceTwo);
+        let min_base_rows = if needs_two_rows_per_op {
+            2 * self.rows_per_op
+        } else {
+            self.rows_per_op
+        };
+        if self.base_rows < min_base_rows {
+            return Err(WorkloadError::Invalid(format!(
+                "base_rows ({}) must be at least {min_base_rows} \
+                 ({}rows_per_op ({}){}, given ops)",
+                self.base_rows,
+                if needs_two_rows_per_op { "2 * " } else { "" },
+                self.rows_per_op,
+                if needs_two_rows_per_op {
+                    " for replace_two's pair per op"
+                } else {
+                    ""
+                },
+            )));
+        }
+        if self.group_cardinality < 1 || self.group_cardinality > self.base_rows {
+            return Err(WorkloadError::Invalid(format!(
+                "group_cardinality ({}) must be between 1 and base_rows ({})",
+                self.group_cardinality, self.base_rows
+            )));
+        }
+        if self.amount_max <= 0 {
+            return Err(WorkloadError::Invalid(format!(
+                "amount_max ({}) must be positive",
+                self.amount_max
+            )));
+        }
+        if self.view_threshold_modulus <= 0 {
+            return Err(WorkloadError::Invalid(format!(
+                "view_threshold_modulus ({}) must be positive",
+                self.view_threshold_modulus
+            )));
+        }
+        if self.ops.is_empty() {
+            return Err(WorkloadError::Invalid("ops must not be empty".into()));
+        }
+        if self.recursive_triggers.is_empty() {
+            return Err(WorkloadError::Invalid(
+                "recursive_triggers must not be empty".into(),
+            ));
+        }
+        if self.view_counts.is_empty() {
+            return Err(WorkloadError::Invalid(
+                "view_counts must not be empty".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// A copy with `base_rows` and `rows_per_op` overridden. A test-only
@@ -322,10 +396,16 @@ impl WriteAmpWorkload {
 
     /// Base rows: id `i`, email `"e{i}@x"`, handle `"h{i}"`, region
     /// `"r{i % card}"`, amount seeded (spec §7's data description).
+    ///
+    /// Precondition: `group_cardinality >= 1` and `amount_max >= 1`.
+    /// `validate` (which `load` calls) enforces both; a caller that builds a
+    /// `WriteAmpWorkload` directly must uphold them itself, or `id % card`
+    /// panics (division by zero) and `random_range(0..amount_max)` panics
+    /// (an empty range).
     pub fn rows(&self) -> impl Iterator<Item = (i64, String, String, String, i64)> + '_ {
         let mut rng = StdRng::seed_from_u64(self.seed);
-        let card = self.group_cardinality.max(1) as i64;
-        let amount_max = self.amount_max.max(1);
+        let card = self.group_cardinality as i64;
+        let amount_max = self.amount_max;
         (0..self.base_rows as i64).map(move |id| {
             (
                 id,
@@ -346,12 +426,17 @@ impl WriteAmpWorkload {
     /// A fresh email or handle (one not tied to any existing row) is
     /// prefixed `n`/`m` rather than the base rows' own `e`/`h`, so it can
     /// never be mistaken for pointing at an existing row.
+    ///
+    /// Precondition: the same as `rows()`'s, plus enough distinct rows for
+    /// `kind` to draw without replacement (`validate` enforces this too:
+    /// `base_rows >= rows_per_op`, or `>= 2 * rows_per_op` when `ops`
+    /// contains `ReplaceTwo`) — otherwise `sample_distinct` panics.
     pub fn trace(&self, kind: WriteOpKind) -> Vec<WriteOp> {
         let mut rng = StdRng::seed_from_u64(self.seed ^ kind.seed_salt());
         let base = self.base_rows as i64;
         let m = self.rows_per_op;
-        let card = self.group_cardinality.max(1) as i64;
-        let amount_max = self.amount_max.max(1);
+        let card = self.group_cardinality as i64;
+        let amount_max = self.amount_max;
 
         match kind {
             WriteOpKind::Insert => (0..m)
@@ -1237,5 +1322,121 @@ mod tests {
         assert_eq!(drawn.len(), 40);
         assert_eq!(drawn.iter().collect::<BTreeSet<_>>().len(), 40);
         assert!(drawn.iter().all(|&id| (0..50).contains(&id)));
+    }
+
+    // ---- M1b Phase 4 Task 5 fix round, ruling 9: WriteAmpWorkload::validate ----
+
+    /// Every rejection rule `validate` must enforce, each checked by
+    /// mutating one field of a workload that is otherwise valid and
+    /// confirming `validate()` returns `Err`. Mirrors the style of
+    /// `Workload`'s own `validate` tests (e.g.
+    /// `load_rejects_group_cardinality_exceeding_base_rows`): a direct call
+    /// to `validate()`, not a round trip through TOML, since `validate`
+    /// must be callable on its own (see the load-integration test below for
+    /// the "load actually calls it" half).
+    #[test]
+    fn validate_rejects_every_invalid_field() {
+        let base = tiny();
+        assert!(base.validate().is_ok(), "the fixture itself must be valid");
+
+        let cases: Vec<(&str, WriteAmpWorkload)> = vec![
+            ("rows_per_op", {
+                let mut w = base.clone();
+                w.rows_per_op = 0;
+                w
+            }),
+            ("tx_rows", {
+                let mut w = base.clone();
+                w.tx_rows = 0;
+                w
+            }),
+            ("base_rows", {
+                // No replace_two: base_rows must be >= rows_per_op (50).
+                let mut w = base.clone();
+                w.ops = vec![WriteOpKind::Delete];
+                w.base_rows = 49;
+                w
+            }),
+            ("base_rows", {
+                // replace_two present: base_rows must be >= 2 * rows_per_op (100).
+                let mut w = base.clone();
+                w.ops = vec![WriteOpKind::ReplaceTwo];
+                w.base_rows = 99;
+                w
+            }),
+            ("group_cardinality", {
+                let mut w = base.clone();
+                w.group_cardinality = 0;
+                w
+            }),
+            ("group_cardinality", {
+                let mut w = base.clone();
+                w.group_cardinality = w.base_rows + 1;
+                w
+            }),
+            ("amount_max", {
+                let mut w = base.clone();
+                w.amount_max = 0;
+                w
+            }),
+            ("view_threshold_modulus", {
+                let mut w = base.clone();
+                w.view_threshold_modulus = 0;
+                w
+            }),
+            ("ops", {
+                let mut w = base.clone();
+                w.ops = vec![];
+                w
+            }),
+            ("recursive_triggers", {
+                let mut w = base.clone();
+                w.recursive_triggers = vec![];
+                w
+            }),
+            ("view_counts", {
+                let mut w = base.clone();
+                w.view_counts = vec![];
+                w
+            }),
+        ];
+
+        for (field, w) in cases {
+            assert!(
+                w.validate().is_err(),
+                "validate() should reject an invalid {field}"
+            );
+        }
+    }
+
+    /// The boundary `base_rows == 2 * rows_per_op` (with `replace_two`
+    /// present) must be accepted — an off-by-one in the comparison would
+    /// reject this legal boundary too.
+    #[test]
+    fn validate_accepts_the_replace_two_base_rows_boundary() {
+        let mut w = tiny();
+        w.ops = vec![WriteOpKind::ReplaceTwo];
+        w.base_rows = 2 * w.rows_per_op;
+        w.group_cardinality = 1; // irrelevant here; must not exceed base_rows
+        assert!(w.validate().is_ok());
+    }
+
+    /// `load` must actually call `validate`, not merely offer it (ruling
+    /// 9): a shipped-file-shaped TOML with `rows_per_op = 0` must be
+    /// rejected at `load` time.
+    #[test]
+    fn load_rejects_an_invalid_write_amp_workload() {
+        let mut w = tiny();
+        w.rows_per_op = 0;
+        let toml_text = toml::to_string(&w).unwrap();
+
+        let dir = std::env::temp_dir().join("ivmlite-workload-write-amp-invalid");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("bad.toml");
+        std::fs::write(&path, toml_text).unwrap();
+
+        let err = WriteAmpWorkload::load(&path)
+            .expect_err("rows_per_op = 0 must be rejected at load time");
+        assert!(err.to_string().contains("rows_per_op"), "{err}");
     }
 }

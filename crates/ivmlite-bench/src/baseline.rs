@@ -134,6 +134,26 @@ impl<'c> ApplyStatements<'c> {
             delete: conn.prepare(&format!("DELETE FROM \"{table}\" WHERE id = ?1"))?,
         })
     }
+
+    /// Neither statement must have been recompiled since `prepare` (M1b
+    /// Phase 4 Task 5 fix round, ruling 6): a flag `PRAGMA` issued between
+    /// `prepare` and a timed region would silently do this by expiring the
+    /// statement (`OP_Expire`), moving compilation cost inside the timer it
+    /// was prepared to stay out of. No matrix cell currently sets such a
+    /// pragma, so this is a preventive check for `engine::run_cell` — see
+    /// `crate::engine::tests::apply_statements_detect_an_intervening_pragma`
+    /// for a test that forces the condition this guards against.
+    pub(crate) fn assert_not_reprepared(&self) -> Result<(), String> {
+        for (label, s) in [("insert", &self.insert), ("delete", &self.delete)] {
+            let n = s.get_status(rusqlite::StatementStatus::RePrepare);
+            if n != 0 {
+                return Err(format!(
+                    "the {label} statement was recompiled {n} time(s) during a timed region"
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Apply one batch of changes and return the elapsed milliseconds. The timed
@@ -417,5 +437,50 @@ mod tests {
             got,
             vec![("a".to_string(), 30, 1), ("c".to_string(), 110, 2),]
         );
+    }
+
+    /// M1b Phase 4 Task 5 fix round (ruling 6): `assert_not_reprepared` must
+    /// pass after ordinary use.
+    #[test]
+    fn apply_statements_are_not_reprepared_by_ordinary_use() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(DDL).unwrap();
+        let mut stmts = ApplyStatements::prepare(&conn, "orders").unwrap();
+        apply(
+            &conn,
+            &mut stmts,
+            &[TraceOp::Insert {
+                id: 1,
+                region: "a".into(),
+                amount: 1,
+            }],
+        )
+        .unwrap();
+        stmts.assert_not_reprepared().unwrap();
+    }
+
+    /// The negative half: a flag `PRAGMA` issued after `prepare` expires
+    /// the statement, and its next `execute` recompiles it —
+    /// `assert_not_reprepared` must catch that, not merely pass because
+    /// nothing in this crate happens to trigger it today.
+    #[test]
+    fn apply_statements_detect_an_intervening_pragma() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(DDL).unwrap();
+        let mut stmts = ApplyStatements::prepare(&conn, "orders").unwrap();
+        conn.execute_batch("PRAGMA recursive_triggers = 1").unwrap();
+        apply(
+            &conn,
+            &mut stmts,
+            &[TraceOp::Insert {
+                id: 1,
+                region: "a".into(),
+                amount: 1,
+            }],
+        )
+        .unwrap();
+        let err = stmts.assert_not_reprepared().unwrap_err();
+        assert!(err.contains("insert"), "{err}");
+        assert!(err.contains("recompiled"), "{err}");
     }
 }

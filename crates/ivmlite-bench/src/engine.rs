@@ -134,6 +134,25 @@ pub(crate) fn verify_view(
     Ok(())
 }
 
+/// A statement must not have been recompiled since it was prepared (M1b
+/// Phase 4 Task 5 fix round, ruling 6) — see
+/// `baseline::ApplyStatements::assert_not_reprepared`'s doc comment for why.
+/// `run_cell` uses this for each `Ivmlite` refresh statement, which (unlike
+/// `ApplyStatements`) is a bare `Statement` rather than a field of its own
+/// struct.
+pub(crate) fn assert_statement_not_reprepared(
+    label: &str,
+    stmt: &rusqlite::Statement<'_>,
+) -> Result<(), String> {
+    let n = stmt.get_status(rusqlite::StatementStatus::RePrepare);
+    if n != 0 {
+        return Err(format!(
+            "the {label} statement was recompiled {n} time(s) during a timed region"
+        ));
+    }
+    Ok(())
+}
+
 /// Run spec §3.2's sequence for one engine on one cell, in a fresh in-memory
 /// database. `lib` is the extension library, used only for `Engine::Ivmlite`.
 pub fn run_cell(engine: Engine, cell: &Workload, lib: &Path) -> Result<Measurement, String> {
@@ -203,6 +222,9 @@ pub fn run_cell(engine: Engine, cell: &Workload, lib: &Path) -> Result<Measureme
 
     // ---- step 5: timed apply ----
     let apply_ms = apply(&conn, &mut apply_stmts, &ops).map_err(|e| e.to_string())?;
+    // M1b Phase 4 Task 5 fix round (ruling 6): guards this class of bug in
+    // the matrix path too — see `ApplyStatements::assert_not_reprepared`.
+    apply_stmts.assert_not_reprepared()?;
     let written = space(&conn).map_err(|e| e.to_string())?;
 
     // ---- step 6: timed maintain ----
@@ -222,6 +244,11 @@ pub fn run_cell(engine: Engine, cell: &Workload, lib: &Path) -> Result<Measureme
         Engine::NoMaintenance | Engine::HandWrittenTrigger => {}
     }
     let maintain_ms = maintain_start.elapsed().as_secs_f64() * 1000.0;
+    if engine == Engine::Ivmlite {
+        for (i, stmt) in refresh_stmts.iter().enumerate() {
+            assert_statement_not_reprepared(&format!("refresh view {i}"), stmt)?;
+        }
+    }
     let maintained = space(&conn).map_err(|e| e.to_string())?;
 
     // ---- step 7: verify the final state (untimed) ----
@@ -342,5 +369,33 @@ mod tests {
         let err =
             verify_view(&conn, "orders", &view, "mv_0").expect_err("6 is not SUM(amount) = 5");
         assert!(err.contains("mv_0"), "{err}");
+    }
+
+    /// M1b Phase 4 Task 5 fix round (ruling 6): `assert_statement_not_reprepared`
+    /// must actually detect a recompilation, not just report zero because
+    /// nothing in the matrix currently sets a flag pragma. A pragma issued
+    /// after `prepare` expires the refresh statement, and its next
+    /// `execute` recompiles it.
+    #[test]
+    fn refresh_statement_detects_an_intervening_pragma() {
+        let lib = ivmlite_test::extension_library_for(ivmlite_test::Profile::Debug)
+            .unwrap_or_else(|why| panic!("{why}"));
+        let conn = ivmlite_test::open_with_extension_at(None, &lib).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE orders(id INTEGER PRIMARY KEY, region TEXT NOT NULL, amount INTEGER NOT NULL) STRICT;
+             CREATE VIRTUAL TABLE mv_0 USING ivm('SELECT region, SUM(amount), COUNT(*) FROM \"orders\" GROUP BY region');",
+        )
+        .unwrap();
+        let mut stmt = conn
+            .prepare("INSERT INTO mv_0(mv_0) VALUES ('refresh')")
+            .unwrap();
+        // A flag pragma set only now, after prepare — exactly the class of
+        // bug this ruling guards against.
+        conn.execute_batch("PRAGMA recursive_triggers = 1").unwrap();
+        stmt.execute([]).unwrap();
+
+        let err = assert_statement_not_reprepared("refresh", &stmt).unwrap_err();
+        assert!(err.contains("refresh"), "{err}");
+        assert!(err.contains("recompiled"), "{err}");
     }
 }

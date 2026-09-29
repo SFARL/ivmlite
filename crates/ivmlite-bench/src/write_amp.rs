@@ -16,7 +16,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use ivmlite_workload::{ViewSpec, WriteAmpWorkload, WriteOp, WriteOpKind};
-use rusqlite::{Connection, Statement};
+use rusqlite::{Connection, Statement, StatementStatus};
 
 use crate::engine::{rotate_left, verify_view, Engine};
 
@@ -181,7 +181,13 @@ fn expected_replace_total(base_rows: usize, ops: &[WriteOp]) -> i64 {
 }
 
 /// Check the net row count for a replace trace (ruling 3): a miss aborts the
-/// run, exactly like a per-op effect miss.
+/// run, exactly like a per-op effect miss. This check is trace-wide, not
+/// per op, but that is sufficient here: `trace()` draws every op's target
+/// row(s) disjointly (no two ops in one trace touch the same existing row),
+/// so a single op that actually removed the wrong number of rows shifts the
+/// aggregate total by exactly that op's own error — there is no way for two
+/// ops' errors to cancel out through a row they share, because they never
+/// share one.
 fn check_replace_net_count(conn: &Connection, table: &str, expected: i64) -> Result<(), String> {
     let got: i64 = conn
         .query_row(&format!("SELECT COUNT(*) FROM \"{table}\""), [], |r| {
@@ -196,10 +202,39 @@ fn check_replace_net_count(conn: &Connection, table: &str, expected: i64) -> Res
     Ok(())
 }
 
+/// The four timed statements must not have been recompiled during the
+/// timed apply (ruling 6 of the Task 5 fix round): `PRAGMA
+/// recursive_triggers` is a flag pragma, and SQLite responds to setting one
+/// with `OP_Expire`, which marks every statement currently prepared on the
+/// connection as expired — an expired statement is transparently
+/// recompiled the next time it runs. If the pragma were set after
+/// `WriteStatements::prepare` (as it originally was, right before this
+/// fix), that recompilation would land inside the timed apply instead of
+/// before it. Checked here mechanically, via `StatementStatus::RePrepare`,
+/// rather than only by re-reading the call order in `run_one`.
+fn assert_not_reprepared(stmts: &WriteStatements<'_>) -> Result<(), String> {
+    for (label, s) in [
+        ("insert", &stmts.insert),
+        ("delete", &stmts.delete),
+        ("update", &stmts.update),
+        ("replace", &stmts.replace),
+    ] {
+        let n = s.get_status(StatementStatus::RePrepare);
+        if n != 0 {
+            return Err(format!(
+                "the {label} statement was recompiled {n} time(s) during the timed apply \
+                 (something expired it after WriteStatements::prepare, e.g. a flag PRAGMA)"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Run the trace in transactions of `tx_rows`, timed as one region (spec
 /// §7's `apply_ms`). Every `Insert`/`Delete`/`Update` op is checked as it
-/// runs, inside the timed region; a replace trace's net count is checked
-/// once, right after the timer stops.
+/// runs, inside the timed region; right after the timer stops, the four
+/// statements are checked for an unwanted recompilation (ruling 6), and a
+/// replace trace's net count is checked once (ruling 3).
 #[allow(clippy::too_many_arguments)]
 fn apply_trace(
     conn: &Connection,
@@ -220,6 +255,7 @@ fn apply_trace(
     }
     let apply_ms = start.elapsed().as_secs_f64() * 1000.0;
 
+    assert_not_reprepared(stmts)?;
     if is_replace {
         check_replace_net_count(conn, table, expected_replace_total(base_rows, ops))?;
     }
@@ -237,6 +273,18 @@ fn set_recursive_triggers(conn: &Connection, mode: bool) -> rusqlite::Result<()>
         "PRAGMA recursive_triggers = {}",
         if mode { 1 } else { 0 }
     ))
+}
+
+/// Whether `hand_written_trigger`'s view should be checked against the
+/// oracle for this cell, after the trace has run (spec §7; ruling 7 of the
+/// Task 5 fix round): insert/delete/update are always checked; a replace op
+/// is checked only when `recursive_triggers` is ON, since only then does
+/// the engine's `AFTER DELETE` trigger see a REPLACE conflict's implicit
+/// delete — confirmed exact in that mode by
+/// `recursive_triggers_pragma_controls_whether_the_hand_written_trigger_sees_a_replace_deletion`.
+/// With the pragma OFF, a replace op stays cost-only.
+fn should_verify_hand_written_trigger(is_replace: bool, recursive_triggers: bool) -> bool {
+    !is_replace || recursive_triggers
 }
 
 /// Run one (`views`, op, `recursive_triggers`) cell for one engine: open a
@@ -259,17 +307,34 @@ fn run_one(
         WriteOpKind::ReplaceRowid | WriteOpKind::ReplaceUnique | WriteOpKind::ReplaceTwo
     );
 
-    // ---- open + seed (untimed) ----
+    // ---- open, then set the mode immediately (ruling 6) ----
     let conn = if engine == Engine::Ivmlite {
         ivmlite_test::open_with_extension_at(None, lib).map_err(|e| e.to_string())?
     } else {
         Connection::open_in_memory().map_err(|e| e.to_string())?
     };
+    // `PRAGMA recursive_triggers` is a flag pragma: SQLite responds to it
+    // with `OP_Expire`, which marks every statement currently prepared on
+    // this connection as expired, and an expired statement is silently
+    // recompiled the next time it runs. Setting the mode here — immediately
+    // after opening the connection, before `seed_base`'s own prepared
+    // insert, before bootstrap's DDL, and long before `WriteStatements`
+    // exists — means nothing prepared later on this connection can ever be
+    // expired by it. (It used to be set right before the timed apply,
+    // after `WriteStatements::prepare`, which recompiled all four
+    // statements on their first use inside the timed region: measured at
+    // 3.44 ms for that first execute against a 0.29 ms steady state at 200
+    // views.)
+    set_recursive_triggers(&conn, recursive_triggers).map_err(|e| e.to_string())?;
+
+    // ---- seed (untimed) ----
     seed_base(&conn, w).map_err(|e| e.to_string())?;
     let page_size_val = page_size(&conn).map_err(|e| e.to_string())?;
     let base = space(&conn).map_err(|e| e.to_string())?;
 
-    // ---- bootstrap the views ----
+    // ---- bootstrap the views (untimed: unlike the matrix's spec §3.4,
+    // write-amp's CSV has no bootstrap_ms column, so there is nothing to
+    // time here and no reason to guard against timing compilation) ----
     match engine {
         Engine::HandWrittenTrigger => {
             for v in views {
@@ -294,9 +359,26 @@ fn run_one(
     }
     let bootstrapped = space(&conn).map_err(|e| e.to_string())?;
 
-    // ---- prepare every statement, then set the mode (spec §7 step 4) ----
+    // ---- verify the initial state (untimed, spec §3.2 step 3's
+    // technique): right after bootstrap, before any op has run, every view
+    // must already equal the oracle. Unconditional for both engines that
+    // have anything to check — no op has touched the table yet, so `kind`
+    // and `recursive_triggers` cannot matter here the way they do for the
+    // final verification below.
+    match engine {
+        Engine::Ivmlite | Engine::HandWrittenTrigger => {
+            for v in views {
+                verify_view(&conn, table, v, &v.table())?;
+            }
+        }
+        Engine::NoMaintenance => {}
+        Engine::NaiveRecompute => {
+            unreachable!("write-amp never selects naive_recompute (WRITE_AMP_ENGINES)")
+        }
+    }
+
+    // ---- prepare every statement (the mode was already set, above) ----
     let mut stmts = WriteStatements::prepare(&conn, table).map_err(|e| e.to_string())?;
-    set_recursive_triggers(&conn, recursive_triggers).map_err(|e| e.to_string())?;
     let mut refresh_stmts = Vec::new();
     if engine == Engine::Ivmlite {
         for v in views {
@@ -322,35 +404,40 @@ fn run_one(
     )?;
     let written = space(&conn).map_err(|e| e.to_string())?;
 
-    // ---- untimed: refresh, then verify against the oracle ----
+    // ---- untimed: refresh, sample space, then verify against the oracle
+    // (space is sampled before verification, as engine::run_cell does —
+    // Minor 2 of the Task 5 fix round) ----
     if engine == Engine::Ivmlite {
         for stmt in &mut refresh_stmts {
             stmt.execute([]).map_err(|e| e.to_string())?;
         }
     }
+    let maintained = space(&conn).map_err(|e| e.to_string())?;
     match engine {
         Engine::Ivmlite => {
             for v in views {
                 verify_view(&conn, table, v, &v.table())?;
             }
         }
-        Engine::HandWrittenTrigger if !is_replace => {
+        Engine::HandWrittenTrigger
+            if should_verify_hand_written_trigger(is_replace, recursive_triggers) =>
+        {
             for v in views {
                 verify_view(&conn, table, v, &v.table())?;
             }
         }
         // A replace op's implicit conflict-resolution deletes are only ever
         // visible to a hand-written AFTER DELETE trigger when
-        // recursive_triggers is ON (spec §7); measured as cost-only here
-        // regardless of the mode, so hand_written_trigger's view is never
-        // compared with the oracle for a replace op.
+        // recursive_triggers is ON (ruling 7 of the Task 5 fix round; see
+        // `should_verify_hand_written_trigger`); with the pragma OFF, a
+        // replace op's numbers stay cost-only, so its view is never
+        // compared with the oracle in that mode.
         Engine::HandWrittenTrigger => {}
         Engine::NoMaintenance => {}
         Engine::NaiveRecompute => {
             unreachable!("write-amp never selects naive_recompute (WRITE_AMP_ENGINES)")
         }
     }
-    let maintained = space(&conn).map_err(|e| e.to_string())?;
 
     Ok(WriteAmpRow {
         engine,
@@ -415,6 +502,10 @@ mod tests {
             .join(rel)
     }
 
+    const ACCOUNTS_DDL: &str =
+        "CREATE TABLE accounts(id INTEGER PRIMARY KEY, email TEXT NOT NULL UNIQUE, \
+         handle TEXT NOT NULL UNIQUE, region TEXT NOT NULL, amount INTEGER NOT NULL) STRICT;";
+
     #[test]
     fn write_amp_order_rotates_by_combination_index() {
         assert_eq!(write_amp_order(0), WRITE_AMP_ENGINES);
@@ -428,6 +519,96 @@ mod tests {
         );
         assert_eq!(write_amp_order(3), WRITE_AMP_ENGINES);
         assert_eq!(write_amp_order(7), write_amp_order(1));
+    }
+
+    /// Ruling 6 of the Task 5 fix round: the four `WriteStatements` must not
+    /// be recompiled during `apply_trace`'s timed region. This reproduces
+    /// `run_one`'s real ordering for `hand_written_trigger` — set the
+    /// pragma, *then* create the table and its trigger (a schema change),
+    /// *then* prepare — since that bootstrap is the one schema change in
+    /// the whole sequence and the case the reviewer's measurement was about.
+    /// If the pragma were set after `prepare` instead (as it originally
+    /// was), every statement's first `execute` after that would recompile
+    /// it, and `StatementStatus::RePrepare` would read nonzero.
+    #[test]
+    fn apply_trace_does_not_reprepare_the_timed_statements() {
+        let conn = Connection::open_in_memory().unwrap();
+        set_recursive_triggers(&conn, true).unwrap();
+        conn.execute_batch(ACCOUNTS_DDL).unwrap();
+        let view = ViewSpec {
+            id: 0,
+            threshold: 0,
+        };
+        crate::baseline::install_trigger_view_with_update(&conn, "accounts", &view).unwrap();
+
+        let mut stmts = WriteStatements::prepare(&conn, "accounts").unwrap();
+        let ops = vec![
+            WriteOp::Insert {
+                id: 1,
+                email: "e1@x".into(),
+                handle: "h1".into(),
+                region: "r0".into(),
+                amount: 1,
+            },
+            WriteOp::Update {
+                id: 1,
+                region: "r1".into(),
+                amount: 2,
+            },
+            WriteOp::Delete { id: 1 },
+            WriteOp::Replace {
+                id: 2,
+                email: "n2@x".into(),
+                handle: "m2".into(),
+                region: "r0".into(),
+                amount: 1,
+                expect_removed: 0,
+            },
+        ];
+        apply_trace(&conn, &mut stmts, "accounts", &ops, 10, 0, false)
+            .expect("no statement should be recompiled during the timed apply");
+    }
+
+    /// The negative half of the same ruling: `assert_not_reprepared` must
+    /// actually detect a recompilation when one happens, not just report
+    /// zero because nothing ever recompiles in practice. A flag pragma
+    /// issued *after* `prepare` (the bug this ruling fixes, reproduced
+    /// directly here rather than by reverting `run_one`) expires the
+    /// statement, and its first `execute` recompiles it.
+    #[test]
+    fn assert_not_reprepared_catches_a_statement_expired_after_prepare() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(ACCOUNTS_DDL).unwrap();
+        let mut stmts = WriteStatements::prepare(&conn, "accounts").unwrap();
+        // A flag pragma set only now, after prepare: this is exactly the
+        // bug ruling 6 fixes (the pragma used to run here, in `run_one`).
+        set_recursive_triggers(&conn, true).unwrap();
+        execute_op(
+            &mut stmts,
+            &WriteOp::Insert {
+                id: 1,
+                email: "e1@x".into(),
+                handle: "h1".into(),
+                region: "r0".into(),
+                amount: 1,
+            },
+        )
+        .unwrap();
+
+        let err = assert_not_reprepared(&stmts).unwrap_err();
+        assert!(err.contains("insert"), "{err}");
+        assert!(err.contains("recompiled"), "{err}");
+    }
+
+    /// Ruling 7 of the Task 5 fix round: `hand_written_trigger`'s view is
+    /// checked for every op except a replace op with `recursive_triggers`
+    /// OFF.
+    #[test]
+    fn should_verify_hand_written_trigger_only_skips_a_replace_op_with_the_pragma_off() {
+        assert!(should_verify_hand_written_trigger(false, false));
+        assert!(should_verify_hand_written_trigger(false, true));
+        assert!(!should_verify_hand_written_trigger(true, false));
+        assert!(should_verify_hand_written_trigger(true, true));
     }
 
     #[test]
