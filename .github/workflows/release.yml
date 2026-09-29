@@ -1,0 +1,81 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: linux-x86_64
+            library: libivmlite_sqlite.so
+          - runner: macos-14
+            target: macos-arm64
+            library: libivmlite_sqlite.dylib
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - name: Build release extension
+        run: cargo build --release --locked --manifest-path crates/ivmlite-sqlite/Cargo.toml
+      - name: Package extension
+        env:
+          TARGET_NAME: ${{ matrix.target }}
+          LIBRARY_NAME: ${{ matrix.library }}
+        run: |
+          set -euo pipefail
+          package="ivmlite-${GITHUB_REF_NAME}-${TARGET_NAME}"
+          mkdir -p "dist/${package}"
+          cp "crates/ivmlite-sqlite/target/release/${LIBRARY_NAME}" "dist/${package}/"
+          cp README.md LICENSE CHANGELOG.md "dist/${package}/"
+          tar -C dist -czf "dist/${package}.tar.gz" "${package}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ivmlite-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum *.tar.gz > SHA256SUMS
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          release_args=(
+            release create "${GITHUB_REF_NAME}"
+            --repo "${GITHUB_REPOSITORY}"
+            --title "ivmlite ${GITHUB_REF_NAME}"
+          )
+          notes_file="docs/releases/${GITHUB_REF_NAME#v}.md"
+          if [[ -f "${notes_file}" ]]; then
+            release_args+=(--notes-file "${notes_file}")
+          else
+            release_args+=(--generate-notes)
+          fi
+          if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
+            release_args+=(--prerelease)
+          fi
+          gh "${release_args[@]}" dist/*
