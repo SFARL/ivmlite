@@ -497,14 +497,16 @@ fn temp_contents(c: &Connection, names: &[&str]) -> Vec<Vec<Vec<Value>>> {
         .collect()
 }
 
-/// Whether a TEMP index named `name` still exists. An index has no rows of
-/// its own to read back the way `temp_contents` does for a table, so its
-/// mere presence is what stands in for "untouched".
-fn temp_index_exists(c: &Connection, name: &str) -> bool {
+/// Whether `sqlite_schema` (`main`, not `temp`) holds an index named `name`.
+/// A main-schema index and a same-named TEMP table can coexist (different
+/// schemas, confirmed empirically), so this checks that the real index this
+/// crate creates is not shadowed or otherwise disturbed by a TEMP decoy of
+/// its name.
+fn main_index_exists(c: &Connection, name: &str) -> bool {
     count(
         c,
         &format!(
-            "SELECT count(*) FROM sqlite_temp_schema WHERE type = 'index' AND name = '{name}'"
+            "SELECT count(*) FROM main.sqlite_schema WHERE type = 'index' AND name = '{name}'"
         ),
     ) == 1
 }
@@ -571,6 +573,12 @@ fn temp_tables_named_like_the_shadow_tables_are_never_touched() {
         "__ivm_delta_orders",
         "__ivm_pend_orders",
         "__ivm_out_sums",
+        // Phase 4 spec §4: a TEMP table named like the output index too —
+        // an index shares nothing with `temp_contents`'s row-based check
+        // (it holds no rows of its own), but a TEMP *table* under the
+        // index's name is a real object with rows, and spec §4 asks for it
+        // by name.
+        "__ivm_outidx_sums",
         "__ivm_stage_sums",
         "__ivm_state_sums_0_agg_groups",
     ];
@@ -602,7 +610,8 @@ fn temp_tables_named_like_the_shadow_tables_are_never_touched() {
          CREATE TEMP TABLE __ivm_out_sums AS
              SELECT region, SUM(amount), COUNT(*), 1 AS __w FROM orders WHERE 0 GROUP BY region;
          INSERT INTO temp.__ivm_out_sums VALUES ('temp', 1000, 1000, 1);
-         CREATE INDEX __ivm_outidx_sums ON __ivm_out_sums(region);
+         CREATE TEMP TABLE __ivm_outidx_sums(x INTEGER);
+         INSERT INTO temp.__ivm_outidx_sums VALUES (1000);
          CREATE TEMP TABLE __ivm_stage_sums(op TEXT NOT NULL, arr INTEGER, key BLOB, val BLOB,
              w INTEGER, tbl TEXT, seq INTEGER, c0 TEXT, c1 INTEGER, c2 INTEGER,
              armed INTEGER NOT NULL DEFAULT 0);
@@ -616,6 +625,13 @@ fn temp_tables_named_like_the_shadow_tables_are_never_touched() {
 
     create(&c, "sums", SUMS).unwrap();
     assert_matches_oracle(&c, "sums", SUMS);
+    // The TEMP table above shares the real output index's name, but they
+    // are in different schemas (confirmed: a main-schema index and a
+    // same-named TEMP table coexist) — the real index must still exist.
+    assert!(
+        main_index_exists(&c, "__ivm_outidx_sums"),
+        "the TEMP table __ivm_outidx_sums must not shadow the real output index"
+    );
     c.execute_batch(
         "INSERT INTO orders VALUES ('a', 5), ('d', 6);
          DELETE FROM orders WHERE region = 'b';
@@ -626,8 +642,8 @@ fn temp_tables_named_like_the_shadow_tables_are_never_touched() {
     assert_matches_oracle(&c, "sums", SUMS);
     assert_eq!(temp_contents(&c, &shadows), temp_before);
     assert!(
-        temp_index_exists(&c, "__ivm_outidx_sums"),
-        "refresh touched the TEMP __ivm_outidx_sums index"
+        main_index_exists(&c, "__ivm_outidx_sums"),
+        "refresh touched the real output index"
     );
 
     c.execute_batch("DROP TABLE sums").unwrap();
@@ -635,10 +651,6 @@ fn temp_tables_named_like_the_shadow_tables_are_never_touched() {
         temp_contents(&c, &shadows),
         temp_before,
         "DROP TABLE touched a TEMP table"
-    );
-    assert!(
-        temp_index_exists(&c, "__ivm_outidx_sums"),
-        "DROP TABLE touched a TEMP index"
     );
     assert_eq!(
         rows(
@@ -946,44 +958,148 @@ fn a_view_creates_its_output_index() {
     }
 }
 
-/// Phase 4 spec §4: the apply trigger's retraction lookup is a SEARCH on the
-/// output index, not a SCAN — checked directly with `EXPLAIN QUERY PLAN`
-/// against the view's own, really-created output table and index.
+/// Phase 4 spec §4, controller ruling 4: `verify` runs only at `connect`, so
+/// on the connection that already holds the view, dropping the output index
+/// used to leave a refresh silently falling back to a full table scan
+/// instead of reporting a broken view. `refresh` now checks the index too.
+#[test]
+fn a_dropped_output_index_breaks_a_refresh_on_the_same_connection_and_still_drops() {
+    let c = open_with_extension(None).unwrap();
+    setup(&c);
+    create(&c, "sums", SUMS).unwrap();
+    c.execute_batch("DROP INDEX __ivm_outidx_sums").unwrap();
+    c.execute_batch("INSERT INTO orders VALUES ('a', 5)")
+        .unwrap();
+    let err = refresh(&c, "sums").expect_err("dropped output index");
+    assert!(
+        err.to_string()
+            .contains("its shadow index __ivm_outidx_sums is missing"),
+        "{err}"
+    );
+    c.execute_batch("DROP TABLE sums").unwrap();
+    assert_eq!(
+        count(
+            &c,
+            "SELECT count(*) FROM sqlite_schema WHERE name LIKE '__ivm\\_%' ESCAPE '\\'"
+        ),
+        0
+    );
+}
+
+/// The text inside the first balanced `(...)` that immediately follows
+/// `marker` in `text` (`marker` must end in `(`, whose own open paren counts
+/// as depth 1) — so a `(` nested inside the match does not end it early.
+/// `None` if `marker` does not occur.
+fn extract_parenthesized(text: &str, marker: &str) -> Option<String> {
+    let start = text.find(marker)? + marker.len();
+    let mut depth = 1i32;
+    for (i, ch) in text[start..].char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(text[start..start + i].to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Phase 4 spec §4: the apply trigger's *own stored* retraction lookup — read
+/// straight out of `sqlite_schema`, not a hand-written copy of what it is
+/// supposed to be — is a single piece of text shared by the RAISE's
+/// existence check and the retracting `DELETE`, and it is a SEARCH that uses
+/// the output index for every output column, not a SCAN and not a
+/// partial-prefix SEARCH on only the leading column.
 ///
-/// `view.rs`'s own crate cannot check this itself: it builds `rusqlite` with
-/// only the `loadable_extension` feature, which is never linked to a real
-/// SQLite (see that crate's Cargo.toml's own comment), so
+/// `view.rs`'s own crate cannot check a real plan itself: it builds
+/// `rusqlite` with only the `loadable_extension` feature, which is never
+/// linked to a real SQLite (see that crate's Cargo.toml's own comment), so
 /// `Connection::open_in_memory` there panics with "SQLite API not
-/// initialized" instead of opening a database. `retraction_lookup`'s exact
-/// generated text is pinned by a connection-free unit test in `view.rs`
-/// instead (`the_retraction_lookup_names_every_column_by_position`); this
-/// test proves that exact text actually plans as a search, against the
-/// extension's own index.
+/// initialized" instead of opening a database. This test is the one place
+/// that actually proves the trigger's plan; `view.rs`'s connection-free unit
+/// test only pins `retraction_lookup`'s generated text, which is a different,
+/// weaker claim.
 #[test]
 fn the_retraction_lookup_searches_the_output_index() {
     let c = open_with_extension(None).unwrap();
     setup(&c);
     create(&c, "sums", SUMS).unwrap();
-    let lookup = "SELECT rowid FROM \"__ivm_out_sums\" WHERE \"region\" IS ?1 \
-                  AND \"SUM(amount)\" IS ?2 AND \"COUNT(*)\" IS ?3";
+
+    let trigger_sql: String = c
+        .query_row(
+            "SELECT sql FROM sqlite_schema WHERE type = 'trigger' AND name = '__ivm_apply_sums'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+
+    // The RAISE's `NOT EXISTS (…)` and the DELETE's `rowid = (… LIMIT 1)`
+    // must embed byte-identical lookup text (Phase 4 spec §4: one function
+    // builds it once, and both sites use it unchanged).
+    let not_exists = extract_parenthesized(&trigger_sql, "NOT EXISTS (")
+        .unwrap_or_else(|| panic!("no NOT EXISTS clause in {trigger_sql}"));
+    let delete_paren = extract_parenthesized(&trigger_sql, "rowid = (")
+        .unwrap_or_else(|| panic!("no `rowid = (…)` clause in {trigger_sql}"));
+    let delete_lookup = delete_paren.strip_suffix(" LIMIT 1").unwrap_or_else(|| {
+        panic!("the DELETE's subquery does not end with LIMIT 1: {delete_paren}")
+    });
+    assert_eq!(
+        not_exists, delete_lookup,
+        "the RAISE and the DELETE must embed byte-identical lookup text"
+    );
+
+    // Every output column, in the output table's own declared order — read
+    // from the real table SQLite built, not hard-coded. `rows()` re-sorts
+    // as a multiset, so this query is run directly to keep `cid` order.
+    let names: Vec<String> = c
+        .prepare(
+            "SELECT name FROM pragma_table_info('__ivm_out_sums') \
+             WHERE name <> '__w' ORDER BY cid",
+        )
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert_eq!(names.len(), 3, "SUMS has 3 output columns: {names:?}");
+
+    // Substitute `NEW.cN` with a bound parameter, highest N first, so `c1`
+    // cannot match inside `c10`.
+    let mut probe = not_exists.clone();
+    for i in (0..names.len()).rev() {
+        probe = probe.replace(&format!("NEW.c{i}"), &format!("?{}", i + 1));
+    }
+    assert!(
+        !probe.contains("NEW.c"),
+        "every NEW.cN must have been substituted: {probe}"
+    );
+
     let plan: Vec<String> = c
-        .prepare(&format!("EXPLAIN QUERY PLAN {lookup}"))
+        .prepare(&format!("EXPLAIN QUERY PLAN {probe}"))
         .unwrap()
         .query_map(
-            rusqlite::params![
-                Option::<String>::None,
-                Option::<i64>::None,
-                Option::<i64>::None
-            ],
+            rusqlite::params_from_iter(vec![None::<i64>; names.len()]),
             |r| r.get::<_, String>(3),
         )
         .unwrap()
         .map(|r| r.unwrap())
         .collect();
+
+    let expected_columns = names
+        .iter()
+        .map(|c| format!("{c}=?"))
+        .collect::<Vec<_>>()
+        .join(" AND ");
+    let expected = format!("({expected_columns})");
     assert!(
-        plan.iter()
-            .any(|d| d.contains("SEARCH") && d.contains("__ivm_outidx_sums")),
-        "{plan:?}"
+        plan.iter().any(|d| {
+            d.contains("SEARCH") && d.contains("__ivm_outidx_sums") && d.contains(&expected)
+        }),
+        "expected a SEARCH on __ivm_outidx_sums covering {expected}: {plan:?}"
     );
 }
 

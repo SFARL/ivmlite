@@ -86,10 +86,6 @@ fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
     object_exists(conn, "table", name)
 }
 
-fn index_exists(conn: &Connection, name: &str) -> Result<bool> {
-    object_exists(conn, "index", name)
-}
-
 /// `trigger` must exist and be on `table`. Its name alone proves nothing:
 /// `ALTER TABLE t RENAME TO u` carries `t`'s triggers to `u` under their
 /// old names.
@@ -885,8 +881,19 @@ fn read_deltas(conn: &Connection, schema: &Schema, after: i64) -> Result<(ZSet, 
 /// column, quoted, in the output table's own order — the same order
 /// `create_out_table` indexed them in — so SQLite can plan this as a SEARCH
 /// on `out_index`, not a SCAN. `operand` gives each column's `IS`
-/// comparison's right-hand side: `NEW.cN` inside the apply trigger, `?N` in
-/// the unit test that inspects the trigger's own query plan.
+/// comparison's right-hand side; the only caller is `create_stage`, which
+/// passes `NEW.cN` and uses the result, unchanged, in both the RAISE's
+/// existence check and the retracting `DELETE`.
+///
+/// This crate cannot open a live `Connection` to check the resulting plan
+/// itself — it builds `rusqlite` with only the `loadable_extension`
+/// feature, never linked to a real SQLite (see its own Cargo.toml). Below,
+/// `the_retraction_lookup_names_every_column_by_position` pins this
+/// function's exact generated text; it does not check the plan.
+/// `ivmlite-test`'s `the_retraction_lookup_searches_the_output_index`
+/// reads the *stored apply trigger's own SQL* back out of `sqlite_schema`
+/// (not a copy of this function's text) and checks that its plan is a
+/// SEARCH covering every output column.
 fn retraction_lookup(out: &str, cols: &[String], operand: impl Fn(usize) -> String) -> String {
     let terms: Vec<String> = cols
         .iter()
@@ -1264,17 +1271,27 @@ fn verify(
     needed.push((stage_table(name), "table"));
     needed.extend(view.tables.iter().map(|t| (delta_table(t), "table")));
     for (object, kind) in needed {
-        let exists = match kind {
-            "table" => table_exists(conn, &object)?,
-            "index" => index_exists(conn, &object)?,
-            _ => unreachable!("every `needed` entry names its own kind"),
-        };
-        if !exists {
+        if !object_exists(conn, kind, &object)? {
             return Err(format!("its shadow {kind} {object} is missing"));
         }
     }
     check_capture(conn, name, &view)?;
     Ok(view)
+}
+
+/// The output table's index must exist too (Phase 4 spec §4), checked at
+/// every refresh — `verify`'s own `needed` list above already checks it at
+/// every connect, but `refresh` runs on the same connection a view was
+/// created on and never calls `verify`. Without this, a user who drops
+/// `__ivm_outidx_<view>` on the connection that already holds the view
+/// would see a refresh silently fall back to a full table scan instead of a
+/// broken view (controller ruling 4).
+fn check_output_index(conn: &Connection, name: &str) -> Result<()> {
+    let index = out_index(name);
+    if !object_exists(conn, "index", &index)? {
+        return Err(format!("its shadow index {index} is missing"));
+    }
+    Ok(())
 }
 
 /// Checked on every connect and every refresh: each base table the view
@@ -1311,6 +1328,7 @@ fn check_capture(conn: &Connection, name: &str, view: &CompiledView) -> Result<(
 /// output and watermarks change together or not at all (see `apply`).
 pub fn refresh(conn: &Rc<Connection>, name: &str, view: &CompiledView) -> Result<()> {
     check_capture(conn, name, view).map_err(|why| broken(name, &why))?;
+    check_output_index(conn, name).map_err(|why| broken(name, &why))?;
     let mut batches = Vec::new();
     let mut progress = Vec::new();
     for table in &view.tables {
@@ -1502,11 +1520,13 @@ mod tests {
     // SQLite, only loaded into one at runtime, so `Connection::open_in_memory`
     // panics with "SQLite API not initialized" here (confirmed: that is
     // exactly what happens if this test opens one). `EXPLAIN QUERY PLAN`
-    // therefore cannot be run from this crate's own tests; instead this
-    // test pins `retraction_lookup`'s exact generated text, and
-    // `ivmlite-test`'s `the_retraction_lookup_searches_the_output_index`
-    // (`extension_lifecycle.rs`) proves that exact text plans as a SEARCH
-    // on `__ivm_outidx_<view>`, against the real extension's own index.
+    // therefore cannot be run from this crate's own tests; this test only
+    // pins `retraction_lookup`'s exact generated text. It does not, on its
+    // own, prove anything about the real trigger's plan: `ivmlite-test`'s
+    // `the_retraction_lookup_searches_the_output_index`, in
+    // `extension_lifecycle.rs`, does that separately, by reading the apply
+    // trigger's own stored SQL back out of `sqlite_schema` — not a copy of
+    // this function's text — and running `EXPLAIN QUERY PLAN` on it.
     #[test]
     fn the_retraction_lookup_names_every_column_by_position() {
         let cols = vec![quote("k"), quote("s")];
