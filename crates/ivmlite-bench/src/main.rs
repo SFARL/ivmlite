@@ -2,10 +2,6 @@ mod ablation;
 mod baseline;
 mod confirm;
 mod engine;
-// M1b Phase 4 task 1 stops calling `plot::write_svg` here (the M0 chart
-// writing moves to Task 6, spec §3), so the module is temporarily unreachable
-// outside its own tests; Task 6 restores the call and this `allow` with it.
-#[allow(dead_code)]
 mod plot;
 mod write_amp;
 
@@ -14,20 +10,6 @@ use std::path::{Path, PathBuf};
 use engine::{engine_order, run_cell, Engine, Measurement};
 use ivmlite_test::{extension_library_for, Profile};
 use ivmlite_workload::{Workload, WriteAmpWorkload};
-
-/// One row of an M0 chart's data (Task 6 draws the M1b chart from `Row`
-/// instead). Kept here because `plot.rs` still reads `Record`s in its own
-/// tests; `main.rs` no longer constructs any.
-#[derive(Debug, Clone)]
-pub struct Record {
-    pub baseline: &'static str,
-    pub views: usize,
-    pub base_rows: usize,
-    pub batch: usize,
-    pub cardinality: usize,
-    pub apply_ms: f64,
-    pub maintain_ms: f64,
-}
 
 /// The Task 1 CSV header (spec §3.4). `pub(crate)` so `confirm.rs`'s
 /// `parse_csv` reads exploration CSVs against this exact string too, rather
@@ -239,7 +221,7 @@ fn run_write_amp_mode(
 /// `ablation` mode's rows: printed with `label,repeat` as two extra leading
 /// columns before Task 1's own header (spec §6). `label` names which build of
 /// the extension produced these rows — the same for every row of one run, so
-/// `scripts/bench-ablation.sh` can append several runs' output into one file.
+/// `scripts/bench-ablation.sh` can combine several builds' rows in one file.
 fn print_ablation_csv(label: &str, mut rows: Vec<ablation::AblationRow>) {
     rows.sort_by(|a, b| {
         (
@@ -372,8 +354,8 @@ fn run_ablation_mode(workload_path: &Path, lib: &Path, label: &str) -> Result<()
     Ok(())
 }
 
-/// Parsed command line: the mode (`matrix`, `confirm`, `ablation` and
-/// `write-amp`, with `matrix` the default), plus the shared overrides.
+/// Parsed command line: the mode (`matrix`, `confirm`, `ablation`,
+/// `write-amp`, or `plot`, with `matrix` the default), plus shared overrides.
 #[derive(Debug)]
 struct Args {
     mode: String,
@@ -475,6 +457,16 @@ fn parse_args(raw: impl Iterator<Item = String>) -> Result<Args, String> {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = parse_args(std::env::args().skip(1))?;
 
+    if args.mode == "plot" {
+        let from = args
+            .from
+            .ok_or("plot mode needs --from <exploration CSV path>")?;
+        for path in plot::write_phase4_charts(&from)? {
+            eprintln!("wrote {}", path.display());
+        }
+        return Ok(());
+    }
+
     let lib = match args.extension {
         // The staleness check is skipped for an explicit path (spec §3.1):
         // the ablation (Task 5) points this at a library built without a fix
@@ -501,7 +493,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "write-amp" => run_write_amp_mode(&args.workload, &lib, args.views)?,
         other => {
             return Err(format!(
-                "unknown mode {other:?} (expected matrix, confirm, ablation or write-amp)"
+                "unknown mode {other:?} (expected matrix, confirm, ablation, write-amp or plot)"
             )
             .into())
         }
@@ -768,6 +760,18 @@ mod tests {
         assert_eq!(a.mode, "write-amp");
         assert_eq!(a.workload, PathBuf::from("workloads/write-amp.toml"));
         assert_eq!(a.views, None);
+    }
+
+    #[test]
+    fn parse_args_accepts_plot_with_an_input_csv() {
+        let args = parse_args(
+            ["plot", "--from", "docs/bench/m1b-phase4.csv"]
+                .into_iter()
+                .map(String::from),
+        )
+        .unwrap();
+        assert_eq!(args.mode, "plot");
+        assert_eq!(args.from, Some(PathBuf::from("docs/bench/m1b-phase4.csv")));
     }
 
     /// An explicit `--workload` always wins, regardless of mode.

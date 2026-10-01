@@ -2,6 +2,16 @@
 
 **Status:** approved 2026-09-28. **Parent specs:** [2026-09-18-ivmlite-design.md](2026-09-18-ivmlite-design.md) §10 (benchmark), [2026-09-27-m1b-phase3b-shared-capture-design.md](2026-09-27-m1b-phase3b-shared-capture-design.md) (the extension as it stands). Where they disagree, this document is newer and wins for Phase 4.
 
+> **Results amendment, 2026-09-30:** the full protocol completed without a
+> verification mismatch. The confirmed data finds a broad region above the 2x
+> bar and a small-table, large-batch losing region; ivmlite did not beat the
+> hand-written trigger. Full results and limits are in
+> [`docs/bench/README.md`](../../bench/README.md), section “M1b Phase 4: the
+> SQLite extension.” There was no measurement-protocol deviation. The data
+> deliverable list in §9 is corrected to include
+> `m1b-phase4-ablation-write-amp.csv`, which §7 and the implementation plan
+> already required.
+
 ## 1. Scope
 
 1. Add the extension, as the engine `ivmlite`, to `ivmlite-bench`, next to the three M0 baselines (§10.2): `no_maintenance`, `hand_written_trigger` and `naive_recompute`. It runs on the same workload file and the same matrix cells.
@@ -215,7 +225,10 @@ The ablation's commits also run this workload for `ivmlite` at 10 and 200 views,
   - trace verification;
   - the write-amp trace generator, which must be deterministic and produce the conflicts it claims.
 - **A smoke test in the workspace suite.** It runs one tiny cell per engine against the debug extension, verifying the states, so `scripts/test-all.sh` exercises the harness without a release build.
-- **Data.** `docs/bench/m1b-phase4.csv`, `-confirm.csv`, `-ablation.csv` and `-write-amp.csv`, plus charts. The M0 charts are regenerated with an `ivmlite` series, under new file names. The M0 CSV and its test stay as the historical M0 record.
+- **Data.** `docs/bench/m1b-phase4.csv`, `-confirm.csv`, `-ablation.csv`,
+  `-ablation-write-amp.csv` and `-write-amp.csv`, plus charts. The M0 charts
+  are regenerated with an `ivmlite` series, under new file names. The M0 CSV
+  and its test stay as the historical M0 record.
 - **Analysis.** `docs/bench/README.md` gains an "M1b Phase 4" section:
   - **The three bars of §10.2**, each with where it holds and where it does not.
   - **The falsification test of §10.4:** is there a region with speedup > 2? Where exactly is it, backed by confirmed cells?

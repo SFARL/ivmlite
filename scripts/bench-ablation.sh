@@ -1,21 +1,16 @@
 #!/usr/bin/env bash
-# Task 2 (spec §6): build the extension at one or more commits, each in its
-# own git worktree with its own CARGO_TARGET_DIR (never the main checkout's
-# target/ — that is reserved for the release bench itself), and run
-# `ivmlite-bench ablation` against each build. Rows from every build
-# accumulate into one output CSV, with the header written only once.
+# Build the extension at each named revision and measure both the fixed
+# performance-ablation cells and ivmlite's write amplification at 10 and 200
+# views. Each revision gets a detached worktree and a separate Cargo target.
 #
 # Usage: scripts/bench-ablation.sh <label>=<rev> [<label>=<rev> ...]
 #
-# Example (spec §6's three builds):
-#   scripts/bench-ablation.sh before-4=<sha-before-§4> after-4=<sha-after-§4> after-5=<sha-after-§5>
-#
-# Environment overrides (used by the Task 2 smoke test, so it never touches
-# the real workload file or the real output CSV):
-#   WORKLOAD  the workload file passed to `ivmlite-bench ablation --workload`
-#             (default: workloads/m0-baseline.toml)
-#   OUT       the output CSV rows are appended to (default:
-#             docs/bench/m1b-phase4-ablation.csv)
+# Environment overrides, used by smoke tests:
+#   WORKLOAD       ablation workload (default: workloads/m0-baseline.toml)
+#   WRITE_WORKLOAD write-amplification workload (default: workloads/write-amp.toml)
+#   OUT            performance CSV (default: docs/bench/m1b-phase4-ablation.csv)
+#   WRITE_AMP_OUT  write-amplification CSV
+#                  (default: docs/bench/m1b-phase4-ablation-write-amp.csv)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 repo_root="$(pwd)"
@@ -26,7 +21,9 @@ if [ "$#" -eq 0 ]; then
 fi
 
 workload="${WORKLOAD:-workloads/m0-baseline.toml}"
+write_workload="${WRITE_WORKLOAD:-workloads/write-amp.toml}"
 out="${OUT:-docs/bench/m1b-phase4-ablation.csv}"
+write_amp_out="${WRITE_AMP_OUT:-docs/bench/m1b-phase4-ablation-write-amp.csv}"
 
 if [ "$(uname)" = "Darwin" ]; then
     lib_name="libivmlite_sqlite.dylib"
@@ -34,37 +31,36 @@ else
     lib_name="libivmlite_sqlite.so"
 fi
 
-# Step 1: build the release bench once, from the current tree. This is the
-# ordinary workspace build (crates/ivmlite-bench is a workspace member), so it
-# uses the main checkout's own target/ — only the extension itself must never
-# land there (crates/ivmlite-sqlite is built separately below, per worktree).
 echo "building the release bench..." >&2
 cargo build --release -p ivmlite-bench --locked
 bench_bin="$repo_root/target/release/ivmlite-bench"
 
-# Worktrees still pending removal, and the current run's scratch CSV (if
-# any); the trap below removes whatever is left of either if the script
-# exits early (an error, or Ctrl-C) — including a mid-run bench failure,
-# which used to leak `$tmp_csv` because the `rm -f` right after it never ran.
 pending_worktrees=()
-current_tmp_csv=""
+pending_roots=()
+temporary_files=()
 
 cleanup() {
-    if [ -n "$current_tmp_csv" ]; then
-        rm -f "$current_tmp_csv"
-    fi
     for wt in "${pending_worktrees[@]:-}"; do
         [ -n "$wt" ] || continue
         git worktree remove --force "$wt" >/dev/null 2>&1 || true
     done
+    for root in "${pending_roots[@]:-}"; do
+        [ -n "$root" ] || continue
+        rmdir "$root" >/dev/null 2>&1 || true
+    done
+    for file in "${temporary_files[@]:-}"; do
+        [ -n "$file" ] || continue
+        rm -f "$file"
+    done
 }
 trap cleanup EXIT
 
-mkdir -p "$(dirname "$out")"
+mkdir -p "$(dirname "$out")" "$(dirname "$write_amp_out")"
+out_tmp="$(mktemp "$(dirname "$out")/.m1b-phase4-ablation.XXXXXX")"
+write_amp_out_tmp="$(mktemp "$(dirname "$write_amp_out")/.m1b-phase4-ablation-write-amp.XXXXXX")"
+temporary_files+=("$out_tmp" "$write_amp_out_tmp")
 header_written=0
-if [ -f "$out" ]; then
-    header_written=1
-fi
+write_amp_header_written=0
 
 for pair in "$@"; do
     label="${pair%%=*}"
@@ -73,11 +69,14 @@ for pair in "$@"; do
         echo "invalid argument (want <label>=<rev>): $pair" >&2
         exit 1
     fi
+    if [[ ! "$label" =~ ^[A-Za-z0-9._-]+$ ]]; then
+        echo "invalid label (use letters, digits, dot, underscore or hyphen): $label" >&2
+        exit 1
+    fi
 
-    # Step 2: a detached checkout of $rev, under its own directory, so it
-    # cannot collide with another label's worktree or with the main checkout.
-    wt="${TMPDIR:-/tmp}/ivmlite-ablation-$label"
-    rm -rf "$wt"
+    scratch_root="$(mktemp -d "${TMPDIR:-/tmp}/ivmlite-ablation-${label}.XXXXXX")"
+    wt="$scratch_root/worktree"
+    pending_roots+=("$scratch_root")
     git worktree add --detach "$wt" "$rev"
     pending_worktrees+=("$wt")
 
@@ -86,31 +85,50 @@ for pair in "$@"; do
         --manifest-path "$wt/crates/ivmlite-sqlite/Cargo.toml"
     lib="$wt/target/release/$lib_name"
 
-    # Step 3: run the ablation and append its rows to $out, writing the
-    # header only for the very first build. $tmp_csv is registered with the
-    # exit trap before the bench runs, so a failed run still gets it removed.
-    tmp_csv="$(mktemp)"
-    current_tmp_csv="$tmp_csv"
-    "$bench_bin" ablation --extension "$lib" --label "$label" --workload "$workload" >"$tmp_csv"
+    run_csv="$(mktemp)"
+    temporary_files+=("$run_csv")
+    "$bench_bin" ablation --extension "$lib" --label "$label" --workload "$workload" >"$run_csv"
     if [ "$header_written" -eq 0 ]; then
-        cat "$tmp_csv" >>"$out"
+        cat "$run_csv" >>"$out_tmp"
         header_written=1
     else
-        tail -n +2 "$tmp_csv" >>"$out"
+        tail -n +2 "$run_csv" >>"$out_tmp"
     fi
-    rm -f "$tmp_csv"
-    current_tmp_csv=""
+    rm -f "$run_csv"
 
-    # Step 4: remove the worktree now that this label is done, rather than
-    # waiting for every label to finish — a later label's failure still
-    # leaves nothing of this one behind. Clear it from pending_worktrees so
-    # the exit trap does not try (and fail) to remove it a second time.
+    write_amp_csv="$(mktemp)"
+    temporary_files+=("$write_amp_csv")
+    "$bench_bin" write-amp --extension "$lib" --workload "$write_workload" --views 10,200 >"$write_amp_csv"
+    if [ "$write_amp_header_written" -eq 0 ]; then
+        awk -F, -v label="$label" '
+            NR == 1 { print "label," $0; next }
+            $1 == "ivmlite" { print label "," $0 }
+        ' "$write_amp_csv" >>"$write_amp_out_tmp"
+        write_amp_header_written=1
+    else
+        awk -F, -v label="$label" '
+            NR > 1 && $1 == "ivmlite" { print label "," $0 }
+        ' "$write_amp_csv" >>"$write_amp_out_tmp"
+    fi
+    rm -f "$write_amp_csv"
+
     git worktree remove --force "$wt"
-    remaining=()
-    for w in "${pending_worktrees[@]}"; do
-        [ "$w" = "$wt" ] || remaining+=("$w")
+    rmdir "$scratch_root"
+    remaining_worktrees=()
+    for item in "${pending_worktrees[@]}"; do
+        [ "$item" = "$wt" ] || remaining_worktrees+=("$item")
     done
-    pending_worktrees=("${remaining[@]:-}")
+    pending_worktrees=("${remaining_worktrees[@]:-}")
+    remaining_roots=()
+    for item in "${pending_roots[@]}"; do
+        [ "$item" = "$scratch_root" ] || remaining_roots+=("$item")
+    done
+    pending_roots=("${remaining_roots[@]:-}")
 done
 
+mv "$out_tmp" "$out"
+mv "$write_amp_out_tmp" "$write_amp_out"
+chmod 0644 "$out" "$write_amp_out"
+temporary_files=()
 echo "wrote $out" >&2
+echo "wrote $write_amp_out" >&2
