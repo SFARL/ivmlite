@@ -6,6 +6,7 @@
   - [`2026-09-18-ivmlite-design.md`](superpowers/specs/2026-09-18-ivmlite-design.md) — the overall design
   - [`2026-09-26-m1b-phase3a-sqlite-extension-design.md`](superpowers/specs/2026-09-26-m1b-phase3a-sqlite-extension-design.md) — M1b Phase 3a: the SQLite extension, one view end to end
   - [`2026-09-27-m1b-phase3b-shared-capture-design.md`](superpowers/specs/2026-09-27-m1b-phase3b-shared-capture-design.md) — M1b Phase 3b: shared capture, delta GC, REPLACE capture, rename refusal
+  - [`2026-09-28-m1b-phase4-benchmark-design.md`](superpowers/specs/2026-09-28-m1b-phase4-benchmark-design.md) — M1b Phase 4: benchmark protocol, hot-spot fixes, and write amplification
 - **`superpowers/plans/`** — implementation plans.
   - [`2026-09-18-m0-test-and-bench-harness.md`](superpowers/plans/2026-09-18-m0-test-and-bench-harness.md) — M0: the test and benchmark harness
   - [`2026-09-20-m1a-phase1-multi-table-harness.md`](superpowers/plans/2026-09-20-m1a-phase1-multi-table-harness.md) — M1a Phase 1: the multi-table harness refactor
@@ -16,8 +17,9 @@
   - [`2026-09-24-m1b-phase2b-sql-front-end.md`](superpowers/plans/2026-09-24-m1b-phase2b-sql-front-end.md) — M1b Phase 2b: the SQL front end
   - [`2026-09-26-m1b-phase3a-sqlite-extension.md`](superpowers/plans/2026-09-26-m1b-phase3a-sqlite-extension.md) — M1b Phase 3a: the SQLite extension
   - [`2026-09-27-m1b-phase3b-shared-capture.md`](superpowers/plans/2026-09-27-m1b-phase3b-shared-capture.md) — M1b Phase 3b: shared capture, delta GC, REPLACE capture, rename refusal
+  - [`2026-09-28-m1b-phase4-benchmark.md`](superpowers/plans/2026-09-28-m1b-phase4-benchmark.md) — M1b Phase 4: run the extension against the M0 baselines and publish the result
 - [`mutation-gates.md`](mutation-gates.md) — **the mutation-gate table**: spec requirement → mutation → the test that goes red. Every invariant M1 adds must be registered here.
-- **`bench/`** — benchmark results, charts and conclusions ([README](bench/README.md)).
+- **`bench/`** — benchmark results, charts and conclusions ([README](bench/README.md)), including the Phase 4 matrix, confirmation, ablation, write-amplification data, and six charts.
 - **`cases/`** — original real-world reports, queries and implementation snapshots, collected before phase evaluation ([README](cases/README.md)).
 - **`adr/`** — Architecture Decision Records (reserved; see below).
 - **`spikes/`** — feasibility probes and their conclusions. The output is a conclusion, not code to keep.

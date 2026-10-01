@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="420" font-family="sans-serif" font-size="12">
+<rect width="720" height="420" fill="white"/>
+<text x="360" y="24" text-anchor="middle" font-size="15">naive recompute / ivmlite &#183; views=10 &#183; groups=1000</text>
+<line x1="64" y1="356" x2="656" y2="356" stroke="#333"/>
+<line x1="64" y1="64" x2="64" y2="356" stroke="#333"/>
+<text x="360" y="400" text-anchor="middle">base_rows</text>
+<text x="18" y="18" fill="#333">speedup (log10)</text>
+<line x1="64.0" y1="356.0" x2="64.0" y2="362.0" stroke="#333"/>
+<text x="64.0" y="374.0" text-anchor="middle">10k</text>
+<line x1="360.0" y1="356.0" x2="360.0" y2="362.0" stroke="#333"/>
+<text x="360.0" y="374.0" text-anchor="middle">100k</text>
+<line x1="656.0" y1="356.0" x2="656.0" y2="362.0" stroke="#333"/>
+<text x="656.0" y="374.0" text-anchor="middle">1M</text>
+<line data-reference="1x" x1="64.0" y1="297.7" x2="656.0" y2="297.7" stroke="#555" stroke-dasharray="4 3"/>
+<text x="656.0" y="297.7" dy="-3" text-anchor="end">1x</text>
+<line data-reference="2x" x1="64.0" y1="275.1" x2="656.0" y2="275.1" stroke="#555" stroke-dasharray="8 3"/>
+<text x="656.0" y="275.1" dy="-3" text-anchor="end">2x</text>
+<polyline fill="none" stroke="#888888" stroke-width="2" points="64.0,233.0 360.0,151.9 656.0,75.3"/>
+<circle cx="64.0" cy="233.0" r="3" fill="#888888"/>
+<circle cx="360.0" cy="151.9" r="3" fill="#888888"/>
+<circle cx="656.0" cy="75.3" r="3" fill="#888888"/>
+<text x="72" y="82" fill="#888888">batch=1</text>
+<polyline fill="none" stroke="#1f77b4" stroke-width="2" points="64.0,246.9 360.0,168.8 656.0,91.6"/>
+<circle cx="64.0" cy="246.9" r="3" fill="#1f77b4"/>
+<circle cx="360.0" cy="168.8" r="3" fill="#1f77b4"/>
+<circle cx="656.0" cy="91.6" r="3" fill="#1f77b4"/>
+<text x="72" y="100" fill="#1f77b4">batch=10</text>
+<polyline fill="none" stroke="#d62728" stroke-width="2" points="64.0,289.6 360.0,207.1 656.0,130.9"/>
+<circle cx="64.0" cy="289.6" r="3" fill="#d62728"/>
+<circle cx="360.0" cy="207.1" r="3" fill="#d62728"/>
+<circle cx="656.0" cy="130.9" r="3" fill="#d62728"/>
+<text x="72" y="118" fill="#d62728">batch=100</text>
+<polyline fill="none" stroke="#2ca02c" stroke-width="2" points="64.0,344.7 360.0,266.1 656.0,187.6"/>
+<circle cx="64.0" cy="344.7" r="3" fill="#2ca02c"/>
+<circle cx="360.0" cy="266.1" r="3" fill="#2ca02c"/>
+<circle cx="656.0" cy="187.6" r="3" fill="#2ca02c"/>
+<text x="72" y="136" fill="#2ca02c">batch=1000</text>
+</svg>

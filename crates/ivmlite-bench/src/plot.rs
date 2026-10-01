@@ -2,12 +2,12 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
-use crate::Record;
+use crate::confirm::Row;
 
 const W: f64 = 720.0;
 const H: f64 = 420.0;
 const PAD: f64 = 64.0;
-const COLORS: [&str; 3] = ["#888888", "#1f77b4", "#d62728"];
+const COLORS: [&str; 4] = ["#888888", "#1f77b4", "#d62728", "#2ca02c"];
 
 /// Format `10^log10_rows` the way people write row counts (`10k` / `1M`), for
 /// the x-axis tick labels.
@@ -54,17 +54,20 @@ fn fmt_ms(ms: f64) -> String {
 /// so a reader does not mistake the gap for a run that was never done.
 pub fn write_svg(
     path: &Path,
-    records: &[Record],
+    records: &[Row],
     fixed_views: usize,
     fixed_batch: usize,
     fixed_card: usize,
 ) -> std::io::Result<()> {
     let mut series: BTreeMap<&str, Vec<(f64, f64)>> = BTreeMap::new();
     for r in records {
-        if r.views == fixed_views && r.batch == fixed_batch && r.cardinality == fixed_card {
+        if r.views == fixed_views
+            && r.batch_size == fixed_batch
+            && r.group_cardinality == fixed_card
+        {
             let total_ms = (r.apply_ms + r.maintain_ms).max(1e-6); // a log scale cannot take 0 or negatives
             series
-                .entry(r.baseline)
+                .entry(r.engine.as_str())
                 .or_default()
                 .push(((r.base_rows as f64).log10(), total_ms.log10()));
         }
@@ -188,27 +191,179 @@ pub fn write_svg(
     fs::write(path, svg)
 }
 
+/// Draw one slice of §10.4's speedup surface. Views and group cardinality are
+/// fixed, base-table size is the x axis, and each batch size gets one line.
+/// The y axis is logarithmic because the explored ratios span several orders
+/// of magnitude; the 1x crossover and 2x falsification bar remain explicit.
+pub fn write_speedup_svg(
+    path: &Path,
+    records: &[Row],
+    fixed_views: usize,
+    fixed_card: usize,
+) -> std::io::Result<()> {
+    let mut naive: BTreeMap<(usize, usize), f64> = BTreeMap::new();
+    let mut ivmlite: BTreeMap<(usize, usize), f64> = BTreeMap::new();
+    for r in records {
+        if r.views != fixed_views || r.group_cardinality != fixed_card {
+            continue;
+        }
+        let total = r.apply_ms + r.maintain_ms;
+        match r.engine.as_str() {
+            "naive_recompute" => {
+                naive.insert((r.base_rows, r.batch_size), total);
+            }
+            "ivmlite" => {
+                ivmlite.insert((r.base_rows, r.batch_size), total);
+            }
+            _ => {}
+        }
+    }
+
+    let mut series: BTreeMap<usize, Vec<(f64, f64)>> = BTreeMap::new();
+    for (&(base_rows, batch_size), &naive_ms) in &naive {
+        let Some(&ivmlite_ms) = ivmlite.get(&(base_rows, batch_size)) else {
+            continue;
+        };
+        if naive_ms > 0.0 && ivmlite_ms > 0.0 {
+            series
+                .entry(batch_size)
+                .or_default()
+                .push(((base_rows as f64).log10(), (naive_ms / ivmlite_ms).log10()));
+        }
+    }
+    for points in series.values_mut() {
+        points.sort_by(|a, b| a.0.total_cmp(&b.0));
+    }
+
+    let xs: Vec<f64> = series.values().flatten().map(|point| point.0).collect();
+    let mut ys: Vec<f64> = series.values().flatten().map(|point| point.1).collect();
+    ys.extend([0.0, 2f64.log10()]);
+    if xs.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("no speedup data for views={fixed_views} card={fixed_card}"),
+        ));
+    }
+
+    let x0 = xs.iter().copied().fold(f64::MAX, f64::min);
+    let x1 = xs.iter().copied().fold(f64::MIN, f64::max);
+    let y0 = ys.iter().copied().fold(f64::MAX, f64::min) - 0.15;
+    let y1 = ys.iter().copied().fold(f64::MIN, f64::max) + 0.15;
+    let sx = |x: f64| PAD + (x - x0) / (x1 - x0).max(1e-9) * (W - 2.0 * PAD);
+    let sy = |y: f64| H - PAD - (y - y0) / (y1 - y0).max(1e-9) * (H - 2.0 * PAD);
+
+    let mut svg = format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" font-family="sans-serif" font-size="12">
+<rect width="{W}" height="{H}" fill="white"/>
+<text x="{tx}" y="24" text-anchor="middle" font-size="15">naive recompute / ivmlite &#183; views={fixed_views} &#183; groups={fixed_card}</text>
+<line x1="{PAD}" y1="{by}" x2="{rx}" y2="{by}" stroke="#333"/>
+<line x1="{PAD}" y1="{PAD}" x2="{PAD}" y2="{by}" stroke="#333"/>
+<text x="{tx}" y="{lx}" text-anchor="middle">base_rows</text>
+<text x="18" y="18" fill="#333">speedup (log10)</text>
+"##,
+        tx = W / 2.0,
+        by = H - PAD,
+        rx = W - PAD,
+        lx = H - 20.0,
+    );
+
+    let mut x_ticks = xs;
+    x_ticks.sort_by(|a, b| a.total_cmp(b));
+    x_ticks.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+    for x in &x_ticks {
+        let px = sx(*x);
+        svg.push_str(&format!(
+            "<line x1=\"{px:.1}\" y1=\"{by:.1}\" x2=\"{px:.1}\" y2=\"{tick_end:.1}\" stroke=\"#333\"/>\n\
+             <text x=\"{px:.1}\" y=\"{label_y:.1}\" text-anchor=\"middle\">{label}</text>\n",
+            by = H - PAD,
+            tick_end = H - PAD + 6.0,
+            label_y = H - PAD + 18.0,
+            label = fmt_rows(*x),
+        ));
+    }
+
+    for (ratio, name, dash) in [(1.0_f64, "1x", "4 3"), (2.0_f64, "2x", "8 3")] {
+        let py = sy(ratio.log10());
+        svg.push_str(&format!(
+            "<line data-reference=\"{name}\" x1=\"{PAD:.1}\" y1=\"{py:.1}\" x2=\"{rx:.1}\" y2=\"{py:.1}\" stroke=\"#555\" stroke-dasharray=\"{dash}\"/>\n\
+             <text x=\"{label_x:.1}\" y=\"{py:.1}\" dy=\"-3\" text-anchor=\"end\">{name}</text>\n",
+            rx = W - PAD,
+            label_x = W - PAD,
+        ));
+    }
+
+    for (index, (batch_size, points)) in series.iter().enumerate() {
+        let color = COLORS[index % COLORS.len()];
+        let coordinates: Vec<String> = points
+            .iter()
+            .map(|(x, y)| format!("{:.1},{:.1}", sx(*x), sy(*y)))
+            .collect();
+        svg.push_str(&format!(
+            "<polyline fill=\"none\" stroke=\"{color}\" stroke-width=\"2\" points=\"{}\"/>\n",
+            coordinates.join(" ")
+        ));
+        for (x, y) in points {
+            svg.push_str(&format!(
+                "<circle cx=\"{:.1}\" cy=\"{:.1}\" r=\"3\" fill=\"{color}\"/>\n",
+                sx(*x),
+                sy(*y)
+            ));
+        }
+        svg.push_str(&format!(
+            "<text x=\"{}\" y=\"{}\" fill=\"{color}\">batch={batch_size}</text>\n",
+            PAD + 8.0,
+            PAD + 18.0 * (index as f64 + 1.0),
+        ));
+    }
+    svg.push_str("</svg>\n");
+
+    if let Some(directory) = path.parent() {
+        fs::create_dir_all(directory)?;
+    }
+    fs::write(path, svg)
+}
+
+/// Parse the exploration CSV and write the six Phase 4 charts beside it.
+pub fn write_phase4_charts(from: &Path) -> Result<Vec<std::path::PathBuf>, String> {
+    let text = fs::read_to_string(from).map_err(|error| format!("{}: {error}", from.display()))?;
+    let records = crate::confirm::parse_csv(&text)?;
+    let directory = from.parent().unwrap_or_else(|| Path::new("."));
+    let mut written = Vec::new();
+    for cardinality in [10, 1_000, 100_000] {
+        let time_path = directory.join(format!("m1b-phase4-card{cardinality}.svg"));
+        write_svg(&time_path, &records, 10, 100, cardinality)
+            .map_err(|error| format!("{}: {error}", time_path.display()))?;
+        written.push(time_path);
+
+        let speedup_path = directory.join(format!("m1b-phase4-speedup-card{cardinality}.svg"));
+        write_speedup_svg(&speedup_path, &records, 10, cardinality)
+            .map_err(|error| format!("{}: {error}", speedup_path.display()))?;
+        written.push(speedup_path);
+    }
+    Ok(written)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn rec(baseline: &'static str, base_rows: usize, apply_ms: f64, maintain_ms: f64) -> Record {
-        rec_card(baseline, base_rows, apply_ms, maintain_ms, 1_000)
+    fn rec(engine: &str, base_rows: usize, apply_ms: f64, maintain_ms: f64) -> Row {
+        rec_card(engine, base_rows, apply_ms, maintain_ms, 1_000)
     }
 
     fn rec_card(
-        baseline: &'static str,
+        engine: &str,
         base_rows: usize,
         apply_ms: f64,
         maintain_ms: f64,
         cardinality: usize,
-    ) -> Record {
-        Record {
-            baseline,
+    ) -> Row {
+        Row {
+            engine: engine.to_string(),
             views: 10,
             base_rows,
-            batch: 100,
-            cardinality,
+            batch_size: 100,
+            group_cardinality: cardinality,
             apply_ms,
             maintain_ms,
         }
@@ -309,6 +464,22 @@ mod tests {
             svg.contains("has only 2 data points"),
             "a series with fewer than three points must be annotated: {svg}"
         );
+    }
+
+    #[test]
+    fn speedup_chart_contains_the_one_and_two_times_reference_lines() {
+        let directory = std::env::temp_dir().join("ivmlite-bench-speedup-reference-lines");
+        let path = directory.join("test.svg");
+        let records = vec![
+            rec("naive_recompute", 10_000, 20.0, 0.0),
+            rec("ivmlite", 10_000, 10.0, 0.0),
+            rec("naive_recompute", 100_000, 40.0, 0.0),
+            rec("ivmlite", 100_000, 10.0, 0.0),
+        ];
+        write_speedup_svg(&path, &records, 10, 1_000).unwrap();
+        let svg = fs::read_to_string(path).unwrap();
+        assert!(svg.contains("data-reference=\"1x\""), "{svg}");
+        assert!(svg.contains("data-reference=\"2x\""), "{svg}");
     }
 
     #[test]

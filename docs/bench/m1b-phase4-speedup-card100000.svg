@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="420" font-family="sans-serif" font-size="12">
+<rect width="720" height="420" fill="white"/>
+<text x="360" y="24" text-anchor="middle" font-size="15">naive recompute / ivmlite &#183; views=10 &#183; groups=100000</text>
+<line x1="64" y1="356" x2="656" y2="356" stroke="#333"/>
+<line x1="64" y1="64" x2="64" y2="356" stroke="#333"/>
+<text x="360" y="400" text-anchor="middle">base_rows</text>
+<text x="18" y="18" fill="#333">speedup (log10)</text>
+<line x1="64.0" y1="356.0" x2="64.0" y2="362.0" stroke="#333"/>
+<text x="64.0" y="374.0" text-anchor="middle">100k</text>
+<line x1="656.0" y1="356.0" x2="656.0" y2="362.0" stroke="#333"/>
+<text x="656.0" y="374.0" text-anchor="middle">1M</text>
+<line data-reference="1x" x1="64.0" y1="338.1" x2="656.0" y2="338.1" stroke="#555" stroke-dasharray="4 3"/>
+<text x="656.0" y="338.1" dy="-3" text-anchor="end">1x</text>
+<line data-reference="2x" x1="64.0" y1="302.2" x2="656.0" y2="302.2" stroke="#555" stroke-dasharray="8 3"/>
+<text x="656.0" y="302.2" dy="-3" text-anchor="end">2x</text>
+<polyline fill="none" stroke="#888888" stroke-width="2" points="64.0,162.4 656.0,81.9"/>
+<circle cx="64.0" cy="162.4" r="3" fill="#888888"/>
+<circle cx="656.0" cy="81.9" r="3" fill="#888888"/>
+<text x="72" y="82" fill="#888888">batch=1</text>
+<polyline fill="none" stroke="#1f77b4" stroke-width="2" points="64.0,169.9 656.0,85.3"/>
+<circle cx="64.0" cy="169.9" r="3" fill="#1f77b4"/>
+<circle cx="656.0" cy="85.3" r="3" fill="#1f77b4"/>
+<text x="72" y="100" fill="#1f77b4">batch=10</text>
+<polyline fill="none" stroke="#d62728" stroke-width="2" points="64.0,212.4 656.0,113.0"/>
+<circle cx="64.0" cy="212.4" r="3" fill="#d62728"/>
+<circle cx="656.0" cy="113.0" r="3" fill="#d62728"/>
+<text x="72" y="118" fill="#d62728">batch=100</text>
+<polyline fill="none" stroke="#2ca02c" stroke-width="2" points="64.0,295.9 656.0,191.2"/>
+<circle cx="64.0" cy="295.9" r="3" fill="#2ca02c"/>
+<circle cx="656.0" cy="191.2" r="3" fill="#2ca02c"/>
+<text x="72" y="136" fill="#2ca02c">batch=1000</text>
+</svg>

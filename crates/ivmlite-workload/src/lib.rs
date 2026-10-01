@@ -41,7 +41,7 @@ pub struct UpdateSpec {
     pub locality: Locality,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ViewSpec {
     pub id: usize,
     pub threshold: i64,
@@ -119,6 +119,30 @@ pub struct Workload {
     /// test code that builds `Workload` literals) keep leaving it out.
     #[serde(default)]
     pub matrix: Option<MatrixSpec>,
+    /// The fixed set of cells `ivmlite-bench ablation` measures (M1b Phase 4
+    /// Task 2, spec §6). Like `matrix`, only the workload file that is the
+    /// ablation's starting point (`workloads/m0-baseline.toml`) needs this
+    /// section; `#[serde(default)]` keeps every other workload file and test
+    /// literal from needing one.
+    #[serde(default)]
+    pub ablation: Option<AblationSpec>,
+}
+
+/// One row of spec §6's ablation table: a representative combination of the
+/// same four dimensions `cells()` sweeps, held fixed rather than derived.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AblationCell {
+    pub base_rows: usize,
+    pub group_cardinality: usize,
+    pub views: usize,
+    pub batch_size: usize,
+}
+
+/// Spec §6's ablation: a fixed set of cells, each repeated `repeats` times.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AblationSpec {
+    pub cells: Vec<AblationCell>,
+    pub repeats: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -151,6 +175,351 @@ impl std::fmt::Display for WorkloadError {
 }
 
 impl std::error::Error for WorkloadError {}
+
+/// M1b Phase 4 Task 5 (spec §7): the write-amplification workload. Separate
+/// from `Workload` because it needs REPLACE, UPDATE and `recursive_triggers`,
+/// none of which the m0-shaped matrix (`Workload`) uses, and its own schema
+/// (`accounts`) has two ordinary UNIQUE keys besides the `INTEGER PRIMARY
+/// KEY` — §3's matrix inserts and deletes only through the primary key, so
+/// it cannot measure what REPLACE's UNIQUE-candidate lookup costs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WriteOpKind {
+    Insert,
+    Delete,
+    Update,
+    ReplaceRowid,
+    ReplaceUnique,
+    ReplaceTwo,
+}
+
+impl WriteOpKind {
+    /// The label written to the write-amp CSV's `op` column and read back
+    /// from `[[ops]]` in the workload file — the same spelling
+    /// `#[serde(rename_all = "snake_case")]` already produces, spelled out
+    /// explicitly so `ivmlite-bench` does not need to round-trip through
+    /// `serde` just to print a column.
+    pub fn label(self) -> &'static str {
+        match self {
+            WriteOpKind::Insert => "insert",
+            WriteOpKind::Delete => "delete",
+            WriteOpKind::Update => "update",
+            WriteOpKind::ReplaceRowid => "replace_rowid",
+            WriteOpKind::ReplaceUnique => "replace_unique",
+            WriteOpKind::ReplaceTwo => "replace_two",
+        }
+    }
+
+    /// A distinct RNG seed offset per kind, so `WriteAmpWorkload::trace`'s
+    /// per-kind trace is reproducible on its own (each kind's trace is
+    /// generated independently, against a freshly seeded table) without two
+    /// kinds ever drawing from the same random sequence.
+    fn seed_salt(self) -> u64 {
+        match self {
+            WriteOpKind::Insert => 0x1A5E_9F00,
+            WriteOpKind::Delete => 0x5EED,
+            WriteOpKind::Update => 0x0BAD_F00D,
+            WriteOpKind::ReplaceRowid => 0xC0FF_EE01,
+            WriteOpKind::ReplaceUnique => 0xC0FF_EE02,
+            WriteOpKind::ReplaceTwo => 0xC0FF_EE03,
+        }
+    }
+}
+
+/// One row of a write-amplification trace (spec §7's op table).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WriteOp {
+    Insert {
+        id: i64,
+        email: String,
+        handle: String,
+        region: String,
+        amount: i64,
+    },
+    Delete {
+        id: i64,
+    },
+    Update {
+        id: i64,
+        region: String,
+        amount: i64,
+    },
+    /// INSERT OR REPLACE of a full row; `expect_removed` rows are removed by
+    /// conflict (spec §7's table: 1 for `replace_rowid` and
+    /// `replace_unique`, 2 for `replace_two`).
+    Replace {
+        id: i64,
+        email: String,
+        handle: String,
+        region: String,
+        amount: i64,
+        expect_removed: usize,
+    },
+}
+
+/// Draw `count` distinct values from `0..upper` without replacement
+/// (rejection sampling — the same technique `Workload::update_trace` already
+/// uses for "an id that has not been deleted yet"). Every write-amp trace
+/// needs this: no two ops in one trace may touch the same existing row
+/// (spec §7).
+///
+/// # Panics
+/// If `count > upper` (as `usize`): rejection sampling would never
+/// terminate.
+fn sample_distinct(rng: &mut StdRng, count: usize, upper: i64) -> Vec<i64> {
+    assert!(
+        upper >= 0 && count <= upper as usize,
+        "cannot draw {count} distinct values without replacement from 0..{upper}"
+    );
+    let mut taken = std::collections::BTreeSet::new();
+    let mut out = Vec::with_capacity(count);
+    while out.len() < count {
+        let id = rng.random_range(0..upper);
+        if taken.insert(id) {
+            out.push(id);
+        }
+    }
+    out
+}
+
+/// The write-amplification workload (spec §7): its own schema (`accounts`),
+/// data parameters, view counts, op kinds, transaction size and
+/// `recursive_triggers` modes. Loaded from `workloads/write-amp.toml`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WriteAmpWorkload {
+    pub name: String,
+    pub seed: u64,
+    pub schema: WorkloadSchema,
+    pub base_rows: usize,
+    pub group_cardinality: usize,
+    pub amount_max: i64,
+    pub view_counts: Vec<usize>,
+    pub ops: Vec<WriteOpKind>,
+    pub rows_per_op: usize,
+    pub tx_rows: usize,
+    pub recursive_triggers: Vec<bool>,
+    pub view_threshold_stride: i64,
+    pub view_threshold_modulus: i64,
+}
+
+impl WriteAmpWorkload {
+    pub fn load(path: &Path) -> Result<Self, WorkloadError> {
+        let text = fs::read_to_string(path).map_err(WorkloadError::Io)?;
+        let w: WriteAmpWorkload =
+            toml::from_str(&text).map_err(|e| WorkloadError::Parse(e.to_string()))?;
+        w.validate()?;
+        Ok(w)
+    }
+
+    /// Reject every configuration `rows()`/`trace()`/`views()` cannot make
+    /// sense of (M1b Phase 4 Task 5 fix round, ruling 9). `load` calls this,
+    /// and so must anything that mutates a loaded `WriteAmpWorkload` before
+    /// running it (`ivmlite-bench`'s `--views` override re-validates after
+    /// replacing `view_counts`, for exactly this reason).
+    ///
+    /// `rows()` and `trace()` no longer clamp `group_cardinality` or
+    /// `amount_max` to a minimum of 1 themselves — this is now the one place
+    /// that rule lives, exactly as `Workload::validate` is the one place
+    /// `group_cardinality > base_rows` is rejected.
+    pub fn validate(&self) -> Result<(), WorkloadError> {
+        if self.rows_per_op == 0 {
+            return Err(WorkloadError::Invalid("rows_per_op must not be 0".into()));
+        }
+        if self.tx_rows == 0 {
+            return Err(WorkloadError::Invalid("tx_rows must not be 0".into()));
+        }
+        // `replace_two` draws 2 * rows_per_op distinct existing rows per
+        // trace (a pair per op); every other kind draws at most rows_per_op.
+        let needs_two_rows_per_op = self.ops.contains(&WriteOpKind::ReplaceTwo);
+        let min_base_rows = if needs_two_rows_per_op {
+            2 * self.rows_per_op
+        } else {
+            self.rows_per_op
+        };
+        if self.base_rows < min_base_rows {
+            return Err(WorkloadError::Invalid(format!(
+                "base_rows ({}) must be at least {min_base_rows} \
+                 ({}rows_per_op ({}){}, given ops)",
+                self.base_rows,
+                if needs_two_rows_per_op { "2 * " } else { "" },
+                self.rows_per_op,
+                if needs_two_rows_per_op {
+                    " for replace_two's pair per op"
+                } else {
+                    ""
+                },
+            )));
+        }
+        if self.group_cardinality < 1 || self.group_cardinality > self.base_rows {
+            return Err(WorkloadError::Invalid(format!(
+                "group_cardinality ({}) must be between 1 and base_rows ({})",
+                self.group_cardinality, self.base_rows
+            )));
+        }
+        if self.amount_max <= 0 {
+            return Err(WorkloadError::Invalid(format!(
+                "amount_max ({}) must be positive",
+                self.amount_max
+            )));
+        }
+        if self.view_threshold_modulus <= 0 {
+            return Err(WorkloadError::Invalid(format!(
+                "view_threshold_modulus ({}) must be positive",
+                self.view_threshold_modulus
+            )));
+        }
+        if self.ops.is_empty() {
+            return Err(WorkloadError::Invalid("ops must not be empty".into()));
+        }
+        if self.recursive_triggers.is_empty() {
+            return Err(WorkloadError::Invalid(
+                "recursive_triggers must not be empty".into(),
+            ));
+        }
+        if self.view_counts.is_empty() {
+            return Err(WorkloadError::Invalid(
+                "view_counts must not be empty".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// A copy with `base_rows` and `rows_per_op` overridden. A test-only
+    /// helper (spec §7's brief, Task 5 Step 1): it lets a test shrink the
+    /// shipped workload without hand-editing every field of a clone.
+    pub fn with_sizes(&self, base_rows: usize, rows_per_op: usize) -> Self {
+        let mut w = self.clone();
+        w.base_rows = base_rows;
+        w.rows_per_op = rows_per_op;
+        w
+    }
+
+    /// Base rows: id `i`, email `"e{i}@x"`, handle `"h{i}"`, region
+    /// `"r{i % card}"`, amount seeded (spec §7's data description).
+    ///
+    /// Precondition: `group_cardinality >= 1` and `amount_max >= 1`.
+    /// `validate` (which `load` calls) enforces both; a caller that builds a
+    /// `WriteAmpWorkload` directly must uphold them itself, or `id % card`
+    /// panics (division by zero) and `random_range(0..amount_max)` panics
+    /// (an empty range).
+    pub fn rows(&self) -> impl Iterator<Item = (i64, String, String, String, i64)> + '_ {
+        let mut rng = StdRng::seed_from_u64(self.seed);
+        let card = self.group_cardinality as i64;
+        let amount_max = self.amount_max;
+        (0..self.base_rows as i64).map(move |id| {
+            (
+                id,
+                format!("e{id}@x"),
+                format!("h{id}"),
+                format!("r{}", id % card),
+                rng.random_range(0..amount_max),
+            )
+        })
+    }
+
+    /// The deterministic trace for one op kind, against the base rows only
+    /// (spec §7): each kind's trace starts from a freshly seeded table, and
+    /// every op targets a distinct existing row, drawn with the seeded RNG
+    /// without replacement — so every op hits a live row, and no two ops in
+    /// one trace touch the same one.
+    ///
+    /// A fresh email or handle (one not tied to any existing row) is
+    /// prefixed `n`/`m` rather than the base rows' own `e`/`h`, so it can
+    /// never be mistaken for pointing at an existing row.
+    ///
+    /// Precondition: the same as `rows()`'s, plus enough distinct rows for
+    /// `kind` to draw without replacement (`validate` enforces this too:
+    /// `base_rows >= rows_per_op`, or `>= 2 * rows_per_op` when `ops`
+    /// contains `ReplaceTwo`) — otherwise `sample_distinct` panics.
+    pub fn trace(&self, kind: WriteOpKind) -> Vec<WriteOp> {
+        let mut rng = StdRng::seed_from_u64(self.seed ^ kind.seed_salt());
+        let base = self.base_rows as i64;
+        let m = self.rows_per_op;
+        let card = self.group_cardinality as i64;
+        let amount_max = self.amount_max;
+
+        match kind {
+            WriteOpKind::Insert => (0..m)
+                .map(|i| {
+                    let id = base + i as i64;
+                    WriteOp::Insert {
+                        id,
+                        email: format!("e{id}@x"),
+                        handle: format!("h{id}"),
+                        region: format!("r{}", rng.random_range(0..card)),
+                        amount: rng.random_range(0..amount_max),
+                    }
+                })
+                .collect(),
+            WriteOpKind::Delete => sample_distinct(&mut rng, m, base)
+                .into_iter()
+                .map(|id| WriteOp::Delete { id })
+                .collect(),
+            WriteOpKind::Update => sample_distinct(&mut rng, m, base)
+                .into_iter()
+                .map(|id| WriteOp::Update {
+                    id,
+                    region: format!("r{}", rng.random_range(0..card)),
+                    amount: rng.random_range(0..amount_max),
+                })
+                .collect(),
+            WriteOpKind::ReplaceRowid => sample_distinct(&mut rng, m, base)
+                .into_iter()
+                .map(|a| WriteOp::Replace {
+                    id: a,
+                    email: format!("n{a}@x"),
+                    handle: format!("m{a}"),
+                    region: format!("r{}", rng.random_range(0..card)),
+                    amount: rng.random_range(0..amount_max),
+                    expect_removed: 1,
+                })
+                .collect(),
+            WriteOpKind::ReplaceUnique => sample_distinct(&mut rng, m, base)
+                .into_iter()
+                .enumerate()
+                .map(|(i, a)| {
+                    let id = base + i as i64;
+                    WriteOp::Replace {
+                        id,
+                        email: format!("e{a}@x"),
+                        handle: format!("m{id}"),
+                        region: format!("r{}", rng.random_range(0..card)),
+                        amount: rng.random_range(0..amount_max),
+                        expect_removed: 1,
+                    }
+                })
+                .collect(),
+            WriteOpKind::ReplaceTwo => sample_distinct(&mut rng, 2 * m, base)
+                .chunks(2)
+                .enumerate()
+                .map(|(i, pair)| {
+                    let (a, b) = (pair[0], pair[1]);
+                    let id = base + i as i64;
+                    WriteOp::Replace {
+                        id,
+                        email: format!("e{a}@x"),
+                        handle: format!("h{b}"),
+                        region: format!("r{}", rng.random_range(0..card)),
+                        amount: rng.random_range(0..amount_max),
+                        expect_removed: 2,
+                    }
+                })
+                .collect(),
+        }
+    }
+
+    /// The m0-shaped set of `n` views over `accounts` (spec §7: "views of
+    /// the m0 shape over accounts"), using the same threshold formula
+    /// `MatrixSpec::views` uses for the main matrix.
+    pub fn views(&self, n: usize) -> Vec<ViewSpec> {
+        (0..n)
+            .map(|i| ViewSpec {
+                id: i,
+                threshold: (i as i64 * self.view_threshold_stride) % self.view_threshold_modulus,
+            })
+            .collect()
+    }
+}
 
 impl Workload {
     pub fn load(path: &Path) -> Result<Workload, WorkloadError> {
@@ -316,7 +685,7 @@ impl Workload {
                     continue;
                 }
                 for &batch in &m.batch_sizes {
-                    cells.push(self.cell(rows, card, m.fixed_views, batch, m));
+                    cells.push(self.with_cell(rows, card, m.fixed_views, batch));
                 }
             }
         }
@@ -331,7 +700,7 @@ impl Workload {
                     continue;
                 }
                 for &batch in &m.batch_sizes {
-                    cells.push(self.cell(rows, m.fixed_cardinality, views, batch, m));
+                    cells.push(self.with_cell(rows, m.fixed_cardinality, views, batch));
                 }
             }
         }
@@ -339,22 +708,35 @@ impl Workload {
         cells
     }
 
-    /// Build one cell for `cells()`: clone self, change the four dimensions
-    /// `base_rows` / `group_cardinality` / `batch_size` / `views`, and call
+    /// Build one concrete cell: clone self, change the four dimensions
+    /// `base_rows` / `group_cardinality` / `batch_size` / `views` (the latter
+    /// expanded through the matrix's view-threshold formula), and call
     /// `validate()` explicitly before returning — building by clone + field
     /// mutation bypasses the `validate()` inside `load()`, so it is called again
     /// here, keeping `validate()` the only place the `group_cardinality >
     /// base_rows` rule is enforced. A derived cell is already a concrete
     /// configuration with the matrix evaluated, so its `matrix` field is cleared
     /// to `None` — it needs no evaluation rules of its own.
-    fn cell(
+    ///
+    /// `cells()` calls this for every point of the M0 matrix, and Task 2's
+    /// `confirm` and `ablation` modes call it for cells selected or fixed
+    /// outside the matrix — the two can never disagree on how a cell is built
+    /// from its four dimensions, because there is only one implementation.
+    ///
+    /// # Panics
+    /// If `self.matrix` is `None` (the view-threshold formula lives there), or
+    /// if the resulting cell fails `validate()`.
+    pub fn with_cell(
         &self,
         base_rows: usize,
         group_cardinality: usize,
         views: usize,
         batch_size: usize,
-        m: &MatrixSpec,
     ) -> Workload {
+        let m = self
+            .matrix
+            .as_ref()
+            .expect("with_cell needs a [matrix] section in the workload");
         let mut w = self.clone();
         w.data.base_rows = base_rows;
         w.data.group_cardinality = group_cardinality;
@@ -362,7 +744,7 @@ impl Workload {
         w.views = m.views(views);
         w.matrix = None;
         w.validate()
-            .unwrap_or_else(|e| panic!("cells() built an invalid workload: {e}"));
+            .unwrap_or_else(|e| panic!("with_cell built an invalid workload: {e}"));
         w
     }
 }
@@ -396,6 +778,7 @@ mod tests {
                 ViewSpec { id: 1, threshold: 10 },
             ],
             matrix: None,
+            ablation: None,
         }
     }
 
@@ -669,6 +1052,74 @@ mod tests {
         }
     }
 
+    /// Task 2's requirement in its own words: `with_cell` must be able to
+    /// reproduce every cell `cells()` returns, called with exactly that cell's
+    /// own four dimensions — so `cells()` and `with_cell` (which `confirm` and
+    /// `ablation` call directly) can never disagree, because `cells()` is
+    /// implemented in terms of `with_cell` rather than a second copy of the
+    /// same derivation.
+    #[test]
+    fn with_cell_reproduces_every_cell_cells_returns() {
+        let w = spec_with_matrix();
+        for c in w.cells() {
+            let reproduced = w.with_cell(
+                c.data.base_rows,
+                c.data.group_cardinality,
+                c.views.len(),
+                c.updates.batch_size,
+            );
+            assert_eq!(reproduced.data.base_rows, c.data.base_rows);
+            assert_eq!(reproduced.data.group_cardinality, c.data.group_cardinality);
+            assert_eq!(reproduced.updates.batch_size, c.updates.batch_size);
+            assert_eq!(reproduced.views, c.views);
+            assert!(reproduced.matrix.is_none());
+        }
+    }
+
+    /// The shipped `workloads/m0-baseline.toml` gains a `[ablation]` section
+    /// (Task 2, spec §6 / §8): exactly the four cells of the spec's table, with
+    /// `repeats = 5`. This is the only test that pins the table's actual
+    /// numbers against the committed file.
+    #[test]
+    fn shipped_workload_file_has_the_spec_6_ablation_section() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../workloads/m0-baseline.toml");
+        let w = Workload::load(&path).expect("the shipped workload file must parse");
+        let ablation = w
+            .ablation
+            .expect("workloads/m0-baseline.toml must have an [ablation] section");
+        assert_eq!(ablation.repeats, 5);
+        assert_eq!(
+            ablation.cells,
+            vec![
+                AblationCell {
+                    base_rows: 100_000,
+                    group_cardinality: 1_000,
+                    views: 10,
+                    batch_size: 1_000
+                },
+                AblationCell {
+                    base_rows: 100_000,
+                    group_cardinality: 100_000,
+                    views: 10,
+                    batch_size: 1_000
+                },
+                AblationCell {
+                    base_rows: 100_000,
+                    group_cardinality: 1_000,
+                    views: 200,
+                    batch_size: 1_000
+                },
+                AblationCell {
+                    base_rows: 100_000,
+                    group_cardinality: 100_000,
+                    views: 200,
+                    batch_size: 100
+                },
+            ]
+        );
+    }
+
     /// The skip rule really takes effect: compared with the size of the naive
     /// cross product of both sweeps computed without any skipping, the number
     /// of cells `cells()` actually produces must be smaller. In `matrix_spec()`,
@@ -694,5 +1145,298 @@ mod tests {
             "the skip rule should make cells() produce fewer cells ({actual}) than the naive \
              cross product ({naive_total})"
         );
+    }
+
+    // ---- M1b Phase 4 Task 5 (spec §7): the write-amplification workload ----
+
+    fn tiny() -> WriteAmpWorkload {
+        WriteAmpWorkload::load(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../workloads/write-amp.toml"),
+        )
+        .unwrap()
+        .with_sizes(1_000, 50) // base_rows, rows_per_op: a test-only helper
+    }
+
+    #[test]
+    fn traces_are_deterministic_and_hit_distinct_live_rows() {
+        let w = tiny();
+        for kind in [
+            WriteOpKind::Delete,
+            WriteOpKind::Update,
+            WriteOpKind::ReplaceRowid,
+            WriteOpKind::ReplaceUnique,
+            WriteOpKind::ReplaceTwo,
+        ] {
+            let t = w.trace(kind);
+            assert_eq!(t, w.trace(kind), "{kind:?} is not deterministic");
+            assert_eq!(t.len(), 50);
+            let mut touched = BTreeSet::new();
+            for op in &t {
+                let hit: Vec<i64> = match op {
+                    WriteOp::Delete { id } | WriteOp::Update { id, .. } => vec![*id],
+                    WriteOp::Replace {
+                        id,
+                        email,
+                        handle,
+                        expect_removed,
+                        ..
+                    } => {
+                        let mut ids = Vec::new();
+                        if (*id as usize) < 1_000 {
+                            ids.push(*id);
+                        }
+                        if let Some(a) = email.strip_prefix('e').and_then(|s| s.strip_suffix("@x"))
+                        {
+                            ids.push(a.parse().unwrap());
+                        }
+                        if let Some(b) = handle.strip_prefix('h') {
+                            ids.push(b.parse().unwrap());
+                        }
+                        ids.dedup();
+                        assert_eq!(ids.len(), *expect_removed, "{op:?}");
+                        ids
+                    }
+                    WriteOp::Insert { .. } => vec![],
+                };
+                for id in hit {
+                    assert!(
+                        id < 1_000 && touched.insert(id),
+                        "{kind:?} reuses or misses row {id}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// `insert` is not covered by the distinctness test above (it never
+    /// touches an existing row), so it gets its own: fresh ids starting
+    /// exactly at `base_rows`, all distinct, and deterministic like every
+    /// other kind.
+    #[test]
+    fn insert_trace_uses_fresh_ids_starting_at_base_rows() {
+        let w = tiny();
+        let t = w.trace(WriteOpKind::Insert);
+        assert_eq!(t, w.trace(WriteOpKind::Insert));
+        assert_eq!(t.len(), 50);
+        let ids: BTreeSet<i64> = t
+            .iter()
+            .map(|op| match op {
+                WriteOp::Insert { id, .. } => *id,
+                other => panic!("insert trace produced a non-insert op: {other:?}"),
+            })
+            .collect();
+        assert_eq!(ids.len(), 50, "every inserted id must be distinct");
+        assert_eq!(*ids.iter().min().unwrap(), 1_000);
+        assert_eq!(*ids.iter().max().unwrap(), 1_049);
+    }
+
+    #[test]
+    fn rows_use_the_documented_id_email_handle_region_format() {
+        let w = tiny();
+        let first: Vec<_> = w.rows().take(3).collect();
+        assert_eq!(
+            first,
+            vec![
+                (
+                    0,
+                    "e0@x".to_string(),
+                    "h0".to_string(),
+                    "r0".to_string(),
+                    first[0].4
+                ),
+                (
+                    1,
+                    "e1@x".to_string(),
+                    "h1".to_string(),
+                    "r1".to_string(),
+                    first[1].4
+                ),
+                (
+                    2,
+                    "e2@x".to_string(),
+                    "h2".to_string(),
+                    "r2".to_string(),
+                    first[2].4
+                ),
+            ]
+        );
+        for (_, _, _, _, amount) in w.rows() {
+            assert!((0..200).contains(&amount), "amount {amount} out of range");
+        }
+    }
+
+    #[test]
+    fn write_amp_views_use_the_threshold_formula() {
+        let w = tiny();
+        let views = w.views(3);
+        assert_eq!(views.len(), 3);
+        for (i, v) in views.iter().enumerate() {
+            assert_eq!(v.id, i);
+            assert_eq!(
+                v.threshold,
+                (i as i64 * w.view_threshold_stride) % w.view_threshold_modulus
+            );
+        }
+        assert!(views[1].sql("accounts").contains("GROUP BY region"));
+    }
+
+    #[test]
+    fn shipped_write_amp_workload_file_parses() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../workloads/write-amp.toml");
+        let w = WriteAmpWorkload::load(&path).expect("the shipped workload file must parse");
+        assert_eq!(w.name, "write-amp");
+        assert_eq!(w.base_rows, 100_000);
+        assert_eq!(w.group_cardinality, 1_000);
+        assert_eq!(w.amount_max, 200);
+        assert_eq!(w.view_counts, vec![0, 1, 10, 50, 200]);
+        assert_eq!(
+            w.ops,
+            vec![
+                WriteOpKind::Insert,
+                WriteOpKind::Delete,
+                WriteOpKind::Update,
+                WriteOpKind::ReplaceRowid,
+                WriteOpKind::ReplaceUnique,
+                WriteOpKind::ReplaceTwo,
+            ]
+        );
+        assert_eq!(w.rows_per_op, 1_000);
+        assert_eq!(w.tx_rows, 1_000);
+        assert_eq!(w.recursive_triggers, vec![false, true]);
+        assert!(
+            w.schema.ddl.contains("email")
+                && w.schema.ddl.contains("UNIQUE")
+                && w.schema.ddl.contains("handle"),
+            "the accounts schema must have two ordinary UNIQUE keys besides the rowid (spec §7)"
+        );
+    }
+
+    /// `sample_distinct` must actually draw *distinct* values — a mutation
+    /// that dropped the `taken.insert` check (letting duplicates through)
+    /// would make this red, since it directly counts distinctness rather
+    /// than trusting `trace`'s own claim.
+    #[test]
+    fn sample_distinct_draws_are_unique_and_in_range() {
+        let mut rng = StdRng::seed_from_u64(99);
+        let drawn = sample_distinct(&mut rng, 40, 50);
+        assert_eq!(drawn.len(), 40);
+        assert_eq!(drawn.iter().collect::<BTreeSet<_>>().len(), 40);
+        assert!(drawn.iter().all(|&id| (0..50).contains(&id)));
+    }
+
+    // ---- M1b Phase 4 Task 5 fix round, ruling 9: WriteAmpWorkload::validate ----
+
+    /// Every rejection rule `validate` must enforce, each checked by
+    /// mutating one field of a workload that is otherwise valid and
+    /// confirming `validate()` returns `Err`. Mirrors the style of
+    /// `Workload`'s own `validate` tests (e.g.
+    /// `load_rejects_group_cardinality_exceeding_base_rows`): a direct call
+    /// to `validate()`, not a round trip through TOML, since `validate`
+    /// must be callable on its own (see the load-integration test below for
+    /// the "load actually calls it" half).
+    #[test]
+    fn validate_rejects_every_invalid_field() {
+        let base = tiny();
+        assert!(base.validate().is_ok(), "the fixture itself must be valid");
+
+        let cases: Vec<(&str, WriteAmpWorkload)> = vec![
+            ("rows_per_op", {
+                let mut w = base.clone();
+                w.rows_per_op = 0;
+                w
+            }),
+            ("tx_rows", {
+                let mut w = base.clone();
+                w.tx_rows = 0;
+                w
+            }),
+            ("base_rows", {
+                // No replace_two: base_rows must be >= rows_per_op (50).
+                let mut w = base.clone();
+                w.ops = vec![WriteOpKind::Delete];
+                w.base_rows = 49;
+                w
+            }),
+            ("base_rows", {
+                // replace_two present: base_rows must be >= 2 * rows_per_op (100).
+                let mut w = base.clone();
+                w.ops = vec![WriteOpKind::ReplaceTwo];
+                w.base_rows = 99;
+                w
+            }),
+            ("group_cardinality", {
+                let mut w = base.clone();
+                w.group_cardinality = 0;
+                w
+            }),
+            ("group_cardinality", {
+                let mut w = base.clone();
+                w.group_cardinality = w.base_rows + 1;
+                w
+            }),
+            ("amount_max", {
+                let mut w = base.clone();
+                w.amount_max = 0;
+                w
+            }),
+            ("view_threshold_modulus", {
+                let mut w = base.clone();
+                w.view_threshold_modulus = 0;
+                w
+            }),
+            ("ops", {
+                let mut w = base.clone();
+                w.ops = vec![];
+                w
+            }),
+            ("recursive_triggers", {
+                let mut w = base.clone();
+                w.recursive_triggers = vec![];
+                w
+            }),
+            ("view_counts", {
+                let mut w = base.clone();
+                w.view_counts = vec![];
+                w
+            }),
+        ];
+
+        for (field, w) in cases {
+            assert!(
+                w.validate().is_err(),
+                "validate() should reject an invalid {field}"
+            );
+        }
+    }
+
+    /// The boundary `base_rows == 2 * rows_per_op` (with `replace_two`
+    /// present) must be accepted — an off-by-one in the comparison would
+    /// reject this legal boundary too.
+    #[test]
+    fn validate_accepts_the_replace_two_base_rows_boundary() {
+        let mut w = tiny();
+        w.ops = vec![WriteOpKind::ReplaceTwo];
+        w.base_rows = 2 * w.rows_per_op;
+        w.group_cardinality = 1; // irrelevant here; must not exceed base_rows
+        assert!(w.validate().is_ok());
+    }
+
+    /// `load` must actually call `validate`, not merely offer it (ruling
+    /// 9): a shipped-file-shaped TOML with `rows_per_op = 0` must be
+    /// rejected at `load` time.
+    #[test]
+    fn load_rejects_an_invalid_write_amp_workload() {
+        let mut w = tiny();
+        w.rows_per_op = 0;
+        let toml_text = toml::to_string(&w).unwrap();
+
+        let dir = std::env::temp_dir().join("ivmlite-workload-write-amp-invalid");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("bad.toml");
+        std::fs::write(&path, toml_text).unwrap();
+
+        let err = WriteAmpWorkload::load(&path)
+            .expect_err("rows_per_op = 0 must be rejected at load time");
+        assert!(err.to_string().contains("rows_per_op"), "{err}");
     }
 }

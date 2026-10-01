@@ -3,36 +3,6 @@ use std::time::Instant;
 use ivmlite_workload::{TraceOp, ViewSpec, Workload};
 use rusqlite::{Connection, Statement};
 
-/// The three same-host control baselines of spec §10.2.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Baseline {
-    /// Lower bound: write the base table and maintain no views at all. Pure write cost.
-    NoMaintenance,
-    /// The skeptic: hand-written triggers maintain summary tables. Spec §10.2's
-    /// bar has three tiers and is **not** "must beat this": ivmlite **must** be
-    /// far faster than full recompute; it is **expected** to come close to
-    /// hand-written triggers; and it would be a **bonus** to beat row-level
-    /// triggers on large deltas, the structural advantage consolidation brings.
-    /// A hand-written trigger is one of the best implementations of this query
-    /// compiled by hand, and a general engine pays for its generality (a
-    /// generic delta representation, serialization, arrangement lookups,
-    /// operator dispatch, progress tracking). Not beating it does not mean
-    /// having no value.
-    HandWrittenTrigger,
-    /// Baseline: re-run every view's SQL after each batch of deltas. The crossover is measured against this.
-    NaiveRecompute,
-}
-
-impl Baseline {
-    pub fn label(self) -> &'static str {
-        match self {
-            Baseline::NoMaintenance => "no_maintenance",
-            Baseline::HandWrittenTrigger => "hand_written_trigger",
-            Baseline::NaiveRecompute => "naive_recompute",
-        }
-    }
-}
-
 /// Create the base table and load its initial data. Untimed.
 ///
 /// The table definition comes from the workload, and `id INTEGER PRIMARY KEY`
@@ -98,6 +68,49 @@ pub fn install_trigger_view(conn: &Connection, table: &str, v: &ViewSpec) -> rus
     ))
 }
 
+/// Add an `AFTER UPDATE` trigger to a view `install_trigger_view` already
+/// installed: it retracts `OLD`'s contribution (if `OLD.amount` crossed the
+/// threshold) and adds `NEW`'s (if `NEW.amount` crosses it), one trigger
+/// firing once per updated row.
+///
+/// A single `AFTER UPDATE` trigger body cannot branch (SQLite trigger bodies
+/// have no `IF`), so each of the three statements below carries its own
+/// guard in a `WHERE`/`SELECT ... WHERE` clause instead of the trigger's own
+/// `WHEN` clause — one `WHEN` could gate the whole body, but not the retract
+/// and the add independently. Written in this order (retract, then its
+/// cleanup, then add), the three statements are correct regardless of
+/// whether `OLD.region` and `NEW.region` are the same key: if they are, the
+/// retract's decrement, the cleanup's possible deletion, and the add's
+/// insert-or-increment run as one sequential pipeline on that key, so a
+/// row's count never observes a spurious zero from the other half of the
+/// same update.
+///
+/// M1b Phase 4 Task 5 (spec §7): `write_amp.rs` uses this for the
+/// `hand_written_trigger` engine, which has INSERT, DELETE and UPDATE
+/// triggers; `engine.rs`'s matrix keeps using `install_trigger_view`
+/// unchanged, since the m0 update trace never updates a row in place.
+pub fn install_trigger_view_with_update(
+    conn: &Connection,
+    table: &str,
+    v: &ViewSpec,
+) -> rusqlite::Result<()> {
+    install_trigger_view(conn, table, v)?;
+    let t = v.table();
+    let k = v.threshold;
+    conn.execute_batch(&format!(
+        r#"
+        CREATE TRIGGER "{t}_upd" AFTER UPDATE ON "{table}" BEGIN
+            UPDATE "{t}" SET s = s - OLD.amount, c = c - 1
+                WHERE k = OLD.region AND OLD.amount > {k};
+            DELETE FROM "{t}" WHERE k = OLD.region AND c = 0 AND OLD.amount > {k};
+            INSERT INTO "{t}"(k, s, c)
+                SELECT NEW.region, NEW.amount, 1 WHERE NEW.amount > {k}
+                ON CONFLICT(k) DO UPDATE SET s = s + NEW.amount, c = c + 1;
+        END;
+        "#
+    ))
+}
+
 /// The statements `apply` executes, compiled before the timer starts.
 ///
 /// They must be prepared **after every trigger exists**. Creating a trigger
@@ -120,6 +133,26 @@ impl<'c> ApplyStatements<'c> {
             ))?,
             delete: conn.prepare(&format!("DELETE FROM \"{table}\" WHERE id = ?1"))?,
         })
+    }
+
+    /// Neither statement must have been recompiled since `prepare` (M1b
+    /// Phase 4 Task 5 fix round, ruling 6): a flag `PRAGMA` issued between
+    /// `prepare` and a timed region would silently do this by expiring the
+    /// statement (`OP_Expire`), moving compilation cost inside the timer it
+    /// was prepared to stay out of. No matrix cell currently sets such a
+    /// pragma, so this is a preventive check for `engine::run_cell` — see
+    /// `crate::engine::tests::apply_statements_detect_an_intervening_pragma`
+    /// for a test that forces the condition this guards against.
+    pub(crate) fn assert_not_reprepared(&self) -> Result<(), String> {
+        for (label, s) in [("insert", &self.insert), ("delete", &self.delete)] {
+            let n = s.get_status(rusqlite::StatementStatus::RePrepare);
+            if n != 0 {
+                return Err(format!(
+                    "the {label} statement was recompiled {n} time(s) during a timed region"
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -166,6 +199,18 @@ impl<'c> RecomputeStatements<'c> {
             .collect::<rusqlite::Result<Vec<_>>>()
             .map(Self)
     }
+
+    fn assert_not_reprepared(&self) -> Result<(), String> {
+        for (i, stmt) in self.0.iter().enumerate() {
+            let n = stmt.get_status(rusqlite::StatementStatus::RePrepare);
+            if n != 0 {
+                return Err(format!(
+                    "the recompute view {i} statement was recompiled {n} time(s) during a timed region"
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Naive recompute: run every view's SQL once and drain its result set.
@@ -173,13 +218,15 @@ impl<'c> RecomputeStatements<'c> {
 /// The results are deliberately **not** written back to a table. That biases
 /// the comparison toward naive recompute on purpose: if incremental maintenance
 /// cannot beat a recompute that only reads, the conclusion is beyond dispute.
-pub fn recompute_all(stmts: &mut RecomputeStatements<'_>) -> rusqlite::Result<f64> {
+pub fn recompute_all(stmts: &mut RecomputeStatements<'_>) -> Result<f64, String> {
     let start = Instant::now();
     for stmt in &mut stmts.0 {
-        let mut rows = stmt.query([])?;
-        while rows.next()?.is_some() {}
+        let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+        while rows.next().map_err(|e| e.to_string())?.is_some() {}
     }
-    Ok(start.elapsed().as_secs_f64() * 1000.0)
+    let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+    stmts.assert_not_reprepared()?;
+    Ok(elapsed_ms)
 }
 
 #[cfg(test)]
@@ -343,5 +390,132 @@ mod tests {
             without_bootstrap.is_empty(),
             "without the bootstrap statement, the three rows that existed before the triggers are never counted"
         );
+    }
+
+    /// M1b Phase 4 Task 5 (spec §7): `install_trigger_view_with_update`'s
+    /// `AFTER UPDATE` trigger must retract `OLD`'s contribution and add
+    /// `NEW`'s, matching a direct evaluation of the view's SQL — covering an
+    /// update that keeps the same region, one that moves to a different
+    /// region, and one that crosses the threshold in each direction.
+    #[test]
+    fn update_trigger_matches_direct_query_across_region_moves_and_threshold_crossings() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(DDL).unwrap();
+        let seed_rows = [(0i64, "a", 10i64), (1, "a", 20), (2, "b", 50), (3, "c", 5)];
+        {
+            let tx = conn.unchecked_transaction().unwrap();
+            {
+                let mut ins = tx
+                    .prepare("INSERT INTO orders(id, region, amount) VALUES (?1, ?2, ?3)")
+                    .unwrap();
+                for (id, region, amount) in seed_rows {
+                    ins.execute((id, region, amount)).unwrap();
+                }
+            }
+            tx.commit().unwrap();
+        }
+
+        let view = ViewSpec {
+            id: 0,
+            threshold: 8,
+        };
+        install_trigger_view_with_update(&conn, "orders", &view).unwrap();
+
+        // Same region, amount stays above the threshold (a plain retract+add
+        // on the same key).
+        conn.execute("UPDATE orders SET amount = 30 WHERE id = 0", [])
+            .unwrap();
+        // Different region, amount stays above the threshold (retract from
+        // "b", add to "c").
+        conn.execute(
+            "UPDATE orders SET region = 'c', amount = 60 WHERE id = 2",
+            [],
+        )
+        .unwrap();
+        // Crosses the threshold downward: was counted (20 > 8), now is not.
+        conn.execute("UPDATE orders SET amount = 1 WHERE id = 1", [])
+            .unwrap();
+        // Crosses the threshold upward: was not counted (5 <= 8), now is.
+        conn.execute("UPDATE orders SET amount = 50 WHERE id = 3", [])
+            .unwrap();
+
+        let got = trigger_rows(&conn, &view);
+        let want = direct_query_rows(&conn, &view, "orders");
+        assert_eq!(
+            got, want,
+            "the update-maintained summary table must equal a direct evaluation of the view SQL"
+        );
+        // Pin the concrete numbers too, so the two sides cannot "confirm"
+        // each other by sharing the same (possibly wrong) SQL.
+        assert_eq!(
+            got,
+            vec![("a".to_string(), 30, 1), ("c".to_string(), 110, 2),]
+        );
+    }
+
+    /// M1b Phase 4 Task 5 fix round (ruling 6): `assert_not_reprepared` must
+    /// pass after ordinary use.
+    #[test]
+    fn apply_statements_are_not_reprepared_by_ordinary_use() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(DDL).unwrap();
+        let mut stmts = ApplyStatements::prepare(&conn, "orders").unwrap();
+        apply(
+            &conn,
+            &mut stmts,
+            &[TraceOp::Insert {
+                id: 1,
+                region: "a".into(),
+                amount: 1,
+            }],
+        )
+        .unwrap();
+        stmts.assert_not_reprepared().unwrap();
+    }
+
+    /// The negative half: a flag `PRAGMA` issued after `prepare` expires
+    /// the statement, and its next `execute` recompiles it —
+    /// `assert_not_reprepared` must catch that, not merely pass because
+    /// nothing in this crate happens to trigger it today.
+    #[test]
+    fn apply_statements_detect_an_intervening_pragma() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(DDL).unwrap();
+        let mut stmts = ApplyStatements::prepare(&conn, "orders").unwrap();
+        conn.execute_batch("PRAGMA recursive_triggers = 1").unwrap();
+        apply(
+            &conn,
+            &mut stmts,
+            &[TraceOp::Insert {
+                id: 1,
+                region: "a".into(),
+                amount: 1,
+            }],
+        )
+        .unwrap();
+        let err = stmts.assert_not_reprepared().unwrap_err();
+        assert!(err.contains("insert"), "{err}");
+        assert!(err.contains("recompiled"), "{err}");
+    }
+
+    /// The matrix's naive-recompute statements are timed too. A flag pragma
+    /// after preparation must therefore be detected by the real
+    /// `recompute_all` path, not only by an isolated status helper.
+    #[test]
+    fn recompute_all_detects_an_intervening_pragma() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(DDL).unwrap();
+        let workload = Workload::load(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../workloads/m0-baseline.toml"),
+        )
+        .unwrap()
+        .with_cell(10, 1, 1, 1);
+        let mut stmts = RecomputeStatements::prepare(&conn, &workload).unwrap();
+        conn.execute_batch("PRAGMA recursive_triggers = 1").unwrap();
+
+        let err = recompute_all(&mut stmts).unwrap_err();
+        assert!(err.contains("recompute view 0"), "{err}");
+        assert!(err.contains("recompiled"), "{err}");
     }
 }

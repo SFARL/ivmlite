@@ -708,6 +708,12 @@ All randomness goes through a seed; a failure prints its seed and can be replaye
 
 ## 10. Benchmark
 
+> **Amended 2026-09-28, M1b Phase 4:** the extension has now been measured
+> against the M0 baselines. Results, confirmed boundary cells, ablations,
+> write amplification, space amplification, and limits are in
+> [`docs/bench/README.md`](../../bench/README.md), section “M1b Phase 4: the
+> SQLite extension.”
+
 ### 10.1 The main benchmark
 
 ```

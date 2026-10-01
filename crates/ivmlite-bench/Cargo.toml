@@ -7,5 +7,6 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+ivmlite-test = { path = "../ivmlite-test" }
 ivmlite-workload = { path = "../ivmlite-workload" }
-rusqlite.workspace = true
+rusqlite = { workspace = true, features = ["load_extension"] }

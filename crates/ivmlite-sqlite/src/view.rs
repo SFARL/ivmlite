@@ -12,7 +12,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::catalog::{require_utf8, CaptureInfo, SqliteCatalog};
 use crate::names::{
-    apply_trigger, delta_table, has_reserved_prefix, literal, main_qualified, out_table,
+    apply_trigger, delta_table, has_reserved_prefix, literal, main_qualified, out_index, out_table,
     pend_table, quote, stage_table, state_table, trigger, CAPTURE_EVENTS, DELTA_SEQ, DELTA_W, DEPS,
     META, PREFIX, PROBE, PROBE_STEP, PROGRESS, TRACKED, VIEWS,
 };
@@ -25,7 +25,11 @@ use crate::state::{BufferedArrangement, Pending};
 /// (view, table) pair: several views can now share a table's capture, and the
 /// shape is a property of the table's triggers, not of any one view that
 /// reads them.
-pub const FORMAT: i64 = 2;
+///
+/// Format 3 (Phase 4 spec §4) adds the output table's index, `out_index`: a
+/// database built in format 2 has no such index, and no release ever wrote
+/// format 2, so it is refused rather than migrated.
+pub const FORMAT: i64 = 3;
 
 /// The column of the view's output table that holds each row's weight.
 const WEIGHT: &str = "__w";
@@ -65,8 +69,8 @@ fn arrangement_ids(plan: &Plan) -> Vec<ArrangementId> {
     ids
 }
 
-/// Whether the main schema holds an object of `kind` (`table`, `trigger`)
-/// named exactly `name`.
+/// Whether the main schema holds an object of `kind` (`table`, `index`,
+/// `trigger`) named exactly `name`.
 fn object_exists(conn: &Connection, kind: &str, name: &str) -> Result<bool> {
     conn.query_row(
         "SELECT 1 FROM \"main\".sqlite_schema WHERE type = ?1 AND name = ?2",
@@ -351,44 +355,46 @@ fn candidates(schema: &Schema, capture: &CaptureInfo, exclude_old: bool) -> Stri
         .join(" UNION ")
 }
 
-/// `table`'s own `sqlite_schema` row, as a `FROM … WHERE` clause. `schema`
-/// is `"main".` outside a trigger and empty inside one, where a trigger in
-/// `main` reads `main`'s `sqlite_schema` (measured, with an attached
-/// database holding a same-named table and unique index).
-fn table_row(schema: &str, table: &str) -> String {
+/// The `sqlite_schema` rows that concern `table`, as a `WHERE` condition:
+/// the table itself, its indexes and the triggers on it. The latch scans
+/// exactly these, once (Phase 4 spec §5).
+fn rows_of(table: &str) -> String {
+    format!("tbl_name = {} COLLATE NOCASE", literal(table))
+}
+
+/// Among `rows_of(table)`, `table`'s own row.
+fn is_table_row(table: &str) -> String {
     format!(
-        "FROM {schema}sqlite_schema WHERE type = 'table' AND name = {} COLLATE NOCASE",
+        "type = 'table' AND name = {} COLLATE NOCASE",
         literal(table)
     )
 }
 
-/// The `sqlite_schema` rows of `table`'s explicit unique indexes, as a
-/// `FROM … WHERE` clause; `schema` as for `table_row`. SQLite stores every
+/// Among `rows_of(table)`, an explicit unique index. SQLite stores every
 /// such statement with the prefix normalized to `CREATE UNIQUE INDEX `
 /// (measured: `create  unique index if not exists` and a leading comment
 /// are both stored that way), so the `LIKE` needs no more than that prefix.
 /// Autoindexes have no `sql` and are left out: they change only when the
 /// table is rebuilt, which drops the triggers too.
-fn unique_index_rows(schema: &str, table: &str) -> String {
+const IS_UNIQUE_INDEX: &str = "type = 'index' AND sql LIKE 'CREATE UNIQUE INDEX%'";
+
+/// `table`'s own row of `main`'s `sqlite_schema`, as a `FROM … WHERE`
+/// clause, built from the predicates the latch counts with.
+fn table_row(table: &str) -> String {
     format!(
-        "FROM {schema}sqlite_schema WHERE type = 'index' AND tbl_name = {} COLLATE NOCASE \
-         AND sql LIKE 'CREATE UNIQUE INDEX%'",
-        literal(table)
+        "FROM \"main\".sqlite_schema WHERE {} AND {}",
+        rows_of(table),
+        is_table_row(table)
     )
 }
 
-/// The `sqlite_schema` rows of `table`'s capture triggers that sit on the
-/// table named `table`, as a `FROM … WHERE` clause read inside a trigger.
-fn capture_trigger_rows(table: &str) -> String {
-    let names: Vec<String> = CAPTURE_EVENTS
-        .iter()
-        .map(|event| literal(&trigger(table, event)))
-        .collect();
+/// The rows of `table`'s explicit unique indexes in `main`'s
+/// `sqlite_schema`, as a `FROM … WHERE` clause, built from the predicates
+/// the latch counts with.
+fn unique_index_rows(table: &str) -> String {
     format!(
-        "FROM sqlite_schema WHERE type = 'trigger' AND tbl_name = {} COLLATE NOCASE \
-         AND name IN ({})",
-        literal(table),
-        names.join(", ")
+        "FROM \"main\".sqlite_schema WHERE {} AND {IS_UNIQUE_INDEX}",
+        rows_of(table)
     )
 }
 
@@ -401,17 +407,16 @@ struct Fingerprint {
 }
 
 impl Fingerprint {
-    /// Read with the same `table_row` and `unique_index_rows` the latch
-    /// compares against.
+    /// Read with the same `rows_of`, `is_table_row` and `IS_UNIQUE_INDEX`
+    /// predicates the latch counts with, qualified to `main`.
     fn read(conn: &Connection, table: &str) -> Result<Fingerprint> {
-        let main = "\"main\".";
         let table_sql = conn
-            .query_row(&format!("SELECT sql {}", table_row(main, table)), [], |r| {
+            .query_row(&format!("SELECT sql {}", table_row(table)), [], |r| {
                 r.get(0)
             })
             .map_err(sql_error)?;
         let unique_indexes = conn
-            .prepare(&format!("SELECT sql {}", unique_index_rows(main, table)))
+            .prepare(&format!("SELECT sql {}", unique_index_rows(table)))
             .and_then(|mut s| s.query_map([], |r| r.get(0))?.collect())
             .map_err(sql_error)?;
         Ok(Fingerprint {
@@ -435,38 +440,56 @@ impl Fingerprint {
     ///   decoy with its exact text stands in its place, the triggers sit on
     ///   the renamed table and are missing here. Trigger names are unique in
     ///   a schema, so no decoy can carry them;
-    /// - the unique indexes are as many as recorded, and each one's text is
-    ///   among the recorded ones. Index names are unique in a schema and
-    ///   every text contains its name, so together these compare the sets.
-    ///   With none recorded the count alone does, and `NOT IN ()` is left
+    /// - the unique indexes are as many as recorded, and as many of them
+    ///   have a recorded text. Index names are unique in a schema and every
+    ///   text contains its name, so together these compare the sets. With
+    ///   none recorded, the count alone covers it, so the text part is left
     ///   out.
+    ///
+    /// Every part concerns a row whose `tbl_name` is `table`, so they are
+    /// one aggregate over a single scan of `sqlite_schema` (Phase 4 spec
+    /// §5), not one subquery each: the latch runs for every written row.
+    /// Each part counts with `count(CASE WHEN … THEN 1 END)`, which is 0 on
+    /// empty input, never with `sum(…)`, which is NULL there: while `table`
+    /// is renamed away the scan finds no row at all, and a NULL condition
+    /// would silently not latch. `FILTER` and window functions stay out for
+    /// the same old-SQLite reason as `ORDER BY`. The table part counts only
+    /// the rows with the recorded text: a schema cannot hold two tables of
+    /// the same name (in any case), so exactly one such row means `table`'s
+    /// row exists and is unchanged. The `sqlite_schema` read is
+    /// unqualified: a trigger in `main` reads `main`'s (measured, with an
+    /// attached database holding a same-named table and unique index).
     fn changed(&self, table: &str) -> String {
+        let table_row = is_table_row(table);
+        let names: Vec<String> = CAPTURE_EVENTS
+            .iter()
+            .map(|event| literal(&trigger(table, event)))
+            .collect();
+        let recorded = self.unique_indexes.len();
         let mut parts = vec![
             format!(
-                "(SELECT sql {}) IS NOT {}",
-                table_row("", table),
+                "count(CASE WHEN {table_row} AND sql IS {} THEN 1 END) <> 1",
                 literal(&self.table_sql)
             ),
             format!(
-                "(SELECT count(*) {}) <> {}",
-                capture_trigger_rows(table),
+                "count(CASE WHEN type = 'trigger' AND name IN ({}) THEN 1 END) <> {}",
+                names.join(", "),
                 CAPTURE_EVENTS.len()
             ),
-            format!(
-                "(SELECT count(*) {}) <> {}",
-                unique_index_rows("", table),
-                self.unique_indexes.len()
-            ),
+            format!("count(CASE WHEN {IS_UNIQUE_INDEX} THEN 1 END) <> {recorded}"),
         ];
-        if !self.unique_indexes.is_empty() {
-            let recorded: Vec<String> = self.unique_indexes.iter().map(|s| literal(s)).collect();
+        if recorded > 0 {
+            let texts: Vec<String> = self.unique_indexes.iter().map(|s| literal(s)).collect();
             parts.push(format!(
-                "EXISTS (SELECT 1 {} AND sql NOT IN ({}))",
-                unique_index_rows("", table),
-                recorded.join(", ")
+                "count(CASE WHEN {IS_UNIQUE_INDEX} AND sql IN ({}) THEN 1 END) <> {recorded}",
+                texts.join(", ")
             ));
         }
-        parts.join(" OR ")
+        format!(
+            "(SELECT {} FROM sqlite_schema WHERE {})",
+            parts.join(" OR "),
+            rows_of(table)
+        )
     }
 }
 
@@ -776,12 +799,23 @@ fn create_out_table(conn: &Connection, name: &str, view: &CompiledView) -> Resul
         .iter()
         .map(|c| format!("{} {}", quote(&c.name), sql_type(c)))
         .collect();
+    let cols: Vec<String> = view.columns.iter().map(|c| quote(&c.name)).collect();
+    // Non-unique (spec §4): v0's root aggregate makes output rows distinct,
+    // but the apply trigger's semantics are per-copy — one `out-` removes
+    // one row (see `one_retraction_removes_one_copy_of_a_duplicated_output_row`).
+    // A unique index would refuse the duplicate that white-box test creates,
+    // or worse, silently collapse it. Dropped with the output table itself:
+    // SQLite drops a table's indexes when the table is dropped.
     exec(
         conn,
         &format!(
-            "CREATE TABLE {}({}, {WEIGHT} INTEGER NOT NULL)",
+            "CREATE TABLE {}({}, {WEIGHT} INTEGER NOT NULL);
+             CREATE INDEX {} ON {}({});",
             main_qualified(&out_table(name)),
-            defs.join(", ")
+            defs.join(", "),
+            main_qualified(&out_index(name)),
+            quote(&out_table(name)),
+            cols.join(", "),
         ),
     )
 }
@@ -860,6 +894,34 @@ fn read_deltas(conn: &Connection, schema: &Schema, after: i64) -> Result<(ZSet, 
     Ok((z, last))
 }
 
+/// The lookup a retraction (`out-`) uses to find the one output row it
+/// removes (Phase 4 spec §4): `SELECT rowid FROM <out> WHERE <c0> IS
+/// <operand(0)> AND <c1> IS <operand(1)> AND …`. `cols` must be every output
+/// column, quoted, in the output table's own order — the same order
+/// `create_out_table` indexed them in — so SQLite can plan this as a SEARCH
+/// on `out_index`, not a SCAN. `operand` gives each column's `IS`
+/// comparison's right-hand side; the only caller is `create_stage`, which
+/// passes `NEW.cN` and uses the result, unchanged, in both the RAISE's
+/// existence check and the retracting `DELETE`.
+///
+/// This crate cannot open a live `Connection` to check the resulting plan
+/// itself — it builds `rusqlite` with only the `loadable_extension`
+/// feature, never linked to a real SQLite (see its own Cargo.toml). Below,
+/// `the_retraction_lookup_names_every_column_by_position` pins this
+/// function's exact generated text; it does not check the plan.
+/// `ivmlite-test`'s `the_retraction_lookup_searches_the_output_index`
+/// reads the *stored apply trigger's own SQL* back out of `sqlite_schema`
+/// (not a copy of this function's text) and checks that its plan is a
+/// SEARCH covering every output column.
+fn retraction_lookup(out: &str, cols: &[String], operand: impl Fn(usize) -> String) -> String {
+    let terms: Vec<String> = cols
+        .iter()
+        .enumerate()
+        .map(|(i, c)| format!("{c} IS {}", operand(i)))
+        .collect();
+    format!("SELECT rowid FROM {out} WHERE {}", terms.join(" AND "))
+}
+
 /// The stage table and the trigger that applies it (see `apply`). One stage
 /// row is one change: `op` is `state` (a weight change of arrangement `arr`),
 /// `out+` / `out-` (an output row, in `c0`, `c1`, …), or `progress` (table
@@ -886,12 +948,7 @@ fn create_stage(
         .collect();
     let cols: Vec<String> = view.columns.iter().map(|c| quote(&c.name)).collect();
     let new_cols: Vec<String> = (0..n).map(|i| format!("NEW.c{i}")).collect();
-    let same: Vec<String> = cols
-        .iter()
-        .enumerate()
-        .map(|(i, c)| format!("{c} IS NEW.c{i}"))
-        .collect();
-    let same = same.join(" AND ");
+    let lookup = retraction_lookup(&out, &cols, |i| format!("NEW.c{i}"));
     let mut body = Vec::new();
     for (i, id) in ids.iter().enumerate() {
         let t = quote(&state_table(name, *id));
@@ -907,11 +964,11 @@ fn create_stage(
     }
     body.push(format!(
         "SELECT RAISE(ABORT, 'ivmlite broken invariant: the view retracted a row its output table does not hold') \
-         WHERE NEW.op = 'out-' AND NOT EXISTS (SELECT 1 FROM {out} WHERE {same});"
+         WHERE NEW.op = 'out-' AND NOT EXISTS ({lookup});"
     ));
     body.push(format!(
         "DELETE FROM {out} WHERE NEW.op = 'out-' \
-         AND rowid = (SELECT rowid FROM {out} WHERE {same} LIMIT 1);"
+         AND rowid = ({lookup} LIMIT 1);"
     ));
     body.push(format!(
         "INSERT INTO {out}({}, {WEIGHT}) SELECT {}, 1 WHERE NEW.op = 'out+';",
@@ -1222,20 +1279,38 @@ fn verify(
              (stored {plan}, now {now})"
         ));
     }
-    let mut needed: Vec<String> = arrangement_ids(&view.plan)
+    let mut needed: Vec<(String, &str)> = arrangement_ids(&view.plan)
         .into_iter()
-        .map(|id| state_table(name, id))
+        .map(|id| (state_table(name, id), "table"))
         .collect();
-    needed.push(out_table(name));
-    needed.push(stage_table(name));
-    needed.extend(view.tables.iter().map(|t| delta_table(t)));
-    for table in needed {
-        if !table_exists(conn, &table)? {
-            return Err(format!("its shadow table {table} is missing"));
+    needed.push((out_table(name), "table"));
+    // Phase 4 spec §4: the output index too, so a view whose index the user
+    // dropped is broken rather than silently falling back to a full scan.
+    needed.push((out_index(name), "index"));
+    needed.push((stage_table(name), "table"));
+    needed.extend(view.tables.iter().map(|t| (delta_table(t), "table")));
+    for (object, kind) in needed {
+        if !object_exists(conn, kind, &object)? {
+            return Err(format!("its shadow {kind} {object} is missing"));
         }
     }
     check_capture(conn, name, &view)?;
     Ok(view)
+}
+
+/// The output table's index must exist too (Phase 4 spec §4), checked at
+/// every refresh — `verify`'s own `needed` list above already checks it at
+/// every connect, but `refresh` runs on the same connection a view was
+/// created on and never calls `verify`. Without this, a user who drops
+/// `__ivm_outidx_<view>` on the connection that already holds the view
+/// would see a refresh silently fall back to a full table scan instead of a
+/// broken view (controller ruling 4).
+fn check_output_index(conn: &Connection, name: &str) -> Result<()> {
+    let index = out_index(name);
+    if !object_exists(conn, "index", &index)? {
+        return Err(format!("its shadow index {index} is missing"));
+    }
+    Ok(())
 }
 
 /// Checked on every connect and every refresh: each base table the view
@@ -1272,6 +1347,7 @@ fn check_capture(conn: &Connection, name: &str, view: &CompiledView) -> Result<(
 /// output and watermarks change together or not at all (see `apply`).
 pub fn refresh(conn: &Rc<Connection>, name: &str, view: &CompiledView) -> Result<()> {
     check_capture(conn, name, view).map_err(|why| broken(name, &why))?;
+    check_output_index(conn, name).map_err(|why| broken(name, &why))?;
     let mut batches = Vec::new();
     let mut progress = Vec::new();
     for table in &view.tables {
@@ -1456,5 +1532,27 @@ mod tests {
         assert!(!is_state_table_of("__ivm_state_v_x_agg_groups", "v"));
         assert!(!is_state_table_of("__ivm_state_v__agg_groups", "v"));
         assert!(!is_state_table_of("__ivm_out_v", "v"));
+    }
+
+    // This crate builds `rusqlite` with only the `loadable_extension`
+    // feature (see this crate's Cargo.toml): it is never linked to a real
+    // SQLite, only loaded into one at runtime, so `Connection::open_in_memory`
+    // panics with "SQLite API not initialized" here (confirmed: that is
+    // exactly what happens if this test opens one). `EXPLAIN QUERY PLAN`
+    // therefore cannot be run from this crate's own tests; this test only
+    // pins `retraction_lookup`'s exact generated text. It does not, on its
+    // own, prove anything about the real trigger's plan: `ivmlite-test`'s
+    // `the_retraction_lookup_searches_the_output_index`, in
+    // `extension_lifecycle.rs`, does that separately, by reading the apply
+    // trigger's own stored SQL back out of `sqlite_schema` — not a copy of
+    // this function's text — and running `EXPLAIN QUERY PLAN` on it.
+    #[test]
+    fn the_retraction_lookup_names_every_column_by_position() {
+        let cols = vec![quote("k"), quote("s")];
+        let lookup = retraction_lookup(&quote("__ivm_out_v"), &cols, |i| format!("?{}", i + 1));
+        assert_eq!(
+            lookup,
+            "SELECT rowid FROM \"__ivm_out_v\" WHERE \"k\" IS ?1 AND \"s\" IS ?2"
+        );
     }
 }

@@ -1,0 +1,49 @@
+name = "write-amp"
+seed = 90210
+
+base_rows = 100000
+group_cardinality = 1000
+amount_max = 200
+
+# View shapes are the m0 shape over `accounts` (region, amount); the
+# threshold formula below is what makes the views differ from one another.
+view_counts = [0, 1, 10, 50, 200]
+
+# Each op kind has its own deterministic trace of rows_per_op rows (spec §7's
+# table). `replace_rowid`/`replace_unique`/`replace_two` exercise REPLACE's
+# rowid and UNIQUE-candidate conflict resolution; §3's matrix cannot, since
+# it only ever inserts and deletes through the INTEGER PRIMARY KEY.
+ops = ["insert", "delete", "update", "replace_rowid", "replace_unique", "replace_two"]
+
+rows_per_op = 1000
+tx_rows = 1000
+
+# recursive_triggers OFF and ON (spec §7): with the pragma OFF, an AFTER
+# DELETE trigger does not fire for a row removed by REPLACE's conflict
+# resolution, so hand_written_trigger's replace-op numbers are cost-only in
+# that mode. With the pragma ON, its view is checked against the oracle.
+recursive_triggers = [false, true]
+
+# The threshold of view i = (i * view_threshold_stride) % view_threshold_modulus,
+# the same formula workloads/m0-baseline.toml's [matrix] section uses.
+view_threshold_stride = 7
+view_threshold_modulus = 150
+
+# Refresh policy (spec §7): every view is refreshed exactly once after each
+# op trace, untimed. `apply_ms` (the timed quantity) covers only the trace's
+# writes, in transactions of tx_rows rows; nothing runs between the timed
+# apply and the untimed refresh that follows it.
+
+# Two ordinary UNIQUE keys besides the rowid (spec §7) — this table must come
+# last: every field above is top-level, and TOML attaches key = value lines
+# to the nearest preceding [table] header.
+[schema]
+table = "accounts"
+ddl = """
+CREATE TABLE accounts(
+    id     INTEGER PRIMARY KEY,
+    email  TEXT    NOT NULL UNIQUE,
+    handle TEXT    NOT NULL UNIQUE,
+    region TEXT    NOT NULL,
+    amount INTEGER NOT NULL
+) STRICT"""

@@ -61,3 +61,33 @@ fixed_cardinality = 1000
 # The threshold of view i = (i * view_threshold_stride) % view_threshold_modulus.
 view_threshold_stride = 7
 view_threshold_modulus = 150
+
+# M1b Phase 4 Task 2 (spec §6): the fixed set of cells `ivmlite-bench ablation`
+# measures, held fixed rather than derived from [matrix]. They cover low and
+# high group cardinality, and few and many views.
+[ablation]
+repeats = 5
+
+[[ablation.cells]]
+base_rows = 100000
+group_cardinality = 1000
+views = 10
+batch_size = 1000
+
+[[ablation.cells]]
+base_rows = 100000
+group_cardinality = 100000
+views = 10
+batch_size = 1000
+
+[[ablation.cells]]
+base_rows = 100000
+group_cardinality = 1000
+views = 200
+batch_size = 1000
+
+[[ablation.cells]]
+base_rows = 100000
+group_cardinality = 100000
+views = 200
+batch_size = 100
