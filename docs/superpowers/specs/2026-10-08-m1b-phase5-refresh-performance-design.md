@@ -175,6 +175,31 @@ If nothing reaches 20%, record that and make no change.
 
 **Tests and gates.** The change gets tests and gate rows like any other.
 
+**Amendment 2026-10-08: the profile, and no change.** `scripts/profile-refresh.sh` profiled the release build of fb5e39f, which has §3–§5, on §2's workload:
+- 10 views over 100,000 rows in 1,000 groups, each refreshed after every 1,000-row insert;
+- run for 30 s and sampled for 10 s with `sample`;
+- Python 3.14 with SQLite 3.53 on an Apple M2 Pro running macOS 26.2.
+
+The workload ran at a median of 62.6 ms per batch for the refresh of all ten views. Two runs gave the same shares to within 0.6 points. These are the inclusive shares of `view::refresh`'s 6,449 samples. `view::apply` is split by source line, so the arming statement and the staging inserts are separate:
+
+| cost | share of `view::refresh` |
+|---|---:|
+| the arming `UPDATE`, i.e. the set-based trigger body | **39.9%** |
+| `view::compute`, the operator tree | 27.7% |
+| of which `AggState::absorb` | 19.0% |
+| of which `BufferedArrangement::get` | 8.3% |
+| the staging inserts, i.e. `view::apply` outside the arming statement | 25.1% |
+| `read_deltas` | 4.5% |
+| the catalog checks (`checked_schemas`) | 0.1% |
+
+The single largest cost is the arming statement. It is neither remedy in the table above, so it falls under "something else": **no code change is made in §6**. A new amendment decides any further work.
+
+What the arming statement spends its time on:
+- About 30% of it is `sqlite3BtreeIndexMoveto` and about 20% is `sqlite3BtreeInsert`: B-tree seeks and inserts by the body's upserts, deletes and lookups.
+- About 2.6% of it, 1% of a refresh, is SQLite preparing the `UPDATE` again on every apply. That includes compiling the trigger program, because the arming statement is not a cached statement.
+
+The staging inserts, at 25.1%, would meet the 20% bar. They are not the largest cost, though, so §6's rule does not select them.
+
 ## 7. Measurement
 
 The protocol is Phase 4 spec §3, unchanged.
