@@ -2,7 +2,9 @@
 //! benchmark. The adaptation and its source evidence are documented in
 //! `docs/demos/fluxflow.md`.
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, Statement};
+
+use crate::demo_bench::{ApplyFn, Handwritten, Workload};
 
 pub const FLOW_TABLE_DDL: &str = "CREATE TABLE flow_facts(
     id INTEGER PRIMARY KEY,
@@ -45,8 +47,10 @@ fn mix(mut value: u64) -> u64 {
 }
 
 /// Preserve the upstream generator's important categorical shape: roughly
-/// 45% buying, 44% selling and 11% p2p, seven exchanges and three kinds over
-/// about 180 day buckets at the reported 1.5--1.7M-row scale.
+/// 45% buying, 44% selling and 11% p2p, seven exchanges and three kinds, with
+/// 10,000 flows per day bucket (150 buckets at 1.5M rows). A p2p flow has no
+/// exchange; the empty `exchange_key` stands in for upstream's NULL, because
+/// the grouping key is `NOT NULL` here (`docs/demos/fluxflow.md`).
 pub fn generated_flow(id: usize) -> Flow {
     let hash = mix(id as u64 + 42);
     let percentile = hash % 100;
@@ -71,7 +75,7 @@ pub fn generated_flow(id: usize) -> Flow {
     }
 }
 
-fn insert_flow(statement: &mut rusqlite::Statement<'_>, flow: &Flow) -> rusqlite::Result<()> {
+fn insert_flow(statement: &mut Statement<'_>, flow: &Flow) -> rusqlite::Result<()> {
     statement.execute(params![
         flow.id,
         flow.flow_type,
@@ -86,7 +90,7 @@ fn insert_flow(statement: &mut rusqlite::Statement<'_>, flow: &Flow) -> rusqlite
 pub fn seed(c: &Connection, rows: usize) -> rusqlite::Result<()> {
     let tx = c.unchecked_transaction()?;
     {
-        let mut insert = tx.prepare("INSERT INTO flow_facts VALUES (?1, ?2, ?3, ?4, ?5, ?6)")?;
+        let mut insert = tx.prepare(INSERT_SQL)?;
         for id in 0..rows {
             insert_flow(&mut insert, &generated_flow(id))?;
         }
@@ -94,49 +98,85 @@ pub fn seed(c: &Connection, rows: usize) -> rusqlite::Result<()> {
     tx.commit()
 }
 
-/// Apply one deterministic mixed batch. Three fifths are new flows, one fifth
-/// changes an existing flow's grouping keys and amount, and one fifth removes
-/// an existing flow as a reorg would.
-pub fn apply_mixed_batch(c: &Connection, base_rows: usize, batch: usize) -> rusqlite::Result<()> {
-    assert!(base_rows >= batch, "base_rows must be at least batch size");
-    let tx = c.unchecked_transaction()?;
-    {
-        let mut insert = tx.prepare("INSERT INTO flow_facts VALUES (?1, ?2, ?3, ?4, ?5, ?6)")?;
-        let mut update = tx.prepare(
-            "UPDATE flow_facts SET flow_type = ?2, day_bucket = ?3, \
-             counterparty_kind = ?4, exchange_key = ?5, sat = ?6 WHERE id = ?1",
-        )?;
-        let mut delete = tx.prepare("DELETE FROM flow_facts WHERE id = ?1")?;
+const INSERT_SQL: &str = "INSERT INTO flow_facts VALUES (?1, ?2, ?3, ?4, ?5, ?6)";
 
-        for offset in 0..batch {
-            match offset % 5 {
-                0..=2 => insert_flow(&mut insert, &generated_flow(base_rows + offset))?,
-                3 => {
-                    let id = offset;
-                    let source = generated_flow(id);
-                    let flow_type = match source.flow_type {
-                        "buying" => "selling",
-                        "selling" => "p2p",
-                        _ => "buying",
-                    };
-                    let exchange_key = if flow_type == "p2p" { "" } else { "Kucoin" };
-                    update.execute(params![
-                        id as i64,
-                        flow_type,
-                        source.day_bucket + 1,
-                        "foundation",
-                        exchange_key,
-                        source.sat + 7,
-                    ])?;
-                }
-                4 => {
-                    delete.execute([offset as i64])?;
-                }
-                _ => unreachable!(),
+/// The mixed batch's statements, indexed by `INSERT`, `UPDATE` and `DELETE`.
+const BATCH_SQL: &[&str] = &[
+    INSERT_SQL,
+    "UPDATE flow_facts SET flow_type = ?2, day_bucket = ?3, \
+     counterparty_kind = ?4, exchange_key = ?5, sat = ?6 WHERE id = ?1",
+    "DELETE FROM flow_facts WHERE id = ?1",
+];
+const INSERT: usize = 0;
+const UPDATE: usize = 1;
+const DELETE: usize = 2;
+
+/// `Ok` when `rounds` batches fit: each round updates or deletes its own
+/// newest base rows, so the rounds together need `rounds * batch` of them.
+pub fn validate(rows: usize, batch: usize, rounds: usize) -> Result<(), String> {
+    if rows < rounds * batch {
+        return Err(format!(
+            "fluxflow: {rounds} batches of {batch} need at least {} base rows, not {rows}",
+            rounds * batch
+        ));
+    }
+    Ok(())
+}
+
+/// Round `round` of the deterministic mixed batch. Three fifths are new
+/// flows, one fifth changes an existing flow's grouping keys and amount, and
+/// one fifth removes an existing flow as a reorg would. The updates and
+/// deletes hit the newest base rows, as a reorg does, so they concentrate on
+/// the last day bucket and the next (`docs/demos/fluxflow.md`).
+fn apply_round(
+    statements: &mut [Statement<'_>],
+    base_rows: usize,
+    batch: usize,
+    round: usize,
+) -> rusqlite::Result<()> {
+    assert!(
+        base_rows >= (round + 1) * batch,
+        "base_rows must cover every round's updates and deletes"
+    );
+    for offset in 0..batch {
+        let k = round * batch + offset;
+        match offset % 5 {
+            0..=2 => insert_flow(&mut statements[INSERT], &generated_flow(base_rows + k))?,
+            3 => {
+                let id = base_rows - 1 - k;
+                let source = generated_flow(id);
+                let flow_type = match source.flow_type {
+                    "buying" => "selling",
+                    "selling" => "p2p",
+                    _ => "buying",
+                };
+                let exchange_key = if flow_type == "p2p" { "" } else { "Kucoin" };
+                statements[UPDATE].execute(params![
+                    id as i64,
+                    flow_type,
+                    source.day_bucket + 1,
+                    "foundation",
+                    exchange_key,
+                    source.sat + 7,
+                ])?;
             }
+            4 => {
+                statements[DELETE].execute([(base_rows - 1 - k) as i64])?;
+            }
+            _ => unreachable!(),
         }
     }
-    tx.commit()
+    Ok(())
+}
+
+/// Prepares and applies round `round` of the mixed batch, for untimed use.
+pub fn apply_mixed_batch(
+    c: &Connection,
+    base_rows: usize,
+    batch: usize,
+    round: usize,
+) -> rusqlite::Result<()> {
+    FLUXFLOW.apply_mixed_batch(c, base_rows, batch, round)
 }
 
 pub fn install_handwritten_rollup(c: &Connection) -> rusqlite::Result<()> {
@@ -192,9 +232,56 @@ pub fn install_handwritten_rollup(c: &Connection) -> rusqlite::Result<()> {
     ))
 }
 
+/// Reads the hand-written rollup in the view's column order.
+const ROLLUP_READ_SQL: &str = "SELECT flow_type, day_bucket, counterparty_kind, exchange_key, \
+    sat, count FROM fluxflow_rollup";
+
+/// The FluxFlow demo as a `demo_bench` workload.
+pub struct FluxFlow;
+
+pub static FLUXFLOW: FluxFlow = FluxFlow;
+
+impl Workload for FluxFlow {
+    fn name(&self) -> &'static str {
+        "fluxflow_grouped_flow_rollup"
+    }
+    fn ddl(&self) -> &'static str {
+        FLOW_TABLE_DDL
+    }
+    fn view_name(&self) -> &'static str {
+        "fluxflow_stats"
+    }
+    fn view_sql(&self) -> &'static str {
+        VIEW_SQL
+    }
+    fn covering_index_sql(&self) -> &'static str {
+        "CREATE INDEX flow_facts_covering ON flow_facts(\
+         flow_type, day_bucket, counterparty_kind, exchange_key, sat)"
+    }
+    fn handwritten(&self) -> Option<Handwritten> {
+        Some(Handwritten {
+            install: install_handwritten_rollup,
+            read_sql: ROLLUP_READ_SQL,
+        })
+    }
+    fn validate(&self, rows: usize, batch: usize, rounds: usize) -> Result<(), String> {
+        validate(rows, batch, rounds)
+    }
+    fn seed(&self, c: &Connection, rows: usize) -> rusqlite::Result<()> {
+        seed(c, rows)
+    }
+    fn batch_sql(&self) -> &'static [&'static str] {
+        BATCH_SQL
+    }
+    fn apply_fn(&self) -> ApplyFn {
+        apply_round
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::demo_bench::check_same_multiset;
 
     #[test]
     fn generator_is_deterministic_and_has_all_flow_types() {
@@ -205,48 +292,33 @@ mod tests {
     }
 
     #[test]
-    fn handwritten_rollup_tracks_mixed_changes() {
+    fn handwritten_rollup_tracks_both_rounds_of_mixed_changes() {
         let c = Connection::open_in_memory().unwrap();
         c.execute_batch(FLOW_TABLE_DDL).unwrap();
         seed(&c, 100).unwrap();
         install_handwritten_rollup(&c).unwrap();
-        apply_mixed_batch(&c, 100, 25).unwrap();
+        validate(100, 25, 2).unwrap();
+        for round in 0..2 {
+            apply_mixed_batch(&c, 100, 25, round).unwrap();
+            assert_eq!(
+                check_same_multiset(&c, ROLLUP_READ_SQL, VIEW_SQL),
+                Ok(()),
+                "round {round}"
+            );
+        }
+        let rows: i64 = c
+            .query_row("SELECT COUNT(*) FROM flow_facts", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            rows,
+            100 + 2 * 15 - 2 * 5,
+            "each round inserts 15 and deletes 5"
+        );
+    }
 
-        let oracle: Vec<(String, i64, String, String, i64, i64)> = c
-            .prepare(&format!("{VIEW_SQL} ORDER BY 1, 2, 3, 4"))
-            .unwrap()
-            .query_map([], |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
-                ))
-            })
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap();
-        let actual: Vec<(String, i64, String, String, i64, i64)> = c
-            .prepare(&format!(
-                "SELECT flow_type, day_bucket, counterparty_kind, exchange_key, sat, count \
-                 FROM {ROLLUP_TABLE} ORDER BY 1, 2, 3, 4"
-            ))
-            .unwrap()
-            .query_map([], |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
-                ))
-            })
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap();
-        assert_eq!(actual, oracle);
+    #[test]
+    fn validate_requires_a_base_row_per_round_operation() {
+        assert!(validate(50, 25, 2).is_ok());
+        assert!(validate(49, 25, 2).is_err());
     }
 }
