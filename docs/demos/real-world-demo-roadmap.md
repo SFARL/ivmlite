@@ -28,7 +28,7 @@ reproduction of a production deployment.
 
 | Priority | Candidate | Evidence available | Current fit | Decision |
 |---|---|---|---|---|
-| P0 | [FluxFlow #3](https://github.com/2ndtlmining/fluxflow/issues/3) / [PR #45](https://github.com/2ndtlmining/fluxflow/pull/45) | Public generator and source; no public production DB | A normalized grouped `SUM`/`COUNT` slice fits; retention semantics do not | Implemented |
+| P0 | [FluxFlow #3](https://github.com/2ndtlmining/fluxflow/issues/3) / [PR #45](https://github.com/2ndtlmining/fluxflow/pull/45) | Public generator and source; no public production DB | A normalized grouped `SUM`/`COUNT` slice fits; retention semantics do not | Partly implemented: one source-scale slice with indexed and unindexed recomputation and trigger baselines; the variations below are not |
 | P0 | [Taproot Assets #642](https://github.com/lightninglabs/taproot-assets/issues/642) | Public source/query and an existing synthetic ivmlite fixture; no production DB | Existing split filtered join/count slice fits | Package and extend existing demo |
 | P1 | [noop #2314](https://github.com/ryanbr/noop/issues/2314) | Public source/query and issue measurements; no production DB or reusable large fixture captured here | Per-device/day `COUNT(*)` fits after storing the day bucket | Implemented adapted slice |
 | P1 | [Zcash #2476](https://github.com/zcash/librustzcash/issues/2476) | Public source/query and issue measurements; no production DB or matching large generator | Per-account integer `SUM` fits only after eligibility is denormalized | Implemented adapted slice |
@@ -102,6 +102,19 @@ Measure bootstrap, base writes, refresh, result reads, total write-plus-refresh,
 state size, and correctness. Include small and large bases, multiple batch
 sizes, and INSERT, corrected-label UPDATE, reorg DELETE, and reinsert traces.
 Compare every checkpoint with SQLite recomputation.
+
+Status of the [FluxFlow demo](fluxflow.md):
+
+- **Implemented:** the three baselines above (indexed recomputation, plus an
+  unindexed one labelled as such), bootstrap, base writes, first and
+  steady-state refresh, result reads, write-plus-refresh, in-memory page
+  allocation, and INSERT, group-moving UPDATE and reorg DELETE in one mixed
+  batch. The state is compared with SQLite recomputation after bootstrap,
+  after a warm-up batch and after the measured batch.
+- **Not implemented:** a published sweep over several base sizes and batch
+  sizes (each run takes one of each as arguments, and only the 1.5M-row,
+  500-operation run is recorded), reinsert traces, separate per-operation
+  traces, and verification at every individual checkpoint of a trace.
 
 FluxFlow deliberately keeps rollups after retention deletes raw rows. Current
 ivmlite retracts contributions when source rows are deleted. Disable retention
