@@ -1295,12 +1295,7 @@ fn a_refresh_staging_one_chunk_or_one_chunk_and_one_row_is_maintained() {
         create(&c, "sums", SUMS).unwrap();
         // One row in each of `rows` new regions: one new group, so one
         // state row and one `out+` row, per inserted row.
-        c.execute(
-            "WITH RECURSIVE i(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM i WHERE n < ?1)
-             INSERT INTO orders SELECT 'new' || n, n FROM i",
-            [rows],
-        )
-        .unwrap();
+        insert_new_regions(&c, rows);
         refresh(&c, "sums").unwrap();
         for op in ["state", "out+"] {
             assert_eq!(
@@ -1314,6 +1309,93 @@ fn a_refresh_staging_one_chunk_or_one_chunk_and_one_row_is_maintained() {
         }
         assert_matches_oracle(&c, "sums", SUMS);
     }
+}
+
+/// Lower this connection's `SQLITE_LIMIT_VARIABLE_NUMBER` to `n`, as an
+/// application may.
+fn limit_variables(c: &Connection, n: i32) {
+    // SAFETY: `c`'s own live handle; `sqlite3_limit` only sets one of its
+    // run-time limits.
+    unsafe {
+        rusqlite::ffi::sqlite3_limit(c.handle(), rusqlite::ffi::SQLITE_LIMIT_VARIABLE_NUMBER, n);
+    }
+}
+
+/// Insert `groups` rows into `orders`, each in a new region.
+fn insert_new_regions(c: &Connection, groups: i64) {
+    c.execute(
+        "WITH RECURSIVE i(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM i WHERE n < ?1)
+         INSERT INTO orders SELECT 'new' || n, n FROM i",
+        [groups],
+    )
+    .unwrap();
+}
+
+/// Phase 5 spec §6 (amendments 2026-10-08): no staging `INSERT` binds more
+/// than 999 parameters, the default limit before SQLite 3.32, however wide
+/// the view: 64 output rows of a 16-column view would bind 1,088.
+#[test]
+fn a_wide_view_stages_within_999_parameters() {
+    let cols: Vec<String> = (0..15).map(|i| format!("g{i}")).collect();
+    let sql = format!(
+        "SELECT {cols}, COUNT(*) FROM wide GROUP BY {cols}",
+        cols = cols.join(", ")
+    );
+    let c = open_with_extension(None).unwrap();
+    limit_variables(&c, 999);
+    c.execute_batch(&format!(
+        "CREATE TABLE wide({}) STRICT",
+        cols.iter()
+            .map(|g| format!("{g} INTEGER"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    ))
+    .unwrap();
+    create(&c, "wide_v", &sql).unwrap();
+    // 130 new groups: two full chunks' worth of output rows and more.
+    c.execute(
+        &format!(
+            "WITH RECURSIVE i(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM i WHERE n < 130)
+             INSERT INTO wide SELECT {} FROM i",
+            vec!["n"; cols.len()].join(", ")
+        ),
+        [],
+    )
+    .unwrap();
+    refresh(&c, "wide_v").unwrap();
+    assert_eq!(
+        count(
+            &c,
+            "SELECT count(*) FROM __ivm_stage_wide_v WHERE op = 'out+'"
+        ),
+        130
+    );
+    assert_matches_oracle(&c, "wide_v", &sql);
+}
+
+/// Phase 5 spec §6 (amendments 2026-10-08): the bound is also the
+/// connection's live `SQLITE_LIMIT_VARIABLE_NUMBER` when an application has
+/// lowered it: at 100, 64 rows of a narrow view (4 parameters each) would
+/// bind 256.
+#[test]
+fn a_lowered_variable_limit_bounds_every_staging_insert() {
+    let c = open_with_extension(None).unwrap();
+    limit_variables(&c, 100);
+    setup(&c);
+    create(&c, "sums", SUMS).unwrap();
+    insert_new_regions(&c, 130);
+    refresh(&c, "sums").unwrap();
+    for op in ["state", "out+"] {
+        assert_eq!(
+            count(
+                &c,
+                &format!("SELECT count(*) FROM __ivm_stage_sums WHERE op = '{op}'")
+            ),
+            130,
+            "{op} rows staged"
+        );
+    }
+    assert_matches_oracle(&c, "sums", SUMS);
 }
 
 /// Phase 3a §5, Phase 5 spec §4: a retraction whose row the output table

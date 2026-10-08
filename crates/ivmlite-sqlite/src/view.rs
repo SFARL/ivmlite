@@ -1127,22 +1127,43 @@ fn sql_value(v: &Value) -> rusqlite::types::Value {
 }
 
 /// How many rows one staging `INSERT` carries (Phase 5 spec §6, amendments
-/// 2026-10-08), unless `MAX_PARAMS` allows fewer.
+/// 2026-10-08), unless the parameter bound allows fewer.
 const STAGE_CHUNK: usize = 64;
 
-/// The most parameters one staging `INSERT` binds: `SQLITE_MAX_VARIABLE_NUMBER`
-/// defaults to 999 before SQLite 3.32 (32766 since), and the extension may
-/// run on an older SQLite.
+/// The most parameters one staging `INSERT` binds, even where the
+/// connection allows more: `SQLITE_MAX_VARIABLE_NUMBER` defaults to 999
+/// before SQLite 3.32 (32766 since), and the extension may run on an older
+/// SQLite.
 const MAX_PARAMS: usize = 999;
 
+/// The parameters a `state` stage row binds: `arr`, `key`, `val`, `w`.
+const STATE_WIDTH: usize = 4;
+
+/// The most parameters one staging `INSERT` may bind on `conn`: `MAX_PARAMS`,
+/// or the connection's live `SQLITE_LIMIT_VARIABLE_NUMBER` when an
+/// application has lowered it below that with `sqlite3_limit`.
+fn max_params(conn: &Connection) -> usize {
+    // SAFETY: `conn` wraps the live handle SQLite called the extension on;
+    // a negative new value only reads the limit, changing nothing.
+    let live = unsafe {
+        rusqlite::ffi::sqlite3_limit(
+            conn.handle(),
+            rusqlite::ffi::SQLITE_LIMIT_VARIABLE_NUMBER,
+            -1,
+        )
+    };
+    usize::try_from(live).map_or(0, |live| live.min(MAX_PARAMS))
+}
+
 /// The rows one staging `INSERT` carries for rows of `width` parameters:
-/// `STAGE_CHUNK`, or fewer when that many would bind more than `MAX_PARAMS`.
-/// The width is the view's column count plus one for an output row, so it is
-/// derived here rather than assumed. A row wider than `MAX_PARAMS` still goes
-/// one row per statement, as before chunking; only an SQLite whose limit is
-/// higher (any default build since 3.32) accepts it.
-fn rows_per_statement(width: usize) -> usize {
-    (MAX_PARAMS / width).clamp(1, STAGE_CHUNK)
+/// `STAGE_CHUNK`, or fewer when that many would bind more than `max_params`.
+/// An output row's width is the view's column count plus one, so the chunk is
+/// derived here rather than assumed. A row wider than `max_params` still goes
+/// one row per statement, as before chunking, and fails as it did then. (With
+/// SQLite's default limits, its expression-depth limit caps a view at about
+/// 329 output columns, so a width over 999 is not reachable.)
+fn rows_per_statement(width: usize, max_params: usize) -> usize {
+    (max_params / width).clamp(1, STAGE_CHUNK)
 }
 
 /// Stages rows of one shape with multi-row `INSERT … VALUES (…), (…), …`
@@ -1154,7 +1175,7 @@ struct Stager<'c> {
     conn: &'c Connection,
     /// `INSERT INTO <stage>(<columns>) VALUES `.
     head: String,
-    /// One row's `(…)`; its anonymous `?` parameters are the row's width.
+    /// One row's `(…)`, with `width` anonymous `?` parameters.
     row: String,
     width: usize,
     chunk: usize,
@@ -1164,9 +1185,14 @@ struct Stager<'c> {
 }
 
 impl<'c> Stager<'c> {
-    fn new(conn: &'c Connection, head: String, row: String) -> Self {
-        let width = row.matches('?').count();
-        let chunk = rows_per_statement(width);
+    fn new(
+        conn: &'c Connection,
+        head: String,
+        row: String,
+        width: usize,
+        max_params: usize,
+    ) -> Self {
+        let chunk = rows_per_statement(width, max_params);
         Stager {
             conn,
             head,
@@ -1248,10 +1274,13 @@ fn apply(conn: &Connection, name: &str, view: &CompiledView, changes: &Changes) 
     // stays a one-row insert of its own, so `last_insert_rowid` is its rowid.
     exec(conn, &format!("INSERT INTO {stage}(op) VALUES ('arm')"))?;
     let sentinel = conn.last_insert_rowid();
+    let max_params = max_params(conn);
     let mut state = Stager::new(
         conn,
         format!("INSERT INTO {stage}(op, arr, key, val, w) VALUES "),
         "('state', ?, ?, ?, ?)".to_string(),
+        STATE_WIDTH,
+        max_params,
     );
     for (i, pending) in changes.state.iter().enumerate() {
         for (key, vals) in pending.borrow().iter() {
@@ -1272,6 +1301,8 @@ fn apply(conn: &Connection, name: &str, view: &CompiledView, changes: &Changes) 
         conn,
         format!("INSERT INTO {stage}(op, {}) VALUES ", cs.join(", ")),
         format!("({})", vec!["?"; n + 1].join(", ")),
+        n + 1,
+        max_params,
     );
     for (row, &w) in changes.output.iter() {
         let op = match w {
@@ -1808,15 +1839,25 @@ mod tests {
 
     #[test]
     fn a_staging_insert_binds_at_most_999_parameters() {
-        assert_eq!(rows_per_statement(4), 64, "a state row");
-        assert_eq!(rows_per_statement(15), 64, "64 rows of 15 bind 960");
-        assert_eq!(rows_per_statement(16), 62, "64 rows of 16 would bind 1,024");
-        assert_eq!(rows_per_statement(999), 1);
+        assert_eq!(rows_per_statement(STATE_WIDTH, MAX_PARAMS), 64);
         assert_eq!(
-            rows_per_statement(1000),
+            rows_per_statement(15, MAX_PARAMS),
+            64,
+            "64 rows of 15 bind 960"
+        );
+        assert_eq!(
+            rows_per_statement(16, MAX_PARAMS),
+            62,
+            "64 rows of 16 would bind 1,024"
+        );
+        assert_eq!(rows_per_statement(999, MAX_PARAMS), 1);
+        assert_eq!(
+            rows_per_statement(1000, MAX_PARAMS),
             1,
             "one row per statement, as before"
         );
+        assert_eq!(rows_per_statement(2, 100), 50, "a lowered live limit");
+        assert_eq!(rows_per_statement(4, 0), 1, "never zero rows");
     }
 
     // This crate builds `rusqlite` with only the `loadable_extension`
