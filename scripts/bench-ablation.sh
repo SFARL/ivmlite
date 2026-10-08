@@ -62,8 +62,8 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$(dirname "$out")" "$(dirname "$write_amp_out")"
-out_tmp="$(mktemp "$(dirname "$out")/.m1b-phase4-ablation.XXXXXX")"
-write_amp_out_tmp="$(mktemp "$(dirname "$write_amp_out")/.m1b-phase4-ablation-write-amp.XXXXXX")"
+out_tmp="$(mktemp "$(dirname "$out")/.$(basename "$out" .csv).XXXXXX")"
+write_amp_out_tmp="$(mktemp "$(dirname "$write_amp_out")/.$(basename "$write_amp_out" .csv).XXXXXX")"
 temporary_files+=("$out_tmp" "$write_amp_out_tmp")
 header_written=0
 write_amp_header_written=0

@@ -1120,9 +1120,11 @@ mod tests {
     }
 
     /// The shipped `workloads/m0-baseline.toml` gains a `[ablation]` section
-    /// (Task 2, spec §6 / §8): exactly the four cells of the spec's table, with
-    /// `repeats = 5`. This is the only test that pins the table's actual
-    /// numbers against the committed file.
+    /// (Task 2, spec §6 / §8): the four cells of the spec's table, with
+    /// `repeats = 5`, plus the batch=1 cell at 200 views that M1b Phase 5
+    /// spec §7 adds to isolate its schema-version-gated checks. This is the
+    /// only test that pins the table's actual numbers against the committed
+    /// file.
     #[test]
     fn shipped_workload_file_has_the_spec_6_ablation_section() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1158,6 +1160,12 @@ mod tests {
                     group_cardinality: 100_000,
                     views: 200,
                     batch_size: 100
+                },
+                AblationCell {
+                    base_rows: 100_000,
+                    group_cardinality: 1_000,
+                    views: 200,
+                    batch_size: 1
                 },
             ]
         );

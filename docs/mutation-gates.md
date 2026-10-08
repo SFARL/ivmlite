@@ -405,12 +405,14 @@ Baseline for this section: `scripts/test-all.sh` gives **294** passed / 0 failed
 | M1b Phase 4 Task 5 fix round, §7: `--views` is rejected outside `write-amp` mode, never silently ignored | In `main::parse_args`, report `--views` as never given to the mode check (`("--views", false)`) | `tests::parse_args_rejects_views_outside_write_amp_mode` | **verified** — compiles; `scripts/test-all.sh` gives 424 passed / 1 failed (baseline 425/0), exactly that test red |
 | M1b Phase 4 post-merge review, §7: every REPLACE is checked on its own — its row present as written, every claimed target gone — so opposing per-op errors cannot cancel in the net count | Delete the `check_replace_effects(conn, table, ops)?;` call from `write_amp::apply_trace` | `write_amp::tests::apply_trace_aborts_when_a_replace_misses_its_target_even_if_the_net_count_balances` (two REPLACEs whose count errors cancel) | **verified** — compiles (with a dead-code warning); `scripts/test-all.sh` gives 424 passed / 1 failed (baseline 425/0), exactly that test red |
 | M1b Phase 4 post-merge review, §6 / §8: `AblationSpec::validate` rejects zero repeats, an empty cell list and a cell with more groups than rows, and `Workload::load` calls it | Make `AblationSpec::validate` return `Ok(())` before any of its checks | `ivmlite_workload::tests::ablation_validate_rejects_zero_repeats_no_cells_and_too_many_groups`, `ivmlite_workload::tests::load_rejects_an_invalid_ablation_section` | **verified** — compiles (with unreachable-code warnings); `scripts/test-all.sh` gives 423 passed / 2 failed (baseline 425/0), exactly those two tests red |
+| M1b Phase 5 Task 5, §7: the shipped `[ablation]` section adds the batch=1 cell at 200 views (100,000 rows, 1,000 groups) that isolates the schema-version-gated checks | Delete that cell from `workloads/m0-baseline.toml` | `ivmlite_workload::tests::shipped_workload_file_has_the_spec_6_ablation_section` | **verified** — `scripts/test-all.sh` gives 461 passed / 1 failed (baseline 462/0), exactly that test red |
+| M1b Phase 5 Task 5, §7: `plot --from` names its six charts after the exploration CSV, so the Phase 5 charts never overwrite Phase 4's | In `plot::chart_location`, return the constant stem `"m1b-phase4"` instead of the CSV's file stem | `plot::tests::charts_are_named_after_the_exploration_csv` | **verified** — compiles; `scripts/test-all.sh` gives 461 passed / 1 failed (baseline 462/0), exactly that test red |
 
 ---
 
 ## Totals and outstanding debt
 
-The table has **345** rows: **323** verified, **0** unverified, **22** n/a.
+The table has **347** rows: **325** verified, **0** unverified, **22** n/a.
 (`Value` having no Real/Blob is guarded by the type system rather than a test: adding a variant fails to compile.)
 
 These numbers are counted from this file by `scripts/count-mutation-gates.py`, not written by hand — the first hand-written version was wrong (it said 12/26), which is itself a small sample of why this table exists: **the gap between a claim and the fact is not closed by writing more carefully; it is closed by making the claim mechanically checkable.**
