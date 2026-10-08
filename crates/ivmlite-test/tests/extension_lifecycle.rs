@@ -1283,6 +1283,39 @@ fn one_refresh_fires_the_apply_body_once() {
     assert_matches_oracle(&c, "sums", SUMS);
 }
 
+/// Phase 5 spec §6 (amendments 2026-10-08): rows are staged up to 64 per
+/// `INSERT`, then one remainder `INSERT` takes the rest. A refresh that stages
+/// exactly 64 rows of each kind (`state` and `out+`) has no remainder; one
+/// that stages 65 has a remainder of one row.
+#[test]
+fn a_refresh_staging_one_chunk_or_one_chunk_and_one_row_is_maintained() {
+    for rows in [64_i64, 65] {
+        let c = open_with_extension(None).unwrap();
+        setup(&c);
+        create(&c, "sums", SUMS).unwrap();
+        // One row in each of `rows` new regions: one new group, so one
+        // state row and one `out+` row, per inserted row.
+        c.execute(
+            "WITH RECURSIVE i(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM i WHERE n < ?1)
+             INSERT INTO orders SELECT 'new' || n, n FROM i",
+            [rows],
+        )
+        .unwrap();
+        refresh(&c, "sums").unwrap();
+        for op in ["state", "out+"] {
+            assert_eq!(
+                count(
+                    &c,
+                    &format!("SELECT count(*) FROM __ivm_stage_sums WHERE op = '{op}'")
+                ),
+                rows,
+                "{op} rows staged"
+            );
+        }
+        assert_matches_oracle(&c, "sums", SUMS);
+    }
+}
+
 /// Phase 3a §5, Phase 5 spec §4: a retraction whose row the output table
 /// does not hold fails the whole apply, which changes nothing durable. The
 /// output row is removed behind the view's back (white-box), so the next

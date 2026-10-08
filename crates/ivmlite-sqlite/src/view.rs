@@ -1126,6 +1126,104 @@ fn sql_value(v: &Value) -> rusqlite::types::Value {
     }
 }
 
+/// How many rows one staging `INSERT` carries (Phase 5 spec §6, amendments
+/// 2026-10-08), unless `MAX_PARAMS` allows fewer.
+const STAGE_CHUNK: usize = 64;
+
+/// The most parameters one staging `INSERT` binds: `SQLITE_MAX_VARIABLE_NUMBER`
+/// defaults to 999 before SQLite 3.32 (32766 since), and the extension may
+/// run on an older SQLite.
+const MAX_PARAMS: usize = 999;
+
+/// The rows one staging `INSERT` carries for rows of `width` parameters:
+/// `STAGE_CHUNK`, or fewer when that many would bind more than `MAX_PARAMS`.
+/// The width is the view's column count plus one for an output row, so it is
+/// derived here rather than assumed. A row wider than `MAX_PARAMS` still goes
+/// one row per statement, as before chunking; only an SQLite whose limit is
+/// higher (any default build since 3.32) accepts it.
+fn rows_per_statement(width: usize) -> usize {
+    (MAX_PARAMS / width).clamp(1, STAGE_CHUNK)
+}
+
+/// Stages rows of one shape with multi-row `INSERT … VALUES (…), (…), …`
+/// statements, `chunk` rows at a time, then one remainder statement for the
+/// rows left over (Phase 5 spec §6, amendments 2026-10-08). Each shape is a
+/// `prepare_cached` statement. Rows are inserted in the order they are pushed,
+/// each with exactly the values it would have had as a one-row insert.
+struct Stager<'c> {
+    conn: &'c Connection,
+    /// `INSERT INTO <stage>(<columns>) VALUES `.
+    head: String,
+    /// One row's `(…)`; its anonymous `?` parameters are the row's width.
+    row: String,
+    width: usize,
+    chunk: usize,
+    /// The full chunk's SQL, built at the first full chunk.
+    full: Option<String>,
+    values: Vec<rusqlite::types::Value>,
+}
+
+impl<'c> Stager<'c> {
+    fn new(conn: &'c Connection, head: String, row: String) -> Self {
+        let width = row.matches('?').count();
+        let chunk = rows_per_statement(width);
+        Stager {
+            conn,
+            head,
+            row,
+            width,
+            chunk,
+            full: None,
+            values: Vec::with_capacity(chunk * width),
+        }
+    }
+
+    fn sql(&self, rows: usize) -> String {
+        let mut sql = self.head.clone();
+        for i in 0..rows {
+            if i > 0 {
+                sql.push_str(", ");
+            }
+            sql.push_str(&self.row);
+        }
+        sql
+    }
+
+    fn push(&mut self, row: impl IntoIterator<Item = rusqlite::types::Value>) -> Result<()> {
+        let before = self.values.len();
+        self.values.extend(row);
+        debug_assert_eq!(self.values.len() - before, self.width);
+        if self.values.len() == self.chunk * self.width {
+            if self.full.is_none() {
+                self.full = Some(self.sql(self.chunk));
+            }
+            let sql = self.full.as_deref().expect("filled just above");
+            execute_staging(self.conn, sql, &mut self.values)?;
+        }
+        Ok(())
+    }
+
+    /// Stage the rows left over, fewer than one chunk, in one statement.
+    fn finish(mut self) -> Result<()> {
+        if self.values.is_empty() {
+            return Ok(());
+        }
+        let sql = self.sql(self.values.len() / self.width);
+        execute_staging(self.conn, &sql, &mut self.values)
+    }
+}
+
+fn execute_staging(
+    conn: &Connection,
+    sql: &str,
+    values: &mut Vec<rusqlite::types::Value>,
+) -> Result<()> {
+    conn.prepare_cached(sql)
+        .and_then(|mut s| s.execute(rusqlite::params_from_iter(values.drain(..))))
+        .map(|_| ())
+        .map_err(sql_error)
+}
+
 /// Apply `changes` to the state tables, the output table and the watermarks
 /// **in one statement**, so they change together or not at all.
 ///
@@ -1142,37 +1240,38 @@ fn sql_value(v: &Value) -> rusqlite::types::Value {
 /// bootstrap's own apply, which `create` empties itself at the end (spec §5),
 /// so no view's stage is ever left full once `create` returns.
 fn apply(conn: &Connection, name: &str, view: &CompiledView, changes: &Changes) -> Result<()> {
+    use rusqlite::types::Value as SqlValue;
     let stage = main_qualified(&stage_table(name));
     exec(conn, &format!("DELETE FROM {stage}"))?;
     // The sentinel the arming statement turns into `apply` (Phase 5 spec §4,
-    // amendment 2026-10-08), found again by its rowid, not by a scan.
+    // amendment 2026-10-08), found again by its rowid, not by a scan. It
+    // stays a one-row insert of its own, so `last_insert_rowid` is its rowid.
     exec(conn, &format!("INSERT INTO {stage}(op) VALUES ('arm')"))?;
     let sentinel = conn.last_insert_rowid();
-    let stage_state =
-        format!("INSERT INTO {stage}(op, arr, key, val, w) VALUES ('state', ?1, ?2, ?3, ?4)");
+    let mut state = Stager::new(
+        conn,
+        format!("INSERT INTO {stage}(op, arr, key, val, w) VALUES "),
+        "('state', ?, ?, ?, ?)".to_string(),
+    );
     for (i, pending) in changes.state.iter().enumerate() {
         for (key, vals) in pending.borrow().iter() {
             for (val, w) in vals {
-                conn.prepare_cached(&stage_state)
-                    .and_then(|mut s| {
-                        s.execute(params![
-                            i as i64,
-                            crate::encode::encode(key),
-                            crate::encode::encode(val),
-                            w
-                        ])
-                    })
-                    .map_err(sql_error)?;
+                state.push([
+                    SqlValue::Integer(i as i64),
+                    SqlValue::Blob(crate::encode::encode(key)),
+                    SqlValue::Blob(crate::encode::encode(val)),
+                    SqlValue::Integer(*w),
+                ])?;
             }
         }
     }
+    state.finish()?;
     let n = view.columns.len();
-    let placeholders: Vec<String> = (0..n).map(|i| format!("?{}", i + 2)).collect();
     let cs: Vec<String> = (0..n).map(|i| format!("c{i}")).collect();
-    let stage_out = format!(
-        "INSERT INTO {stage}(op, {}) VALUES (?1, {})",
-        cs.join(", "),
-        placeholders.join(", ")
+    let mut output = Stager::new(
+        conn,
+        format!("INSERT INTO {stage}(op, {}) VALUES ", cs.join(", ")),
+        format!("({})", vec!["?"; n + 1].join(", ")),
     );
     for (row, &w) in changes.output.iter() {
         let op = match w {
@@ -1184,12 +1283,11 @@ fn apply(conn: &Connection, name: &str, view: &CompiledView, changes: &Changes) 
                 ))
             }
         };
-        let mut values = vec![rusqlite::types::Value::Text(op.to_string())];
-        values.extend(row.0.iter().map(sql_value));
-        conn.prepare_cached(&stage_out)
-            .and_then(|mut s| s.execute(rusqlite::params_from_iter(values.iter())))
-            .map_err(sql_error)?;
+        output.push(
+            std::iter::once(SqlValue::Text(op.to_string())).chain(row.0.iter().map(sql_value)),
+        )?;
     }
+    output.finish()?;
     for (table, seq) in &changes.progress {
         conn.execute(
             &format!("INSERT INTO {stage}(op, tbl, seq) VALUES ('progress', ?1, ?2)"),
@@ -1201,13 +1299,13 @@ fn apply(conn: &Connection, name: &str, view: &CompiledView, changes: &Changes) 
     // failure after it would report an error for changes that stay applied
     // (Phase 3a §5). The stage is left full here; a refresh's apply is
     // emptied by the next apply, while the bootstrap's is emptied right
-    // after by `create`'s own cleanup DELETE (spec §5).
-    conn.execute(
-        &format!("UPDATE {stage} SET op = 'apply' WHERE rowid = ?1"),
-        params![sentinel],
-    )
-    .map(|_| ())
-    .map_err(sql_error)
+    // after by `create`'s own cleanup DELETE (spec §5). Cached like the
+    // staging inserts, though the cache lasts one callback: `vtab.rs` wraps
+    // the handle in a new `Connection` for each.
+    conn.prepare_cached(&format!("UPDATE {stage} SET op = 'apply' WHERE rowid = ?1"))
+        .and_then(|mut s| s.execute(params![sentinel]))
+        .map(|_| ())
+        .map_err(sql_error)
 }
 
 /// `CREATE VIRTUAL TABLE <name> USING ivm('<sql>')`, inside the statement's
@@ -1706,6 +1804,19 @@ mod tests {
         assert!(!is_state_table_of("__ivm_state_v_x_agg_groups", "v"));
         assert!(!is_state_table_of("__ivm_state_v__agg_groups", "v"));
         assert!(!is_state_table_of("__ivm_out_v", "v"));
+    }
+
+    #[test]
+    fn a_staging_insert_binds_at_most_999_parameters() {
+        assert_eq!(rows_per_statement(4), 64, "a state row");
+        assert_eq!(rows_per_statement(15), 64, "64 rows of 15 bind 960");
+        assert_eq!(rows_per_statement(16), 62, "64 rows of 16 would bind 1,024");
+        assert_eq!(rows_per_statement(999), 1);
+        assert_eq!(
+            rows_per_statement(1000),
+            1,
+            "one row per statement, as before"
+        );
     }
 
     // This crate builds `rusqlite` with only the `loadable_extension`
