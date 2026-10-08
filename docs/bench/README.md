@@ -157,34 +157,78 @@ not: where does the real extension beat full recomputation, what does its
 generality cost against hand-written triggers, and how much tax does it add to
 ordinary writes?
 
+Every number in this section is derived from the committed CSVs by
+[`phase4_tables.py`](phase4_tables.py) (`python3 docs/bench/phase4_tables.py`);
+nothing is typed in by hand.
+
 ### Setup and protocol
 
 The measurements ran in one otherwise idle session on 2026-09-29–30 on a
-10-core Apple M2 Pro MacBook Pro with 16 GB RAM, macOS 26.2, and bundled SQLite
-3.53.2. The extension and runner were release builds. Wall times were 3,079.23
-seconds for the exploration matrix, 475.10 seconds for confirmation, 4,460.33
-seconds for the two ablations, and 577.00 seconds for the full write-amplification
-run.
+10-core Apple M2 Pro MacBook Pro with 16 GB RAM, macOS 26.2, and the SQLite
+3.53.2 that `rusqlite` bundles (the bench loads the extension into it). The
+extension and runner were release builds. Wall times were 3,079.23 seconds for
+the exploration matrix, 475.10 seconds for confirmation, 4,460.33 seconds for
+the one `scripts/bench-ablation.sh` run (all three builds, each measured on the
+ablation cells and on the ablation's write-amplification workload), and 577.00
+seconds for the full write-amplification run.
 
 Every matrix cell followed Phase 4 spec §3.2: bootstrap, verify the initial
 state, prepare, time apply, time maintain with nothing between those regions,
-then verify the final state. Cells were the outer loop and the four engines
-rotated inside it (§3.3). A mismatch would have aborted the run; all cells
-passed. The exploration contains one observation per cell. The 13 cells near
-the 1x and 2x boundaries were then independently repeated five times with a
-rotated engine order.
+then verify the final state. A mismatch would have aborted the run; all cells
+passed. The exploration contains one observation per cell. The 13 cells the
+confirmation rule selected were then independently repeated five times.
+
+The measurement protocol's constants live in the runner, not in a workload
+file (spec §3.5, §8):
+
+- **Confirmation rule.** A cell is re-run if its exploration speedup
+  (`naive_recompute`'s `apply + maintain` over `ivmlite`'s) lies in
+  **[0.7, 1.4]** or **[1.4, 2.8]**, or if `ivmlite`'s `apply + maintain` is
+  below `hand_written_trigger`'s. No cell met the third clause; the first two
+  selected the 13 cells in `m1b-phase4-confirm.csv`, exactly.
+- **K = 5** repeats per selected cell, each in a fresh database.
+- **Engine rotation.** Matrix cell *i* runs `no_maintenance`,
+  `hand_written_trigger`, `naive_recompute`, `ivmlite` rotated left by
+  *i* mod 4. Repeat *r* of the *i*-th selected cell uses rotation *i* + *r*.
+  The ablation alternates its two engines by repeat, and the
+  write-amplification runner rotates its three engines by combination index.
+
+The ablation's cells, its five repeats (`[ablation] repeats`) and its
+write-amplification view counts (`ablation_view_counts`) are workload
+parameters, in `workloads/m0-baseline.toml` and `workloads/write-amp.toml`.
 
 These results cover one refresh policy: **refresh every view once after each
-batch**. They are a slice of §10.4's surface, not a measurement of the
+batch** (in the write-amplification workload, once after each op trace,
+untimed). They are a slice of §10.4's surface, not a measurement of the
 refresh-frequency dimension. The data is uniform and all databases are
 in-memory.
+
+### Reproducing
+
+From the repository root, on the commit that holds this README:
+
+```bash
+scripts/bench.sh matrix > docs/bench/m1b-phase4.csv
+scripts/bench.sh confirm --from docs/bench/m1b-phase4.csv > docs/bench/m1b-phase4-confirm.csv
+scripts/bench-ablation.sh before=a7c9ec7 index=756bb5b latch=9c6ff90
+scripts/bench.sh write-amp > docs/bench/m1b-phase4-write-amp.csv
+cargo run --release -p ivmlite-bench --locked -- plot --from docs/bench/m1b-phase4.csv
+python3 docs/bench/phase4_tables.py
+```
+
+`scripts/bench.sh` builds the release extension and runner first;
+`scripts/bench-ablation.sh` builds each named commit in its own worktree and
+writes `m1b-phase4-ablation.csv` and `m1b-phase4-ablation-write-amp.csv`. The
+labels map to commits in
+[`m1b-phase4-ablation-builds.csv`](m1b-phase4-ablation-builds.csv).
 
 ### The result: the premise survives, with a clear losing region
 
 The §10.4 falsification bar is met. In the exploration, 55 of 68 cells had
 `naive_recompute / ivmlite > 2`. All 24 cells at one million base rows were
-above 2x, ranging from 17.1x to 909.2x. At 100,000 rows, 22 of 24 cells were
-above 2x. The two boundary cells at 100,000 rows that matter most were confirmed:
+above 2x, ranging from 17.078x to 909.228x. At 100,000 rows, 22 of 24 cells
+were above 2x. Four confirmed cells at 100,000 rows sit close to the 2x bar,
+and all four stayed above it in every repeat:
 
 | views | base rows | batch | groups | confirmed speedup median [min, max] |
 |---:|---:|---:|---:|---:|
@@ -193,14 +237,20 @@ above 2x. The two boundary cells at 100,000 rows that matter most were confirmed
 | 50 | 100,000 | 1,000 | 1,000 | 2.352x [2.332, 2.387] |
 | 200 | 100,000 | 1,000 | 1,000 | 2.042x [2.024, 2.052] |
 
-The losing region is the small-table, large-batch corner. Seven of the 20
-exploration cells at 10,000 base rows were below 1x. Two losses close enough to
-the boundary to require confirmation remained losses: `views=10, batch=1000,
+The losing region is the small-table corner. Seven of the 20 exploration cells
+at 10,000 base rows were below 1x. Two of them were close enough to the
+boundary to be confirmed, and both remained losses: `views=10, batch=1000,
 groups=10` had median 0.949x [0.939, 0.968], and `views=200, batch=10,
-groups=1000` had median 0.938x [0.934, 0.955]. More extreme single-run losses
-also occurred at `base_rows=10,000, batch=1000`: 0.168x at one view, 0.237x at
-10 views, 0.223x at 50 views, and 0.205x at 200 views. They are exploration
-points, not repeated estimates.
+groups=1000` had median 0.938x [0.934, 0.955]. The other five are single
+exploration runs, not repeated estimates: 0.168x at one view, 0.237x at 10
+views, 0.223x at 50 views and 0.205x at 200 views, all with `batch=1000`, and
+0.663x at `views=200, batch=100` (all at `groups=1000`).
+
+Three more confirmed cells at 10,000 rows are too close to 1x to count as
+wins. Two straddle it: `views=1, batch=100, groups=1000` had median 1.087x
+[0.817, 1.780], and `views=50, batch=100, groups=1000` had median 1.087x
+[0.899, 1.100]. The third, `views=200, batch=1, groups=1000`, had median
+1.021x [1.008, 1.038]: above 1x in every repeat, but barely.
 
 The transition is not one clean crossover. For example, at `views=1,
 base_rows=100,000, batch=1000, groups=1000`, the confirmed median was 1.965x
@@ -211,15 +261,21 @@ threshold.
 ### The three bars against hand-written triggers
 
 - **Must — much faster than full recomputation:** met over a broad region, and
-  missed in the small-table, large-batch corner described above.
+  missed in the small-table corner described above.
 - **Expected — close to hand-written triggers:** not met under this workload.
   The closest confirmed cell was still 1.92x slower (median, range
   1.85–1.97x) at `views=10, base_rows=10,000, batch=1000, groups=10`.
-  Other confirmed cells were commonly 4–15x slower.
-- **Bonus — beat hand-written triggers:** not observed. No exploration cell
-  had a lower `apply + maintain` time than the hand-written trigger. The gap
-  becomes extreme for tiny batches and many views because the extension pays
-  fixed refresh machinery that the special-purpose trigger avoids.
+  Eight of the other twelve confirmed cells were 4.63–15.35x slower (medians).
+  The four tiny-batch cells were far slower: 41.76x at 50 views and 106.48x at
+  200 views with `batch=10`, and 1,134.22x at 50 views and 4,529.00x at 200
+  views with `batch=1`.
+- **Bonus — beat hand-written triggers:** not observed. No exploration cell and
+  no confirmation repeat had a lower `apply + maintain` time than the
+  hand-written trigger. The gap is in maintenance, not in writes: `ivmlite`'s
+  `apply_ms` alone was lower than the trigger's in 41 of the 68 exploration
+  cells (see the matrix write amplification below), but every refresh then pays
+  fixed machinery that the special-purpose trigger avoids, which dominates for
+  tiny batches and many views.
 
 The outcome is useful but narrower than the optimistic story: ivmlite wins its
 required comparison with recomputation as the base table grows, while this v0
@@ -227,9 +283,9 @@ implementation does not approach the special-purpose trigger closely enough.
 
 ### Ablation: output index and one-scan latch
 
-The formal ablation used the reviewed commits: `a7c9ec7` before the output
-index, `756bb5b` after the reviewed index change, and `9c6ff90` after the
-reviewed one-scan latch. Each value below is `apply + maintain` in milliseconds,
+The formal ablation used three reviewed builds: `before` (`a7c9ec7`, before the
+output index), `index` (`756bb5b`, after it) and `latch` (`9c6ff90`, after the
+one-scan latch). Each value below is `apply + maintain` in milliseconds,
 reported as median [min, max] over five runs.
 
 | build | views | base rows | batch | groups | median [min, max] ms |
@@ -248,68 +304,166 @@ reported as median [min, max] over five runs.
 | latch | 200 | 100,000 | 100 | 100,000 | 1,301.640 [1,243.658, 1,367.619] |
 
 The output index is the decisive fix: it cuts the 10-view, high-cardinality
-cell by about 132x and the 200-view cell by about 14x. The one-scan latch adds a
-smaller 2–5% improvement to these end-to-end cells because bootstrap,
-maintenance, and verification dominate much of their wall time.
+cell by a median 131.7x and the 200-view, high-cardinality cell by 14.4x.
 
-Its direct write effect is clearer. The table shows `index → latch` µs per
-written row for each operation and recursive-trigger mode:
+The one-scan latch lowers the medians by only 4.5%, 4.7%, 3.1% and 2.1% (table
+order). That is because the latch changes only `apply`, and `apply` is a small
+part of `apply + maintain`: in the `index` build its median share was 11.1%,
+7.5%, 4.1% and 0.5% in the four cells, and refresh (`maintain`) is the rest.
+Within `apply` the effect is large — the median fell from 10.206 to 7.461 ms,
+10.096 to 7.512 ms, 70.831 to 38.322 ms and 7.348 to 4.350 ms. End to end, two
+cells cannot tell the `index` and `latch` builds apart, because their ranges
+overlap: `views=10, groups=100,000` ([133.031, 137.998] against
+[126.729, 140.859]) and `views=200, batch=100, groups=100,000`
+([1,306.762, 1,394.654] against [1,243.658, 1,367.619]). In the other two
+cells every `latch` run was faster than every `index` run.
 
-| op | 10 views OFF | 10 views ON | 200 views OFF | 200 views ON |
-|---|---:|---:|---:|---:|
-| insert | 20.332 → 15.477 | 20.079 → 15.370 | 110.487 → 61.194 | 108.843 → 59.956 |
-| delete | 5.757 → 5.080 | 5.016 → 4.983 | 4.985 → 5.068 | 5.028 → 5.114 |
-| update | 21.438 → 15.609 | 19.682 → 15.684 | 110.283 → 61.925 | 111.537 → 60.471 |
-| replace rowid | 25.566 → 21.677 | 25.670 → 21.692 | 116.182 → 67.171 | 116.003 → 67.373 |
-| replace unique | 25.982 → 22.092 | 25.332 → 21.391 | 115.996 → 68.482 | 115.606 → 68.037 |
-| replace two | 30.227 → 26.473 | 29.985 → 25.409 | 120.244 → 72.469 | 119.390 → 72.049 |
+The direct write effect is clearer, and it includes a regression the index
+build introduced. The table gives µs per written row for each build, from the
+ablation's write-amplification workload (100,000 base rows, traces of 1,000
+writes; `ivmlite` only):
 
-Deletes do not run the latch and stay flat. At 200 views, every operation that
-does run it saves about 47–51 µs per row, a 1.66–1.84x reduction.
+| views | op | OFF before | OFF index | OFF latch | ON before | ON index | ON latch |
+|---:|---|---:|---:|---:|---:|---:|---:|
+| 10 | insert | 17.982 | 20.332 | 15.477 | 18.580 | 20.079 | 15.370 |
+| 10 | delete | 5.457 | 5.757 | 5.080 | 5.507 | 5.016 | 4.983 |
+| 10 | update | 18.204 | 21.438 | 15.609 | 18.259 | 19.682 | 15.684 |
+| 10 | replace rowid | 24.236 | 25.566 | 21.677 | 24.306 | 25.670 | 21.692 |
+| 10 | replace unique | 24.375 | 25.982 | 22.092 | 24.063 | 25.332 | 21.391 |
+| 10 | replace two | 28.560 | 30.227 | 26.473 | 27.766 | 29.985 | 25.409 |
+| 200 | insert | 91.593 | 110.487 | 61.194 | 91.182 | 108.843 | 59.956 |
+| 200 | delete | 5.808 | 4.985 | 5.068 | 5.180 | 5.028 | 5.114 |
+| 200 | update | 92.982 | 110.283 | 61.925 | 92.487 | 111.537 | 60.471 |
+| 200 | replace rowid | 98.189 | 116.182 | 67.171 | 98.003 | 116.003 | 67.373 |
+| 200 | replace unique | 97.693 | 115.996 | 68.482 | 97.408 | 115.606 | 68.037 |
+| 200 | replace two | 102.368 | 120.244 | 72.469 | 105.499 | 119.390 | 72.049 |
+
+- **The index made writes slower.** From `before` to `index`, every operation
+  that runs the latch (all but delete) rose by 13.89–19.05 µs per row at 200
+  views, and by 1.27–3.23 µs at 10 views. The cause is the schema, not the
+  index's own maintenance: each view's index is one more `sqlite_schema` row,
+  and the four-scan latch reads all of `sqlite_schema` four times per written
+  row, so its cost grows with every schema row (spec §2). The same rise shows
+  in the end-to-end cells above, where median `apply` went from 9.543 to
+  10.206 ms (10 views) and from 62.559 to 70.831 ms (200 views,
+  `groups=1,000`).
+- **The latch more than recovers it.** From `index` to `latch`, the same
+  operations fell by 47.34–51.07 µs per row at 200 views (1.657–1.844x) and by
+  3.75–5.83 µs at 10 views (1.142–1.373x).
+- **The net effect of both fixes on writes** is the `before → latch` ratio:
+  1.413–1.529x at 200 views and 1.079–1.209x at 10 views, not the larger
+  `index → latch` ratio.
+- **Deletes do not run the latch** and stay at 4.983–5.808 µs across builds,
+  modes and view counts.
+
+Each build's write-amplification run was measured **once**: every cell in this
+table is a single observation. Its CSV's `extra_us_per_row` column is computed
+against that run's `no_maintenance` rows, which the script measures but does
+not publish (it keeps only the `ivmlite` rows).
 
 ### Write amplification
 
 The full write-amplification workload uses 100,000 base rows and traces of
-1,000 writes. Each cell below is `ivmlite.apply / no_maintenance.apply`, with
-the extra µs per row in parentheses. Both `recursive_triggers` modes are shown.
-At zero views, the ratio stays near 1x and the extra cost stays within
--0.73–0.78 µs/row, which is the run's noise floor.
+1,000 writes; it was run once. Each cell below is `engine.apply /
+no_maintenance.apply`, with the extra µs per written row in parentheses, for
+both engines and both `recursive_triggers` modes. At zero views the multiple
+stays at 0.86–1.33x for `ivmlite` and 0.77–1.14x for the trigger, and the
+extra cost within -0.73–+0.78 and -1.17–+0.63 µs/row: that is the run's noise
+floor.
 
-| views | op | OFF multiple (+µs/row) | ON multiple (+µs/row) |
-|---:|---|---:|---:|
-| 1 | insert | 11.19x (+11.52) | 15.85x (+17.43) |
-| 1 | delete | 2.24x (+2.87) | 1.99x (+2.24) |
-| 1 | update | 13.65x (+15.87) | 14.01x (+12.39) |
-| 1 | replace rowid | 4.40x (+14.99) | 4.24x (+15.27) |
-| 1 | replace unique | 4.52x (+15.27) | 4.45x (+14.99) |
-| 1 | replace two | 3.69x (+17.35) | 3.19x (+16.24) |
-| 10 | insert | 13.70x (+14.57) | 13.67x (+14.38) |
-| 10 | delete | 2.50x (+2.90) | 2.60x (+2.94) |
-| 10 | update | 15.66x (+14.82) | 18.70x (+14.96) |
-| 10 | replace rowid | 5.02x (+17.67) | 5.34x (+18.65) |
-| 10 | replace unique | 4.15x (+16.97) | 4.85x (+17.18) |
-| 10 | replace two | 4.23x (+20.40) | 4.18x (+19.89) |
-| 50 | insert | 21.32x (+24.16) | 22.69x (+24.34) |
-| 50 | delete | 2.93x (+3.64) | 2.56x (+2.92) |
-| 50 | update | 30.77x (+24.98) | 30.35x (+24.98) |
-| 50 | replace rowid | 7.44x (+27.88) | 7.37x (+27.55) |
-| 50 | replace unique | 7.50x (+28.28) | 7.84x (+29.43) |
-| 50 | replace two | 6.05x (+31.04) | 5.61x (+29.00) |
-| 200 | insert | 54.43x (+60.33) | 53.95x (+59.41) |
-| 200 | delete | 1.93x (+2.48) | 2.59x (+3.08) |
-| 200 | update | 67.88x (+60.13) | 65.08x (+59.85) |
-| 200 | replace rowid | 16.19x (+64.59) | 15.25x (+68.95) |
-| 200 | replace unique | 14.56x (+64.29) | 15.72x (+65.80) |
-| 200 | replace two | 12.04x (+65.51) | 11.50x (+64.62) |
+With `recursive_triggers` OFF, SQLite does not fire the hand-written `AFTER
+DELETE` trigger for a row REPLACE removes by conflict, so the trigger's summary
+is wrong after a REPLACE and those cells (marked †) are **cost only**; they
+also understate the trigger's cost, since it skips work. All other cells were
+verified against the oracle for both engines.
 
-The fixed latch cost dominates insert, update, and REPLACE as view count rises:
-their extra cost grows from roughly 12–17 µs/row at one view to roughly
-59–69 µs/row at 200 views. Deletes remain near 2–4 µs/row because their
-capture path does not need the REPLACE latch. `replace_two` is consistently
-the most expensive REPLACE form, but UNIQUE-candidate lookup itself does not
-change the order of magnitude. Recursive triggers ON and OFF are close; the
-setting changes whether hand-written triggers observe REPLACE deletions, not
-ivmlite's supported result.
+| views | op | ivmlite OFF | trigger OFF | ivmlite ON | trigger ON |
+|---:|---|---:|---:|---:|---:|
+| 1 | insert | 11.19x (+11.52) | 3.19x (+2.47) | 15.85x (+17.43) | 2.83x (+2.15) |
+| 1 | delete | 2.24x (+2.87) | 2.14x (+2.65) | 1.99x (+2.24) | 1.89x (+2.01) |
+| 1 | update | 13.65x (+15.87) | 2.71x (+2.14) | 14.01x (+12.39) | 3.69x (+2.56) |
+| 1 | replace rowid | 4.40x (+14.99) | 1.39x (+1.74) † | 4.24x (+15.27) | 1.89x (+4.20) |
+| 1 | replace unique | 4.52x (+15.27) | 1.24x (+1.05) † | 4.45x (+14.99) | 1.64x (+2.78) |
+| 1 | replace two | 3.69x (+17.35) | 1.15x (+0.99) † | 3.19x (+16.24) | 1.43x (+3.20) |
+| 10 | insert | 13.70x (+14.57) | 11.46x (+12.00) | 13.67x (+14.38) | 11.46x (+11.87) |
+| 10 | delete | 2.50x (+2.90) | 8.01x (+13.54) | 2.60x (+2.94) | 8.44x (+13.69) |
+| 10 | update | 15.66x (+14.82) | 23.27x (+22.51) | 18.70x (+14.96) | 27.57x (+22.45) |
+| 10 | replace rowid | 5.02x (+17.67) | 3.51x (+11.04) † | 5.34x (+18.65) | 6.73x (+24.63) |
+| 10 | replace unique | 4.15x (+16.97) | 2.86x (+9.98) † | 4.85x (+17.18) | 6.61x (+25.00) |
+| 10 | replace two | 4.23x (+20.40) | 2.83x (+11.59) † | 4.18x (+19.89) | 7.00x (+37.58) |
+| 50 | insert | 21.32x (+24.16) | 38.10x (+44.11) | 22.69x (+24.34) | 39.90x (+43.65) |
+| 50 | delete | 2.93x (+3.64) | 28.01x (+51.00) | 2.56x (+2.92) | 28.06x (+50.71) |
+| 50 | update | 30.77x (+24.98) | 106.83x (+88.80) | 30.35x (+24.98) | 109.13x (+92.02) |
+| 50 | replace rowid | 7.44x (+27.88) | 11.01x (+43.35) † | 7.37x (+27.55) | 22.36x (+92.34) |
+| 50 | replace unique | 7.50x (+28.28) | 10.84x (+42.84) † | 7.84x (+29.43) | 22.21x (+91.29) |
+| 50 | replace two | 6.05x (+31.04) | 8.10x (+43.67) † | 5.61x (+29.00) | 23.23x (+139.72) |
+| 200 | insert | 54.43x (+60.33) | 148.76x (+166.82) | 53.95x (+59.41) | 152.52x (+170.01) |
+| 200 | delete | 1.93x (+2.48) | 75.55x (+198.16) | 2.59x (+3.08) | 102.25x (+195.93) |
+| 200 | update | 67.88x (+60.13) | 397.10x (+356.09) | 65.08x (+59.85) | 388.25x (+361.69) |
+| 200 | replace rowid | 16.19x (+64.59) | 40.80x (+169.22) † | 15.25x (+68.95) | 79.66x (+380.63) |
+| 200 | replace unique | 14.56x (+64.29) | 38.93x (+179.80) † | 15.72x (+65.80) | 84.63x (+373.90) |
+| 200 | replace two | 12.04x (+65.51) | 29.98x (+172.02) † | 11.50x (+64.62) | 88.97x (+541.18) |
+
+**Where ivmlite's writes are cheaper than the trigger's.** Measured as extra
+µs per row, `ivmlite` costs less than the hand-written trigger for every
+operation in both modes from 50 views up; at 10 views, for delete and update in
+both modes and for all three REPLACE forms with `recursive_triggers` ON (the
+mode in which the trigger is correct); at one view, for no operation. At 200
+views with the mode OFF, an insert costs 54.43x the unmaintained write under
+`ivmlite` against 148.76x under the trigger, and a delete 1.93x against
+75.55x. The hand-written trigger fires once per view for every written row, so
+its cost grows with the number of views; `ivmlite` captures each written row
+once for all views, so its cost grows only through the latch.
+
+**What grows with the view count.** The latch's cost is not fixed: it grows
+with the size of `sqlite_schema`, and every view adds rows to it. `ivmlite`'s
+extra cost for insert, update and REPLACE grows from 11.52–17.43 µs/row at one
+view to 14.38–20.40 at 10, 24.16–31.04 at 50 and 59.41–68.95 at 200. Deletes
+stay at 2.24–3.64 µs/row, because the delete capture path does not run the
+latch.
+
+**REPLACE.** The UNIQUE-candidate lookup does not change the order of
+magnitude: `ivmlite`'s three REPLACE forms cost 14.99–17.35 µs/row at one view
+and 64.29–68.95 at 200, across both modes. `replace_two` has the
+highest extra cost of the three at one and 10 views in both modes, and at 50 and
+200 views with the mode OFF; with it ON, `replace_unique` (50 views) and
+`replace_rowid` (200 views) are higher.
+
+**The two modes.** For `ivmlite` the modes differ by at most 5.91 µs/row in any
+cell (insert at one view) and by at most 4.36 µs/row from 10 views up; it is
+correct in both. For the trigger the mode decides REPLACE's cost: ON makes it
+fire its delete triggers too, and `replace_two` at 200 views rises from
++172.02 to +541.18 µs/row.
+
+**Matrix write amplification.** The same two measures over the main matrix
+(`m1b-phase4.csv`), where every write is a plain insert or delete through the
+primary key, as medians over the cells with each view count and batch size,
+with [min, max] for the extra µs per written row. With `batch=1` the single
+written row carries the whole transaction's cost.
+
+| views | batch | cells | ivmlite multiple | ivmlite +µs/row | trigger multiple | trigger +µs/row |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 1 | 3 | 25.00x | +51.00 [26.00, 96.00] | 6.00x | +15.00 [4.00, 20.00] |
+| 1 | 10 | 3 | 12.46x | +9.50 [6.90, 14.90] | 4.20x | +3.20 [2.00, 3.80] |
+| 1 | 100 | 3 | 13.14x | +5.95 [5.83, 6.96] | 4.53x | +1.76 [1.73, 2.18] |
+| 1 | 1,000 | 3 | 11.03x | +5.78 [5.27, 5.80] | 3.79x | +1.63 [1.55, 1.67] |
+| 10 | 1 | 8 | 19.08x | +62.00 [21.00, 138.00] | 5.62x | +16.50 [8.00, 25.00] |
+| 10 | 10 | 8 | 14.81x | +12.45 [10.50, 18.80] | 21.96x | +17.65 [13.80, 37.50] |
+| 10 | 100 | 8 | 13.50x | +8.17 [7.11, 8.83] | 26.39x | +12.25 [9.38, 28.61] |
+| 10 | 1,000 | 8 | 14.72x | +7.61 [7.39, 7.90] | 28.60x | +11.97 [9.66, 28.93] |
+| 50 | 1 | 3 | 35.50x | +138.00 [96.00, 507.00] | 13.00x | +36.00 [34.00, 83.00] |
+| 50 | 10 | 3 | 28.33x | +24.60 [22.80, 27.20] | 73.67x | +65.40 [63.40, 118.00] |
+| 50 | 100 | 3 | 24.56x | +14.88 [14.84, 15.98] | 80.76x | +50.25 [49.60, 59.56] |
+| 50 | 1,000 | 3 | 35.41x | +15.14 [13.23, 15.35] | 107.80x | +46.99 [44.58, 51.27] |
+| 200 | 1 | 3 | 66.67x | +197.00 [88.00, 275.00] | 28.33x | +78.00 [67.00, 82.00] |
+| 200 | 10 | 3 | 74.83x | +54.80 [44.30, 62.60] | 346.00x | +248.70 [241.50, 329.10] |
+| 200 | 100 | 3 | 88.34x | +38.43 [37.48, 39.50] | 451.00x | +206.84 [198.00, 209.85] |
+| 200 | 1,000 | 3 | 97.84x | +37.77 [37.43, 38.61] | 444.01x | +177.86 [172.77, 181.97] |
+
+`ivmlite`'s `apply_ms` was below the trigger's in 41 of the 68 cells: in none
+of the 12 one-view cells, and in 23 of 32, 9 of 12 and 9 of 12 cells at 10, 50
+and 200 views — every one of them with `batch` of 10 or more. The trigger wins
+every `batch=1` cell and every one-view cell.
 
 ### Space amplification
 
@@ -325,24 +479,47 @@ base-only database:
 | 200 | 100,000 | 1,000 | 1,000 | 1.45 MiB | 46.62 MiB (32.09x) | 46.65 MiB (32.10x) | 45.91 MiB (31.59x) |
 
 Cardinality is the space risk: ten 100,000-group views retain more than 55x
-the base table even after refresh and GC. More views scale state similarly.
-The post-maintenance drop shows that GC reclaims delta pages, but it cannot
-remove the materialized output and aggregate state.
+the base table after refresh. More views scale state similarly.
+
+**The `bootstrapped` and `written` samples are inflated.** Bootstrap writes the
+whole initial state — every state row and every output row — through the
+view's stage table, and the stage is emptied only at the start of the next
+apply, so the bootstrapped database still holds a full copy of it. The first
+refresh empties the stage and its pages go to the freelist. The drop to
+`maintained` is that, not garbage collection of delta pages. At `views=10,
+base_rows=100,000, batch=100, groups=100,000`, the bootstrapped sample uses
+45,826 pages and the maintained one 23,384, with 22,442 pages on the freelist:
+the bootstrapped figure is 1.96x the steady state. At `groups=1,000` it is
+1.29x, and at `groups=10`, where the stage is tiny, 1.00x. The `maintained`
+column is the footprint to plan for.
+
+The output index costs space too: in the four ablation cells it added 6.6%,
+10.1%, 11.2% and 10.2% to the bootstrapped page count (table order), from the
+`before` build to the `index` build.
 
 ### Limits and artifacts
 
 The exploration has one run per cell; only the 13 selected boundary cells have
-five repeats. Data is uniform, databases are in-memory, and refresh frequency
-is fixed to once per batch. These results do not cover Zipf distributions,
-locality, disk durability, concurrent connections, Turso, or Nexmark.
+five repeats. The full write-amplification run and each build's ablation
+write-amplification run were each measured once. Data is uniform, databases are
+in-memory, and refresh frequency is fixed to once per batch. These results do
+not cover Zipf distributions, locality, disk durability, concurrent
+connections, Turso, or Nexmark.
+
+Follow-up for the next phase: **clear the stage table at the end of
+bootstrap**, so a freshly created view does not hold a second copy of its
+initial state until its first refresh. Phase 4 documents the effect and does
+not change the extension.
 
 Raw data:
 
 - [`m1b-phase4.csv`](m1b-phase4.csv) — 68 cells × 4 engines.
 - [`m1b-phase4-confirm.csv`](m1b-phase4-confirm.csv) — 13 selected cells × 5 repeats × 4 engines.
 - [`m1b-phase4-ablation.csv`](m1b-phase4-ablation.csv) — three builds × four cells × five repeats × two engines.
-- [`m1b-phase4-ablation-write-amp.csv`](m1b-phase4-ablation-write-amp.csv) — ivmlite at 10/200 views for all operations and both trigger modes, across three builds.
-- [`m1b-phase4-write-amp.csv`](m1b-phase4-write-amp.csv) — the complete write-amplification matrix.
+- [`m1b-phase4-ablation-write-amp.csv`](m1b-phase4-ablation-write-amp.csv) — ivmlite at 10/200 views for all operations and both trigger modes, across three builds, one run each.
+- [`m1b-phase4-ablation-builds.csv`](m1b-phase4-ablation-builds.csv) — the commit behind each ablation label.
+- [`m1b-phase4-write-amp.csv`](m1b-phase4-write-amp.csv) — the complete write-amplification matrix, one run.
+- [`phase4_tables.py`](phase4_tables.py) — derives every table and figure in this section from the CSVs above.
 
 Charts:
 
