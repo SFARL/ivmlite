@@ -8,6 +8,7 @@
 mod common;
 use common::*;
 
+use ivmlite_test::demand_cases::{DemandCase, KENER, NOOP, ZCASH};
 use ivmlite_test::fluxflow::{
     apply_mixed_batch as apply_fluxflow_batch, seed as seed_fluxflow, FLOW_TABLE_DDL,
     VIEW_SQL as FLUXFLOW_VIEW,
@@ -167,6 +168,46 @@ fn fluxflow_grouped_rollup_tracks_insert_update_and_reorg_delete() {
         after_first_refresh,
         "a second refresh with no new writes must be a no-op"
     );
+}
+
+fn assert_demand_case_tracks_mixed_changes(case: &DemandCase) {
+    let c = open_with_extension(None).unwrap();
+    c.execute_batch(case.ddl).unwrap();
+    case.seed(&c, 600).unwrap();
+    create(&c, case.view_name, case.view_sql).unwrap();
+    assert_matches_oracle(&c, case.view_name, case.view_sql);
+
+    case.apply_mixed_batch(&c, 600, 40).unwrap();
+    assert_ne!(
+        rows(&c, &format!("SELECT * FROM {}", case.view_name)),
+        rows(&c, case.view_sql),
+        "captured changes must wait for explicit refresh"
+    );
+    refresh(&c, case.view_name).unwrap();
+    assert_matches_oracle(&c, case.view_name, case.view_sql);
+
+    let after_first_refresh = rows(&c, &format!("SELECT * FROM {}", case.view_name));
+    refresh(&c, case.view_name).unwrap();
+    assert_eq!(
+        rows(&c, &format!("SELECT * FROM {}", case.view_name)),
+        after_first_refresh,
+        "a second refresh with no new writes must be a no-op"
+    );
+}
+
+#[test]
+fn noop_day_counts_track_append_backfill_delete_and_correction() {
+    assert_demand_case_tracks_mixed_changes(&NOOP);
+}
+
+#[test]
+fn zcash_balances_track_receive_spend_rewind_and_correction() {
+    assert_demand_case_tracks_mixed_changes(&ZCASH);
+}
+
+#[test]
+fn kener_rollup_tracks_insert_status_rewrite_latency_update_and_delete() {
+    assert_demand_case_tracks_mixed_changes(&KENER);
 }
 
 #[test]

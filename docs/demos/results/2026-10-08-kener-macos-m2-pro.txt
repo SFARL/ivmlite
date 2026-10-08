@@ -1,0 +1,10 @@
+machine: Apple M2 Pro, arm64
+os: macOS 26.2 (25C56)
+rustc: 1.95.0 (59807616e 2026-04-14)
+parent revision: ccfdbdb
+command: target/release/examples/demand_case_bench kener_quarter_hour_rollup 4100000 500 3
+
+case,mode,base_rows,batch_size,repeats,bootstrap_ms,apply_ms,maintain_ms,read_ms,apply_plus_maintain_ms,end_to_end_ms,database_kib
+kener_quarter_hour_rollup,no_maintenance,4100000,500,3,0.000,0.240,0.000,0.000,0.240,0.240,100900
+kener_quarter_hour_rollup,full_recompute,4100000,500,3,0.000,0.211,1683.307,0.000,1683.518,1683.518,100900
+kener_quarter_hour_rollup,ivmlite,4100000,500,3,10230.130,3.914,9.567,155.736,13.481,169.217,256048

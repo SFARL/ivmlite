@@ -1,17 +1,44 @@
 # Demand-backed demos
 
-Research date: 2026-09-24. These are **documented problem patterns**, not
+Research snapshot: 2026-10-08. These are **documented problem patterns**, not
 customer interviews, endorsements, or evidence that their authors want ivmlite.
 Historical performance reports are not benchmarks of current software.
 
 The [real-world demo roadmap](real-world-demo-roadmap.md) records the next
 source-backed candidates, their evidence levels, current ivmlite boundaries,
-and why FluxFlow is the first implementation target.
+and the order in which they were implemented.
 
-The first executable workload from that roadmap is the
-[FluxFlow grouped-flow rollup slice](fluxflow.md). It uses the real extension,
-a deterministic large fixture, mixed mutations, a full-recompute baseline and
-a correct hand-written trigger baseline.
+Four executable workloads from that roadmap now use the real extension,
+deterministic large fixtures, mixed mutations and SQLite recomputation oracles:
+
+- [FluxFlow grouped-flow rollup](fluxflow.md), including a hand-written trigger
+  baseline;
+- [noop gravity-witness count](noop.md);
+- [Zcash transparent balance](zcash.md);
+- [Kener quarter-hour status rollup](kener.md).
+
+The latter three share one selectable benchmark executable:
+
+```sh
+cargo run --release --locked -p ivmlite-test --example demand_case_bench -- \
+  noop_gravity_witness
+cargo run --release --locked -p ivmlite-test --example demand_case_bench -- \
+  zcash_transparent_balance
+cargo run --release --locked -p ivmlite-test --example demand_case_bench -- \
+  kener_quarter_hour_rollup
+```
+
+Each case records its public evidence, exact adaptation, unsupported behavior,
+source-scale command and raw first-run output. These are synthetic development
+benchmarks rather than reproductions of production deployments.
+
+For the shared runner, seeding and extension loading are outside timed regions.
+`bootstrap_ms` measures creating ivmlite state over the existing base rows;
+`apply_ms` measures one mixed transaction; `maintain_ms` is either full query
+recomputation or ivmlite refresh; and `read_ms` drains the materialized result.
+`end_to_end_ms` includes apply, maintenance and materialized read. Every ivmlite
+run is checked against SQLite recomputing the adapted query after timing. The
+three new cases do not yet include source-specific hand-written baselines.
 
 ## Run the first two demos
 

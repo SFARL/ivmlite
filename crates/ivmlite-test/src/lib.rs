@@ -1,5 +1,6 @@
 mod buggy;
 mod data;
+pub mod demand_cases;
 mod differential;
 mod engine;
 mod extension;

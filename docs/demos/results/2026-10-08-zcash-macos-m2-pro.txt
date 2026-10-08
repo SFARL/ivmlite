@@ -1,0 +1,10 @@
+machine: Apple M2 Pro, arm64
+os: macOS 26.2 (25C56)
+rustc: 1.95.0 (59807616e 2026-04-14)
+parent revision: ccfdbdb
+command: target/release/examples/demand_case_bench zcash_transparent_balance 500000 500 3
+
+case,mode,base_rows,batch_size,repeats,bootstrap_ms,apply_ms,maintain_ms,read_ms,apply_plus_maintain_ms,end_to_end_ms,database_kib
+zcash_transparent_balance,no_maintenance,500000,500,3,0.000,0.203,0.000,0.000,0.203,0.203,12280
+zcash_transparent_balance,full_recompute,500000,500,3,0.000,0.200,121.768,0.000,121.968,121.968,12280
+zcash_transparent_balance,ivmlite,500000,500,3,608.176,4.339,4.134,0.072,8.474,8.545,12480

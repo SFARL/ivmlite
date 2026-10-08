@@ -28,11 +28,11 @@ reproduction of a production deployment.
 
 | Priority | Candidate | Evidence available | Current fit | Decision |
 |---|---|---|---|---|
-| P0 | [FluxFlow #3](https://github.com/2ndtlmining/fluxflow/issues/3) / [PR #45](https://github.com/2ndtlmining/fluxflow/pull/45) | Public generator and source; no public production DB | A normalized grouped `SUM`/`COUNT` slice fits; retention semantics do not | Build first |
+| P0 | [FluxFlow #3](https://github.com/2ndtlmining/fluxflow/issues/3) / [PR #45](https://github.com/2ndtlmining/fluxflow/pull/45) | Public generator and source; no public production DB | A normalized grouped `SUM`/`COUNT` slice fits; retention semantics do not | Implemented |
 | P0 | [Taproot Assets #642](https://github.com/lightninglabs/taproot-assets/issues/642) | Public source/query and an existing synthetic ivmlite fixture; no production DB | Existing split filtered join/count slice fits | Package and extend existing demo |
-| P1 | [noop #2314](https://github.com/ryanbr/noop/issues/2314) | Public source/query and issue measurements; no production DB or reusable large fixture captured here | Per-device/day `COUNT(*)` fits after storing the day bucket | Build after FluxFlow |
-| P1 | [Zcash #2476](https://github.com/zcash/librustzcash/issues/2476) | Public source/query and issue measurements; no production DB or matching large generator | Per-account integer `SUM` fits only after eligibility is denormalized | Build an explicitly adapted mutation demo |
-| P2 | [Kener #840](https://github.com/rajnandan1/kener/issues/840) | Issue-reported production numbers and public code; no production DB or large generator | Separate filtered counts and integer latency sum fit; full rollup does not | Use later as a high-cardinality stress slice |
+| P1 | [noop #2314](https://github.com/ryanbr/noop/issues/2314) | Public source/query and issue measurements; no production DB or reusable large fixture captured here | Per-device/day `COUNT(*)` fits after storing the day bucket | Implemented adapted slice |
+| P1 | [Zcash #2476](https://github.com/zcash/librustzcash/issues/2476) | Public source/query and issue measurements; no production DB or matching large generator | Per-account integer `SUM` fits only after eligibility is denormalized | Implemented adapted slice |
+| P2 | [Kener #840](https://github.com/rajnandan1/kener/issues/840) / [PR #842](https://github.com/rajnandan1/kener/pull/842) | Issue-reported production numbers and an upstream rollup implementation; no production DB | Status-dimensional counts and integer latency sum fit; full rollup does not | Implemented high-cardinality slice |
 | P3 | [Bifrost #7460](https://github.com/maximhq/bifrost/issues/7460) | Issue-reported production numbers; no public DB or complete generator | Requires aggregates to survive raw deletion, which ivmlite does not support | Keep as a negative demo and sealing acceptance case |
 | Defer | [Claude Monitor #305](https://github.com/hoangsonww/Claude-Code-Agent-Monitor/issues/305) | Public proposal and small application fixtures; no row count, DB size, or timing in the issue | Also requires rollup-before-delete/sealing | Revisit after sealing exists |
 
@@ -162,6 +162,9 @@ The stored day bucket is an adaptation because current ivmlite cannot group by
 the original timezone/day expression. The issue's Python timings are
 indicative; only the cited store-probe timings came from the device.
 
+The executable [noop demo](noop.md) runs this slice at 518,400 rows and checks
+append, historical backfill, delete and correction against SQLite recomputation.
+
 ## P1: Zcash transparent balance
 
 The issue reports about **197 ms warm-cache at 500,000 UTXOs** for a
@@ -185,6 +188,9 @@ insert throughput. It does not reproduce confirmation-height logic, coinbase
 maturity, the original multi-table query, or wallet correctness. The fixture
 must be described as synthetic and shaped only by public scale/query evidence.
 
+The executable [Zcash demo](zcash.md) runs this adaptation at 500,000 rows with
+receive, spend, rewind and correction batches.
+
 ## P2: Kener status rollups
 
 The issue reports 215 monitors and 5.5 million SQLite rows. Its largest page has
@@ -193,14 +199,16 @@ database, and returns 847 KB. The proposed 15-minute rollup is reported as
 550,000 buckets and 23 MB for 4.1 million raw rows, versus 577 MB raw, with a
 4.4-second backfill and an expected read near 470 ms.
 
-A current ivmlite slice can pre-store `bucket_ts` and integer latency, then
-maintain separate filtered status counts plus `SUM(latency_ms)` and `COUNT(*)`
-by monitor and bucket. It cannot reproduce the full query because `MIN`, `MAX`,
-`AVG`, computed time buckets, compound predicates, and multiple conditional
-aggregates are unsupported.
+A current ivmlite slice can pre-store `bucket_ts` and integer latency, then use
+status as a grouping dimension alongside `SUM(latency_ms)` and `COUNT(*)`.
+It cannot reproduce the full query because `MIN`, `MAX`, `AVG`, computed time
+buckets, compound predicates, and multiple conditional aggregates are
+unsupported.
 
-Use this later to test roughly 550,000 result groups, historical rewrites, and
-deletes. Do not quote the issue's expected 470 ms as an observed ivmlite result.
+The executable [Kener demo](kener.md) tests 4.1 million rows, exactly 550,000
+initial result groups, historical rewrites and deletes. It also records the
+large materialized-read and state-size costs. Do not quote the issue's expected
+470 ms as an observed ivmlite result.
 
 ## P3: Bifrost sealing acceptance case
 

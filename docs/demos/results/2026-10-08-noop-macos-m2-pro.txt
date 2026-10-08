@@ -1,0 +1,10 @@
+machine: Apple M2 Pro, arm64
+os: macOS 26.2 (25C56)
+rustc: 1.95.0 (59807616e 2026-04-14)
+parent revision: ccfdbdb
+command: target/release/examples/demand_case_bench noop_gravity_witness 518400 200 3
+
+case,mode,base_rows,batch_size,repeats,bootstrap_ms,apply_ms,maintain_ms,read_ms,apply_plus_maintain_ms,end_to_end_ms,database_kib
+noop_gravity_witness,no_maintenance,518400,200,3,0.000,0.254,0.000,0.000,0.254,0.254,15008
+noop_gravity_witness,full_recompute,518400,200,3,0.000,0.293,185.489,0.000,185.781,185.781,15008
+noop_gravity_witness,ivmlite,518400,200,3,224.505,2.125,1.026,0.024,3.151,3.175,15112
