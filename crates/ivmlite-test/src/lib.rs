@@ -1,8 +1,11 @@
 mod buggy;
 mod data;
+pub mod demand_cases;
+pub mod demo_bench;
 mod differential;
 mod engine;
 mod extension;
+pub mod fluxflow;
 mod incremental;
 mod invariants;
 mod naive;

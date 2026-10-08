@@ -1,6 +1,8 @@
 //! Same-host probe for the executable slices in `tests/real_world_cases.rs`.
 //!
 //! Usage: `cargo run --release -p ivmlite-test --example real_case_bench -- [rows] [batch] [repeats]`
+//! (`--extension <path>` loads another build and skips the staleness check
+//! of the release library, as in `ivmlite_test::demo_bench`).
 //! Setup, seeding, extension loading, view creation and correctness checks are
 //! outside the timed regions. The full-recompute baseline drains each query but
 //! does not persist its result, deliberately favouring the baseline.
@@ -9,7 +11,9 @@ use std::error::Error;
 use std::hint::black_box;
 use std::time::Instant;
 
-use rusqlite::types::Value;
+use ivmlite_test::demo_bench::{
+    check_same_multiset, create_view, take_extension_flag, Extension, Summary,
+};
 use rusqlite::{params, Connection, Statement};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
@@ -282,78 +286,30 @@ fn apply_taproot(c: &Connection, rows: usize, batch: usize) -> rusqlite::Result<
     )
 }
 
-fn create_view(c: &Connection, view: View) -> rusqlite::Result<()> {
-    c.execute_batch(&format!(
-        "CREATE VIRTUAL TABLE {} USING ivm('{}')",
-        view.name,
-        view.sql.replace('\'', "''")
-    ))
-}
-
-fn open_benchmark_connection() -> Result<Connection> {
-    let library = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../ivmlite-sqlite/target/release")
-        .join(if cfg!(target_os = "macos") {
-            "libivmlite_sqlite.dylib"
-        } else {
-            "libivmlite_sqlite.so"
-        });
-    if !library.is_file() {
-        return Err(format!(
-            "the release extension is missing at {}; run \
-             `cargo build --release --locked --manifest-path crates/ivmlite-sqlite/Cargo.toml`",
-            library.display()
-        )
-        .into());
-    }
-    let c = Connection::open_in_memory()?;
-    // SAFETY: this loads this repository's release-built extension and names
-    // its explicit entry point. Loading is disabled again immediately.
-    unsafe {
-        c.load_extension_enable()?;
-        c.load_extension(&library, Some("sqlite3_ivmlite_init"))?;
-        c.load_extension_disable()?;
-    }
-    Ok(c)
-}
-
 fn refresh(c: &Connection, name: &str) -> rusqlite::Result<()> {
     c.execute_batch(&format!("INSERT INTO {name}({name}) VALUES ('refresh')"))
 }
 
-fn sorted_rows(c: &Connection, sql: &str) -> rusqlite::Result<Vec<Vec<Value>>> {
-    let mut statement = c.prepare(sql)?;
-    let columns = statement.column_count();
-    let mut rows: Vec<Vec<Value>> = statement
-        .query_map([], |row| {
-            (0..columns)
-                .map(|column| row.get::<_, Value>(column))
-                .collect()
-        })?
-        .collect::<rusqlite::Result<_>>()?;
-    rows.sort_by(|left, right| format!("{left:?}").cmp(&format!("{right:?}")));
-    Ok(rows)
-}
-
-fn check(c: &Connection, views: &[View]) -> rusqlite::Result<()> {
+fn check(c: &Connection, views: &[View]) -> Result<()> {
     for view in views {
-        assert_eq!(
-            sorted_rows(c, &format!("SELECT * FROM {}", view.name))?,
-            sorted_rows(c, view.sql)?,
-            "{} diverged from SQLite recomputation",
-            view.name
-        );
+        check_same_multiset(c, &format!("SELECT * FROM {}", view.name), view.sql)?;
     }
     Ok(())
 }
 
-fn run_once(case: &Case, mode: Mode, rows: usize, batch: usize) -> Result<Timing> {
-    let c = open_benchmark_connection()?;
+fn run_once(
+    case: &Case,
+    mode: Mode,
+    rows: usize,
+    batch: usize,
+    extension: &Extension,
+) -> Result<Timing> {
+    let c = extension.open()?;
     c.execute_batch(case.ddl)?;
     (case.seed)(&c, rows)?;
     if matches!(mode, Mode::Ivm) {
         for &view in case.views {
-            create_view(&c, view)?;
+            create_view(&c, view.name, view.sql)?;
         }
     }
 
@@ -397,26 +353,29 @@ fn run_once(case: &Case, mode: Mode, rows: usize, batch: usize) -> Result<Timing
     })
 }
 
-fn median(mut values: Vec<f64>) -> f64 {
-    values.sort_by(f64::total_cmp);
-    values[values.len() / 2]
+fn median(values: Vec<f64>) -> f64 {
+    Summary::of(&values).expect("repeats is positive").median
 }
 
-fn arguments() -> Result<(usize, usize, usize)> {
-    let mut args = std::env::args().skip(1);
+fn arguments(args: Vec<String>) -> Result<(usize, usize, usize)> {
+    let mut args = args.into_iter();
     let rows = args.next().map_or(Ok(25_000), |s| s.parse())?;
     let batch = args.next().map_or(Ok(1_000), |s| s.parse())?;
     let repeats = args.next().map_or(Ok(5), |s| s.parse())?;
     if args.next().is_some() || rows == 0 || batch == 0 || repeats == 0 {
         return Err(
-            "usage: real_case_bench [positive rows] [positive batch] [positive repeats]".into(),
+            "usage: real_case_bench [positive rows] [positive batch] [positive repeats] \
+             [--extension <path>]"
+                .into(),
         );
     }
     Ok((rows, batch, repeats))
 }
 
 fn main() -> Result<()> {
-    let (rows, batch, repeats) = arguments()?;
+    let (extension, args) = take_extension_flag(std::env::args().skip(1).collect())?;
+    let (rows, batch, repeats) = arguments(args)?;
+    let extension = Extension::resolve(extension)?;
     eprintln!(
         "Running source-backed slices: rows={rows}, batch={batch}, repeats={repeats}; median reported"
     );
@@ -425,7 +384,7 @@ fn main() -> Result<()> {
         for mode in Mode::ALL {
             let mut timings = Vec::with_capacity(repeats);
             for _ in 0..repeats {
-                timings.push(run_once(case, mode, rows, batch)?);
+                timings.push(run_once(case, mode, rows, batch, &extension)?);
             }
             let apply_ms = median(timings.iter().map(|t| t.apply_ms).collect());
             let maintain_ms = median(timings.iter().map(|t| t.maintain_ms).collect());

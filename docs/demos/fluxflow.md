@@ -1,0 +1,166 @@
+# FluxFlow grouped-flow rollup slice
+
+This demo evaluates one stable grouped aggregate shaped by
+[FluxFlow issue #3](https://github.com/2ndtlmining/fluxflow/issues/3) and the
+hand-written rollups merged in
+[PR #45](https://github.com/2ndtlmining/fluxflow/pull/45). It is an adapted
+workload, not a reproduction of the complete application and not evidence that
+FluxFlow uses or endorses ivmlite.
+
+## Public evidence
+
+Issue #3 reports about 700 ms per `getStats()` call on a synthetic database
+with 1.5 million `flow_events`. A browser tab could indirectly trigger about
+five full-scan calls every five seconds while synchronization also wrote in
+batches.
+
+PR #45 later added a deterministic upstream benchmark generator. Its default
+six-month run creates 518,400 blocks and, because of the generator's
+Poisson-shaped loop, about 1.7 million flows. In the PR's results, **`6M` means
+six months, not six million rows**. The reported six-month summary improved
+from 100 ms to 2.8 ms after the application added hand-written hourly/daily
+trigger rollups and caching. That result belongs to FluxFlow, not ivmlite.
+
+The pinned upstream sources are:
+
+- [benchmark generator](https://github.com/2ndtlmining/fluxflow/blob/ed26a17f5dbf3fcc0a5e2f1f7b9536877198ff3c/scripts/bench-api.ts)
+- [schema and rollup triggers](https://github.com/2ndtlmining/fluxflow/blob/ed26a17f5dbf3fcc0a5e2f1f7b9536877198ff3c/src/lib/server/db/migrations.ts)
+
+No production database is public. This repository therefore creates a
+deterministic synthetic fixture with the same important categorical shape:
+approximately 45% buying, 44% selling and 11% p2p, seven exchange values,
+three counterparty kinds and integer satoshi amounts. Each day bucket holds
+10,000 flows, so the 1.5-million-row run has 150 day buckets.
+
+## Adaptation
+
+The upstream `flows` table is not `STRICT` and contains a `REAL confidence`
+column. Current ivmlite accepts only `STRICT` base tables whose columns are
+`INTEGER`, `TEXT` or nullable variants. The demo uses a narrow fact table and
+precomputes the day and counterparty grouping dimensions:
+
+```sql
+CREATE TABLE flow_facts (
+  id INTEGER PRIMARY KEY,
+  flow_type TEXT NOT NULL,
+  day_bucket INTEGER NOT NULL,
+  counterparty_kind TEXT NOT NULL,
+  exchange_key TEXT NOT NULL,
+  sat INTEGER NOT NULL
+) STRICT;
+```
+
+It maintains exactly this query:
+
+```sql
+SELECT
+  flow_type,
+  day_bucket,
+  counterparty_kind,
+  exchange_key,
+  SUM(sat),
+  COUNT(*)
+FROM flow_facts
+GROUP BY flow_type, day_bucket, counterparty_kind, exchange_key;
+```
+
+Upstream, a p2p flow has no exchange. Here `exchange_key` is `NOT NULL`, and
+the empty string `''` stands in for that NULL on every p2p row, so all p2p
+flows of a day and counterparty kind share one group.
+
+The mixed batch contains 60% inserts, 20% updates that move a row between
+groups and change its value, and 20% deletes representing reorg rollback. As a
+reorg would, the updates and deletes hit the newest base rows. At the
+documented batch sizes all of those rows lie in the last day bucket, and the
+updates move them into the next day, where the inserts also land. The batch
+therefore touches only the groups of two day buckets. That is realistic for a
+reorg, and it is favourable to refresh, whose cost grows with the groups a
+batch touches; a batch spread across history would touch more. Every
+materialized result is compared with SQLite recomputing the query.
+
+## Run
+
+Build the release extension, then run a quick probe:
+
+```sh
+cargo build --release --locked \
+  --manifest-path crates/ivmlite-sqlite/Cargo.toml
+cargo run --release --locked -p ivmlite-test \
+  --example fluxflow_demo -- 250000 100 5
+```
+
+Run at the source-reported scale:
+
+```sh
+cargo run --release --locked -p ivmlite-test \
+  --example fluxflow_demo -- 1500000 500 5
+```
+
+The output is CSV, preceded by `#` provenance lines, and includes five modes:
+`no_maintenance`, `unindexed_recompute`, `indexed_recompute`,
+`handwritten_trigger` and `ivmlite`. The protocol, the modes and every column
+are described in the [demos README](README.md#benchmark-protocol). Here, the
+covering index of `indexed_recompute` is
+`flow_facts(flow_type, day_bucket, counterparty_kind, exchange_key, sat)`, and
+`handwritten_trigger` is a correct rollup table maintained inside each base
+write transaction, using FluxFlow's subtract-old/add-new strategy for this one
+adapted view rather than copying both upstream rollup levels.
+
+## Source-scale result
+
+This run used an Apple M2 Pro, macOS 26.2, Rust 1.95.0, SQLite 3.53.2, an
+in-memory database, 1.5 million base rows, a 500-operation mixed batch and five
+independent repetitions. Each cell is the median, with the min–max over the
+repetitions in parentheses. Other builds and tests were running on the machine
+at the time, so these timings are noisier than an idle run and only the shape
+of each comparison should be read from them; the authoritative before/after
+comparison of M1b Phase 5 comes from its own measurement run. These are
+development measurements of the adapted fixture, not FluxFlow production
+results:
+
+| Mode | Bootstrap | First refresh | Apply | Maintain | Read | Apply + maintain | End to end | SQLite pages |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| no maintenance | 0 ms | 0 ms | 0.212 (0.210–0.217) ms | 0 ms | 0 ms | 0.213 (0.210–0.217) ms | 0.213 (0.211–0.217) ms | 60,728 KiB |
+| unindexed recompute | 0 ms | 1,249 (1,222–1,282) ms | 0.237 (0.234–0.258) ms | 1,261 (1,250–1,278) ms | 0 ms | 1,261 (1,250–1,278) ms | 1,261 (1,250–1,278) ms | 60,728 KiB |
+| indexed recompute | 1,343 (1,320–1,358) ms | 136 (133–136) ms | 0.782 (0.755–0.784) ms | 136 (134–136) ms | 0 ms | 136 (135–137) ms | 136 (135–137) ms | 121,396 KiB |
+| hand-written trigger | 1,257 (1,221–1,262) ms | 0 ms | 1.42 (1.40–1.44) ms | 0 ms | 0.495 (0.481–0.507) ms | 1.42 (1.40–1.44) ms | 1.92 (1.88–1.94) ms | 61,032 KiB |
+| ivmlite | 2,807 (2,623–3,160) ms | 3.04 (2.89–3.47) ms | 4.16 (3.99–4.40) ms | 2.90 (2.79–2.98) ms | 2.65 (2.55–2.71) ms | 7.04 (6.89–7.38) ms | 9.76 (9.45–10.0) ms | 63,316 KiB |
+
+Against the headline baseline, recomputing the aggregate over its covering
+index, ivmlite's batch write plus refresh was about 19 times faster than that
+recomputation. It was about 180 times faster than the secondary baseline,
+unindexed recomputation; the covering index alone made recomputation about 9
+times faster than the unindexed scan, at about 2.0 times the page allocation.
+ivmlite was about 5 times slower than the specialized trigger, and its
+bootstrap took about 2.2 times the trigger backfill's. That is the intended
+comparison: ivmlite wins reusable machinery and explicit batching, while a
+workload-specific trigger remains the performance bar.
+
+ivmlite's first refresh after `CREATE`, which also drains the stage the
+bootstrap left behind, took 3.04 ms: within run-to-run noise of the
+steady-state refresh of 2.90 ms.
+
+The [raw results](results/2026-10-08-fluxflow-macos-m2-pro.txt) contain the
+environment, provenance and CSV output. More machines, on-disk runs, batch
+sizes and mutation mixes are required before making a release-level performance
+claim.
+
+Correctness is also covered by:
+
+```sh
+scripts/build-extension.sh
+cargo test --locked -p ivmlite-test \
+  fluxflow_grouped_rollup_tracks_insert_update_and_reorg_delete
+```
+
+## Boundaries
+
+This demo does not reproduce FluxFlow's blocks table, HTTP polling, ETags,
+leaderboards, time-window stitching, page query, or response cache. It cannot
+reuse the PR's 2.8 ms result as an ivmlite baseline; all comparisons must be
+rerun on the same host with this executable.
+
+FluxFlow deliberately keeps historical rollups when retention deletes raw
+rows. Current ivmlite instead retracts a deleted row's contribution. Retention
+is therefore disabled in this positive demo and remains a separate unsupported
+sealing requirement.
