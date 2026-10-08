@@ -107,6 +107,21 @@ fn check_trigger(conn: &Connection, trigger: &str, table: &str) -> Result<()> {
     }
 }
 
+/// What a view's last passing catalog check saw (Phase 5 spec §3): the
+/// schema cookie, and its base tables' schemas in `view.tables` order.
+pub struct Checked {
+    pub schema_version: i64,
+    pub schemas: Vec<Schema>,
+}
+
+/// `main`'s schema cookie (Phase 5 spec §3), which SQLite increments on every
+/// schema change any connection makes to the database. Reading it, unlike
+/// setting it, expires no prepared statement.
+pub fn schema_version(conn: &Connection) -> Result<i64> {
+    conn.query_row("PRAGMA \"main\".schema_version", [], |r| r.get(0))
+        .map_err(sql_error)
+}
+
 fn base_schema(conn: &Connection, table: &str) -> Result<Schema> {
     SqliteCatalog { conn }
         .table(table)
@@ -136,7 +151,8 @@ fn sql_type(column: &ivmlite_core::Column) -> &'static str {
 /// default, and its partial and expression flags — in a canonical order,
 /// so an index's name never matters. Stored in `__ivm_tracked` when the
 /// table is first tracked and compared on every later create over it, every
-/// connect and every refresh. A table dropped and recreated with other
+/// connect and every refresh that runs the catalog checks (Phase 5 spec §3:
+/// those after a schema change). A table dropped and recreated with other
 /// column types can compile to the same plan, since the plan names columns
 /// by position only.
 fn shape(schema: &Schema, capture: &CaptureInfo) -> String {
@@ -622,7 +638,7 @@ fn capture_triggers(schema: &Schema, capture: &CaptureInfo, fingerprint: &Finger
 /// Start capturing `table`'s writes (Phase 3a §8.1, shared since Phase 3b
 /// §4): its delta and pend tables, its `CAPTURE_EVENTS` triggers, and the
 /// `__ivm_tracked` row that every later view of it, and every connect and
-/// refresh, checks its capture against.
+/// checking refresh, checks its capture against.
 fn track(conn: &Connection, schema: &Schema) -> Result<()> {
     let t = &schema.table;
     let capture = SqliteCatalog { conn }.capture(t)?;
@@ -710,11 +726,12 @@ fn collect_garbage(conn: &Connection, table: &str) -> Result<()> {
     .map_err(sql_error)
 }
 
-/// `table`'s capture as every view of it relies on: no capture trigger has
-/// latched a change to its definition, unique indexes or capture triggers,
-/// the shape its triggers were generated from, and every capture trigger on
-/// `table` itself.
-fn check_table_capture(conn: &Connection, table: &str) -> Result<()> {
+/// `table` is tracked and no capture trigger has latched a change to its
+/// definition, unique indexes or capture triggers; returns the shape its
+/// triggers were generated from. The latch is set by a data write, never by
+/// a schema change, so a refresh reads it even when it skips every other
+/// check (Phase 5 spec §3).
+fn check_latch(conn: &Connection, table: &str) -> Result<String> {
     let recorded: Option<(String, Option<String>)> = conn
         .query_row(
             &format!(
@@ -727,11 +744,20 @@ fn check_table_capture(conn: &Connection, table: &str) -> Result<()> {
         .optional()
         .map_err(sql_error)?;
     let (recorded, latched) = recorded.ok_or_else(|| format!("table {table} is not tracked"))?;
-    if let Some(why) = latched {
-        return Err(why);
+    match latched {
+        Some(why) => Err(why),
+        None => Ok(recorded),
     }
+}
+
+/// `table`'s capture as every view of it relies on: `check_latch`, the shape
+/// its triggers were generated from, and every capture trigger on `table`
+/// itself. Returns `table`'s schema as read for the shape.
+fn check_table_capture(conn: &Connection, table: &str) -> Result<Schema> {
+    let recorded = check_latch(conn, table)?;
     let capture = SqliteCatalog { conn }.capture(table)?;
-    let now = shape(&base_schema(conn, table)?, &capture);
+    let schema = base_schema(conn, table)?;
+    let now = shape(&schema, &capture);
     if now != recorded {
         return Err(format!(
             "base table {table} changed shape since it was first tracked \
@@ -752,7 +778,7 @@ fn check_table_capture(conn: &Connection, table: &str) -> Result<()> {
             return Err(format!("its shadow table {shadow} is missing"));
         }
     }
-    Ok(())
+    Ok(schema)
 }
 
 /// Stop capturing `table`: triggers first, so it stays writable.
@@ -1127,7 +1153,9 @@ fn apply(conn: &Connection, name: &str, view: &CompiledView, changes: &Changes) 
 
 /// `CREATE VIRTUAL TABLE <name> USING ivm('<sql>')`, inside the statement's
 /// own transaction: create every shadow object, then bootstrap (spec §7.3).
-pub fn create(conn: &Rc<Connection>, name: &str, sql: &str) -> Result<CompiledView> {
+/// Returns the view and what its catalog checks would now see (Phase 5 spec
+/// §3): everything they inspect was just created or checked here.
+pub fn create(conn: &Rc<Connection>, name: &str, sql: &str) -> Result<(CompiledView, Checked)> {
     if has_reserved_prefix(name) {
         return Err(format!(
             "the view name {name} starts with {PREFIX}, which ivmlite reserves for its own shadow tables"
@@ -1221,14 +1249,23 @@ pub fn create(conn: &Rc<Connection>, name: &str, sql: &str) -> Result<CompiledVi
             progress: Vec::new(),
         },
     )?;
-    Ok(view)
+    // Read last, once this function's own DDL has moved the cookie. The
+    // write transaction `CREATE VIRTUAL TABLE` runs in keeps every other
+    // connection from moving it in between.
+    let checked = Checked {
+        schema_version: schema_version(conn)?,
+        schemas,
+    };
+    Ok((view, checked))
 }
 
-/// A reopened view: the table declaration it was created with, and either the
-/// compiled view or why it can no longer be maintained.
+/// A reopened view: the table declaration it was created with, either the
+/// compiled view or why it can no longer be maintained, and, when it can, what
+/// its passing catalog checks saw (Phase 5 spec §3).
 pub struct Reopened {
     pub declaration: String,
     pub view: std::result::Result<CompiledView, String>,
+    pub checked: Option<Checked>,
 }
 
 /// Reopen an existing view. Its stored SQL must compile to the same plan and
@@ -1250,8 +1287,15 @@ pub fn connect(conn: &Connection, name: &str) -> Result<Reopened> {
     let Some((sql, plan, declaration, format)) = stored else {
         return Err(format!("ivmlite has no record of the view {name}"));
     };
-    let view = verify(conn, name, &sql, &plan, format).map_err(|why| broken(name, &why));
-    Ok(Reopened { declaration, view })
+    let (view, checked) = match verify(conn, name, &sql, &plan, format) {
+        Ok((view, checked)) => (Ok(view), Some(checked)),
+        Err(why) => (Err(broken(name, &why)), None),
+    };
+    Ok(Reopened {
+        declaration,
+        view,
+        checked,
+    })
 }
 
 /// The error every read and refresh of a broken view reports (spec §5).
@@ -1265,7 +1309,12 @@ fn verify(
     sql: &str,
     plan: &str,
     format: i64,
-) -> Result<CompiledView> {
+) -> Result<(CompiledView, Checked)> {
+    // Read before the checks (Phase 5 spec §3): a connect need not run inside
+    // a transaction, so another connection may change the schema while they
+    // run, and the cookie read first is then older than the one the next
+    // refresh reads, which runs every check again.
+    let version = schema_version(conn)?;
     if format != FORMAT {
         return Err(format!(
             "it was stored in format {format}, and this extension reads format {FORMAT}"
@@ -1294,14 +1343,21 @@ fn verify(
             return Err(format!("its shadow {kind} {object} is missing"));
         }
     }
-    check_capture(conn, name, &view)?;
-    Ok(view)
+    let schemas = check_capture(conn, name, &view)?;
+    Ok((
+        view,
+        Checked {
+            schema_version: version,
+            schemas,
+        },
+    ))
 }
 
-/// The output table's index must exist too (Phase 4 spec §4), checked at
-/// every refresh — `verify`'s own `needed` list above already checks it at
-/// every connect, but `refresh` runs on the same connection a view was
-/// created on and never calls `verify`. Without this, a user who drops
+/// The output table's index must exist too (Phase 4 spec §4), checked by
+/// every refresh that runs the catalog checks (Phase 5 spec §3) —
+/// `verify`'s own `needed` list above already checks it at every connect,
+/// but `refresh` runs on the same connection a view was created on and never
+/// calls `verify`. Without this, a user who drops
 /// `__ivm_outidx_<view>` on the connection that already holds the view
 /// would see a refresh silently fall back to a full table scan instead of a
 /// broken view (Phase 4 spec §4: the index is what keeps a retraction a
@@ -1314,15 +1370,18 @@ fn check_output_index(conn: &Connection, name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Checked on every connect and every refresh: each base table the view
+/// Checked on every connect, and by every refresh after a schema change
+/// (Phase 5 spec §3): each base table the view
 /// reads is still tracked with its recorded shape and its capture triggers
 /// (now `__ivm_tracked`'s concern, shared across every view of the table —
 /// Phase 3b spec §3), and the view still has its apply trigger, each on the
 /// table it was created on. `DROP TABLE t` drops `t`'s triggers but not its
 /// delta table, so a recreated `t` would otherwise leave every later write
 /// uncaptured; without the apply trigger, a refresh would apply nothing.
-/// Either way the view would go stale with no error.
-fn check_capture(conn: &Connection, name: &str, view: &CompiledView) -> Result<()> {
+/// Either way the view would go stale with no error. Returns the base
+/// tables' schemas, in `view.tables` order.
+fn check_capture(conn: &Connection, name: &str, view: &CompiledView) -> Result<Vec<Schema>> {
+    let mut schemas = Vec::with_capacity(view.tables.len());
     for table in &view.tables {
         let recorded: Option<i64> = conn
             .query_row(
@@ -1338,21 +1397,60 @@ fn check_capture(conn: &Connection, name: &str, view: &CompiledView) -> Result<(
         if recorded.is_none() {
             return Err(format!("its dependency on table {table} is not recorded"));
         }
-        check_table_capture(conn, table)?;
+        schemas.push(check_table_capture(conn, table)?);
     }
     check_trigger(conn, &apply_trigger(name), &stage_table(name))
-        .map_err(|why| format!("its apply trigger {why}"))
+        .map_err(|why| format!("its apply trigger {why}"))?;
+    Ok(schemas)
+}
+
+/// The base tables' schemas a refresh reads deltas with, after the catalog
+/// checks (Phase 5 spec §3). While `main`'s schema cookie still has the value
+/// `checked` passed at, no object those checks inspect can have changed, so
+/// only each table's latch is read: a data write sets it, and moves no
+/// cookie. Otherwise every check runs, and `checked` holds the new cookie
+/// and schemas only once they pass.
+fn checked_schemas(
+    conn: &Connection,
+    name: &str,
+    view: &CompiledView,
+    checked: &mut Option<Checked>,
+) -> Result<Vec<Schema>> {
+    let version = schema_version(conn)?;
+    match checked {
+        Some(c) if c.schema_version == version => {
+            for table in &view.tables {
+                check_latch(conn, table).map_err(|why| broken(name, &why))?;
+            }
+            Ok(c.schemas.clone())
+        }
+        _ => {
+            *checked = None;
+            let schemas = check_capture(conn, name, view).map_err(|why| broken(name, &why))?;
+            check_output_index(conn, name).map_err(|why| broken(name, &why))?;
+            *checked = Some(Checked {
+                schema_version: version,
+                schemas: schemas.clone(),
+            });
+            Ok(schemas)
+        }
+    }
 }
 
 /// `INSERT INTO v(v) VALUES('refresh')`: bring the view up to date. State,
 /// output and watermarks change together or not at all (see `apply`).
-pub fn refresh(conn: &Rc<Connection>, name: &str, view: &CompiledView) -> Result<()> {
-    check_capture(conn, name, view).map_err(|why| broken(name, &why))?;
-    check_output_index(conn, name).map_err(|why| broken(name, &why))?;
+/// `checked` is the view's per-connection cache of its last passing catalog
+/// check (Phase 5 spec §3), updated here.
+pub fn refresh(
+    conn: &Rc<Connection>,
+    name: &str,
+    view: &CompiledView,
+    checked: &mut Option<Checked>,
+) -> Result<()> {
+    let schemas = checked_schemas(conn, name, view, checked)?;
     let mut batches = Vec::new();
     let mut progress = Vec::new();
-    for table in &view.tables {
-        let schema = base_schema(conn, table)?;
+    for (table, schema) in view.tables.iter().zip(&schemas) {
         let applied: i64 = conn
             .query_row(
                 &format!(
@@ -1363,7 +1461,7 @@ pub fn refresh(conn: &Rc<Connection>, name: &str, view: &CompiledView) -> Result
                 |r| r.get(0),
             )
             .map_err(sql_error)?;
-        let (delta, last) = read_deltas(conn, &schema, applied)?;
+        let (delta, last) = read_deltas(conn, schema, applied)?;
         batches.push((table.clone(), delta));
         if last > applied {
             progress.push((table.clone(), last));
