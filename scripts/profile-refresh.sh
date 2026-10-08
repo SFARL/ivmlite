@@ -8,6 +8,8 @@
 #
 # The release build carries debug line tables (CARGO_PROFILE_RELEASE_DEBUG),
 # which name each frame's source line and do not change the generated code.
+# It goes to its own target directory, crates/ivmlite-sqlite/target/profile,
+# so it never replaces the plain release build that scripts/bench.sh uses.
 #
 # macOS only: the report reads `sample`'s call-graph format. On Linux the
 # equivalent is `perf record -g` on the driver's pid; that path is not
@@ -34,13 +36,25 @@ python="${PYTHON:-python3}"
 run_seconds="${RUN_SECONDS:-30}"
 sample_delay="${SAMPLE_DELAY:-10}"
 sample_seconds="${SAMPLE_SECONDS:-10}"
+
+# `load_extension`'s `entrypoint` argument, which the driver needs, is new in
+# Python 3.12.
+if ! command -v "$python" >/dev/null; then
+    echo "$0: needs Python 3.12 or later; \$PYTHON ($python) was not found" >&2
+    exit 1
+fi
+if ! "$python" -c 'import sys; sys.exit(sys.version_info < (3, 12))'; then
+    echo "$0: needs Python 3.12 or later as \$PYTHON; $python is $("$python" --version 2>&1)" >&2
+    exit 1
+fi
 out_dir="${OUT_DIR:-$(mktemp -d)}"
 mkdir -p "$out_dir"
 
-echo "building the release extension..." >&2
-CARGO_PROFILE_RELEASE_DEBUG=line-tables-only \
+target_dir="crates/ivmlite-sqlite/target/profile"
+echo "building the release extension into $target_dir..." >&2
+CARGO_PROFILE_RELEASE_DEBUG=line-tables-only CARGO_TARGET_DIR="$target_dir" \
     cargo build --release --locked --manifest-path crates/ivmlite-sqlite/Cargo.toml
-lib="crates/ivmlite-sqlite/target/release/libivmlite_sqlite.dylib"
+lib="$target_dir/release/libivmlite_sqlite.dylib"
 
 driver_out="$out_dir/driver.txt"
 sample_out="$out_dir/sample.txt"

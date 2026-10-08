@@ -200,16 +200,20 @@ What the arming statement spends its time on:
 
 The staging inserts, at 25.1%, would meet the 20% bar. They are not the largest cost, though, so §6's rule does not select them.
 
-**Amendment 2026-10-08 (second): stage with multi-row inserts.** This replaces the "no code change" decision above. The 40% in the arming statement is the B-tree work on the state and output tables, which is the maintenance itself, and §4 already made it set-based; no §6 remedy targets it. The staging inserts are the largest cost a remedy can address, they clear the 20% bar, and the table above already approves their remedy, so it is applied.
+**Amendment 2026-10-08 (second): stage with multi-row inserts.** This replaces the "no code change" decision above, and it **departs from §6's rule**: the rule picks the single largest cost, while this picks the largest cost a remedy can address. The departure is the controller's Ruling 5, made after the profile above. Its reason: the 40% in the arming statement is the B-tree work on the state and output tables, which is the maintenance itself, and §4 already made it set-based, so no §6 remedy targets it. The staging inserts are the largest cost a remedy can address, they clear the 20% bar, and the table above already approves their remedy. The remedy is kept only if it makes refresh at least 5% faster on this workload; otherwise the code is reverted and only this record stays.
 
 How it works:
 - `apply` stages each kind (`state` rows, then `out±` rows) with multi-row `INSERT … VALUES`: full chunks of 64 rows, then one remainder statement for the rows left over. Each shape is `prepare_cached`.
-- **The parameter bound is derived, not proved.** The rows per statement are `min(64, 999 / width)`, and at least 1, where `width` is the parameters per row. That is 4 for a `state` row and the view's column count plus one for an output row, which no fixed bound caps. So no statement binds more than 999 parameters, the default `SQLITE_MAX_VARIABLE_NUMBER` before SQLite 3.32. A row wider than 999 still goes one per statement, as before.
+- **The parameter bound is derived, not proved.** The rows per statement are `min(64, bound / width)`, and at least 1:
+  - `width` is the parameters per row: 4 for a `state` row, and the view's column count plus one for an output row, which no fixed bound caps;
+  - `bound` is `min(999, the connection's live SQLITE_LIMIT_VARIABLE_NUMBER)`, read with `sqlite3_limit(db, SQLITE_LIMIT_VARIABLE_NUMBER, -1)` at each apply. 999 is the default `SQLITE_MAX_VARIABLE_NUMBER` before SQLite 3.32, and the live limit covers an application that lowers it.
+
+  A row wider than the bound still goes one per statement, and fails as it did before. With SQLite's default limits, the expression-depth limit caps a view at about 329 output columns, so a width over 999 is not reachable. Task 4's review found that the first version bounded by 999 alone, which made a refresh fail under a lowered live limit where fb5e39f succeeded; fix round 1 added the live limit.
 - Row order and every row's values are unchanged.
 - The sentinel stays a one-row insert of its own, with its rowid kept.
 - The arming `UPDATE` is still the single last statement, and is now `prepare_cached` too. That cache lives for one callback only, because `vtab.rs` wraps the handle in a new `Connection` for each, so the arming statement and each staging shape are still prepared once per refresh.
 
-**Measured.** I used `scripts/profile-refresh.py drive` on §2's workload: 5 interleaved rounds of 20 s each, on line-table release builds of fb5e39f and of the change (81ea180), on an Apple M2 Pro running macOS 26.2 with SQLite 3.53. The figure is the median refresh time per batch over all ten views:
+**Measured** with `scripts/profile-refresh.py drive` on §2's workload: 5 interleaved rounds of 20 s each, on line-table release builds of fb5e39f and of the change (81ea180), on an Apple M2 Pro running macOS 26.2 with SQLite 3.53. The figure is the median refresh time per batch over all ten views:
 
 | round | fb5e39f | 81ea180 |
 |---:|---:|---:|
@@ -220,7 +224,7 @@ How it works:
 | 5 | 63.43 ms | 59.31 ms |
 | median | **63.35 ms** | **59.25 ms** |
 
-That is 6.5% faster, between 6.4% and 6.8% in every round. A profile of the change puts the staging inserts at about 20% of `view::refresh`, down from 25.1%. About 12% of what remains is preparing each shape once per refresh, and most of the rest is binding and copying the blobs. Task 5's ablation labels this commit `profiled`.
+That is 6.5% faster, between 6.4% and 6.8% in every round, which clears the 5% bar, so the code stays. The fix round's per-apply `sqlite3_limit` read costs nothing measurable: in 3 more interleaved rounds, fb5e39f, 81ea180 and the fixed build had medians of 63.60, 59.30 and 59.30 ms. A profile of the change puts the staging inserts at about 20% of `view::refresh`, down from 25.1%. About 12% of what remains is preparing each shape once per refresh, and most of the rest is binding and copying the blobs. Task 5's ablation labels Task 4's last code commit, the fix round's, `profiled`.
 
 ## 7. Measurement
 
