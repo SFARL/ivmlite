@@ -5,7 +5,7 @@ All notable changes to ivmlite will be documented in this file.
 The project uses semantic versioning after `0.1.0`; prereleases may change the
 SQL subset and persisted shadow-table format without migration.
 
-## [Unreleased]
+## [0.1.0-alpha.2] - 2026-10-08
 
 ### Changed
 
@@ -30,8 +30,14 @@ SQL subset and persisted shadow-table format without migration.
 - Published M1b Phase 4 results in [`docs/bench/README.md`](docs/bench/README.md):
   ivmlite beats full recomputation by more than 2x in 55 of 68 cells (17–909x
   at one million rows), loses in the small-table corner, does not come close to
-  hand-written triggers on total apply + refresh time, and has lower write cost than hand-written
-  triggers from 50 views up.
+  hand-written triggers on total apply + refresh time, and has lower write cost
+  than hand-written triggers from 50 views up.
+
+### Fixed
+
+- The release workflow now publishes the hand-written notes in
+  `docs/releases/<tag>.md`; it looked for the file without the leading `v`, so
+  `v0.1.0-alpha.1` was published with generated notes instead.
 
 ### Known limitations
 
@@ -69,4 +75,5 @@ First public technical preview.
 - The Org-roam join/count case is slower than full recomputation at both
   measured configurations.
 
+[0.1.0-alpha.2]: https://github.com/SFARL/ivmlite/releases/tag/v0.1.0-alpha.2
 [0.1.0-alpha.1]: https://github.com/SFARL/ivmlite/releases/tag/v0.1.0-alpha.1
