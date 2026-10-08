@@ -29,8 +29,8 @@ The pinned upstream sources are:
 No production database is public. This repository therefore creates a
 deterministic synthetic fixture with the same important categorical shape:
 approximately 45% buying, 44% selling and 11% p2p, seven exchange values,
-three counterparty kinds, integer satoshi amounts and about 180 day buckets at
-the reported scale.
+three counterparty kinds and integer satoshi amounts. Each day bucket holds
+10,000 flows, so the 1.5-million-row run has 150 day buckets.
 
 ## Adaptation
 
@@ -64,9 +64,19 @@ FROM flow_facts
 GROUP BY flow_type, day_bucket, counterparty_kind, exchange_key;
 ```
 
+Upstream, a p2p flow has no exchange. Here `exchange_key` is `NOT NULL`, and
+the empty string `''` stands in for that NULL on every p2p row, so all p2p
+flows of a day and counterparty kind share one group.
+
 The mixed batch contains 60% inserts, 20% updates that move a row between
-groups and change its value, and 20% deletes representing reorg rollback.
-Every materialized result is compared with SQLite recomputing the query.
+groups and change its value, and 20% deletes representing reorg rollback. As a
+reorg would, the updates and deletes hit the newest base rows. At the
+documented batch sizes all of those rows lie in the last day bucket, and the
+updates move them into the next day, where the inserts also land. The batch
+therefore touches only the groups of two day buckets. That is realistic for a
+reorg, and it is favourable to refresh, whose cost grows with the groups a
+batch touches; a batch spread across history would touch more. Every
+materialized result is compared with SQLite recomputing the query.
 
 ## Run
 
@@ -79,54 +89,59 @@ cargo run --release --locked -p ivmlite-test \
   --example fluxflow_demo -- 250000 100 5
 ```
 
-Run at the source-reported scale with fewer repetitions first:
+Run at the source-reported scale:
 
 ```sh
 cargo run --release --locked -p ivmlite-test \
-  --example fluxflow_demo -- 1500000 500 3
+  --example fluxflow_demo -- 1500000 500 5
 ```
 
-The output is CSV and includes four modes:
+The output is CSV, preceded by `#` provenance lines, and includes five modes:
+`no_maintenance`, `unindexed_recompute`, `indexed_recompute`,
+`handwritten_trigger` and `ivmlite`. The protocol, the modes and every column
+are described in the [demos README](README.md#benchmark-protocol). Here, the
+covering index of `indexed_recompute` is
+`flow_facts(flow_type, day_bucket, counterparty_kind, exchange_key, sat)`, and
+`handwritten_trigger` is a correct rollup table maintained inside each base
+write transaction, using FluxFlow's subtract-old/add-new strategy for this one
+adapted view rather than copying both upstream rollup levels.
 
-- `no_maintenance`: base-write floor;
-- `full_recompute`: base writes followed by SQLite draining the complete query;
-- `handwritten_trigger`: a correct rollup table maintained inside each base
-  write transaction, using FluxFlow's subtract-old/add-new strategy for this
-  one adapted view rather than copying both upstream rollup levels;
-- `ivmlite`: capture triggers during writes followed by explicit batch refresh.
+## Source-scale result
 
-Seeding and extension loading are outside timed regions. `bootstrap_ms` measures
-creating and backfilling the materialized state over an existing base table.
-`apply_ms` includes each mode's write-side overhead. For ivmlite,
-`maintain_ms` is refresh; for full recomputation, it is the complete aggregate
-read; hand-written trigger maintenance is already inside `apply_ms`. `read_ms`
-measures draining the small materialized result for the two materialized modes.
-`database_kib` is SQLite's total in-memory page allocation after the batch, not
-an on-disk file-size claim.
+This run used an Apple M2 Pro, macOS 26.2, Rust 1.95.0, SQLite 3.53.2, an
+in-memory database, 1.5 million base rows, a 500-operation mixed batch and five
+independent repetitions. Each cell is the median, with the min–max over the
+repetitions in parentheses. Other builds and tests were running on the machine
+at the time, so these timings are noisier than an idle run and only the shape
+of each comparison should be read from them; the authoritative before/after
+comparison of M1b Phase 5 comes from its own measurement run. These are
+development measurements of the adapted fixture, not FluxFlow production
+results:
 
-## First source-scale result
+| Mode | Bootstrap | First refresh | Apply | Maintain | Read | Apply + maintain | End to end | SQLite pages |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| no maintenance | 0 ms | 0 ms | 0.212 (0.210–0.217) ms | 0 ms | 0 ms | 0.213 (0.210–0.217) ms | 0.213 (0.211–0.217) ms | 60,728 KiB |
+| unindexed recompute | 0 ms | 1,249 (1,222–1,282) ms | 0.237 (0.234–0.258) ms | 1,261 (1,250–1,278) ms | 0 ms | 1,261 (1,250–1,278) ms | 1,261 (1,250–1,278) ms | 60,728 KiB |
+| indexed recompute | 1,343 (1,320–1,358) ms | 136 (133–136) ms | 0.782 (0.755–0.784) ms | 136 (134–136) ms | 0 ms | 136 (135–137) ms | 136 (135–137) ms | 121,396 KiB |
+| hand-written trigger | 1,257 (1,221–1,262) ms | 0 ms | 1.42 (1.40–1.44) ms | 0 ms | 0.495 (0.481–0.507) ms | 1.42 (1.40–1.44) ms | 1.92 (1.88–1.94) ms | 61,032 KiB |
+| ivmlite | 2,807 (2,623–3,160) ms | 3.04 (2.89–3.47) ms | 4.16 (3.99–4.40) ms | 2.90 (2.79–2.98) ms | 2.65 (2.55–2.71) ms | 7.04 (6.89–7.38) ms | 9.76 (9.45–10.0) ms | 63,316 KiB |
 
-The first checked-in run used an Apple M2 Pro, macOS 26.2, Rust 1.95.0, an
-in-memory database, 1.5 million base rows, a 500-operation mixed batch and three
-independent repetitions. These are development measurements of the adapted
-fixture, not FluxFlow production results:
+Against the headline baseline, recomputing the aggregate over its covering
+index, ivmlite's batch write plus refresh was about 19 times faster than that
+recomputation. It was about 180 times faster than the secondary baseline,
+unindexed recomputation; the covering index alone made recomputation about 9
+times faster than the unindexed scan, at about 2.0 times the page allocation.
+ivmlite was about 5 times slower than the specialized trigger, and its
+bootstrap took about 2.2 times the trigger backfill's. That is the intended
+comparison: ivmlite wins reusable machinery and explicit batching, while a
+workload-specific trigger remains the performance bar.
 
-| Mode | Bootstrap | Apply | Maintain/recompute | Materialized read | Apply + maintain |
-|---|---:|---:|---:|---:|---:|
-| no maintenance | 0 ms | 0.227 ms | 0 ms | 0 ms | 0.227 ms |
-| full recompute | 0 ms | 0.230 ms | 1,289.994 ms | 0 ms | 1,290.224 ms |
-| hand-written trigger | 1,326.856 ms | 1.428 ms | 0 ms | 0.524 ms | 1.428 ms |
-| ivmlite | 2,884.475 ms | 4.082 ms | 2.676 ms | 2.833 ms | 6.758 ms |
+ivmlite's first refresh after `CREATE`, which also drains the stage the
+bootstrap left behind, took 3.04 ms: within run-to-run noise of the
+steady-state refresh of 2.90 ms.
 
-For this run, ivmlite's batch write plus refresh was about 191 times faster
-than recomputing the aggregate, but about 4.7 times slower than the specialized
-trigger. Its bootstrap was also about 2.2 times slower than the trigger
-backfill. That is the intended comparison: ivmlite wins reusable machinery and
-explicit batching, while a workload-specific trigger remains the performance
-bar.
-
-The [raw command transcript](results/2026-10-08-fluxflow-macos-m2-pro.txt)
-contains the environment and CSV output. More machines, on-disk runs, batch
+The [raw results](results/2026-10-08-fluxflow-macos-m2-pro.txt) contain the
+environment, provenance and CSV output. More machines, on-disk runs, batch
 sizes and mutation mixes are required before making a release-level performance
 claim.
 
