@@ -19,12 +19,14 @@
   - [`2026-09-27-m1b-phase3b-shared-capture.md`](superpowers/plans/2026-09-27-m1b-phase3b-shared-capture.md) — M1b Phase 3b: shared capture, delta GC, REPLACE capture, rename refusal
   - [`2026-09-28-m1b-phase4-benchmark.md`](superpowers/plans/2026-09-28-m1b-phase4-benchmark.md) — M1b Phase 4: run the extension against the M0 baselines and publish the result
 - [`mutation-gates.md`](mutation-gates.md) — **the mutation-gate table**: spec requirement → mutation → the test that goes red. Every invariant M1 adds must be registered here.
-- **`bench/`** — benchmark results, charts and conclusions ([README](bench/README.md)), including the Phase 4 matrix, confirmation, ablation, write-amplification data, and six charts.
+- **`bench/`** — benchmark results, charts and conclusions ([README](bench/README.md)), including the Phase 4 matrix, confirmation, ablation, write-amplification data, six charts, and [`phase4_tables.py`](bench/phase4_tables.py), which recomputes every Phase 4 table from the CSVs.
 - **`cases/`** — original real-world reports, queries and implementation snapshots, collected before phase evaluation ([README](cases/README.md)).
 - **`adr/`** — Architecture Decision Records (reserved; see below).
 - **`spikes/`** — feasibility probes and their conclusions. The output is a conclusion, not code to keep.
   - [`2026-09-18-m-1-sqlite-extension-mechanics.md`](spikes/2026-09-18-m-1-sqlite-extension-mechanics.md) — M-1: can the control surface work as designed (blocks M1)
   - [`2026-09-18-m-1-results.md`](spikes/2026-09-18-m-1-results.md) — M-1: results
+  - [`2026-09-28-m1b-phase4-cost-spike.md`](spikes/2026-09-28-m1b-phase4-cost-spike.md) — M1b Phase 4: the cost spike that motivated the output index and the one-scan latch
+  - [`2026-09-28-m1b-phase4-sqlite342-check.md`](spikes/2026-09-28-m1b-phase4-sqlite342-check.md) — M1b Phase 4: a database with views stays readable and writable by SQLite 3.42
 
 ## How ADRs are used
 

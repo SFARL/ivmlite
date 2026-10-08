@@ -12,6 +12,15 @@
 > `m1b-phase4-ablation-write-amp.csv`, which §7 and the implementation plan
 > already required.
 
+> **Review amendment, 2026-10-07:** the post-merge review of Phase 4 changed no
+> published measurement; it corrected the README's analysis and tightened the
+> runner. This document is amended where it disagreed with the code:
+> §3.4 (which CSV carries the derived write-amplification column), §6 and §8
+> (the ablation's K and view counts live in the workload files; the refresh
+> policy is a documented constant of the runner), and §7 (REPLACE is checked
+> per op, and the `recursive_triggers` mode is read back after each timed
+> apply).
+
 ## 1. Scope
 
 1. Add the extension, as the engine `ivmlite`, to `ivmlite-bench`, next to the three M0 baselines (§10.2): `no_maintenance`, `hand_written_trigger` and `naive_recompute`. It runs on the same workload file and the same matrix cells.
@@ -112,7 +121,9 @@ The four space sample points are:
 - after the writes, before `maintain`;
 - after `maintain`, which includes `ivmlite`'s GC.
 
-Derived in the README, never in the runner:
+Derived in the README, never in the runner (this applies to the matrix CSV;
+the write-amplification CSV of §7 carries its own `extra_us_per_row` column,
+computed by the runner):
 
 - **Speedup**, the main chart's ratio:
 
@@ -164,7 +175,7 @@ Rules:
 
 ## 6. Ablation: the effect of each fix
 
-`ivmlite-bench ablation --extension <lib> --label <name>` runs a fixed set of representative cells for the `ivmlite` and `naive_recompute` engines. Each cell repeats K = 5 times, with the same protocol as §3.2.
+`ivmlite-bench ablation --extension <lib> --label <name>` runs a fixed set of representative cells for the `ivmlite` and `naive_recompute` engines. Each cell repeats K = 5 times, with the same protocol as §3.2. This K is a workload parameter, `[ablation] repeats` in the m0 workload file (§8), not a runner constant like the confirmation's K.
 
 | base rows | groups | views | batch |
 |---|---|---|---|
@@ -201,19 +212,21 @@ These cover low and high group cardinality, and few and many views. Their parame
 
 - **The modes:** `recursive_triggers` OFF and ON.
 - **The transaction batch:** a fixed number of rows per transaction.
-- **The refresh policy:** refresh every view once after each op trace, untimed; `apply_ms` is the timed quantity.
+- **The refresh policy:** refresh every view once after each op trace, untimed; `apply_ms` is the timed quantity. This is a constant of the runner, documented in the workload file's comments (§8).
 
 The engines are `no_maintenance`, `hand_written_trigger` (INSERT, DELETE and UPDATE triggers, measured for cost only) and `ivmlite`. The runner verifies each row's effect as the table says. After refresh, it also verifies that `ivmlite`'s views match SQLite's own evaluation.
 
+The per-row check of a REPLACE is made after the trace, untimed: every REPLACE's own row must be present as written, and every existing row it claims to conflict with must be gone. Together with the net row count, this is exact per op. After each timed apply the runner also reads `PRAGMA recursive_triggers` back and refuses a row whose mode differs from the requested one.
+
 Output: `docs/bench/m1b-phase4-write-amp.csv`, with one row per (engine, views, op, mode). Each row records `apply_ms` and µs per row, the extra µs per row over `no_maintenance`, and the space samples of §3.4.
 
-The ablation's commits also run this workload for `ivmlite` at 10 and 200 views, so the latch fix's effect on write cost is measured, not assumed.
+The ablation's commits also run this workload for `ivmlite` at 10 and 200 views, so the latch fix's effect on write cost is measured, not assumed. Those view counts are the workload file's `ablation_view_counts`, selected with `ivmlite-bench write-amp --ablation-views`.
 
 ## 8. Workload files stay the single source
 
-- **Portable workloads (§10.3 item 7).** Every parameter above that selects what gets measured lives in a workload file, not in the runner. That covers the ablation cells, the write-amp ops, the view counts, the transaction size, the refresh policy and the modes.
+- **Portable workloads (§10.3 item 7).** Every parameter above that selects what gets measured lives in a workload file, not in the runner. That covers the ablation cells and repeats, the write-amp ops, the view counts (including the ablation's), the transaction size and the modes. The refresh policy (§1 item 5, §7) is the one exception: it is a documented constant of the runner, since Phase 4 measures only one.
 - **The m0 file** gains an `[ablation]` section, and `write-amp.toml` is new.
-- **The confirmation rule, K and the engine rotation** are properties of the measurement protocol, not of the workload. They are constants in the runner, stated in this spec and in the README.
+- **The confirmation rule, the confirmation's K and the engine rotation** are properties of the measurement protocol, not of the workload. They are constants in the runner, stated in this spec and in the README. The ablation's K is not among them: the workload file already carries it (§6).
 
 ## 9. Deliverables and acceptance
 

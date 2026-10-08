@@ -15,7 +15,7 @@ use ivmlite_workload::{AblationSpec, Workload};
 use crate::engine::{rotate_left, run_cell, Engine, Measurement};
 
 /// The two engines the ablation compares (spec §6: "the `ivmlite` and
-/// `naive_recompute` engines"). Controller ruling 1: `rotate_left` (Task 1)
+/// `naive_recompute` engines"). Spec §3.3: `rotate_left` (Task 1)
 /// is generic and reused here for this two-engine list, exactly as
 /// `engine_order` reuses it for the four-engine matrix list.
 const ABLATION_ENGINES: [Engine; 2] = [Engine::NaiveRecompute, Engine::Ivmlite];
@@ -44,7 +44,7 @@ pub struct AblationRow {
 /// `naive_recompute` and `ivmlite` only (spec §6). `base` supplies the schema
 /// and update-trace parameters an ablation cell does not repeat itself
 /// (`Workload::with_cell` fills in the rest, exactly as `cells()` does for
-/// the matrix — see Task 2's brief: the two can never disagree).
+/// the matrix — spec §8: the two can never disagree).
 pub fn run_ablation(
     base: &Workload,
     spec: &AblationSpec,

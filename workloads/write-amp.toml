@@ -9,6 +9,11 @@ amount_max = 200
 # threshold formula below is what makes the views differ from one another.
 view_counts = [0, 1, 10, 50, 200]
 
+# The view counts the ablation (spec §6; scripts/bench-ablation.sh) runs this
+# workload at for each build, through `write-amp --ablation-views`, instead of
+# the full sweep above.
+ablation_view_counts = [10, 200]
+
 # Each op kind has its own deterministic trace of rows_per_op rows (spec §7's
 # table). `replace_rowid`/`replace_unique`/`replace_two` exercise REPLACE's
 # rowid and UNIQUE-candidate conflict resolution; §3's matrix cannot, since

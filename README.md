@@ -177,6 +177,16 @@ cargo run --release --locked -p ivmlite-test \
   --example real_case_bench -- 250000 100 5
 ```
 
+Run the M1b Phase 4 benchmark (the extension against hand-written triggers and
+full recomputation, with confirmation repeats and a write-amplification
+workload); [`docs/bench/README.md`](docs/bench/README.md) has the full
+reproduce block and the results:
+
+```sh
+scripts/bench.sh matrix > m1b-phase4.csv
+scripts/bench.sh write-amp > m1b-phase4-write-amp.csv
+```
+
 If you have a real workload, open an issue with the table definitions, exact
 query, approximate row count, read/write cadence, acceptable staleness, and
 what you have already tried. A failing or unsupported workload is useful data.

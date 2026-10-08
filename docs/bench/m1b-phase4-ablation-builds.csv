@@ -1,0 +1,4 @@
+label,commit,build
+before,a7c9ec70f830ff3b3ab8705e5208bd64bb4ff909,before the output index (spec §4)
+index,756bb5bf7751acd8bb52f15c374faa7658153750,after the output index (spec §4)
+latch,9c6ff90ee5c83acc51a768b261023d99682a5515,after the one-scan latch (spec §5)

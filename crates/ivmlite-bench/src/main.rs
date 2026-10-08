@@ -120,20 +120,22 @@ fn print_confirm_csv(mut rows: Vec<(usize, Row)>) {
 /// `rows`/`us_per_row`/`extra_us_per_row` in their place), so it gets its
 /// own constant rather than sharing `measurement_csv`'s formatter.
 /// `extra_us_per_row` is spec §7's "extra µs per row over `no_maintenance`"
-/// (ruling 8 of the Task 5 fix round; §3.4's own "derived in the README"
-/// note is about the matrix CSV only — write-amp computes and publishes
-/// this one directly, since it is exactly what spec §7 asks the CSV for).
+/// (§3.4's "derived in the README" note is about the matrix CSV only —
+/// write-amp computes and publishes this one directly, since it is exactly
+/// what spec §7 asks the CSV for).
 const WRITE_AMP_CSV_HEADER: &str = "engine,views,op,recursive_triggers,rows,apply_ms,us_per_row,extra_us_per_row,page_size,base_pages,base_free,bootstrapped_pages,bootstrapped_free,written_pages,written_free,maintained_pages,maintained_free";
 
 /// The extra µs per row `r`'s engine cost over `no_maintenance`, for the
-/// same (`views`, op, `recursive_triggers`) combination (spec §7; ruling 8).
+/// same (`views`, op, `recursive_triggers`) combination (spec §7).
 /// `no_maintenance` itself always gets exactly `0.0`: looking itself up in
 /// `rows` finds its own `apply_ms`, so the subtraction cancels — no special
-/// case needed. Every combination has exactly one `no_maintenance` row
-/// (`run_write_amp` runs all three engines together for each combination),
-/// but if one were ever missing, this falls back to `r.apply_ms` itself so
-/// the result is `0.0` rather than a panic.
-fn extra_us_per_row(rows: &[write_amp::WriteAmpRow], r: &write_amp::WriteAmpRow) -> f64 {
+/// case needed. `run_write_amp` runs all three engines together for each
+/// combination, so a missing `no_maintenance` row is a runner bug: it is an
+/// error, never a silent `0.0`.
+fn extra_us_per_row(
+    rows: &[write_amp::WriteAmpRow],
+    r: &write_amp::WriteAmpRow,
+) -> Result<f64, String> {
     let no_maintenance_apply_ms = rows
         .iter()
         .find(|o| {
@@ -143,14 +145,24 @@ fn extra_us_per_row(rows: &[write_amp::WriteAmpRow], r: &write_amp::WriteAmpRow)
                 && o.recursive_triggers == r.recursive_triggers
         })
         .map(|o| o.apply_ms)
-        .unwrap_or(r.apply_ms);
-    (r.apply_ms - no_maintenance_apply_ms) * 1000.0 / r.rows as f64
+        .ok_or_else(|| {
+            format!(
+                "no no_maintenance row for views={} op={} recursive_triggers={}",
+                r.views,
+                r.op.label(),
+                r.recursive_triggers
+            )
+        })?;
+    Ok((r.apply_ms - no_maintenance_apply_ms) * 1000.0 / r.rows as f64)
 }
 
-fn write_amp_row_csv(rows: &[write_amp::WriteAmpRow], r: &write_amp::WriteAmpRow) -> String {
+fn write_amp_row_csv(
+    rows: &[write_amp::WriteAmpRow],
+    r: &write_amp::WriteAmpRow,
+) -> Result<String, String> {
     let us_per_row = r.apply_ms * 1000.0 / r.rows as f64;
-    let extra = extra_us_per_row(rows, r);
-    format!(
+    let extra = extra_us_per_row(rows, r)?;
+    Ok(format!(
         "{},{},{},{},{},{:.3},{:.3},{:.3},{},{},{},{},{},{},{},{},{}",
         r.engine.label(),
         r.views,
@@ -169,12 +181,13 @@ fn write_amp_row_csv(rows: &[write_amp::WriteAmpRow], r: &write_amp::WriteAmpRow
         r.written_free,
         r.maintained_pages,
         r.maintained_free,
-    )
+    ))
 }
 
 /// Sorted by (op, views, recursive_triggers, engine label) so the file diffs
-/// stably across runs, the same rationale as `print_csv`.
-fn print_write_amp_csv(mut rows: Vec<write_amp::WriteAmpRow>) {
+/// stably across runs, the same rationale as `print_csv`. Every line is
+/// formatted before any is printed, so an error leaves no partial CSV.
+fn print_write_amp_csv(mut rows: Vec<write_amp::WriteAmpRow>) -> Result<(), String> {
     rows.sort_by(|a, b| {
         (
             a.op.label(),
@@ -189,33 +202,48 @@ fn print_write_amp_csv(mut rows: Vec<write_amp::WriteAmpRow>) {
                 b.engine.label(),
             ))
     });
+    let lines = rows
+        .iter()
+        .map(|r| write_amp_row_csv(&rows, r))
+        .collect::<Result<Vec<String>, String>>()?;
     println!("{WRITE_AMP_CSV_HEADER}");
-    for r in &rows {
-        println!("{}", write_amp_row_csv(&rows, r));
+    for line in &lines {
+        println!("{line}");
     }
+    Ok(())
+}
+
+/// Which view counts `write-amp` mode runs: the workload file's full
+/// `view_counts` sweep, its `ablation_view_counts` (`--ablation-views`, the
+/// set spec §6's ablation runs for each build), or an explicit `--views`
+/// list.
+#[derive(Debug, Clone, PartialEq)]
+enum ViewSelection {
+    Sweep,
+    Ablation,
+    Explicit(Vec<usize>),
 }
 
 /// `write-amp` mode (spec §7): load `workload_path` (default
-/// `workloads/write-amp.toml`), optionally override its view counts, run
-/// every combination over the three write-amp engines, and print the CSV.
+/// `workloads/write-amp.toml`), select its view counts, run every
+/// combination over the three write-amp engines, and print the CSV.
 fn run_write_amp_mode(
     workload_path: &Path,
     lib: &Path,
-    views_override: Option<Vec<usize>>,
+    selection: ViewSelection,
 ) -> Result<(), String> {
     let mut w = WriteAmpWorkload::load(workload_path).map_err(|e| e.to_string())?;
-    if let Some(views) = views_override {
-        w.view_counts = views;
-        // `load` already validated the shipped file; overriding
-        // `view_counts` here (ruling 9 of the Task 5 fix round) can make it
-        // invalid again (e.g. an empty `--views` list, though `parse_args`
-        // cannot produce one today) — re-validate rather than trust the
-        // override blindly.
-        w.validate().map_err(|e| e.to_string())?;
+    match selection {
+        ViewSelection::Sweep => {}
+        ViewSelection::Ablation => w.view_counts = w.ablation_view_counts.clone(),
+        ViewSelection::Explicit(views) => w.view_counts = views,
     }
+    // `load` validated the file as written; replacing `view_counts` can make
+    // it invalid again (e.g. an empty list, though `parse_args` cannot
+    // produce one today) — re-validate rather than trust the selection.
+    w.validate().map_err(|e| e.to_string())?;
     let rows = write_amp::run_write_amp(&w, lib)?;
-    print_write_amp_csv(rows);
-    Ok(())
+    print_write_amp_csv(rows)
 }
 
 /// `ablation` mode's rows: printed with `label,repeat` as two extra leading
@@ -365,10 +393,10 @@ struct Args {
     from: Option<PathBuf>,
     /// `ablation`'s build label (`--label`).
     label: Option<String>,
-    /// `write-amp`'s view-count override (`--views`), a comma-separated
-    /// list; Task 6's ablation script uses this to run write-amp at a fixed
-    /// pair of view counts instead of the workload file's full sweep.
-    views: Option<Vec<usize>>,
+    /// `write-amp`'s view counts: the file's sweep by default,
+    /// `--ablation-views` for the file's `ablation_view_counts`, or `--views`
+    /// for an explicit comma-separated list.
+    views: ViewSelection,
 }
 
 fn parse_args(raw: impl Iterator<Item = String>) -> Result<Args, String> {
@@ -378,6 +406,7 @@ fn parse_args(raw: impl Iterator<Item = String>) -> Result<Args, String> {
     let mut from: Option<PathBuf> = None;
     let mut label: Option<String> = None;
     let mut views: Option<Vec<usize>> = None;
+    let mut ablation_views = false;
 
     let mut it = raw;
     while let Some(arg) = it.next() {
@@ -416,6 +445,7 @@ fn parse_args(raw: impl Iterator<Item = String>) -> Result<Args, String> {
                 }
                 views = Some(parsed);
             }
+            "--ablation-views" => ablation_views = true,
             other if mode.is_none() => mode = Some(other.to_string()),
             other => return Err(format!("unexpected argument: {other}")),
         }
@@ -423,15 +453,28 @@ fn parse_args(raw: impl Iterator<Item = String>) -> Result<Args, String> {
 
     let mode = mode.unwrap_or_else(|| "matrix".to_string());
 
-    // `--views` (ruling 9 of the Task 5 fix round): only `write-amp` mode
-    // ever reads it (main's `write-amp` arm is the only caller of
-    // `Args::views`), so any other mode rejects it outright rather than
-    // silently ignoring it.
-    if views.is_some() && mode != "write-amp" {
-        return Err(format!(
-            "--views is only valid with write-amp mode, not {mode:?}"
-        ));
+    // `--views` and `--ablation-views` (spec §7): only `write-amp` mode
+    // ever reads them (main's `write-amp` arm is the only caller of
+    // `Args::views`), so any other mode rejects them outright rather than
+    // silently ignoring them, and the two cannot be combined.
+    for (flag, given) in [
+        ("--views", views.is_some()),
+        ("--ablation-views", ablation_views),
+    ] {
+        if given && mode != "write-amp" {
+            return Err(format!(
+                "{flag} is only valid with write-amp mode, not {mode:?}"
+            ));
+        }
     }
+    let views = match (views, ablation_views) {
+        (Some(_), true) => {
+            return Err("--views and --ablation-views cannot be combined".to_string())
+        }
+        (Some(list), false) => ViewSelection::Explicit(list),
+        (None, true) => ViewSelection::Ablation,
+        (None, false) => ViewSelection::Sweep,
+    };
 
     // `write-amp`'s own default workload file differs from the other three
     // modes' (spec §7): only applied when `--workload` was not given
@@ -508,7 +551,7 @@ mod tests {
 
     /// A `WriteAmpRow` fixture with every space/timing field but the ones
     /// the test cares about held at an arbitrary fixed value, for
-    /// `extra_us_per_row`'s tests (ruling 8 of the Task 5 fix round).
+    /// `extra_us_per_row`'s tests (spec §7).
     fn fixture_row(
         engine: Engine,
         views: usize,
@@ -536,18 +579,42 @@ mod tests {
         }
     }
 
-    /// `extra_us_per_row` (spec §7; ruling 8): `no_maintenance` itself gets
-    /// exactly `0.0`, and another engine gets `(its apply_ms −
-    /// no_maintenance's apply_ms) * 1000 / rows`, looked up from the same
-    /// (`views`, op, `recursive_triggers`) combination — not just any
-    /// `no_maintenance` row, so a fixture with two different combinations'
-    /// `no_maintenance` rows present is used to pin that the lookup keys on
-    /// all three fields, not merely on engine.
+    /// `extra_us_per_row` (spec §7): `no_maintenance` itself gets exactly
+    /// `0.0`, and another engine gets `(its apply_ms − no_maintenance's
+    /// apply_ms) * 1000 / rows`, looked up from the same (`views`, op,
+    /// `recursive_triggers`) combination. Three decoy `no_maintenance` rows
+    /// come first, each differing from the right one in exactly one key
+    /// field, so a lookup that ignored any one of the three fields would
+    /// find its decoy before the right row.
     #[test]
     fn extra_us_per_row_is_zero_for_no_maintenance_and_the_difference_for_others() {
         use ivmlite_workload::WriteOpKind;
 
         let rows = vec![
+            fixture_row(
+                Engine::NoMaintenance,
+                2,
+                WriteOpKind::Insert,
+                false,
+                100,
+                900.0,
+            ),
+            fixture_row(
+                Engine::NoMaintenance,
+                1,
+                WriteOpKind::Delete,
+                false,
+                100,
+                800.0,
+            ),
+            fixture_row(
+                Engine::NoMaintenance,
+                1,
+                WriteOpKind::Insert,
+                true,
+                100,
+                700.0,
+            ),
             fixture_row(
                 Engine::NoMaintenance,
                 1,
@@ -565,41 +632,28 @@ mod tests {
                 12.0,
             ),
             fixture_row(Engine::Ivmlite, 1, WriteOpKind::Insert, false, 100, 15.0),
-            // A different combination's no_maintenance row, with a
-            // deliberately different apply_ms — if the lookup ignored
-            // views/op/recursive_triggers and matched on engine alone, this
-            // row could be picked up by mistake for the ones above.
-            fixture_row(
-                Engine::NoMaintenance,
-                2,
-                WriteOpKind::Delete,
-                true,
-                100,
-                999.0,
-            ),
         ];
 
         assert_eq!(
-            extra_us_per_row(&rows, &rows[0]),
-            0.0,
+            extra_us_per_row(&rows, &rows[3]),
+            Ok(0.0),
             "no_maintenance itself"
         );
         assert_eq!(
-            extra_us_per_row(&rows, &rows[1]),
-            (12.0 - 10.0) * 1000.0 / 100.0
+            extra_us_per_row(&rows, &rows[4]),
+            Ok((12.0 - 10.0) * 1000.0 / 100.0)
         );
         assert_eq!(
-            extra_us_per_row(&rows, &rows[2]),
-            (15.0 - 10.0) * 1000.0 / 100.0
+            extra_us_per_row(&rows, &rows[5]),
+            Ok((15.0 - 10.0) * 1000.0 / 100.0)
         );
     }
 
-    /// If a combination's `no_maintenance` row were ever missing (it never
-    /// is, in practice — `run_write_amp` always runs all three engines
-    /// together), the fallback must still produce `0.0` rather than a
-    /// nonsensical value or a panic.
+    /// A combination without a `no_maintenance` row is a runner bug (spec
+    /// §7): `extra_us_per_row` reports it, and the CSV printer refuses to
+    /// print anything, instead of publishing a made-up `0.0`.
     #[test]
-    fn extra_us_per_row_falls_back_to_zero_without_a_matching_no_maintenance_row() {
+    fn extra_us_per_row_is_an_error_without_a_matching_no_maintenance_row() {
         use ivmlite_workload::WriteOpKind;
 
         let rows = vec![fixture_row(
@@ -610,7 +664,10 @@ mod tests {
             100,
             15.0,
         )];
-        assert_eq!(extra_us_per_row(&rows, &rows[0]), 0.0);
+        let err = extra_us_per_row(&rows, &rows[0]).unwrap_err();
+        assert!(err.contains("no no_maintenance row"), "{err}");
+        assert!(err.contains("views=1 op=insert"), "{err}");
+        assert!(write_amp_row_csv(&rows, &rows[0]).is_err());
     }
 
     /// One row of `docs/bench/m0-baseline.csv`, keeping only the four matrix
@@ -759,7 +816,7 @@ mod tests {
         let a = parse_args(["write-amp"].into_iter().map(String::from)).unwrap();
         assert_eq!(a.mode, "write-amp");
         assert_eq!(a.workload, PathBuf::from("workloads/write-amp.toml"));
-        assert_eq!(a.views, None);
+        assert_eq!(a.views, ViewSelection::Sweep);
     }
 
     #[test]
@@ -794,7 +851,7 @@ mod tests {
                 .map(String::from),
         )
         .unwrap();
-        assert_eq!(a.views, Some(vec![0, 1, 10]));
+        assert_eq!(a.views, ViewSelection::Explicit(vec![0, 1, 10]));
     }
 
     #[test]
@@ -808,8 +865,8 @@ mod tests {
         assert!(err.contains("--views"), "{err}");
     }
 
-    /// Ruling 9 of the Task 5 fix round: `--views` must reject a repeated
-    /// entry rather than silently running that view count twice.
+    /// Spec §7: `--views` must reject a repeated entry rather than silently
+    /// running that view count twice.
     #[test]
     fn parse_args_rejects_a_duplicate_views_entry() {
         let err = parse_args(
@@ -822,7 +879,7 @@ mod tests {
         assert!(err.contains("duplicate"), "{err}");
     }
 
-    /// Ruling 9: `--views` is a `write-amp`-only flag; every other mode
+    /// Spec §7: `--views` is a `write-amp`-only flag; every other mode
     /// rejects it outright instead of silently ignoring it.
     #[test]
     fn parse_args_rejects_views_outside_write_amp_mode() {
@@ -832,16 +889,62 @@ mod tests {
         assert!(err.contains("matrix"), "{err}");
     }
 
-    /// Ruling 9: `run_write_amp_mode` must re-validate after applying the
-    /// `--views` override, not just trust it — an empty override (which
-    /// `parse_args` itself can never produce, but nothing stops a future
-    /// caller from) must be rejected before anything tries to run it.
+    /// `--ablation-views` selects the workload file's
+    /// `ablation_view_counts` (spec §6, §8: the ablation's view counts live
+    /// in the workload file, not in the script), is `write-amp`-only like
+    /// `--views`, and cannot be combined with it.
+    #[test]
+    fn parse_args_reads_ablation_views_and_rejects_misuse() {
+        let a = parse_args(
+            ["write-amp", "--ablation-views"]
+                .into_iter()
+                .map(String::from),
+        )
+        .unwrap();
+        assert_eq!(a.views, ViewSelection::Ablation);
+
+        let err = parse_args(
+            ["ablation", "--ablation-views"]
+                .into_iter()
+                .map(String::from),
+        )
+        .unwrap_err();
+        assert!(err.contains("--ablation-views"), "{err}");
+        assert!(err.contains("ablation"), "{err}");
+
+        let err = parse_args(
+            ["write-amp", "--ablation-views", "--views", "10"]
+                .into_iter()
+                .map(String::from),
+        )
+        .unwrap_err();
+        assert!(err.contains("cannot be combined"), "{err}");
+    }
+
+    /// The shipped write-amp file names the ablation's view counts, and they
+    /// are the ones the published ablation write-amp CSV was run at.
+    #[test]
+    fn the_shipped_write_amp_file_names_the_ablation_view_counts() {
+        let workload_path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../workloads/write-amp.toml");
+        let w = WriteAmpWorkload::load(&workload_path).unwrap();
+        assert_eq!(w.ablation_view_counts, vec![10, 200]);
+    }
+
+    /// Spec §8: `run_write_amp_mode` must re-validate after selecting the
+    /// view counts, not just trust the selection — an empty explicit list
+    /// (which `parse_args` itself can never produce, but nothing stops a
+    /// future caller from) must be rejected before anything tries to run it.
     #[test]
     fn run_write_amp_mode_rejects_an_override_that_empties_view_counts() {
         let workload_path =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../workloads/write-amp.toml");
-        let err = run_write_amp_mode(&workload_path, Path::new("/nonexistent"), Some(vec![]))
-            .unwrap_err();
+        let err = run_write_amp_mode(
+            &workload_path,
+            Path::new("/nonexistent"),
+            ViewSelection::Explicit(vec![]),
+        )
+        .unwrap_err();
         assert!(err.contains("view_counts"), "{err}");
     }
 }

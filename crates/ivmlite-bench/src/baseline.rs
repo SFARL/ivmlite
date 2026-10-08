@@ -135,25 +135,35 @@ impl<'c> ApplyStatements<'c> {
         })
     }
 
-    /// Neither statement must have been recompiled since `prepare` (M1b
-    /// Phase 4 Task 5 fix round, ruling 6): a flag `PRAGMA` issued between
-    /// `prepare` and a timed region would silently do this by expiring the
-    /// statement (`OP_Expire`), moving compilation cost inside the timer it
-    /// was prepared to stay out of. No matrix cell currently sets such a
-    /// pragma, so this is a preventive check for `engine::run_cell` — see
-    /// `crate::engine::tests::apply_statements_detect_an_intervening_pragma`
-    /// for a test that forces the condition this guards against.
+    /// Neither statement must have been recompiled since `prepare` (Phase 4
+    /// spec §3.2 step 4: compilation is never timed). No matrix cell
+    /// currently sets a flag pragma, so this is a preventive check for
+    /// `engine::run_cell`; `tests::apply_statements_detect_an_intervening_pragma`
+    /// forces the condition it guards against.
     pub(crate) fn assert_not_reprepared(&self) -> Result<(), String> {
         for (label, s) in [("insert", &self.insert), ("delete", &self.delete)] {
-            let n = s.get_status(rusqlite::StatementStatus::RePrepare);
-            if n != 0 {
-                return Err(format!(
-                    "the {label} statement was recompiled {n} time(s) during a timed region"
-                ));
-            }
+            assert_not_reprepared(label, s)?;
         }
         Ok(())
     }
+}
+
+/// A timed statement must not have been recompiled since it was prepared
+/// (Phase 4 spec §3.2 step 4: compilation is never timed). A flag `PRAGMA`
+/// such as `recursive_triggers` makes SQLite run `OP_Expire`, which marks
+/// every statement prepared on the connection as expired; an expired
+/// statement is silently recompiled the next time it runs, which would move
+/// compilation inside the timer it was prepared to stay out of. Every timed
+/// statement in this crate is checked through this one function, after its
+/// timed region, via `StatementStatus::RePrepare`.
+pub(crate) fn assert_not_reprepared(label: &str, stmt: &Statement<'_>) -> Result<(), String> {
+    let n = stmt.get_status(rusqlite::StatementStatus::RePrepare);
+    if n != 0 {
+        return Err(format!(
+            "the {label} statement was recompiled {n} time(s) during a timed region"
+        ));
+    }
+    Ok(())
 }
 
 /// Apply one batch of changes and return the elapsed milliseconds. The timed
@@ -202,12 +212,7 @@ impl<'c> RecomputeStatements<'c> {
 
     fn assert_not_reprepared(&self) -> Result<(), String> {
         for (i, stmt) in self.0.iter().enumerate() {
-            let n = stmt.get_status(rusqlite::StatementStatus::RePrepare);
-            if n != 0 {
-                return Err(format!(
-                    "the recompute view {i} statement was recompiled {n} time(s) during a timed region"
-                ));
-            }
+            assert_not_reprepared(&format!("recompute view {i}"), stmt)?;
         }
         Ok(())
     }
@@ -453,8 +458,8 @@ mod tests {
         );
     }
 
-    /// M1b Phase 4 Task 5 fix round (ruling 6): `assert_not_reprepared` must
-    /// pass after ordinary use.
+    /// Phase 4 spec §3.2 step 4: `assert_not_reprepared` must pass after
+    /// ordinary use.
     #[test]
     fn apply_statements_are_not_reprepared_by_ordinary_use() {
         let conn = Connection::open_in_memory().unwrap();

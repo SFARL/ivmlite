@@ -36,6 +36,35 @@ fn fmt_ms(ms: f64) -> String {
     }
 }
 
+/// Format a speedup ratio as a tick label (`0.5x`, `2x`, `100x`).
+fn fmt_ratio(ratio: f64) -> String {
+    if ratio >= 1.0 {
+        format!("{ratio:.0}x")
+    } else {
+        // Drop trailing zeros: 0.5x, 0.2x, 0.05x.
+        let text = format!("{ratio:.3}");
+        format!("{}x", text.trim_end_matches('0').trim_end_matches('.'))
+    }
+}
+
+/// The 1-2-5 ratios (…, 0.5, 1, 2, 5, 10, …) whose log10 lies in
+/// `[y0, y1]`: the speedup chart's y tick values.
+fn ratio_ticks(y0: f64, y1: f64) -> Vec<f64> {
+    let mut ticks = Vec::new();
+    let mut decade = y0.floor() as i32;
+    while f64::from(decade) <= y1 {
+        for step in [1.0, 2.0, 5.0] {
+            let ratio = step * 10f64.powi(decade);
+            let y = ratio.log10();
+            if y >= y0 && y <= y1 {
+                ticks.push(ratio);
+            }
+        }
+        decade += 1;
+    }
+    ticks
+}
+
 /// Draw the headline chart: views, batch size and group cardinality fixed;
 /// base-table size on the x axis (log), total time on the y axis (log); one
 /// line per baseline. The crossover is where two lines meet (spec §10.4).
@@ -282,6 +311,18 @@ pub fn write_speedup_svg(
         ));
     }
 
+    // Y-axis ticks at 1-2-5 ratios, labelled on the left.
+    for ratio in ratio_ticks(y0, y1) {
+        let py = sy(ratio.log10());
+        svg.push_str(&format!(
+            "<line x1=\"{lx:.1}\" y1=\"{py:.1}\" x2=\"{PAD:.1}\" y2=\"{py:.1}\" stroke=\"#333\"/>\n\
+             <text data-y-tick=\"{label}\" x=\"{label_x:.1}\" y=\"{py:.1}\" dy=\"4\" text-anchor=\"end\">{label}</text>\n",
+            lx = PAD - 6.0,
+            label_x = PAD - 10.0,
+            label = fmt_ratio(ratio),
+        ));
+    }
+
     for (ratio, name, dash) in [(1.0_f64, "1x", "4 3"), (2.0_f64, "2x", "8 3")] {
         let py = sy(ratio.log10());
         svg.push_str(&format!(
@@ -347,6 +388,12 @@ pub fn write_phase4_charts(from: &Path) -> Result<Vec<std::path::PathBuf>, Strin
 mod tests {
     use super::*;
 
+    /// A fresh directory for one test's output, unique to this process and
+    /// test, so concurrent test runs never write into each other's files.
+    fn unique_dir(test: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("ivmlite-bench-plot-{test}-{}", std::process::id()))
+    }
+
     fn rec(engine: &str, base_rows: usize, apply_ms: f64, maintain_ms: f64) -> Row {
         rec_card(engine, base_rows, apply_ms, maintain_ms, 1_000)
     }
@@ -390,7 +437,7 @@ mod tests {
     /// less than a pixel apart; only a log scale keeps tens of pixels between them.
     #[test]
     fn y_axis_uses_log_scale_not_linear() {
-        let dir = std::env::temp_dir().join("ivmlite-bench-plot-log-scale");
+        let dir = unique_dir("log-scale");
         let path = dir.join("test.svg");
         let records = vec![
             rec("no_maintenance", 10_000, 1.0, 0.0),          // total 1ms
@@ -399,6 +446,7 @@ mod tests {
         ];
         write_svg(&path, &records, 10, 100, 1_000).unwrap();
         let svg = fs::read_to_string(&path).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
 
         let no_maint_y = circle_ys(&svg, "#d62728")[0]; // no_maintenance is the third key, so the third color
         let trigger_y = circle_ys(&svg, "#888888")[0]; // hand_written_trigger is the first key
@@ -417,7 +465,7 @@ mod tests {
     /// I11: both axes must carry tick labels, not just a single y1 number.
     #[test]
     fn axes_have_tick_labels() {
-        let dir = std::env::temp_dir().join("ivmlite-bench-plot-ticks");
+        let dir = unique_dir("ticks");
         let path = dir.join("test.svg");
         let records = vec![
             rec("no_maintenance", 10_000, 1.0, 0.0),
@@ -426,6 +474,7 @@ mod tests {
         ];
         write_svg(&path, &records, 10, 100, 1_000).unwrap();
         let svg = fs::read_to_string(&path).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
 
         // X axis: each of the three base_rows values needs a label.
         assert!(
@@ -452,7 +501,7 @@ mod tests {
     /// must be annotated on the chart.
     #[test]
     fn sparse_series_are_annotated() {
-        let dir = std::env::temp_dir().join("ivmlite-bench-plot-sparse");
+        let dir = unique_dir("sparse");
         let path = dir.join("test.svg");
         let records = vec![
             rec_card("no_maintenance", 100_000, 1.0, 0.0, 100_000),
@@ -460,6 +509,7 @@ mod tests {
         ];
         write_svg(&path, &records, 10, 100, 100_000).unwrap();
         let svg = fs::read_to_string(&path).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
         assert!(
             svg.contains("has only 2 data points"),
             "a series with fewer than three points must be annotated: {svg}"
@@ -468,7 +518,7 @@ mod tests {
 
     #[test]
     fn speedup_chart_contains_the_one_and_two_times_reference_lines() {
-        let directory = std::env::temp_dir().join("ivmlite-bench-speedup-reference-lines");
+        let directory = unique_dir("speedup-reference-lines");
         let path = directory.join("test.svg");
         let records = vec![
             rec("naive_recompute", 10_000, 20.0, 0.0),
@@ -477,9 +527,42 @@ mod tests {
             rec("ivmlite", 100_000, 10.0, 0.0),
         ];
         write_speedup_svg(&path, &records, 10, 1_000).unwrap();
-        let svg = fs::read_to_string(path).unwrap();
+        let svg = fs::read_to_string(&path).unwrap();
+        fs::remove_dir_all(&directory).unwrap();
         assert!(svg.contains("data-reference=\"1x\""), "{svg}");
         assert!(svg.contains("data-reference=\"2x\""), "{svg}");
+    }
+
+    /// The speedup chart's y axis carries tick labels, like the time chart's:
+    /// speedups 2x and 4x plus the 1x reference line span log10 0..0.60,
+    /// padded by 0.15 to -0.15..0.75 (0.71x..5.62x), so the 1-2-5 ticks
+    /// inside are 1x, 2x and 5x.
+    #[test]
+    fn speedup_chart_has_y_tick_labels() {
+        let directory = unique_dir("speedup-ticks");
+        let path = directory.join("test.svg");
+        let records = vec![
+            rec("naive_recompute", 10_000, 20.0, 0.0),
+            rec("ivmlite", 10_000, 10.0, 0.0),
+            rec("naive_recompute", 100_000, 40.0, 0.0),
+            rec("ivmlite", 100_000, 10.0, 0.0),
+        ];
+        write_speedup_svg(&path, &records, 10, 1_000).unwrap();
+        let svg = fs::read_to_string(&path).unwrap();
+        fs::remove_dir_all(&directory).unwrap();
+        let ticks: Vec<&str> = svg
+            .lines()
+            .filter_map(|l| l.split("data-y-tick=\"").nth(1))
+            .filter_map(|rest| rest.split('"').next())
+            .collect();
+        assert_eq!(ticks, ["1x", "2x", "5x"], "{svg}");
+    }
+
+    #[test]
+    fn ratio_ticks_and_labels_follow_the_1_2_5_series() {
+        let ticks = ratio_ticks(-1.0, 1.0);
+        let labels: Vec<String> = ticks.iter().map(|r| fmt_ratio(*r)).collect();
+        assert_eq!(labels, ["0.1x", "0.2x", "0.5x", "1x", "2x", "5x", "10x"]);
     }
 
     #[test]
