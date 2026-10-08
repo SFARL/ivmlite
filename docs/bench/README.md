@@ -157,9 +157,11 @@ not: where does the real extension beat full recomputation, what does its
 generality cost against hand-written triggers, and how much tax does it add to
 ordinary writes?
 
-Every number in this section is derived from the committed CSVs by
-[`phase4_tables.py`](phase4_tables.py) (`python3 docs/bench/phase4_tables.py`);
-nothing is typed in by hand.
+Every measured number in this section is derived from the committed CSVs by
+[`phase4_tables.py`](phase4_tables.py) (`python3 docs/bench/phase4_tables.py`).
+The exceptions are the setup facts below — dates, hardware, versions and the
+four wall times, which come from the run session and are in no CSV — and the
+protocol constants, which come from the runner's code.
 
 ### Setup and protocol
 
@@ -227,8 +229,8 @@ labels map to commits in
 The §10.4 falsification bar is met. In the exploration, 55 of 68 cells had
 `naive_recompute / ivmlite > 2`. All 24 cells at one million base rows were
 above 2x, ranging from 17.078x to 909.228x. At 100,000 rows, 22 of 24 cells
-were above 2x. Four confirmed cells at 100,000 rows sit close to the 2x bar,
-and all four stayed above it in every repeat:
+were above 2x. Five cells at 100,000 rows were confirmed near the 2x bar.
+Four stayed above it in every repeat:
 
 | views | base rows | batch | groups | confirmed speedup median [min, max] |
 |---:|---:|---:|---:|---:|
@@ -236,6 +238,10 @@ and all four stayed above it in every repeat:
 | 10 | 100,000 | 1,000 | 100,000 | 2.174x [2.107, 2.700] |
 | 50 | 100,000 | 1,000 | 1,000 | 2.352x [2.332, 2.387] |
 | 200 | 100,000 | 1,000 | 1,000 | 2.042x [2.024, 2.052] |
+
+The fifth missed it: `views=1, base_rows=100,000, batch=1000, groups=1000` had
+a confirmed median of 1.965x, below 2x, although its five runs ranged from
+1.703x to 3.808x.
 
 The losing region is the small-table corner. Seven of the 20 exploration cells
 at 10,000 base rows were below 1x. Two of them were close enough to the
@@ -252,9 +258,9 @@ wins. Two straddle it: `views=1, batch=100, groups=1000` had median 1.087x
 [0.899, 1.100]. The third, `views=200, batch=1, groups=1000`, had median
 1.021x [1.008, 1.038]: above 1x in every repeat, but barely.
 
-The transition is not one clean crossover. For example, at `views=1,
-base_rows=100,000, batch=1000, groups=1000`, the confirmed median was 1.965x
-but the five runs ranged from 1.703x to 3.808x. The charts therefore show a
+The transition is not one clean crossover: the fifth 100,000-row cell above,
+whose runs spanned 1.703x to 3.808x around a median below 2x, is the clearest
+example. The charts therefore show a
 surface and explicit 1x/2x reference lines rather than declaring one row-count
 threshold.
 
