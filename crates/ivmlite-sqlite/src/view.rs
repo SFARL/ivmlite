@@ -29,14 +29,19 @@ use crate::state::{BufferedArrangement, Pending};
 /// Format 3 (Phase 4 spec §4) adds the output table's index, `out_index`: a
 /// database built in format 2 has no such index, and no release ever wrote
 /// format 2, so it is refused rather than migrated.
-pub const FORMAT: i64 = 3;
+///
+/// Format 4 (Phase 5 spec §4) drops the stage table's `armed` column: its
+/// apply trigger fires once, on the insertion of the stage's `apply` row, and
+/// applies every staged row set-based. A format-3 database's trigger is the
+/// per-row one, so it is refused; since this is an alpha, it is not migrated.
+pub const FORMAT: i64 = 4;
 
 /// The column of the view's output table that holds each row's weight.
 const WEIGHT: &str = "__w";
 
 /// Names SQLite reserves for a table's rowid (spec §7): a result column with
 /// one of these would shadow the alias `__ivm_out_<view>`'s own rowid needs —
-/// the apply trigger's `DELETE … WHERE rowid = …` and the cursor's
+/// the apply trigger's `DELETE … WHERE rowid IN …` and the cursor's
 /// `SELECT rowid, …` both rely on `rowid` naming the real row id, not a
 /// same-named result column (reproduced: `SELECT k AS rowid, SUM(x) FROM t
 /// GROUP BY k` left the output empty after an UPDATE).
@@ -927,8 +932,9 @@ fn read_deltas(conn: &Connection, schema: &Schema, after: i64) -> Result<(ZSet, 
 /// `create_out_table` indexed them in — so SQLite can plan this as a SEARCH
 /// on `out_index`, not a SCAN. `operand` gives each column's `IS`
 /// comparison's right-hand side; the only caller is `create_stage`, which
-/// passes `NEW.cN` and uses the result, unchanged, in both the RAISE's
-/// existence check and the retracting `DELETE`.
+/// passes `__ivm_s.cN`, the stage row under its reserved alias (Phase 5
+/// spec §4), and uses the result, unchanged, in both the RAISE's existence
+/// check and the retracting `DELETE`.
 ///
 /// This crate cannot open a live `Connection` to check the resulting plan
 /// itself — it builds `rusqlite` with only the `loadable_extension`
@@ -950,8 +956,9 @@ fn retraction_lookup(out: &str, cols: &[String], operand: impl Fn(usize) -> Stri
 
 /// The stage table and the trigger that applies it (see `apply`). One stage
 /// row is one change: `op` is `state` (a weight change of arrangement `arr`),
-/// `out+` / `out-` (an output row, in `c0`, `c1`, …), or `progress` (table
-/// `tbl` consumed through `seq`).
+/// `out+` / `out-` (an output row, in `c0`, `c1`, …), `progress` (table
+/// `tbl` consumed through `seq`), or `apply`, the one row whose insertion
+/// fires the trigger (Phase 5 spec §4).
 fn create_stage(
     conn: &Connection,
     name: &str,
@@ -973,46 +980,76 @@ fn create_stage(
         .map(|(i, c)| format!("c{i} {}", sql_type(c)))
         .collect();
     let cols: Vec<String> = view.columns.iter().map(|c| quote(&c.name)).collect();
-    let new_cols: Vec<String> = (0..n).map(|i| format!("NEW.c{i}")).collect();
-    let lookup = retraction_lookup(&out, &cols, |i| format!("NEW.c{i}"));
+    // Phase 5 spec §4: the trigger fires once, for the `apply` row, and each
+    // statement of its body applies every staged row of one kind at once.
+    // Wherever a subquery over the output table reads the stage's `cN`, the
+    // stage carries the reserved alias `__ivm_s`: an unqualified `c0` there
+    // would resolve to an output column named `c0` first.
+    let s = "__ivm_s";
+    let lookup = retraction_lookup(&out, &cols, |i| format!("{s}.c{i}"));
     let mut body = Vec::new();
+    // The order is the row trigger's (Phase 3a §5): state, then output, then
+    // watermarks, then GC, which reads the watermarks just written.
     for (i, id) in ids.iter().enumerate() {
         let t = quote(&state_table(name, *id));
+        // One upsert per arrangement adds every staged weight change. SQLite
+        // documents that an upsert over a SELECT needs a WHERE clause (even
+        // `WHERE true`), or ON CONFLICT can parse as a join's ON; the filter
+        // is that clause, and the trailing `AND true` (as spec §4 writes it)
+        // changes nothing. A pending map holds each (key, val) once, so no
+        // row is upserted twice.
         body.push(format!(
-            "INSERT INTO {t}(key, val, w) SELECT NEW.key, NEW.val, NEW.w \
-             WHERE NEW.op = 'state' AND NEW.arr = {i} \
+            "INSERT INTO {t}(key, val, w) SELECT key, val, w FROM {stage} \
+             WHERE op = 'state' AND arr = {i} AND true \
              ON CONFLICT(key, val) DO UPDATE SET w = w + excluded.w;"
         ));
+        // Then every staged key whose weight reached 0 is removed, after
+        // the whole upsert: the final weight is the same either way.
         body.push(format!(
-            "DELETE FROM {t} WHERE NEW.op = 'state' AND NEW.arr = {i} \
-             AND key = NEW.key AND val = NEW.val AND w = 0;"
+            "DELETE FROM {t} WHERE w = 0 AND (key, val) IN \
+             (SELECT key, val FROM {stage} WHERE op = 'state' AND arr = {i});"
         ));
     }
+    // Every retraction is checked before any is applied, so one with no
+    // output row aborts the whole statement.
     body.push(format!(
         "SELECT RAISE(ABORT, 'ivmlite broken invariant: the view retracted a row its output table does not hold') \
-         WHERE NEW.op = 'out-' AND NOT EXISTS ({lookup});"
+         WHERE EXISTS (SELECT 1 FROM {stage} AS {s} WHERE {s}.op = 'out-' AND NOT EXISTS ({lookup}));"
     ));
+    // Each `out-` row picks one output rowid. v0's output Z-set is
+    // consolidated, so each output row is staged at most once, with weight
+    // ±1: no two `out-` rows are identical, and each removes exactly one
+    // copy. Two identical ones would pick the same rowid and remove one copy
+    // between them; v0 cannot stage them (Phase 5 spec §4).
     body.push(format!(
-        "DELETE FROM {out} WHERE NEW.op = 'out-' \
-         AND rowid = ({lookup} LIMIT 1);"
+        "DELETE FROM {out} WHERE rowid IN \
+         (SELECT ({lookup} LIMIT 1) FROM {stage} AS {s} WHERE {s}.op = 'out-');"
     ));
+    // After the retractions, so no `out-` can match a row inserted here;
+    // the consolidated Z-set never stages one row as both `out+` and `out-`.
     body.push(format!(
-        "INSERT INTO {out}({}, {WEIGHT}) SELECT {}, 1 WHERE NEW.op = 'out+';",
+        "INSERT INTO {out}({}, {WEIGHT}) SELECT {}, 1 FROM {stage} WHERE op = 'out+';",
         cols.join(", "),
-        new_cols.join(", ")
+        (0..n)
+            .map(|i| format!("c{i}"))
+            .collect::<Vec<_>>()
+            .join(", ")
     ));
+    // Every staged watermark of this view at once; a view reads each base
+    // table once (a self-join is refused), so each `tbl` is staged once.
     body.push(format!(
-        "UPDATE {progress} SET applied_seq = NEW.seq \
-         WHERE NEW.op = 'progress' AND view = {} AND tbl = NEW.tbl;",
+        "UPDATE {progress} SET applied_seq = \
+         (SELECT seq FROM {stage} WHERE op = 'progress' AND tbl = {progress}.tbl) \
+         WHERE view = {} AND tbl IN (SELECT tbl FROM {stage} WHERE op = 'progress');",
         literal(name)
     ));
-    // Spec §5: once this view's watermark for `t` moves, delete every delta
-    // row of `t` that every reader has consumed. Only on the stage row that
-    // moves `t`'s watermark, inside the one arming statement.
+    // Phase 3b spec §5: once this view's watermark for `t` moves, delete
+    // every delta row of `t` that every reader has consumed — only when this
+    // apply stages `t`'s watermark, inside the one arming statement.
     for t in &view.tables {
         body.push(format!(
-            "DELETE FROM {delta} WHERE NEW.op = 'progress' AND NEW.tbl = {lit} \
-             AND {DELTA_SEQ} <= (SELECT MIN(applied_seq) FROM {progress} WHERE tbl = {lit});",
+            "DELETE FROM {delta} WHERE {DELTA_SEQ} <= (SELECT MIN(applied_seq) FROM {progress} WHERE tbl = {lit}) \
+             AND EXISTS (SELECT 1 FROM {stage} WHERE op = 'progress' AND tbl = {lit});",
             delta = quote(&delta_table(t)),
             lit = literal(t),
         ));
@@ -1021,9 +1058,9 @@ fn create_stage(
         conn,
         &format!(
             "CREATE TABLE {}(op TEXT NOT NULL, arr INTEGER, key BLOB, val BLOB, w INTEGER,
-                 tbl TEXT, seq INTEGER, {}, armed INTEGER NOT NULL DEFAULT 0);
-             CREATE TRIGGER {} AFTER UPDATE OF armed ON {stage}
-                 WHEN OLD.armed = 0 AND NEW.armed = 1
+                 tbl TEXT, seq INTEGER, {});
+             CREATE TRIGGER {} AFTER INSERT ON {stage}
+                 WHEN NEW.op = 'apply'
              BEGIN
                  {}
              END;",
@@ -1091,8 +1128,10 @@ fn sql_value(v: &Value) -> rusqlite::types::Value {
 /// rolled back (both measured, Phase 3a). One statement is atomic on its own:
 /// the changes are first written to the stage table — harmless if that fails
 /// part way, since the stage is emptied at the start of every apply — and then
-/// a single `UPDATE … SET armed = 1` fires the apply trigger for every row.
-/// If any row fails, SQLite rolls that whole statement back.
+/// a single `INSERT` of the `apply` row fires the apply trigger once, whose
+/// set-based statements apply every staged row (Phase 5 spec §4). If any of
+/// them fails, SQLite rolls that whole statement back. The stage keeps its
+/// rows, the `apply` row included, until the next apply empties it.
 fn apply(conn: &Connection, name: &str, view: &CompiledView, changes: &Changes) -> Result<()> {
     let stage = main_qualified(&stage_table(name));
     exec(conn, &format!("DELETE FROM {stage}"))?;
@@ -1146,9 +1185,9 @@ fn apply(conn: &Connection, name: &str, view: &CompiledView, changes: &Changes) 
         .map_err(sql_error)?;
     }
     // The one statement that changes durable state, and the last one: a
-    // failure after it would report an error for changes that stay applied.
-    // The stage is left full and emptied by the next apply.
-    exec(conn, &format!("UPDATE {stage} SET armed = 1"))
+    // failure after it would report an error for changes that stay applied
+    // (Phase 3a §5). The stage is left full and emptied by the next apply.
+    exec(conn, &format!("INSERT INTO {stage}(op) VALUES ('apply')"))
 }
 
 /// `CREATE VIRTUAL TABLE <name> USING ivm('<sql>')`, inside the statement's

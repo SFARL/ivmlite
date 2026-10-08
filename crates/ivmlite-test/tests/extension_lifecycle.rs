@@ -451,22 +451,23 @@ fn a_capture_trigger_left_on_a_renamed_table_breaks_the_view() {
         .unwrap();
 }
 
-/// Once the arming `UPDATE` has applied a refresh, nothing may fail the
+/// Once the arming `INSERT` has applied a refresh, nothing may fail the
 /// refresh: in an explicit transaction a failure would report an error for
-/// changes that stay applied. Here the stage table refuses to be emptied.
-/// The refresh that fills the stage must still succeed. The next refresh,
-/// which empties the stage before staging anything, fails with nothing
-/// changed.
+/// changes that stay applied. Here the stage table refuses to be emptied of
+/// staged changes. The refresh that fills the stage must still succeed. The
+/// next refresh, which empties the stage before staging anything, fails
+/// with nothing changed.
 #[test]
 fn nothing_after_the_apply_can_fail_a_refresh() {
     let c = open_with_extension(None).unwrap();
     setup(&c);
     create(&c, "sums", SUMS).unwrap();
     // The bootstrap leaves its changes staged; a refresh with nothing to
-    // apply empties the stage and stages nothing.
+    // apply empties the stage and stages only the `apply` row (Phase 5 spec
+    // §4), which the fault lets the next refresh delete.
     refresh(&c, "sums").unwrap();
     c.execute_batch(
-        "CREATE TRIGGER fault BEFORE DELETE ON __ivm_stage_sums \
+        "CREATE TRIGGER fault BEFORE DELETE ON __ivm_stage_sums WHEN OLD.op <> 'apply' \
          BEGIN SELECT RAISE(ABORT, 'injected fault'); END;
          BEGIN;
          INSERT INTO orders VALUES ('a', 1);",
@@ -613,8 +614,7 @@ fn temp_tables_named_like_the_shadow_tables_are_never_touched() {
          CREATE TEMP TABLE __ivm_outidx_sums(x INTEGER);
          INSERT INTO temp.__ivm_outidx_sums VALUES (1000);
          CREATE TEMP TABLE __ivm_stage_sums(op TEXT NOT NULL, arr INTEGER, key BLOB, val BLOB,
-             w INTEGER, tbl TEXT, seq INTEGER, c0 TEXT, c1 INTEGER, c2 INTEGER,
-             armed INTEGER NOT NULL DEFAULT 0);
+             w INTEGER, tbl TEXT, seq INTEGER, c0 TEXT, c1 INTEGER, c2 INTEGER);
          INSERT INTO temp.__ivm_stage_sums(op) VALUES ('temp');
          CREATE TEMP TABLE __ivm_state_sums_0_agg_groups(key BLOB NOT NULL, val BLOB NOT NULL,
              w INTEGER NOT NULL, PRIMARY KEY(key, val)) WITHOUT ROWID;
@@ -1037,13 +1037,14 @@ fn the_retraction_lookup_searches_the_output_index() {
         )
         .unwrap();
 
-    // The RAISE's `NOT EXISTS (…)` and the DELETE's `rowid = (… LIMIT 1)`
+    // The RAISE's `NOT EXISTS (…)` and the DELETE's `SELECT (… LIMIT 1)`
     // must embed byte-identical lookup text (Phase 4 spec §4: one function
-    // builds it once, and both sites use it unchanged).
+    // builds it once, and both sites use it unchanged; Phase 5 spec §4: both
+    // now sit in set-based statements over the stage aliased `__ivm_s`).
     let not_exists = extract_parenthesized(&trigger_sql, "NOT EXISTS (")
         .unwrap_or_else(|| panic!("no NOT EXISTS clause in {trigger_sql}"));
-    let delete_paren = extract_parenthesized(&trigger_sql, "rowid = (")
-        .unwrap_or_else(|| panic!("no `rowid = (…)` clause in {trigger_sql}"));
+    let delete_paren = extract_parenthesized(&trigger_sql, "rowid IN (SELECT (")
+        .unwrap_or_else(|| panic!("no `rowid IN (SELECT (…)` clause in {trigger_sql}"));
     let delete_lookup = delete_paren.strip_suffix(" LIMIT 1").unwrap_or_else(|| {
         panic!("the DELETE's subquery does not end with LIMIT 1: {delete_paren}")
     });
@@ -1067,15 +1068,15 @@ fn the_retraction_lookup_searches_the_output_index() {
         .collect();
     assert_eq!(names.len(), 3, "SUMS has 3 output columns: {names:?}");
 
-    // Substitute `NEW.cN` with a bound parameter, highest N first, so `c1`
-    // cannot match inside `c10`.
+    // Substitute `__ivm_s.cN` with a bound parameter, highest N first, so
+    // `c1` cannot match inside `c10`.
     let mut probe = not_exists.clone();
     for i in (0..names.len()).rev() {
-        probe = probe.replace(&format!("NEW.c{i}"), &format!("?{}", i + 1));
+        probe = probe.replace(&format!("__ivm_s.c{i}"), &format!("?{}", i + 1));
     }
     assert!(
-        !probe.contains("NEW.c"),
-        "every NEW.cN must have been substituted: {probe}"
+        !probe.contains("__ivm_s.c"),
+        "every __ivm_s.cN must have been substituted: {probe}"
     );
 
     let plan: Vec<String> = c
@@ -1135,8 +1136,95 @@ fn one_retraction_removes_one_copy_of_a_duplicated_output_row() {
         "INSERT INTO __ivm_out_v SELECT * FROM __ivm_out_v;
          DELETE FROM __ivm_stage_v;
          INSERT INTO __ivm_stage_v(op, c0, c1) VALUES ('out-', 'a', 1);
-         UPDATE __ivm_stage_v SET armed = 1;",
+         INSERT INTO __ivm_stage_v(op) VALUES ('apply');",
     )
     .unwrap();
     assert_eq!(count(&c, "SELECT count(*) FROM __ivm_out_v"), 1);
+}
+
+/// Phase 5 spec §4: one refresh fires the apply trigger's body once, for the
+/// one `apply` row, however many rows it stages. The counter is a TEMP
+/// trigger on the main stage table, which SQLite allows (a TEMP trigger may
+/// name a table in any attached schema); it lives in `sqlite_temp_schema`,
+/// so none of the view's checks of `main`'s catalog see it.
+#[test]
+fn one_refresh_fires_the_apply_body_once() {
+    let c = open_with_extension(None).unwrap();
+    setup(&c);
+    create(&c, "sums", SUMS).unwrap();
+    c.execute_batch(
+        "CREATE TEMP TABLE fired(n INTEGER);
+         CREATE TRIGGER temp.count_apply AFTER INSERT ON main.__ivm_stage_sums
+             WHEN NEW.op = 'apply' BEGIN INSERT INTO fired VALUES (1); END;
+         WITH RECURSIVE i(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM i WHERE n < 300)
+         INSERT INTO orders SELECT 'r' || (n % 60), n FROM i;
+         DELETE FROM orders WHERE region = 'b';",
+    )
+    .unwrap();
+    refresh(&c, "sums").unwrap();
+    assert!(
+        count(
+            &c,
+            "SELECT count(*) FROM __ivm_stage_sums WHERE op <> 'apply'"
+        ) > 60,
+        "the batch must stage many rows"
+    );
+    assert_eq!(count(&c, "SELECT count(*) FROM temp.fired"), 1);
+    assert_matches_oracle(&c, "sums", SUMS);
+}
+
+/// Phase 3a §5, Phase 5 spec §4: a retraction whose row the output table
+/// does not hold fails the whole apply, which changes nothing durable. The
+/// output row is removed behind the view's back (white-box), so the next
+/// refresh stages an `out-` that finds no row.
+#[test]
+fn a_retraction_of_a_missing_output_row_fails_and_changes_nothing() {
+    for explicit_transaction in [false, true] {
+        let c = open_with_extension(None).unwrap();
+        setup(&c);
+        create(&c, "sums", SUMS).unwrap();
+        c.execute_batch("DELETE FROM __ivm_out_sums WHERE region = 'a'")
+            .unwrap();
+        if explicit_transaction {
+            c.execute_batch("BEGIN").unwrap();
+        }
+        c.execute_batch("INSERT INTO orders VALUES ('a', 10), ('b', 1)")
+            .unwrap();
+        let before = durable_state(&c, "sums");
+        let err = refresh(&c, "sums").expect_err("the retraction finds no row");
+        assert!(
+            err.to_string().contains(
+                "ivmlite broken invariant: the view retracted a row its output table does not hold"
+            ),
+            "{err}"
+        );
+        assert_eq!(
+            durable_state(&c, "sums"),
+            before,
+            "transaction: {explicit_transaction}"
+        );
+        if explicit_transaction {
+            assert!(!c.is_autocommit(), "the transaction must still be open");
+        }
+    }
+}
+
+/// Phase 5 spec §4: the apply trigger's subqueries name the stage by the
+/// reserved alias `__ivm_s`, so result columns named like the stage's own
+/// columns (`op`, `key`, `c0`) never capture a reference to it.
+#[test]
+fn result_columns_named_like_stage_columns_are_maintained() {
+    let q = "SELECT region AS op, SUM(amount) AS key, COUNT(*) AS c0 FROM orders GROUP BY region";
+    let c = open_with_extension(None).unwrap();
+    setup(&c);
+    create(&c, "v", q).unwrap();
+    assert_matches_oracle(&c, "v", q);
+    c.execute_batch(
+        "INSERT INTO orders VALUES ('a', 10), ('c', 3);
+         DELETE FROM orders WHERE region = 'b';
+         UPDATE orders SET amount = 7 WHERE region IS NULL;",
+    )
+    .unwrap();
+    refresh(&c, "v").unwrap();
+    assert_matches_oracle(&c, "v", q);
 }

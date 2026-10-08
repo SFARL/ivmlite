@@ -150,24 +150,25 @@ fn a_tracked_table_whose_capture_is_broken_refuses_a_new_view() {
     );
 }
 
-/// Phase 4 spec §4: format 3 adds the output index. Format 2 predates it and
-/// is refused like any other older format — no release ever wrote format 2,
-/// so this only pins that an older format is refused, not that 2 specifically
-/// ever existed in the wild.
+/// Phase 5 spec §4: format 4 replaces the per-row apply trigger with one
+/// that fires once and applies the stage set-based. A database in format 3
+/// (the format v0.1.0-alpha.2 wrote) is refused like any other older format,
+/// with no migration since this is an alpha, and its broken view can still
+/// be dropped.
 #[test]
 fn a_database_in_an_older_format_is_refused_by_create_and_by_connect() {
-    let file = TempFile::new("format2");
+    let file = TempFile::new("format3");
     {
         let c = open_with_extension(Some(file.path())).unwrap();
         setup(&c);
         create(&c, "sums", SUMS).unwrap();
-        c.execute_batch("UPDATE __ivm_meta SET value = 2; UPDATE __ivm_view SET format = 2;")
+        c.execute_batch("UPDATE __ivm_meta SET value = 3; UPDATE __ivm_view SET format = 3;")
             .unwrap();
-        let err = create(&c, "counts", COUNTS).expect_err("format 2");
-        assert!(err.to_string().contains("format 2"), "{err}");
+        let err = create(&c, "counts", COUNTS).expect_err("format 3");
+        assert!(err.to_string().contains("format 3"), "{err}");
     }
     let c = open_with_extension(Some(file.path())).unwrap();
-    let err = c.execute_batch("SELECT * FROM sums").expect_err("format 2");
-    assert!(err.to_string().contains("format 2"), "{err}");
+    let err = c.execute_batch("SELECT * FROM sums").expect_err("format 3");
+    assert!(err.to_string().contains("format 3"), "{err}");
     c.execute_batch("DROP TABLE sums").unwrap();
 }
