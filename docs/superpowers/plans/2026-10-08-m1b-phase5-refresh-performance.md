@@ -368,6 +368,7 @@ Add a dated amendment to Phase 5 spec §6 with the profile's top entries, the ch
 - Modify: `workloads/m0-baseline.toml` (`[ablation]`: add the cell views=200, base_rows=100000, batch=1, group_cardinality=1000)
 - Create:
   - `docs/bench/m1b-phase5.csv`, `docs/bench/m1b-phase5-confirm.csv`, `docs/bench/m1b-phase5-ablation.csv`, `docs/bench/m1b-phase5-ablation-builds.csv`;
+  - `docs/bench/m1b-phase5-demos.csv`, `scripts/bench-demos.sh`;
   - `docs/bench/phase5_tables.py`;
   - the charts.
 - Modify: `docs/bench/README.md`, `docs/README.md`, the Phase 5 spec (dated amendment for any deviation), `CHANGELOG.md`
@@ -379,7 +380,8 @@ Add a dated amendment to Phase 5 spec §6 with the profile's top entries, the ch
   1. `scripts/bench-ablation.sh before=<master at Phase 5 start> schemaver=<Task 1> setapply=<Task 2> stage=<Task 3> [profiled=<Task 4>]`, writing the Phase 5 ablation CSVs. The builds CSV records label → commit.
   2. `scripts/bench.sh matrix > docs/bench/m1b-phase5.csv`.
   3. `scripts/bench.sh confirm --from docs/bench/m1b-phase5.csv > docs/bench/m1b-phase5-confirm.csv`.
-  4. Regenerate the charts with `plot --from` into Phase 5 file names.
+  4. `scripts/bench-demos.sh before=<master at Phase 5 start> after=<last reviewed Phase 5 commit>`, writing `docs/bench/m1b-phase5-demos.csv`. The script builds each rev's extension in its own worktree and runs the current tree's `fluxflow_demo` and `demand_case_bench` against it through `--extension`, at each demo's documented scale with its default repeats.
+  5. Regenerate the charts with `plot --from` into Phase 5 file names.
 
   If any run aborts on a verification mismatch, stop and report BLOCKED with the cell.
 
@@ -387,6 +389,7 @@ Add a dated amendment to Phase 5 spec §6 with the profile's top entries, the ch
   - the ablation per change, as medians and ranges;
   - the speedup surface, as counts above 2x and below 1x per base-row size;
   - the confirmed cells;
+  - the demo before/after, per demo and mode: steady-state refresh, end to end, and the speedup against `indexed_recompute`;
   - the §10.2 bars against hand-written triggers;
   - **the Phase 4 → Phase 5 change per cell**, read from both matrices.
 
