@@ -698,11 +698,10 @@ mod tests {
 
     /// `apply_trace` must actually call `check_replace_net_count` for a
     /// replace trace, not merely offer a function that would catch a
-    /// mismatch if called: this test runs a real `Replace` op through
-    /// `apply_trace` whose claimed `targets` are wrong (the fresh id
-    /// and fresh email/handle create no conflict at all, so nothing is
-    /// actually removed, but the op claims one row was), and asserts the
-    /// wiring — not just the isolated check function — surfaces the error.
+    /// mismatch if called. This REPLACE claims only row 1 as its target, but
+    /// its handle also conflicts with row 2: every claimed target is gone and
+    /// its own row is present, so the per-op check passes, and only the net
+    /// count (2 rows left, not the claimed 3) sees the extra removal.
     #[test]
     fn apply_trace_aborts_when_a_replace_traces_net_row_count_is_wrong() {
         let conn = Connection::open_in_memory().unwrap();
@@ -710,22 +709,23 @@ mod tests {
             "CREATE TABLE accounts(id INTEGER PRIMARY KEY, email TEXT NOT NULL UNIQUE, \
              handle TEXT NOT NULL UNIQUE, region TEXT NOT NULL, amount INTEGER NOT NULL) STRICT;
              INSERT INTO accounts VALUES (1, 'e1@x', 'h1', 'r0', 1);
-             INSERT INTO accounts VALUES (2, 'e2@x', 'h2', 'r0', 1);",
+             INSERT INTO accounts VALUES (2, 'e2@x', 'h2', 'r0', 1);
+             INSERT INTO accounts VALUES (3, 'e3@x', 'h3', 'r0', 1);",
         )
         .unwrap();
         let mut stmts = WriteStatements::prepare(&conn, "accounts").unwrap();
         let ops = vec![WriteOp::Replace {
-            id: 3,
-            email: "n3@x".into(),
-            handle: "m3".into(),
+            id: 10,
+            email: "e1@x".into(),
+            handle: "h2".into(),
             region: "r0".into(),
             amount: 1,
-            // Wrong on purpose: id 3, email "n3@x" and handle "m3" conflict
-            // with nothing, so this REPLACE actually removes 0 rows.
+            // Incomplete on purpose: the handle "h2" removes row 2 as well.
             targets: vec![1],
         }];
-        let err = apply_trace(&conn, &mut stmts, "accounts", &ops, 10, 2, true).unwrap_err();
-        assert!(err.contains("expected 2"), "{err}");
+        let err = apply_trace(&conn, &mut stmts, "accounts", &ops, 10, 3, true).unwrap_err();
+        assert!(err.contains("left 2 rows"), "{err}");
+        assert!(err.contains("expected 3"), "{err}");
     }
 
     /// Spec §7, per op: two REPLACEs whose count errors cancel. The first
