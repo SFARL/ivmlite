@@ -31,8 +31,8 @@ use crate::state::{BufferedArrangement, Pending};
 /// format 2, so it is refused rather than migrated.
 ///
 /// Format 4 (Phase 5 spec §4) drops the stage table's `armed` column: its
-/// apply trigger fires once, on the insertion of the stage's `apply` row, and
-/// applies every staged row set-based. A format-3 database's trigger is the
+/// apply trigger fires once, when the arming `UPDATE` turns the stage's
+/// sentinel row into `apply`, and applies every staged row set-based. A format-3 database's trigger is the
 /// per-row one, so it is refused; since this is an alpha, it is not migrated.
 pub const FORMAT: i64 = 4;
 
@@ -957,8 +957,9 @@ fn retraction_lookup(out: &str, cols: &[String], operand: impl Fn(usize) -> Stri
 /// The stage table and the trigger that applies it (see `apply`). One stage
 /// row is one change: `op` is `state` (a weight change of arrangement `arr`),
 /// `out+` / `out-` (an output row, in `c0`, `c1`, …), `progress` (table
-/// `tbl` consumed through `seq`), or `apply`, the one row whose insertion
-/// fires the trigger (Phase 5 spec §4).
+/// `tbl` consumed through `seq`), or the sentinel: staged first as `arm`, and
+/// updated to `apply` by the arming statement, which fires the trigger
+/// (Phase 5 spec §4, amendment 2026-10-08).
 fn create_stage(
     conn: &Connection,
     name: &str,
@@ -980,8 +981,13 @@ fn create_stage(
         .map(|(i, c)| format!("c{i} {}", sql_type(c)))
         .collect();
     let cols: Vec<String> = view.columns.iter().map(|c| quote(&c.name)).collect();
-    // Phase 5 spec §4: the trigger fires once, for the `apply` row, and each
-    // statement of its body applies every staged row of one kind at once.
+    // Phase 5 spec §4: the trigger fires once, when the arming `UPDATE` turns
+    // the sentinel into `apply`, and each statement of its body applies every
+    // staged row of one kind at once. It fires on `UPDATE OF op`, not on
+    // INSERT, so no staging insert evaluates it (amendment 2026-10-08: an
+    // INSERT trigger's `WHEN` cost each staging insert about as much as the
+    // set-based body saved). The body filters on `op`, so the sentinel is
+    // inert in it.
     // Wherever a subquery over the output table reads the stage's `cN`, the
     // stage carries the reserved alias `__ivm_s`: an unqualified `c0` there
     // would resolve to an output column named `c0` first.
@@ -1059,7 +1065,7 @@ fn create_stage(
         &format!(
             "CREATE TABLE {}(op TEXT NOT NULL, arr INTEGER, key BLOB, val BLOB, w INTEGER,
                  tbl TEXT, seq INTEGER, {});
-             CREATE TRIGGER {} AFTER INSERT ON {stage}
+             CREATE TRIGGER {} AFTER UPDATE OF op ON {stage}
                  WHEN NEW.op = 'apply'
              BEGIN
                  {}
@@ -1128,13 +1134,18 @@ fn sql_value(v: &Value) -> rusqlite::types::Value {
 /// rolled back (both measured, Phase 3a). One statement is atomic on its own:
 /// the changes are first written to the stage table — harmless if that fails
 /// part way, since the stage is emptied at the start of every apply — and then
-/// a single `INSERT` of the `apply` row fires the apply trigger once, whose
-/// set-based statements apply every staged row (Phase 5 spec §4). If any of
-/// them fails, SQLite rolls that whole statement back. The stage keeps its
-/// rows, the `apply` row included, until the next apply empties it.
+/// a single `UPDATE` of the sentinel row, staged first as `arm`, to `apply`
+/// fires the apply trigger once, whose set-based statements apply every
+/// staged row (Phase 5 spec §4 and its amendment 2026-10-08). If any of them
+/// fails, SQLite rolls that whole statement back. The stage keeps its rows,
+/// the sentinel included, until the next apply empties it.
 fn apply(conn: &Connection, name: &str, view: &CompiledView, changes: &Changes) -> Result<()> {
     let stage = main_qualified(&stage_table(name));
     exec(conn, &format!("DELETE FROM {stage}"))?;
+    // The sentinel the arming statement turns into `apply` (Phase 5 spec §4,
+    // amendment 2026-10-08), found again by its rowid, not by a scan.
+    exec(conn, &format!("INSERT INTO {stage}(op) VALUES ('arm')"))?;
+    let sentinel = conn.last_insert_rowid();
     let stage_state =
         format!("INSERT INTO {stage}(op, arr, key, val, w) VALUES ('state', ?1, ?2, ?3, ?4)");
     for (i, pending) in changes.state.iter().enumerate() {
@@ -1187,7 +1198,12 @@ fn apply(conn: &Connection, name: &str, view: &CompiledView, changes: &Changes) 
     // The one statement that changes durable state, and the last one: a
     // failure after it would report an error for changes that stay applied
     // (Phase 3a §5). The stage is left full and emptied by the next apply.
-    exec(conn, &format!("INSERT INTO {stage}(op) VALUES ('apply')"))
+    conn.execute(
+        &format!("UPDATE {stage} SET op = 'apply' WHERE rowid = ?1"),
+        params![sentinel],
+    )
+    .map(|_| ())
+    .map_err(sql_error)
 }
 
 /// `CREATE VIRTUAL TABLE <name> USING ivm('<sql>')`, inside the statement's

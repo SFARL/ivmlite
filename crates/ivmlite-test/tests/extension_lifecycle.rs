@@ -451,7 +451,7 @@ fn a_capture_trigger_left_on_a_renamed_table_breaks_the_view() {
         .unwrap();
 }
 
-/// Once the arming `INSERT` has applied a refresh, nothing may fail the
+/// Once the arming `UPDATE` has applied a refresh, nothing may fail the
 /// refresh: in an explicit transaction a failure would report an error for
 /// changes that stay applied. Here the stage table refuses to be emptied of
 /// staged changes. The refresh that fills the stage must still succeed. The
@@ -463,8 +463,8 @@ fn nothing_after_the_apply_can_fail_a_refresh() {
     setup(&c);
     create(&c, "sums", SUMS).unwrap();
     // The bootstrap leaves its changes staged; a refresh with nothing to
-    // apply empties the stage and stages only the `apply` row (Phase 5 spec
-    // §4), which the fault lets the next refresh delete.
+    // apply empties the stage and stages only the sentinel, armed as `apply`
+    // (Phase 5 spec §4), which the fault lets the next refresh delete.
     refresh(&c, "sums").unwrap();
     c.execute_batch(
         "CREATE TRIGGER fault BEFORE DELETE ON __ivm_stage_sums WHEN OLD.op <> 'apply' \
@@ -1136,17 +1136,20 @@ fn one_retraction_removes_one_copy_of_a_duplicated_output_row() {
         "INSERT INTO __ivm_out_v SELECT * FROM __ivm_out_v;
          DELETE FROM __ivm_stage_v;
          INSERT INTO __ivm_stage_v(op, c0, c1) VALUES ('out-', 'a', 1);
-         INSERT INTO __ivm_stage_v(op) VALUES ('apply');",
+         INSERT INTO __ivm_stage_v(op) VALUES ('arm');
+         UPDATE __ivm_stage_v SET op = 'apply' WHERE op = 'arm';",
     )
     .unwrap();
     assert_eq!(count(&c, "SELECT count(*) FROM __ivm_out_v"), 1);
 }
 
-/// Phase 5 spec §4: one refresh fires the apply trigger's body once, for the
-/// one `apply` row, however many rows it stages. The counter is a TEMP
-/// trigger on the main stage table, which SQLite allows (a TEMP trigger may
-/// name a table in any attached schema); it lives in `sqlite_temp_schema`,
-/// so none of the view's checks of `main`'s catalog see it.
+/// Phase 5 spec §4: one refresh arms the stage once and runs the apply
+/// trigger's body once, however many rows it stages. The body's one
+/// watermark `UPDATE` updates each staged base table's progress row once, so
+/// counting progress updates counts body runs. The counters are TEMP
+/// triggers on main tables, which SQLite allows (a TEMP trigger may name a
+/// table in any attached schema); they live in `sqlite_temp_schema`, so none
+/// of the view's checks of `main`'s catalog see them.
 #[test]
 fn one_refresh_fires_the_apply_body_once() {
     let c = open_with_extension(None).unwrap();
@@ -1154,8 +1157,11 @@ fn one_refresh_fires_the_apply_body_once() {
     create(&c, "sums", SUMS).unwrap();
     c.execute_batch(
         "CREATE TEMP TABLE fired(n INTEGER);
-         CREATE TRIGGER temp.count_apply AFTER INSERT ON main.__ivm_stage_sums
+         CREATE TRIGGER temp.count_apply AFTER UPDATE OF op ON main.__ivm_stage_sums
              WHEN NEW.op = 'apply' BEGIN INSERT INTO fired VALUES (1); END;
+         CREATE TEMP TABLE progress_updates(n INTEGER);
+         CREATE TRIGGER temp.count_progress AFTER UPDATE ON main.__ivm_progress
+             BEGIN INSERT INTO progress_updates VALUES (1); END;
          WITH RECURSIVE i(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM i WHERE n < 300)
          INSERT INTO orders SELECT 'r' || (n % 60), n FROM i;
          DELETE FROM orders WHERE region = 'b';",
@@ -1165,11 +1171,21 @@ fn one_refresh_fires_the_apply_body_once() {
     assert!(
         count(
             &c,
-            "SELECT count(*) FROM __ivm_stage_sums WHERE op <> 'apply'"
+            "SELECT count(*) FROM __ivm_stage_sums WHERE op NOT IN ('arm', 'apply')"
         ) > 60,
         "the batch must stage many rows"
     );
     assert_eq!(count(&c, "SELECT count(*) FROM temp.fired"), 1);
+    let staged_tables = count(
+        &c,
+        "SELECT count(*) FROM __ivm_stage_sums WHERE op = 'progress'",
+    );
+    assert_eq!(staged_tables, 1, "SUMS reads one base table");
+    assert_eq!(
+        count(&c, "SELECT count(*) FROM temp.progress_updates"),
+        staged_tables,
+        "the body must run once: one progress update per staged base table"
+    );
     assert_matches_oracle(&c, "sums", SUMS);
 }
 
