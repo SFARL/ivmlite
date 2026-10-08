@@ -8,6 +8,12 @@
 mod common;
 use common::*;
 
+use ivmlite_test::demand_cases::{DemandCase, KENER, NOOP, ZCASH};
+use ivmlite_test::demo_bench::Workload;
+use ivmlite_test::fluxflow::{
+    apply_mixed_batch as apply_fluxflow_batch, seed as seed_fluxflow, FLOW_TABLE_DDL,
+    VIEW_SQL as FLUXFLOW_VIEW,
+};
 use ivmlite_test::open_with_extension;
 
 const DATASETTE_FACET: &str = "SELECT county, COUNT(*) AS count \
@@ -137,6 +143,105 @@ fn taproot_split_event_counters_are_maintained_on_events_and_roots() {
     refresh(&c, "proof_counts").unwrap();
     assert_matches_oracle(&c, "sync_counts", TAPROOT_SYNCS);
     assert_matches_oracle(&c, "proof_counts", TAPROOT_PROOFS);
+}
+
+#[test]
+fn fluxflow_grouped_rollup_tracks_insert_update_and_reorg_delete() {
+    let c = open_with_extension(None).unwrap();
+    c.execute_batch(FLOW_TABLE_DDL).unwrap();
+    seed_fluxflow(&c, 200).unwrap();
+    create(&c, "fluxflow_stats", FLUXFLOW_VIEW).unwrap();
+    assert_matches_oracle(&c, "fluxflow_stats", FLUXFLOW_VIEW);
+
+    apply_fluxflow_batch(&c, 200, 50, 0).unwrap();
+    assert_ne!(
+        rows(&c, "SELECT * FROM fluxflow_stats"),
+        rows(&c, FLUXFLOW_VIEW),
+        "captured changes must wait for explicit refresh"
+    );
+    refresh(&c, "fluxflow_stats").unwrap();
+    assert_matches_oracle(&c, "fluxflow_stats", FLUXFLOW_VIEW);
+
+    // The benchmark's measured round follows a warm-up round.
+    apply_fluxflow_batch(&c, 200, 50, 1).unwrap();
+    refresh(&c, "fluxflow_stats").unwrap();
+    assert_matches_oracle(&c, "fluxflow_stats", FLUXFLOW_VIEW);
+
+    let after_last_refresh = rows(&c, "SELECT * FROM fluxflow_stats");
+    refresh(&c, "fluxflow_stats").unwrap();
+    assert_eq!(
+        rows(&c, "SELECT * FROM fluxflow_stats"),
+        after_last_refresh,
+        "a second refresh with no new writes must be a no-op"
+    );
+}
+
+/// Runs both rounds of `case`'s mixed batch through the extension, checking
+/// the view against SQLite after each refresh, and returns the result groups
+/// (the leading `key_columns` of each row) that existed after bootstrap but
+/// no longer exist at the end.
+fn assert_demand_case_tracks_mixed_changes(
+    case: &DemandCase,
+    key_columns: usize,
+) -> Vec<Vec<rusqlite::types::Value>> {
+    let c = open_with_extension(None).unwrap();
+    c.execute_batch(case.ddl).unwrap();
+    case.seed(&c, 600).unwrap();
+    create(&c, case.view_name, case.view_sql).unwrap();
+    assert_matches_oracle(&c, case.view_name, case.view_sql);
+    let view = format!("SELECT * FROM {}", case.view_name);
+    let keys = |rows: Vec<Vec<rusqlite::types::Value>>| -> Vec<_> {
+        rows.into_iter()
+            .map(|row| row[..key_columns].to_vec())
+            .collect()
+    };
+    let initial_keys = keys(rows(&c, &view));
+
+    for round in 0..2 {
+        case.apply_mixed_batch(&c, 600, 40, round).unwrap();
+        assert_ne!(
+            rows(&c, &view),
+            rows(&c, case.view_sql),
+            "captured changes must wait for explicit refresh"
+        );
+        refresh(&c, case.view_name).unwrap();
+        assert_matches_oracle(&c, case.view_name, case.view_sql);
+    }
+
+    let after_last_refresh = rows(&c, &view);
+    refresh(&c, case.view_name).unwrap();
+    assert_eq!(
+        rows(&c, &view),
+        after_last_refresh,
+        "a second refresh with no new writes must be a no-op"
+    );
+
+    let final_keys = keys(after_last_refresh);
+    initial_keys
+        .into_iter()
+        .filter(|key| !final_keys.contains(key))
+        .collect()
+}
+
+#[test]
+fn noop_day_counts_track_append_backfill_delete_and_correction() {
+    assert_demand_case_tracks_mixed_changes(&NOOP, 2);
+}
+
+#[test]
+fn zcash_balances_track_receive_spend_rewind_and_correction() {
+    assert_demand_case_tracks_mixed_changes(&ZCASH, 1);
+}
+
+#[test]
+fn kener_rollup_tracks_insert_status_rewrite_latency_update_and_delete() {
+    let vanished = assert_demand_case_tracks_mixed_changes(&KENER, 3);
+    // The status rewrites move every row out of the first quarter-hour
+    // group, so the view must retract that group to nothing, not to zero.
+    assert!(
+        !vanished.is_empty(),
+        "some Kener group must disappear entirely"
+    );
 }
 
 #[test]

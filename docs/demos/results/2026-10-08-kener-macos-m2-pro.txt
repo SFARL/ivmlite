@@ -1,0 +1,15 @@
+# machine: Apple M2 Pro, arm64
+# os: macOS 26.2 (25C56)
+# rustc: rustc 1.95.0 (59807616e 2026-04-14)
+# database: in-memory
+# note: taken while other builds and tests ran on this machine, so timings are noisier than an idle run; the authoritative before/after comparison comes from the M1b Phase 5 measurement run
+# command: target/release/examples/demand_case_bench kener_quarter_hour_rollup 4100000 500 5
+# commit: 4f4382dfe6710e38bc4168f9e329abb939fd34de; uncommitted changes under crates/, Cargo.toml or Cargo.lock: no
+# sqlite: 3.53.2 (bundled by rusqlite in this harness, which hosts the extension)
+# ivmlite extension: crates/ivmlite-sqlite/target/release/libivmlite_sqlite.dylib; built from ivmlite-sqlite 0.1.0-alpha.1; staleness check passed
+# workload: kener_quarter_hour_rollup, 4100000 base rows, 500-operation mixed batches, 5 repeats; rows report the median and min-max over the repeats
+case,mode,base_rows,batch_size,repeats,bootstrap_ms,bootstrap_min_ms,bootstrap_max_ms,first_refresh_ms,first_refresh_min_ms,first_refresh_max_ms,apply_ms,apply_min_ms,apply_max_ms,maintain_ms,maintain_min_ms,maintain_max_ms,read_ms,read_min_ms,read_max_ms,apply_plus_maintain_ms,apply_plus_maintain_min_ms,apply_plus_maintain_max_ms,end_to_end_ms,end_to_end_min_ms,end_to_end_max_ms,database_kib,database_kib_min,database_kib_max
+kener_quarter_hour_rollup,no_maintenance,4100000,500,5,0.000,0.000,0.000,0.000,0.000,0.000,0.158,0.155,0.163,0.000,0.000,0.000,0.000,0.000,0.000,0.158,0.155,0.163,0.158,0.155,0.163,100904.0,100904.0,100904.0
+kener_quarter_hour_rollup,unindexed_recompute,4100000,500,5,0.000,0.000,0.000,1683.442,1585.523,1760.159,0.182,0.181,0.199,1653.610,1636.340,1707.381,0.000,0.000,0.000,1653.793,1636.522,1707.562,1653.793,1636.522,1707.563,100904.0,100904.0,100904.0
+kener_quarter_hour_rollup,indexed_recompute,4100000,500,5,1662.708,1589.949,1765.673,352.806,339.293,356.055,1.194,1.180,1.270,352.432,342.915,354.383,0.000,0.000,0.000,353.621,344.109,355.602,353.621,344.109,355.602,199960.0,199960.0,199960.0
+kener_quarter_hour_rollup,ivmlite,4100000,500,5,9835.629,9534.051,10084.220,8.816,8.496,9.031,4.307,4.147,4.468,2.857,2.761,2.976,147.120,141.680,148.882,7.233,6.908,7.359,154.230,148.587,156.115,256048.0,256048.0,256048.0

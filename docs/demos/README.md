@@ -1,8 +1,103 @@
 # Demand-backed demos
 
-Research date: 2026-09-24. These are **documented problem patterns**, not
+Research snapshot: 2026-10-08. These are **documented problem patterns**, not
 customer interviews, endorsements, or evidence that their authors want ivmlite.
 Historical performance reports are not benchmarks of current software.
+
+The [real-world demo roadmap](real-world-demo-roadmap.md) records the next
+source-backed candidates, their evidence levels, current ivmlite boundaries,
+and the order in which they were implemented.
+
+Four executable workloads from that roadmap now use the real extension,
+deterministic large fixtures, mixed mutations and SQLite recomputation oracles:
+
+- [FluxFlow grouped-flow rollup](fluxflow.md), including a hand-written trigger
+  baseline;
+- [noop gravity-witness count](noop.md);
+- [Zcash transparent balance](zcash.md);
+- [Kener quarter-hour status rollup](kener.md).
+
+The latter three share one selectable benchmark executable:
+
+```sh
+cargo build --release --locked \
+  --manifest-path crates/ivmlite-sqlite/Cargo.toml
+cargo run --release --locked -p ivmlite-test --example demand_case_bench -- \
+  noop_gravity_witness
+cargo run --release --locked -p ivmlite-test --example demand_case_bench -- \
+  zcash_transparent_balance
+cargo run --release --locked -p ivmlite-test --example demand_case_bench -- \
+  kener_quarter_hour_rollup
+```
+
+Each case records its public evidence, exact adaptation, unsupported behavior,
+source-scale command and raw output. These are synthetic development
+benchmarks rather than reproductions of production deployments.
+
+### Benchmark protocol
+
+Both executables run the same protocol, implemented once in
+[`demo_bench.rs`](../../crates/ivmlite-test/src/demo_bench.rs). It follows the
+Phase 4 benchmark protocol
+([spec §3](../superpowers/specs/2026-09-28-m1b-phase4-benchmark-design.md)):
+
+- **Extension.** The release library under
+  `crates/ivmlite-sqlite/target/release/` is refused when it is missing or
+  older than any of its sources. `--extension <path>` loads another build and
+  skips that check, so one binary can time two builds.
+- **One run.** Each mode of each repeat gets a fresh in-memory database:
+  1. seed the base table (untimed);
+  2. bootstrap (timed as `bootstrap_ms`);
+  3. verify the materialized state against SQLite (untimed);
+  4. prepare every statement a timer covers, including `BEGIN`, `COMMIT`,
+     refresh, recomputation and the result read;
+  5. apply an untimed warm-up batch, then time its maintenance as
+     `first_refresh_ms`, read the result and verify again;
+  6. time the measured batch's writes (`apply_ms`), maintenance
+     (`maintain_ms`) and result read (`read_ms`);
+  7. verify the final state, and record `database_kib`.
+
+  The warm-up and measured batches have the same mix but touch different
+  rows. Verification compares multisets of rows: duplicates count, and the
+  integer 5 differs from the real 5.0. A mismatch aborts the run.
+- **Order and statistics.** The mode order rotates left by one each repeat.
+  Every column is a median over the repeats, followed by its minimum and
+  maximum. `apply_plus_maintain_ms` and `end_to_end_ms` are summed per run
+  before taking the median. An even repeat count averages the two middle
+  values.
+- **Provenance.** The output starts with `#` lines that give the command,
+  commit and dirty flag, the bundled SQLite version, and the extension's path
+  and version.
+
+The modes are:
+
+- `no_maintenance`: base writes only, the floor;
+- `unindexed_recompute`: base writes, then SQLite draining the view's query
+  over the table with only the indexes its schema declares;
+- `indexed_recompute`: the same, over a covering index on the grouping and
+  aggregated columns. The index is built at bootstrap (its `bootstrap_ms`);
+  its maintenance is inside `apply_ms`; the runner checks with
+  `EXPLAIN QUERY PLAN` that the query reads it. This is the headline
+  baseline;
+- `handwritten_trigger` (FluxFlow only): a rollup table kept inside each write
+  by hand-written triggers; reading it is `read_ms`;
+- `ivmlite`: capture triggers inside the writes, then explicit refresh
+  (`maintain_ms`) and reading the view (`read_ms`).
+
+`first_refresh_ms` is the maintenance after the warm-up batch. For `ivmlite`
+it is the first refresh after `CREATE`, which also drains the stage the
+bootstrap left behind. That one-time cost is reported there, and is not part
+of the steady-state `maintain_ms`. For the recomputation modes it is simply
+their first recomputation. Recomputation drains its result without storing
+it, which favours those baselines. The recomputation modes are not compared
+with the oracle after the measured batch: they run the oracle's own query, so
+the check would be tautological. `database_kib` is SQLite's in-memory page
+allocation after the measured batch, not an on-disk size.
+
+The checked-in results in [`results/`](results/) were taken while other builds
+and tests ran on the same machine. They show the shape of each comparison; the
+authoritative before/after comparison of M1b Phase 5 comes from its own
+measurement run.
 
 ## Run the first two demos
 
