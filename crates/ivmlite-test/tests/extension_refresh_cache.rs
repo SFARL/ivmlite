@@ -90,6 +90,28 @@ fn a_latch_set_without_a_schema_change_breaks_the_next_refresh() {
     assert!(err.to_string().contains("test latch"), "{err}");
 }
 
+/// As above, for every base table of a join: on a cache hit each table's
+/// latch is read, not only the first table's. Each of `orders` and `regions`
+/// is latched in turn, so whichever one the view lists second is covered.
+#[test]
+fn a_latch_on_any_table_of_a_join_breaks_the_next_refresh() {
+    for table in ["orders", "regions"] {
+        let c = open_with_extension(None).unwrap();
+        setup(&c);
+        create(&c, "j", JOIN).unwrap();
+        refresh(&c, "j").unwrap(); // the cache is warm
+        c.execute_batch(&format!(
+            "UPDATE __ivm_tracked SET broken = 'test latch on {table}' WHERE tbl = '{table}'"
+        ))
+        .unwrap();
+        let err = refresh(&c, "j").expect_err(table);
+        assert!(
+            err.to_string().contains(&format!("test latch on {table}")),
+            "{table}: {err}"
+        );
+    }
+}
+
 /// Phase 5 spec §3: with the schema cookie unchanged, a refresh skips the
 /// catalog checks. Observed deterministically through a data-only tampering
 /// that only those checks would notice: deleting the view's `__ivm_dep` row

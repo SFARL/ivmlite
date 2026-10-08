@@ -1410,19 +1410,20 @@ fn check_capture(conn: &Connection, name: &str, view: &CompiledView) -> Result<V
 /// only each table's latch is read: a data write sets it, and moves no
 /// cookie. Otherwise every check runs, and `checked` holds the new cookie
 /// and schemas only once they pass.
-fn checked_schemas(
+fn checked_schemas<'a>(
     conn: &Connection,
     name: &str,
     view: &CompiledView,
-    checked: &mut Option<Checked>,
-) -> Result<Vec<Schema>> {
+    checked: &'a mut Option<Checked>,
+) -> Result<&'a [Schema]> {
     let version = schema_version(conn)?;
+    // The hit arm returns nothing borrowed from `checked`, so the miss arm
+    // may assign to it; the borrow is taken once both arms are done.
     match checked {
         Some(c) if c.schema_version == version => {
             for table in &view.tables {
                 check_latch(conn, table).map_err(|why| broken(name, &why))?;
             }
-            Ok(c.schemas.clone())
         }
         _ => {
             *checked = None;
@@ -1430,11 +1431,14 @@ fn checked_schemas(
             check_output_index(conn, name).map_err(|why| broken(name, &why))?;
             *checked = Some(Checked {
                 schema_version: version,
-                schemas: schemas.clone(),
+                schemas,
             });
-            Ok(schemas)
         }
     }
+    Ok(&checked
+        .as_ref()
+        .expect("a hit found the cache filled, and a miss filled it")
+        .schemas)
 }
 
 /// `INSERT INTO v(v) VALUES('refresh')`: bring the view up to date. State,
@@ -1450,7 +1454,7 @@ pub fn refresh(
     let schemas = checked_schemas(conn, name, view, checked)?;
     let mut batches = Vec::new();
     let mut progress = Vec::new();
-    for (table, schema) in view.tables.iter().zip(&schemas) {
+    for (table, schema) in view.tables.iter().zip(schemas) {
         let applied: i64 = conn
             .query_row(
                 &format!(
