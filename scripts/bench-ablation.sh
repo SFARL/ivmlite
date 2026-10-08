@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 # Build the extension at each named revision and measure both the fixed
-# performance-ablation cells and ivmlite's write amplification at 10 and 200
-# views. Each revision gets a detached worktree and a separate Cargo target.
+# performance-ablation cells (the m0 workload's [ablation] section) and
+# ivmlite's write amplification at the write-amp workload's
+# ablation_view_counts. Each revision gets a detached worktree and a separate
+# Cargo target.
+#
+# The write-amp run measures all three write-amp engines, but only the
+# ivmlite rows are kept: their extra_us_per_row column is computed against
+# that run's no_maintenance rows, which are not written to the output.
 #
 # Usage: scripts/bench-ablation.sh <label>=<rev> [<label>=<rev> ...]
 #
@@ -98,7 +104,7 @@ for pair in "$@"; do
 
     write_amp_csv="$(mktemp)"
     temporary_files+=("$write_amp_csv")
-    "$bench_bin" write-amp --extension "$lib" --workload "$write_workload" --views 10,200 >"$write_amp_csv"
+    "$bench_bin" write-amp --extension "$lib" --workload "$write_workload" --ablation-views >"$write_amp_csv"
     if [ "$write_amp_header_written" -eq 0 ]; then
         awk -F, -v label="$label" '
             NR == 1 { print "label," $0; next }

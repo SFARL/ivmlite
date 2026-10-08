@@ -958,7 +958,7 @@ fn a_view_creates_its_output_index() {
     }
 }
 
-/// Phase 4 spec §4, controller ruling 4: `verify` runs only at `connect`, so
+/// Phase 4 spec §4: `verify` runs only at `connect`, so
 /// on the connection that already holds the view, dropping the output index
 /// used to leave a refresh silently falling back to a full table scan
 /// instead of reporting a broken view. `refresh` now checks the index too.

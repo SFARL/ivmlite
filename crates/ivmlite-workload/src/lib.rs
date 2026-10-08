@@ -139,10 +139,40 @@ pub struct AblationCell {
 }
 
 /// Spec §6's ablation: a fixed set of cells, each repeated `repeats` times.
+/// `repeats` is the ablation's K (spec §6, §8): it lives in the workload
+/// file, unlike the confirmation's K, which is a runner constant.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AblationSpec {
     pub cells: Vec<AblationCell>,
     pub repeats: usize,
+}
+
+impl AblationSpec {
+    /// Reject an `[ablation]` section the runner cannot measure: no
+    /// repeats, no cells, or a cell with more group keys than base rows
+    /// (which `Workload::with_cell` would refuse, part way through a run).
+    /// `Workload::load` calls this whenever the section is present.
+    pub fn validate(&self) -> Result<(), WorkloadError> {
+        if self.repeats == 0 {
+            return Err(WorkloadError::Invalid(
+                "[ablation] repeats must not be 0".into(),
+            ));
+        }
+        if self.cells.is_empty() {
+            return Err(WorkloadError::Invalid(
+                "[ablation] must list at least one cell".into(),
+            ));
+        }
+        for (i, c) in self.cells.iter().enumerate() {
+            if c.group_cardinality > c.base_rows {
+                return Err(WorkloadError::Invalid(format!(
+                    "[ablation] cell {i}: group_cardinality ({}) must not exceed base_rows ({})",
+                    c.group_cardinality, c.base_rows
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -244,16 +274,17 @@ pub enum WriteOp {
         region: String,
         amount: i64,
     },
-    /// INSERT OR REPLACE of a full row; `expect_removed` rows are removed by
-    /// conflict (spec §7's table: 1 for `replace_rowid` and
-    /// `replace_unique`, 2 for `replace_two`).
+    /// INSERT OR REPLACE of a full row. `targets` are the ids of the
+    /// existing rows it conflicts with, each removed by conflict resolution
+    /// (spec §7's table: one row for `replace_rowid`, whose target is its own
+    /// id, and for `replace_unique`; two for `replace_two`).
     Replace {
         id: i64,
         email: String,
         handle: String,
         region: String,
         amount: i64,
-        expect_removed: usize,
+        targets: Vec<i64>,
     },
 }
 
@@ -294,6 +325,9 @@ pub struct WriteAmpWorkload {
     pub group_cardinality: usize,
     pub amount_max: i64,
     pub view_counts: Vec<usize>,
+    /// The view counts the ablation (spec §6, §7's last paragraph) runs this
+    /// workload at for each build, in place of `view_counts`' full sweep.
+    pub ablation_view_counts: Vec<usize>,
     pub ops: Vec<WriteOpKind>,
     pub rows_per_op: usize,
     pub tx_rows: usize,
@@ -312,7 +346,8 @@ impl WriteAmpWorkload {
     }
 
     /// Reject every configuration `rows()`/`trace()`/`views()` cannot make
-    /// sense of (M1b Phase 4 Task 5 fix round, ruling 9). `load` calls this,
+    /// sense of (spec §8: a portable workload file is checked where it is
+    /// read). `load` calls this,
     /// and so must anything that mutates a loaded `WriteAmpWorkload` before
     /// running it (`ivmlite-bench`'s `--views` override re-validates after
     /// replacing `view_counts`, for exactly this reason).
@@ -381,11 +416,16 @@ impl WriteAmpWorkload {
                 "view_counts must not be empty".into(),
             ));
         }
+        if self.ablation_view_counts.is_empty() {
+            return Err(WorkloadError::Invalid(
+                "ablation_view_counts must not be empty".into(),
+            ));
+        }
         Ok(())
     }
 
     /// A copy with `base_rows` and `rows_per_op` overridden. A test-only
-    /// helper (spec §7's brief, Task 5 Step 1): it lets a test shrink the
+    /// helper (spec §7; the Phase 4 plan, Task 5 Step 1): it lets a test shrink the
     /// shipped workload without hand-editing every field of a clone.
     pub fn with_sizes(&self, base_rows: usize, rows_per_op: usize) -> Self {
         let mut w = self.clone();
@@ -471,7 +511,7 @@ impl WriteAmpWorkload {
                     handle: format!("m{a}"),
                     region: format!("r{}", rng.random_range(0..card)),
                     amount: rng.random_range(0..amount_max),
-                    expect_removed: 1,
+                    targets: vec![a],
                 })
                 .collect(),
             WriteOpKind::ReplaceUnique => sample_distinct(&mut rng, m, base)
@@ -485,7 +525,7 @@ impl WriteAmpWorkload {
                         handle: format!("m{id}"),
                         region: format!("r{}", rng.random_range(0..card)),
                         amount: rng.random_range(0..amount_max),
-                        expect_removed: 1,
+                        targets: vec![a],
                     }
                 })
                 .collect(),
@@ -501,7 +541,7 @@ impl WriteAmpWorkload {
                         handle: format!("h{b}"),
                         region: format!("r{}", rng.random_range(0..card)),
                         amount: rng.random_range(0..amount_max),
-                        expect_removed: 2,
+                        targets: vec![a, b],
                     }
                 })
                 .collect(),
@@ -526,6 +566,9 @@ impl Workload {
         let text = fs::read_to_string(path).map_err(WorkloadError::Io)?;
         let w: Workload = toml::from_str(&text).map_err(|e| WorkloadError::Parse(e.to_string()))?;
         w.validate()?;
+        if let Some(ablation) = &w.ablation {
+            ablation.validate()?;
+        }
         Ok(w)
     }
 
@@ -1178,7 +1221,7 @@ mod tests {
                         id,
                         email,
                         handle,
-                        expect_removed,
+                        targets,
                         ..
                     } => {
                         let mut ids = Vec::new();
@@ -1193,7 +1236,7 @@ mod tests {
                             ids.push(b.parse().unwrap());
                         }
                         ids.dedup();
-                        assert_eq!(ids.len(), *expect_removed, "{op:?}");
+                        assert_eq!(&ids, targets, "{op:?}");
                         ids
                     }
                     WriteOp::Insert { .. } => vec![],
@@ -1324,7 +1367,7 @@ mod tests {
         assert!(drawn.iter().all(|&id| (0..50).contains(&id)));
     }
 
-    // ---- M1b Phase 4 Task 5 fix round, ruling 9: WriteAmpWorkload::validate ----
+    // ---- spec §7, §8: WriteAmpWorkload::validate ----
 
     /// Every rejection rule `validate` must enforce, each checked by
     /// mutating one field of a workload that is otherwise valid and
@@ -1399,6 +1442,11 @@ mod tests {
                 w.view_counts = vec![];
                 w
             }),
+            ("ablation_view_counts", {
+                let mut w = base.clone();
+                w.ablation_view_counts = vec![];
+                w
+            }),
         ];
 
         for (field, w) in cases {
@@ -1421,8 +1469,8 @@ mod tests {
         assert!(w.validate().is_ok());
     }
 
-    /// `load` must actually call `validate`, not merely offer it (ruling
-    /// 9): a shipped-file-shaped TOML with `rows_per_op = 0` must be
+    /// `load` must actually call `validate`, not merely offer it: a
+    /// shipped-file-shaped TOML with `rows_per_op = 0` must be
     /// rejected at `load` time.
     #[test]
     fn load_rejects_an_invalid_write_amp_workload() {
@@ -1438,5 +1486,78 @@ mod tests {
         let err = WriteAmpWorkload::load(&path)
             .expect_err("rows_per_op = 0 must be rejected at load time");
         assert!(err.to_string().contains("rows_per_op"), "{err}");
+    }
+
+    // ---- spec §6, §8: AblationSpec::validate ----
+
+    fn ablation_cell(base_rows: usize, group_cardinality: usize) -> AblationCell {
+        AblationCell {
+            base_rows,
+            group_cardinality,
+            views: 10,
+            batch_size: 100,
+        }
+    }
+
+    /// Each rule, checked by breaking one field of an otherwise valid
+    /// section; the boundary `group_cardinality == base_rows` is accepted.
+    #[test]
+    fn ablation_validate_rejects_zero_repeats_no_cells_and_too_many_groups() {
+        let ok = AblationSpec {
+            cells: vec![ablation_cell(1_000, 1_000)],
+            repeats: 5,
+        };
+        assert!(ok.validate().is_ok(), "the fixture itself must be valid");
+
+        let cases = [
+            (
+                "repeats",
+                AblationSpec {
+                    repeats: 0,
+                    ..ok.clone()
+                },
+            ),
+            (
+                "at least one cell",
+                AblationSpec {
+                    cells: vec![],
+                    ..ok.clone()
+                },
+            ),
+            (
+                "cell 1: group_cardinality (1001)",
+                AblationSpec {
+                    cells: vec![ablation_cell(1_000, 10), ablation_cell(1_000, 1_001)],
+                    ..ok.clone()
+                },
+            ),
+        ];
+        for (needle, spec) in cases {
+            let err = spec.validate().expect_err(needle).to_string();
+            assert!(err.contains(needle), "{needle}: {err}");
+        }
+    }
+
+    /// `Workload::load` must call `AblationSpec::validate`: the shipped m0
+    /// file with `repeats = 0` is refused at load time.
+    #[test]
+    fn load_rejects_an_invalid_ablation_section() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../workloads/m0-baseline.toml");
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("repeats = 5"),
+            "the shipped file changed shape"
+        );
+        let dir = std::env::temp_dir().join(format!(
+            "ivmlite-workload-ablation-invalid-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let bad = dir.join("m0.toml");
+        fs::write(&bad, text.replace("repeats = 5", "repeats = 0")).unwrap();
+
+        let err = Workload::load(&bad).expect_err("repeats = 0 must be rejected at load time");
+        fs::remove_dir_all(&dir).unwrap();
+        assert!(err.to_string().contains("repeats"), "{err}");
     }
 }

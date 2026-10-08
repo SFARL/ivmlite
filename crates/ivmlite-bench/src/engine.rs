@@ -6,10 +6,11 @@ use std::path::Path;
 use std::time::Instant;
 
 use ivmlite_workload::{ViewSpec, Workload};
-use rusqlite::Connection;
+use rusqlite::{Connection, Statement};
 
 use crate::baseline::{
-    apply, install_trigger_view, recompute_all, seed_base, ApplyStatements, RecomputeStatements,
+    apply, assert_not_reprepared, install_trigger_view, recompute_all, seed_base, ApplyStatements,
+    RecomputeStatements,
 };
 
 /// The four engines under measurement (spec §3.2): the three M0 baselines,
@@ -40,8 +41,9 @@ impl Engine {
     }
 }
 
-/// Rotate `items` left by `i % items.len()`. Not specific to `Engine`: Task 5
-/// reuses this for a three-engine ablation list (controller ruling 1).
+/// Rotate `items` left by `i % items.len()`. Not specific to `Engine`: the
+/// ablation (spec §6) and write-amp (spec §7) runners reuse it for their own
+/// engine lists, so there is one rotation rule (spec §3.3).
 pub(crate) fn rotate_left<T: Copy>(items: &[T], i: usize) -> Vec<T> {
     if items.is_empty() {
         return Vec::new();
@@ -81,14 +83,14 @@ pub struct Measurement {
     pub maintained: Space,
 }
 
-fn space(conn: &Connection) -> rusqlite::Result<Space> {
+pub(crate) fn space(conn: &Connection) -> rusqlite::Result<Space> {
     Ok(Space {
         page_count: conn.query_row("PRAGMA page_count", [], |r| r.get(0))?,
         freelist_count: conn.query_row("PRAGMA freelist_count", [], |r| r.get(0))?,
     })
 }
 
-fn page_size(conn: &Connection) -> rusqlite::Result<i64> {
+pub(crate) fn page_size(conn: &Connection) -> rusqlite::Result<i64> {
     conn.query_row("PRAGMA page_size", [], |r| r.get(0))
 }
 
@@ -134,23 +136,41 @@ pub(crate) fn verify_view(
     Ok(())
 }
 
-/// A statement must not have been recompiled since it was prepared (M1b
-/// Phase 4 Task 5 fix round, ruling 6) — see
-/// `baseline::ApplyStatements::assert_not_reprepared`'s doc comment for why.
-/// `run_cell` uses this for each `Ivmlite` refresh statement, which (unlike
-/// `ApplyStatements`) is a bare `Statement` rather than a field of its own
-/// struct.
-pub(crate) fn assert_statement_not_reprepared(
-    label: &str,
-    stmt: &rusqlite::Statement<'_>,
+/// Bootstrap `ivmlite`: create one `ivm` virtual table per view, named
+/// `view.table()`, over `table` (spec §3.2 step 2). Shared by the matrix
+/// (`run_cell`) and the write-amp runner (`write_amp::run_one`).
+pub(crate) fn create_ivmlite_views(
+    conn: &Connection,
+    table: &str,
+    views: &[ViewSpec],
 ) -> Result<(), String> {
-    let n = stmt.get_status(rusqlite::StatementStatus::RePrepare);
-    if n != 0 {
-        return Err(format!(
-            "the {label} statement was recompiled {n} time(s) during a timed region"
-        ));
+    for v in views {
+        let sql = v.sql(table).replace('\'', "''");
+        let name = v.table();
+        conn.execute_batch(&format!(
+            "CREATE VIRTUAL TABLE \"{name}\" USING ivm('{sql}')"
+        ))
+        .map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+/// Prepare one `refresh` statement per view (spec §3.2 step 4: before any
+/// timed region). Shared by `run_cell` and `write_amp::run_one`.
+pub(crate) fn prepare_refresh_statements<'c>(
+    conn: &'c Connection,
+    views: &[ViewSpec],
+) -> Result<Vec<Statement<'c>>, String> {
+    views
+        .iter()
+        .map(|v| {
+            let name = v.table();
+            conn.prepare(&format!(
+                "INSERT INTO \"{name}\"(\"{name}\") VALUES ('refresh')"
+            ))
+            .map_err(|e| e.to_string())
+        })
+        .collect()
 }
 
 /// Run spec §3.2's sequence for one engine on one cell, in a fresh in-memory
@@ -176,16 +196,7 @@ pub fn run_cell(engine: Engine, cell: &Workload, lib: &Path) -> Result<Measureme
                 install_trigger_view(&conn, table, v).map_err(|e| e.to_string())?;
             }
         }
-        Engine::Ivmlite => {
-            for v in &cell.views {
-                let sql = v.sql(table).replace('\'', "''");
-                let name = v.table();
-                conn.execute_batch(&format!(
-                    "CREATE VIRTUAL TABLE \"{name}\" USING ivm('{sql}')"
-                ))
-                .map_err(|e| e.to_string())?;
-            }
-        }
+        Engine::Ivmlite => create_ivmlite_views(&conn, table, &cell.views)?,
         Engine::NoMaintenance | Engine::NaiveRecompute => {}
     }
     let bootstrap_ms = bootstrap_start.elapsed().as_secs_f64() * 1000.0;
@@ -207,23 +218,16 @@ pub fn run_cell(engine: Engine, cell: &Workload, lib: &Path) -> Result<Measureme
         }
         Engine::NoMaintenance | Engine::HandWrittenTrigger | Engine::Ivmlite => None,
     };
-    let mut refresh_stmts = Vec::new();
-    if engine == Engine::Ivmlite {
-        for v in &cell.views {
-            let name = v.table();
-            refresh_stmts.push(
-                conn.prepare(&format!(
-                    "INSERT INTO \"{name}\"(\"{name}\") VALUES ('refresh')"
-                ))
-                .map_err(|e| e.to_string())?,
-            );
-        }
-    }
+    let mut refresh_stmts = if engine == Engine::Ivmlite {
+        prepare_refresh_statements(&conn, &cell.views)?
+    } else {
+        Vec::new()
+    };
 
     // ---- step 5: timed apply ----
     let apply_ms = apply(&conn, &mut apply_stmts, &ops).map_err(|e| e.to_string())?;
-    // M1b Phase 4 Task 5 fix round (ruling 6): guards this class of bug in
-    // the matrix path too — see `ApplyStatements::assert_not_reprepared`.
+    // Spec §3.2 step 4: no timed statement may have been recompiled — see
+    // `baseline::assert_not_reprepared`.
     apply_stmts.assert_not_reprepared()?;
     let written = space(&conn).map_err(|e| e.to_string())?;
 
@@ -246,7 +250,7 @@ pub fn run_cell(engine: Engine, cell: &Workload, lib: &Path) -> Result<Measureme
     let maintain_ms = maintain_start.elapsed().as_secs_f64() * 1000.0;
     if engine == Engine::Ivmlite {
         for (i, stmt) in refresh_stmts.iter().enumerate() {
-            assert_statement_not_reprepared(&format!("refresh view {i}"), stmt)?;
+            assert_not_reprepared(&format!("refresh view {i}"), stmt)?;
         }
     }
     let maintained = space(&conn).map_err(|e| e.to_string())?;
@@ -371,8 +375,8 @@ mod tests {
         assert!(err.contains("mv_0"), "{err}");
     }
 
-    /// M1b Phase 4 Task 5 fix round (ruling 6): `assert_statement_not_reprepared`
-    /// must actually detect a recompilation, not just report zero because
+    /// Spec §3.2 step 4: `baseline::assert_not_reprepared` must actually
+    /// detect a recompiled refresh statement, not just report zero because
     /// nothing in the matrix currently sets a flag pragma. A pragma issued
     /// after `prepare` expires the refresh statement, and its next
     /// `execute` recompiles it.
@@ -390,11 +394,11 @@ mod tests {
             .prepare("INSERT INTO mv_0(mv_0) VALUES ('refresh')")
             .unwrap();
         // A flag pragma set only now, after prepare — exactly the class of
-        // bug this ruling guards against.
+        // bug this check guards against.
         conn.execute_batch("PRAGMA recursive_triggers = 1").unwrap();
         stmt.execute([]).unwrap();
 
-        let err = assert_statement_not_reprepared("refresh", &stmt).unwrap_err();
+        let err = assert_not_reprepared("refresh", &stmt).unwrap_err();
         assert!(err.contains("refresh"), "{err}");
         assert!(err.contains("recompiled"), "{err}");
     }

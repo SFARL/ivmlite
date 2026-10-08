@@ -11,6 +11,26 @@
 <text x="360.0" y="374.0" text-anchor="middle">100k</text>
 <line x1="656.0" y1="356.0" x2="656.0" y2="362.0" stroke="#333"/>
 <text x="656.0" y="374.0" text-anchor="middle">1M</text>
+<line x1="58.0" y1="340.7" x2="64.0" y2="340.7" stroke="#333"/>
+<text data-y-tick="1x" x="54.0" y="340.7" dy="4" text-anchor="end">1x</text>
+<line x1="58.0" y1="313.4" x2="64.0" y2="313.4" stroke="#333"/>
+<text data-y-tick="2x" x="54.0" y="313.4" dy="4" text-anchor="end">2x</text>
+<line x1="58.0" y1="277.2" x2="64.0" y2="277.2" stroke="#333"/>
+<text data-y-tick="5x" x="54.0" y="277.2" dy="4" text-anchor="end">5x</text>
+<line x1="58.0" y1="249.8" x2="64.0" y2="249.8" stroke="#333"/>
+<text data-y-tick="10x" x="54.0" y="249.8" dy="4" text-anchor="end">10x</text>
+<line x1="58.0" y1="222.5" x2="64.0" y2="222.5" stroke="#333"/>
+<text data-y-tick="20x" x="54.0" y="222.5" dy="4" text-anchor="end">20x</text>
+<line x1="58.0" y1="186.3" x2="64.0" y2="186.3" stroke="#333"/>
+<text data-y-tick="50x" x="54.0" y="186.3" dy="4" text-anchor="end">50x</text>
+<line x1="58.0" y1="159.0" x2="64.0" y2="159.0" stroke="#333"/>
+<text data-y-tick="100x" x="54.0" y="159.0" dy="4" text-anchor="end">100x</text>
+<line x1="58.0" y1="131.6" x2="64.0" y2="131.6" stroke="#333"/>
+<text data-y-tick="200x" x="54.0" y="131.6" dy="4" text-anchor="end">200x</text>
+<line x1="58.0" y1="95.4" x2="64.0" y2="95.4" stroke="#333"/>
+<text data-y-tick="500x" x="54.0" y="95.4" dy="4" text-anchor="end">500x</text>
+<line x1="58.0" y1="68.1" x2="64.0" y2="68.1" stroke="#333"/>
+<text data-y-tick="1000x" x="54.0" y="68.1" dy="4" text-anchor="end">1000x</text>
 <line data-reference="1x" x1="64.0" y1="340.7" x2="656.0" y2="340.7" stroke="#555" stroke-dasharray="4 3"/>
 <text x="656.0" y="340.7" dy="-3" text-anchor="end">1x</text>
 <line data-reference="2x" x1="64.0" y1="313.4" x2="656.0" y2="313.4" stroke="#555" stroke-dasharray="8 3"/>

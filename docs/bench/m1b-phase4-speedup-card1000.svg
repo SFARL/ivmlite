@@ -11,6 +11,30 @@
 <text x="360.0" y="374.0" text-anchor="middle">100k</text>
 <line x1="656.0" y1="356.0" x2="656.0" y2="362.0" stroke="#333"/>
 <text x="656.0" y="374.0" text-anchor="middle">1M</text>
+<line x1="58.0" y1="350.2" x2="64.0" y2="350.2" stroke="#333"/>
+<text data-y-tick="0.2x" x="54.0" y="350.2" dy="4" text-anchor="end">0.2x</text>
+<line x1="58.0" y1="320.3" x2="64.0" y2="320.3" stroke="#333"/>
+<text data-y-tick="0.5x" x="54.0" y="320.3" dy="4" text-anchor="end">0.5x</text>
+<line x1="58.0" y1="297.7" x2="64.0" y2="297.7" stroke="#333"/>
+<text data-y-tick="1x" x="54.0" y="297.7" dy="4" text-anchor="end">1x</text>
+<line x1="58.0" y1="275.1" x2="64.0" y2="275.1" stroke="#333"/>
+<text data-y-tick="2x" x="54.0" y="275.1" dy="4" text-anchor="end">2x</text>
+<line x1="58.0" y1="245.1" x2="64.0" y2="245.1" stroke="#333"/>
+<text data-y-tick="5x" x="54.0" y="245.1" dy="4" text-anchor="end">5x</text>
+<line x1="58.0" y1="222.5" x2="64.0" y2="222.5" stroke="#333"/>
+<text data-y-tick="10x" x="54.0" y="222.5" dy="4" text-anchor="end">10x</text>
+<line x1="58.0" y1="199.9" x2="64.0" y2="199.9" stroke="#333"/>
+<text data-y-tick="20x" x="54.0" y="199.9" dy="4" text-anchor="end">20x</text>
+<line x1="58.0" y1="170.0" x2="64.0" y2="170.0" stroke="#333"/>
+<text data-y-tick="50x" x="54.0" y="170.0" dy="4" text-anchor="end">50x</text>
+<line x1="58.0" y1="147.3" x2="64.0" y2="147.3" stroke="#333"/>
+<text data-y-tick="100x" x="54.0" y="147.3" dy="4" text-anchor="end">100x</text>
+<line x1="58.0" y1="124.7" x2="64.0" y2="124.7" stroke="#333"/>
+<text data-y-tick="200x" x="54.0" y="124.7" dy="4" text-anchor="end">200x</text>
+<line x1="58.0" y1="94.8" x2="64.0" y2="94.8" stroke="#333"/>
+<text data-y-tick="500x" x="54.0" y="94.8" dy="4" text-anchor="end">500x</text>
+<line x1="58.0" y1="72.2" x2="64.0" y2="72.2" stroke="#333"/>
+<text data-y-tick="1000x" x="54.0" y="72.2" dy="4" text-anchor="end">1000x</text>
 <line data-reference="1x" x1="64.0" y1="297.7" x2="656.0" y2="297.7" stroke="#555" stroke-dasharray="4 3"/>
 <text x="656.0" y="297.7" dy="-3" text-anchor="end">1x</text>
 <line data-reference="2x" x1="64.0" y1="275.1" x2="656.0" y2="275.1" stroke="#555" stroke-dasharray="8 3"/>

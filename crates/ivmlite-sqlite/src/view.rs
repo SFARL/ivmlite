@@ -1304,7 +1304,8 @@ fn verify(
 /// created on and never calls `verify`. Without this, a user who drops
 /// `__ivm_outidx_<view>` on the connection that already holds the view
 /// would see a refresh silently fall back to a full table scan instead of a
-/// broken view (controller ruling 4).
+/// broken view (Phase 4 spec §4: the index is what keeps a retraction a
+/// SEARCH rather than a SCAN).
 fn check_output_index(conn: &Connection, name: &str) -> Result<()> {
     let index = out_index(name);
     if !object_exists(conn, "index", &index)? {
