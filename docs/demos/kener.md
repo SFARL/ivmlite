@@ -66,7 +66,9 @@ comparison of M1b Phase 5 comes from its own measurement run.
 
 The refresh itself was about 120 times faster than indexed recomputation, the
 headline baseline, and about 580 times faster than unindexed recomputation.
-That omits reading the large materialized result. Including the read, the
+Counting the capture cost inside the writes as well, apply + maintain was about
+49 times faster than indexed recomputation. Both figures omit reading the large
+materialized result. Including the read, the
 adapted ivmlite path was about 2.3 times faster than indexed recomputation and
 about 11 times faster than unindexed recomputation, and used about 2.5 times
 the base table's SQLite page allocation (the covering index used about 2.0

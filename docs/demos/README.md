@@ -89,7 +89,9 @@ it is the first refresh after `CREATE`, which also drains the stage the
 bootstrap left behind. That one-time cost is reported there, and is not part
 of the steady-state `maintain_ms`. For the recomputation modes it is simply
 their first recomputation. Recomputation drains its result without storing
-it, which favours those baselines. `database_kib` is SQLite's in-memory page
+it, which favours those baselines. The recomputation modes are not compared
+with the oracle after the measured batch: they run the oracle's own query, so
+the check would be tautological. `database_kib` is SQLite's in-memory page
 allocation after the measured batch, not an on-disk size.
 
 The checked-in results in [`results/`](results/) were taken while other builds
