@@ -69,7 +69,8 @@ jobs:
             --repo "${GITHUB_REPOSITORY}"
             --title "ivmlite ${GITHUB_REF_NAME}"
           )
-          notes_file="docs/releases/${GITHUB_REF_NAME#v}.md"
+          # The notes are named after the tag itself, e.g. docs/releases/v0.1.0-alpha.2.md.
+          notes_file="docs/releases/${GITHUB_REF_NAME}.md"
           if [[ -f "${notes_file}" ]]; then
             release_args+=(--notes-file "${notes_file}")
           else

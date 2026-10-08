@@ -10,7 +10,7 @@ filter and one two-table inner equi-join, captures ordinary SQL writes with
 triggers, and updates a materialized result when the application explicitly
 refreshes it.
 
-**Current status: `v0.1.0-alpha.1` technical preview.** Use it to test real
+**Current status: `v0.1.0-alpha.2` technical preview.** Use it to test real
 workloads and help shape the SQL subset. The on-disk format and supported SQL
 may change before a stable release.
 
@@ -30,7 +30,7 @@ usually a better fit.
 ## Quick start
 
 Download the archive for your platform from the
-[v0.1.0-alpha.1 release](https://github.com/SFARL/ivmlite/releases/tag/v0.1.0-alpha.1),
+[v0.1.0-alpha.2 release](https://github.com/SFARL/ivmlite/releases/tag/v0.1.0-alpha.2),
 extract it, and start a SQLite CLI that supports loadable extensions.
 
 On macOS, the system SQLite omits extension loading. Install SQLite with

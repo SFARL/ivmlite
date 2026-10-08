@@ -7,7 +7,7 @@ members = ["crates/ivmlite-bench", "crates/ivmlite-core", "crates/ivmlite-sql", 
 [workspace.package]
 edition = "2021"
 rust-version = "1.95"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 license = "MIT"
 repository = "https://github.com/SFARL/ivmlite"
 
