@@ -6,6 +6,7 @@ mod common;
 use common::*;
 
 use ivmlite_test::open_with_extension;
+use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 use rusqlite::types::Value;
 use rusqlite::Connection;
 
@@ -140,6 +141,99 @@ fn creating_a_view_is_atomic() {
     // Bootstrap over tables that already hold rows.
     create(&c, "sums", SUMS).unwrap();
     assert_matches_oracle(&c, "sums", SUMS);
+}
+
+/// Phase 5 spec §5: bootstrap leaves no staged rows behind.
+#[test]
+fn bootstrap_leaves_the_stage_empty() {
+    let c = open_with_extension(None).unwrap();
+    setup(&c);
+    create(&c, "sums", SUMS).unwrap();
+    assert_eq!(count(&c, "SELECT count(*) FROM __ivm_stage_sums"), 0);
+}
+
+/// Phase 5 spec §5: a fault on the cleanup `DELETE` fails the whole `CREATE
+/// VIRTUAL TABLE`, in autocommit and inside an explicit transaction, and
+/// leaves nothing of the view behind.
+///
+/// The fault cannot be a `BEFORE DELETE` trigger created ahead of time on
+/// `__ivm_stage_sums`: that table does not exist until `create` creates it,
+/// and SQLite refuses `CREATE TRIGGER … ON <table>` for a table that is not
+/// there yet (measured: "no such table"). A trigger body cannot create one
+/// either — `CREATE TRIGGER` is DDL, and a trigger body's grammar admits only
+/// `INSERT`/`UPDATE`/`DELETE`/`SELECT` (measured: a `CREATE TRIGGER` inside a
+/// trigger body is a parse error, not merely refused at run time), so there
+/// is no way to arm the real trigger the moment the stage table appears.
+///
+/// The authorizer (`sqlite3_set_authorizer`) is a sound substitute: it is a
+/// Rust-level callback, not SQL, so it is never limited to a trigger body's
+/// grammar, and it can be registered before `__ivm_stage_sums` exists —
+/// SQLite consults it by name when it later prepares a statement against
+/// that name, not when the callback is registered. One `create` issues
+/// exactly two `DELETE FROM __ivm_stage_sums` statements in order: the
+/// bootstrap's own apply empties the (still-empty) stage first, and this
+/// task's new cleanup empties it second, after the bootstrap's apply has
+/// filled it. Counting authorized deletes on that table name and denying
+/// only the second therefore targets this task's own `DELETE`, not the
+/// apply's.
+#[test]
+fn a_failing_stage_cleanup_fails_the_create_and_leaves_nothing() {
+    use std::cell::Cell;
+
+    for explicit_transaction in [false, true] {
+        let c = open_with_extension(None).unwrap();
+        setup(&c);
+        let user_objects = objects(&c);
+
+        let deletes_of_stage = Cell::new(0);
+        c.authorizer(Some(move |ctx: AuthContext| {
+            if let AuthAction::Delete { table_name } = ctx.action {
+                if table_name == "__ivm_stage_sums" {
+                    deletes_of_stage.set(deletes_of_stage.get() + 1);
+                    // The first is the bootstrap's own apply, emptying a
+                    // stage that is still empty; the second is this task's
+                    // cleanup, emptying the stage the bootstrap just filled.
+                    if deletes_of_stage.get() == 2 {
+                        return Authorization::Deny;
+                    }
+                }
+            }
+            Authorization::Allow
+        }))
+        .unwrap();
+
+        if explicit_transaction {
+            c.execute_batch("BEGIN; INSERT INTO orders VALUES ('z', 1);")
+                .unwrap();
+        }
+        let err = create(&c, "sums", SUMS).expect_err("the cleanup DELETE is denied");
+        assert!(
+            err.to_string().contains("not authorized"),
+            "transaction: {explicit_transaction}, {err}"
+        );
+        assert_eq!(
+            objects(&c),
+            user_objects,
+            "a failing cleanup DELETE left __ivm_ objects behind (transaction: {explicit_transaction})"
+        );
+
+        // Scope the authorizer to this one `create`: later statements in
+        // this test run under the ordinary, unauthorized connection.
+        c.authorizer(None::<fn(AuthContext) -> Authorization>)
+            .unwrap();
+        if explicit_transaction {
+            c.execute_batch("COMMIT").unwrap();
+            assert_eq!(
+                rows(&c, "SELECT count(*) FROM orders WHERE region = 'z'"),
+                vec![vec![Value::Integer(1)]],
+                "the transaction's earlier work must survive"
+            );
+        }
+
+        // The connection, and a fresh create on it, still work.
+        create(&c, "sums", SUMS).unwrap();
+        assert_matches_oracle(&c, "sums", SUMS);
+    }
 }
 
 /// Spec §6 scenario 5: each rejection names its problem.
@@ -462,10 +556,10 @@ fn nothing_after_the_apply_can_fail_a_refresh() {
     let c = open_with_extension(None).unwrap();
     setup(&c);
     create(&c, "sums", SUMS).unwrap();
-    // The bootstrap leaves its changes staged; a refresh with nothing to
-    // apply empties the stage and stages only the sentinel, armed as `apply`
-    // (Phase 5 spec §4), which the fault lets the next refresh delete.
-    refresh(&c, "sums").unwrap();
+    // `create` empties the stage itself once the bootstrap's apply is done
+    // (spec §5), so no setup refresh is needed to reach a stage the fault
+    // can delete without firing: the fault's `WHEN OLD.op <> 'apply'` never
+    // matches a row that is not there.
     c.execute_batch(
         "CREATE TRIGGER fault BEFORE DELETE ON __ivm_stage_sums WHEN OLD.op <> 'apply' \
          BEGIN SELECT RAISE(ABORT, 'injected fault'); END;

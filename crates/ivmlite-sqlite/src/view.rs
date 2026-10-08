@@ -1138,7 +1138,9 @@ fn sql_value(v: &Value) -> rusqlite::types::Value {
 /// fires the apply trigger once, whose set-based statements apply every
 /// staged row (Phase 5 spec §4 and its amendment 2026-10-08). If any of them
 /// fails, SQLite rolls that whole statement back. The stage keeps its rows,
-/// the sentinel included, until the next apply empties it.
+/// the sentinel included, until the next apply empties it — except after the
+/// bootstrap's own apply, which `create` empties itself at the end (spec §5),
+/// so no view's stage is ever left full once `create` returns.
 fn apply(conn: &Connection, name: &str, view: &CompiledView, changes: &Changes) -> Result<()> {
     let stage = main_qualified(&stage_table(name));
     exec(conn, &format!("DELETE FROM {stage}"))?;
@@ -1197,7 +1199,9 @@ fn apply(conn: &Connection, name: &str, view: &CompiledView, changes: &Changes) 
     }
     // The one statement that changes durable state, and the last one: a
     // failure after it would report an error for changes that stay applied
-    // (Phase 3a §5). The stage is left full and emptied by the next apply.
+    // (Phase 3a §5). The stage is left full here; a refresh's apply is
+    // emptied by the next apply, while the bootstrap's is emptied right
+    // after by `create`'s own cleanup DELETE (spec §5).
     conn.execute(
         &format!("UPDATE {stage} SET op = 'apply' WHERE rowid = ?1"),
         params![sentinel],
@@ -1303,6 +1307,18 @@ pub fn create(conn: &Rc<Connection>, name: &str, sql: &str) -> Result<(CompiledV
             output,
             progress: Vec::new(),
         },
+    )?;
+    // Spec §5: unlike a refresh, a failing CREATE VIRTUAL TABLE is rolled back
+    // as a whole — it writes sqlite_schema — so emptying the stage after the
+    // bootstrap's apply cannot leave an applied-but-reported-failed state
+    // (Phase 3a §5). "Nothing after the apply can fail a refresh" protects a
+    // *refresh* inside an explicit transaction, where a callback's writes are
+    // not undone; a failing `CREATE VIRTUAL TABLE` is rolled back as a whole,
+    // in autocommit and in an explicit transaction alike (Phase 3a §5,
+    // measured), so this DELETE is safe to fail.
+    exec(
+        conn,
+        &format!("DELETE FROM {}", main_qualified(&stage_table(name))),
     )?;
     // Read last, once this function's own DDL has moved the cookie. The
     // write transaction `CREATE VIRTUAL TABLE` runs in keeps every other
