@@ -200,6 +200,28 @@ What the arming statement spends its time on:
 
 The staging inserts, at 25.1%, would meet the 20% bar. They are not the largest cost, though, so §6's rule does not select them.
 
+**Amendment 2026-10-08 (second): stage with multi-row inserts.** This replaces the "no code change" decision above. The 40% in the arming statement is the B-tree work on the state and output tables, which is the maintenance itself, and §4 already made it set-based; no §6 remedy targets it. The staging inserts are the largest cost a remedy can address, they clear the 20% bar, and the table above already approves their remedy, so it is applied.
+
+How it works:
+- `apply` stages each kind (`state` rows, then `out±` rows) with multi-row `INSERT … VALUES`: full chunks of 64 rows, then one remainder statement for the rows left over. Each shape is `prepare_cached`.
+- **The parameter bound is derived, not proved.** The rows per statement are `min(64, 999 / width)`, and at least 1, where `width` is the parameters per row. That is 4 for a `state` row and the view's column count plus one for an output row, which no fixed bound caps. So no statement binds more than 999 parameters, the default `SQLITE_MAX_VARIABLE_NUMBER` before SQLite 3.32. A row wider than 999 still goes one per statement, as before.
+- Row order and every row's values are unchanged.
+- The sentinel stays a one-row insert of its own, with its rowid kept.
+- The arming `UPDATE` is still the single last statement, and is now `prepare_cached` too. That cache lives for one callback only, because `vtab.rs` wraps the handle in a new `Connection` for each, so the arming statement and each staging shape are still prepared once per refresh.
+
+**Measured.** I used `scripts/profile-refresh.py drive` on §2's workload: 5 interleaved rounds of 20 s each, on line-table release builds of fb5e39f and of the change (81ea180), on an Apple M2 Pro running macOS 26.2 with SQLite 3.53. The figure is the median refresh time per batch over all ten views:
+
+| round | fb5e39f | 81ea180 |
+|---:|---:|---:|
+| 1 | 63.27 ms | 59.23 ms |
+| 2 | 63.35 ms | 59.27 ms |
+| 3 | 63.32 ms | 59.13 ms |
+| 4 | 63.60 ms | 59.25 ms |
+| 5 | 63.43 ms | 59.31 ms |
+| median | **63.35 ms** | **59.25 ms** |
+
+That is 6.5% faster, between 6.4% and 6.8% in every round. A profile of the change puts the staging inserts at about 20% of `view::refresh`, down from 25.1%. About 12% of what remains is preparing each shape once per refresh, and most of the rest is binding and copying the blobs. Task 5's ablation labels this commit `profiled`.
+
 ## 7. Measurement
 
 The protocol is Phase 4 spec §3, unchanged.
