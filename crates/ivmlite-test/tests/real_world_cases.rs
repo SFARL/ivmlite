@@ -8,6 +8,10 @@
 mod common;
 use common::*;
 
+use ivmlite_test::fluxflow::{
+    apply_mixed_batch as apply_fluxflow_batch, seed as seed_fluxflow, FLOW_TABLE_DDL,
+    VIEW_SQL as FLUXFLOW_VIEW,
+};
 use ivmlite_test::open_with_extension;
 
 const DATASETTE_FACET: &str = "SELECT county, COUNT(*) AS count \
@@ -137,6 +141,32 @@ fn taproot_split_event_counters_are_maintained_on_events_and_roots() {
     refresh(&c, "proof_counts").unwrap();
     assert_matches_oracle(&c, "sync_counts", TAPROOT_SYNCS);
     assert_matches_oracle(&c, "proof_counts", TAPROOT_PROOFS);
+}
+
+#[test]
+fn fluxflow_grouped_rollup_tracks_insert_update_and_reorg_delete() {
+    let c = open_with_extension(None).unwrap();
+    c.execute_batch(FLOW_TABLE_DDL).unwrap();
+    seed_fluxflow(&c, 200).unwrap();
+    create(&c, "fluxflow_stats", FLUXFLOW_VIEW).unwrap();
+    assert_matches_oracle(&c, "fluxflow_stats", FLUXFLOW_VIEW);
+
+    apply_fluxflow_batch(&c, 200, 50).unwrap();
+    assert_ne!(
+        rows(&c, "SELECT * FROM fluxflow_stats"),
+        rows(&c, FLUXFLOW_VIEW),
+        "captured changes must wait for explicit refresh"
+    );
+    refresh(&c, "fluxflow_stats").unwrap();
+    assert_matches_oracle(&c, "fluxflow_stats", FLUXFLOW_VIEW);
+
+    let after_first_refresh = rows(&c, "SELECT * FROM fluxflow_stats");
+    refresh(&c, "fluxflow_stats").unwrap();
+    assert_eq!(
+        rows(&c, "SELECT * FROM fluxflow_stats"),
+        after_first_refresh,
+        "a second refresh with no new writes must be a no-op"
+    );
 }
 
 #[test]

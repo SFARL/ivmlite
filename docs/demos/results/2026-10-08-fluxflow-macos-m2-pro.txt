@@ -1,0 +1,13 @@
+arm64
+ProductName:		macOS
+ProductVersion:		26.2
+BuildVersion:		25C56
+rustc 1.95.0 (59807616e 2026-04-14)
+    Finished `release` profile [optimized] target(s) in 0.05s
+     Running `target/release/examples/fluxflow_demo 1500000 500 3`
+FluxFlow-shaped slice: rows=1500000, mixed_batch=500, repeats=3; median reported
+mode,base_rows,batch_size,repeats,bootstrap_ms,apply_ms,maintain_ms,read_ms,apply_plus_maintain_ms,database_kib
+no_maintenance,1500000,500,3,0.000,0.227,0.000,0.000,0.227,60716
+full_recompute,1500000,500,3,0.000,0.230,1289.994,0.000,1290.224,60716
+handwritten_trigger,1500000,500,3,1326.856,1.428,0.000,0.524,1.428,61020
+ivmlite,1500000,500,3,2884.475,4.082,2.676,2.833,6.758,63316

@@ -3,6 +3,7 @@ mod data;
 mod differential;
 mod engine;
 mod extension;
+pub mod fluxflow;
 mod incremental;
 mod invariants;
 mod naive;

@@ -4,6 +4,15 @@ Research date: 2026-09-24. These are **documented problem patterns**, not
 customer interviews, endorsements, or evidence that their authors want ivmlite.
 Historical performance reports are not benchmarks of current software.
 
+The [real-world demo roadmap](real-world-demo-roadmap.md) records the next
+source-backed candidates, their evidence levels, current ivmlite boundaries,
+and why FluxFlow is the first implementation target.
+
+The first executable workload from that roadmap is the
+[FluxFlow grouped-flow rollup slice](fluxflow.md). It uses the real extension,
+a deterministic large fixture, mixed mutations, a full-recompute baseline and
+a correct hand-written trigger baseline.
+
 ## Run the first two demos
 
 From the repository root, with the project's Rust toolchain installed:
