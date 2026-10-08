@@ -85,6 +85,18 @@ Every new check gets a verified gate row.
 
 The arming statement becomes `INSERT INTO stage(op) VALUES ('apply')`. It is still one statement and still the last one of every apply (Phase 3a §5). The trigger fires once, for that row only. Staging inserts evaluate the `WHEN` and skip the body.
 
+**Amendment 2026-10-08: arm by an update, not an insert.** The `AFTER INSERT … WHEN NEW.op = 'apply'` trigger above is replaced. The Task 2 review measured it on one view of 10 over 100,000 rows with 1,000 groups:
+- every staging insert evaluates the trigger's `WHEN`, adding 2.1 ms per view to staging;
+- that cancels most of the 2.6 ms the set-based body saves on arming;
+- a whole refresh came out only about 3% faster.
+
+Instead:
+- the trigger is `AFTER UPDATE OF op ON "__ivm_stage_<view>" WHEN NEW.op = 'apply'`, which no staging insert can fire;
+- each apply first stages one sentinel row, `INSERT INTO stage(op) VALUES ('arm')`, and keeps its rowid;
+- arming is `UPDATE stage SET op = 'apply' WHERE rowid = <sentinel rowid>`. It is still one statement, the last one of the apply, and the trigger still fires once.
+
+The review's prototype measured staging plus arming at 6.55 ms per view, against 8.95 ms before Phase 5 and 8.56 ms with the insert trigger. The body (below) is unchanged; its statements already filter on `op`, so the sentinel row is inert.
+
 **The body.** The stage table carries the reserved alias `__ivm_s` everywhere, so no output-column name can capture a reference (the lesson of Phase 3b's `__ivm_b`). The body runs these set-based statements in this order:
 
 1. Per arrangement *i*:
