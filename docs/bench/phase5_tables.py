@@ -106,6 +106,9 @@ def ablation(abl, builds):
     labels = {r["label"] for r in abl}
     print(f"labels in the ablation CSV match the build list: {labels == {b['label'] for b in builds}}")
     print(f"build order in this script matches the build list: {BUILDS == [b['label'] for b in builds]}")
+    print(f"cells: {len({cell_key(r) for r in abl})}; builds: {len(builds)}; "
+          f"repeats per (build, cell, engine): "
+          f"{sorted(set(collections.Counter((r['label'], cell_key(r), r['engine']) for r in abl).values()))}")
 
     runs = collections.defaultdict(list)
     for r in abl:
@@ -144,6 +147,11 @@ def ablation(abl, builds):
                 f"  {fmt_cell(k)} | {tr:.3f}x ({100 * (1 - 1 / tr):+.1f}% time saved) | {ov} -> {verdict} | "
                 f"{mr:.3f}x | {br:.3f}x"
             )
+    whole = {k: stats[("before", k)]["total"][0] / stats[("profiled", k)]["total"][0] for k in cells}
+    stage = {k: stats[("setapply", k)]["total"][0] / stats[("stage", k)]["total"][0] for k in cells}
+    rest = [whole[k] for k in cells if stage[k] < 1.5]
+    print(f"whole phase over all cells: {min(whole.values()):.2f}..{max(whole.values()):.2f}x; "
+          f"over the {len(rest)} cells where §5 is below 1.5x: {min(rest):.2f}..{max(rest):.2f}x")
     print("before -> profiled, the whole phase:")
     for k in cells:
         p, n = stats[("before", k)], stats[("profiled", k)]
@@ -381,7 +389,8 @@ def confirmed_change(c4, c5):
 def demos(rows, builds):
     section("Demo builds (m1b-phase5-demos-builds.csv)")
     for b in builds:
-        print(f"  {b['label']}: {b['commit']}")
+        print(f"  {b['label']}: {b['commit']} (harness {b['harness_commit']}, uncommitted harness changes: "
+              f"{b['harness_dirty']}, SQLite {b['sqlite']})")
     print(f"labels match: {({r['label'] for r in rows}) == {b['label'] for b in builds}}")
     d = {(r["label"], r["case"], r["mode"]): r for r in rows}
     cases = list(dict.fromkeys(r["case"] for r in rows))
@@ -447,6 +456,18 @@ def demos(rows, builds):
         print(f"  {case}: " + ", ".join(parts))
 
 
+def kener_recheck(rows):
+    section("Kener re-run alone, builds in reverse order (m1b-phase5-demos-kener-recheck.csv, same commits)")
+    print(f"build order in the CSV: {list(dict.fromkeys(r['label'] for r in rows))}")
+    d = {r["label"]: r for r in rows if r["mode"] == "ivmlite"}
+    for label in DEMO_BUILDS:
+        r = d[label]
+        print(f"  {label:6} maintain {r['maintain_ms']} [{r['maintain_min_ms']}, {r['maintain_max_ms']}] | "
+              f"first_refresh {r['first_refresh_ms']} | end_to_end {r['end_to_end_ms']}")
+    b, a = float(d["before"]["maintain_ms"]), float(d["after"]["maintain_ms"])
+    print(f"steady-state refresh before/after: {b / a:.2f}x")
+
+
 def main():
     ablation(load("m1b-phase5-ablation.csv"), load("m1b-phase5-ablation-builds.csv"))
     ablation_write_amp(load("m1b-phase5-ablation-write-amp.csv"))
@@ -459,6 +480,7 @@ def main():
     phase_change(p4, p5, speedups(p4), sp5)
     confirmed_change(load("m1b-phase4-confirm.csv"), load("m1b-phase5-confirm.csv"))
     demos(load("m1b-phase5-demos.csv"), load("m1b-phase5-demos-builds.csv"))
+    kener_recheck(load("m1b-phase5-demos-kener-recheck.csv"))
 
 
 if __name__ == "__main__":

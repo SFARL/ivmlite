@@ -8,7 +8,9 @@
 # Each demo runs at its documented scale (docs/demos/*.md) with its default
 # repeats. The demo CSVs begin with `#` provenance lines; those are dropped,
 # one header is kept, and every row gains a leading label column. A second
-# CSV records the commit behind each label.
+# CSV records, per label, the extension's commit, the harness commit (this
+# tree's HEAD, and whether crates/ or the Cargo files had uncommitted
+# changes) and the SQLite version the demos report.
 #
 # Usage: scripts/bench-demos.sh <label>=<rev> [<label>=<rev> ...]
 #
@@ -60,9 +62,22 @@ for pair in "$@"; do
         echo "not a commit: $rev" >&2
         exit 1
     }
+    for seen in "${labels[@]:-}"; do
+        if [ "$seen" = "$label" ]; then
+            echo "duplicate label: $label" >&2
+            exit 1
+        fi
+    done
     labels+=("$label")
     commits+=("$commit")
 done
+
+harness_commit="$(git rev-parse HEAD)"
+if [ -z "$(git status --porcelain -- crates Cargo.toml Cargo.lock)" ]; then
+    harness_dirty="no"
+else
+    harness_dirty="yes"
+fi
 
 echo "building the demo benchmarks..." >&2
 cargo build --release --locked -p ivmlite-test --example fluxflow_demo --example demand_case_bench
@@ -92,13 +107,13 @@ mkdir -p "$(dirname "$out")" "$(dirname "$builds_out")"
 out_tmp="$(mktemp "$(dirname "$out")/.$(basename "$out" .csv).XXXXXX")"
 builds_tmp="$(mktemp "$(dirname "$builds_out")/.$(basename "$builds_out" .csv).XXXXXX")"
 temporary_files+=("$out_tmp" "$builds_tmp")
-echo "label,commit" >"$builds_tmp"
+echo "label,commit,harness_commit,harness_dirty,sqlite" >"$builds_tmp"
 header=""
+sqlite_version=""
 
 for index in "${!labels[@]}"; do
     label="${labels[$index]}"
     commit="${commits[$index]}"
-    echo "$label,$commit" >>"$builds_tmp"
 
     scratch_root="$(mktemp -d "${TMPDIR:-/tmp}/ivmlite-demos-${label}.XXXXXX")"
     wt="$scratch_root/worktree"
@@ -120,7 +135,16 @@ for index in "${!labels[@]}"; do
         "$examples_dir/${words[0]}" "${words[@]:1}" --extension "$lib" >"$run_csv"
         echo "$label: $demo took $(($(date +%s) - started)) s" >&2
 
-        run_header="$(grep -v '^#' "$run_csv" | head -n 1)"
+        # sed quits after the first match without a SIGPIPE, which `head`
+        # would raise under pipefail.
+        run_header="$(sed -n '/^[^#]/{p;q;}' "$run_csv")"
+        run_sqlite="$(sed -n 's/^# sqlite: \([^ ]*\).*/\1/p' "$run_csv")"
+        if [ -z "$sqlite_version" ]; then
+            sqlite_version="$run_sqlite"
+        elif [ "$run_sqlite" != "$sqlite_version" ]; then
+            echo "$label: $demo reported SQLite $run_sqlite, not $sqlite_version" >&2
+            exit 1
+        fi
         if [ -z "$header" ]; then
             header="$run_header"
             echo "label,$header" >>"$out_tmp"
@@ -131,6 +155,7 @@ for index in "${!labels[@]}"; do
         grep -v '^#' "$run_csv" | tail -n +2 | awk -v label="$label" '{ print label "," $0 }' >>"$out_tmp"
         rm -f "$run_csv"
     done <<<"$demos"
+    echo "$label,$commit,$harness_commit,$harness_dirty,$sqlite_version" >>"$builds_tmp"
 
     git worktree remove --force "$wt"
     rmdir "$scratch_root"

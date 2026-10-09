@@ -33,8 +33,10 @@ SQL subset and persisted shadow-table format without migration.
   extension built at several commits; a batch=1, 200-view ablation cell; and
   `scripts/profile-refresh.sh`, which profiles refresh on macOS.
 - Published M1b Phase 5 results in [`docs/bench/README.md`](docs/bench/README.md):
-  - in the five-build ablation, apply + refresh is 1.35–3.52x faster than in
-    alpha.2;
+  - in the five-build ablation, apply + refresh is 1.35–1.53x faster than in
+    alpha.2 in four cells, and 3.52x in the fifth (200 views, 100,000 groups),
+    where most of the gain is the first refresh after `CREATE` no longer
+    draining the bootstrap stage; the benchmark times that first refresh;
   - the speedup over full recomputation is above 2x in 57 of 68 cells,
     including all 48 at 100,000 rows and more;
   - steady-state refresh in the FluxFlow, noop and Zcash demos is 1.19–1.44x
@@ -43,12 +45,13 @@ SQL subset and persisted shadow-table format without migration.
 ### Known limitations
 
 - ivmlite still does not come close to hand-written triggers on apply +
-  refresh time: 1.81x slower at best, 6.64–17.55x slower in the confirmed
-  cells with batches of 100 or more, and thousands of times slower with
+  refresh time: 1.81x slower at best (10 groups), and 6.64–17.55x slower in
+  the other confirmed cells with batches of 100 or more, and thousands of times slower with
   one-row batches at 200 views.
-- The Kener demo's steady-state refresh is slower than in alpha.2
-  (2.547 → 3.179 ms median), although its end to end is unchanged; the cause
-  is not yet known.
+- The Kener demo's steady-state refresh is slower than in alpha.2, by 0.80x
+  to 0.90x of its speed in two runs (2.547 → 3.179 ms and 2.512 → 2.794 ms
+  medians), although its end to end is unchanged; the cause is not yet
+  known.
 - Writes to a tracked table still cost more as views are added (about
   59–71 µs per inserted or updated row at 200 views).
 

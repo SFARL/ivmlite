@@ -762,7 +762,7 @@ The right bar has three tiers:
 
 > **Amended 2026-10-08, M1b Phase 5:** measured against these three tiers after Phase 5's refresh work, in [`docs/bench/README.md`](../../bench/README.md), "M1b Phase 5":
 > - **Must:** met at 100,000 base rows and above. All 48 such cells were above 2x, and the small-table corner still loses.
-> - **Expected:** still not met. In the confirmed cells, ivmlite's apply + refresh is 1.81x the hand-written trigger's at best (10 groups, batch 1,000), 6.64–17.55x with batches of 100 or more, and far more with tiny batches at 200 views.
+> - **Expected:** still not met. In the confirmed cells, ivmlite's apply + refresh is 1.81x the hand-written trigger's at best (10 groups, batch 1,000), 6.64–17.55x in the other confirmed cells with batches of 100 or more, and far more with tiny batches at 200 views.
 > - **Bonus:** not observed in any cell or repeat.
 >
 > The remaining cost is the maintenance itself: the trigger body's B-tree work in the state and output tables is about 40% of refresh, and the operator tree about 27% (Phase 5 spec §6).

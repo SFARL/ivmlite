@@ -82,6 +82,8 @@ A `CREATE VIRTUAL TABLE` that fails part way leaves nothing behind, in autocommi
 
 **xUpdate:** only `INSERT INTO v(v) VALUES('refresh')` is accepted; any other insert, update or delete, or another command, is an error — including `INSERT INTO v(v) VALUES('refresh')` itself if any of the row's other, output-column values is non-NULL (`INSERT INTO v(col, v) VALUES (1, 'refresh')` fails rather than silently dropping the `1`). Refresh first repeats xConnect's shape and trigger checks — a mismatch is the same broken-view error — and then:
 
+> **Amended 2026-10-08, M1b Phase 5:** a refresh repeats those checks only when `PRAGMA schema_version` has changed since they last passed on this connection; it always reads each base table's latch ([Phase 5 spec §3](2026-10-08-m1b-phase5-refresh-performance-design.md)).
+
 1. for each base table of the compiled view, in the order of its `tables` (the anchor table first), read the deltas with `seq` above its progress, in `seq` order;
 2. push them through the operator tree, whose arrangements read the state tables and **buffer** every write in memory, overlaying it on what later reads see;
 3. write every buffered state change, every output change and every new watermark into the stage table (emptied first);

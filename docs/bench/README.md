@@ -583,7 +583,7 @@ The protocol is Phase 4 spec §3, unchanged. Every cell and demo mode verified
 its initial and final state against SQLite's own evaluation of the view. None
 mismatched.
 
-- **Ablation.** The six cells of `[ablation]` in
+- **Ablation.** The five cells of `[ablation]` in
   `workloads/m0-baseline.toml`, five repeats each, over `naive_recompute` and
   `ivmlite`. These are Phase 4's four cells plus one Phase 5 adds:
   `views=200, base_rows=100,000, batch=1, groups=1,000`. In that cell a
@@ -629,9 +629,11 @@ python3 docs/bench/phase5_tables.py
 ```
 
 The labels map to commits in
-[`m1b-phase5-ablation-builds.csv`](m1b-phase5-ablation-builds.csv) and
-[`m1b-phase5-demos-builds.csv`](m1b-phase5-demos-builds.csv). The extension
-at the branch head is the `profiled` build's.
+[`m1b-phase5-ablation-builds.csv`](m1b-phase5-ablation-builds.csv), which is
+written by hand, as in Phase 4, and in
+[`m1b-phase5-demos-builds.csv`](m1b-phase5-demos-builds.csv), which
+`scripts/bench-demos.sh` writes. The extension at the branch head is the
+`profiled` build's.
 
 ### Ablation: which changes matter
 
@@ -674,7 +676,7 @@ build before it, as the ratio of medians (above 1 means faster). A change is
 |---:|---:|---:|---:|---:|---:|---:|---:|
 | 10 | 1,000 | 1,000 | indistinguishable (1.011x) | 1.295x | indistinguishable (0.997x) | 1.033x | 1.35x |
 | 10 | 1,000 | 100,000 | indistinguishable (1.002x) | 1.207x | 1.037x | 1.078x | 1.35x |
-| 200 | 1 | 1,000 | 1.553x | **0.975x (slower)** | 1.011x | indistinguishable (1.000x) | 1.53x |
+| 200 | 1 | 1,000 | 1.553x | **0.975x (slower, at the noise floor)** | 1.011x | indistinguishable (1.000x) | 1.53x |
 | 200 | 100 | 100,000 | 1.118x | indistinguishable (1.024x) | 3.076x | indistinguishable (0.998x) | 3.52x |
 | 200 | 1,000 | 1,000 | 1.074x | 1.245x | indistinguishable (0.997x) | 1.085x | 1.45x |
 
@@ -701,8 +703,8 @@ got worse" below.
 - **§5 matters only where bootstrap leaves a large stage.** At 200 views and
   100,000 groups it is 3.076x, from 1,182.072 to 384.295 ms. As explained
   above, that is mostly the leftover stage leaving the first refresh, not a
-  faster steady state. Bootstrap did not get slower for it (setapply to stage:
-  1.001x and 0.983x at 100,000 groups). It is indistinguishable in two cells,
+  faster steady state. Bootstrap changed by at most 1.7% (setapply to stage:
+  1.001x and 0.983x at 100,000 groups), within the drift control. It is indistinguishable in two cells,
   and 1.037x and 1.011x in two others.
 - **§6 gives the few percent it was kept for.** It is 1.033x, 1.078x and
   1.085x in the batch=1,000 cells, the cells with the most stage rows, and
@@ -710,7 +712,10 @@ got worse" below.
   6.5%.
 
 The drift control: `naive_recompute`, which no build changes, kept medians
-within 1.017–1.040x (max/min across builds) in each cell.
+within 1.017–1.040x (max/min across builds) in each cell. So a change under
+about 1.04x is at the noise floor even where its ranges are apart: §3 at
+200 views and batch=1,000 (1.074x) clears it, §4's 0.975x, §5's 1.037x and
+1.011x, and §6's 1.033x do not.
 
 **Space.** §5 halves the bootstrapped database where the stage was large. At
 200 views and 100,000 groups, bootstrapped used pages went from 679,513
@@ -838,7 +843,11 @@ end divided by `ivmlite`'s, before and after.
 - FluxFlow is the one demo with a hand-written trigger baseline. There,
   `ivmlite` stays 4.95x slower end to end (before: 5.04x).
 - **Kener's steady-state refresh got slower.** Its range moved from
-  [2.504, 2.606] to [2.743, 8.828] ms. Its end to end did not change: at
+  [2.504, 2.606] to [2.743, 8.828] ms; the 8.828 ms maximum is one outlier
+  that the median does not feel. A re-run of Kener alone, with the builds in
+  reverse order (`m1b-phase5-demos-kener-recheck.csv`), gave 2.512 → 2.794 ms
+  (0.90x), again with the ranges apart. The regression is real; its size, 0.80x
+  to 0.90x, is uncertain. Its end to end did not change: at
   550,000 groups, reading the view is almost all of it. Its first refresh
   after `CREATE` got 1.92x faster, as §5 intends, and its bootstrap 1.20x
   faster (9,019.544 to 7,530.303 ms), in line with §4's faster bootstrap at
@@ -876,12 +885,13 @@ phase, and are less exposed to that drift.
 ### What got worse
 
 - **One ablation cell, from §4.** In the batch=1 cell at 200 views, `setapply`
-  was 0.975x of `schemaver` (206.199 to 211.552 ms), with the ranges apart.
-  The whole phase is still 1.53x faster there, because §3 came first.
-- **Kener's steady-state refresh**: 2.547 to 3.179 ms (0.80x), with the ranges
-  apart. The other three demos got faster. What is known:
-  - Kener has the widest output row (five columns) and the most groups
-    (550,000);
+  was 0.975x of `schemaver` (206.199 to 211.552 ms), with the ranges apart but
+  within the ablation's noise floor of about 1.04x. The whole phase is still
+  1.53x faster there, because §3 came first.
+- **Kener's steady-state refresh**: 2.547 to 3.179 ms (0.80x), and 0.90x in
+  the reversed re-run, with the ranges apart both times. The other three demos
+  got faster. What is known:
+  - Kener has a five-column output, and by far the most groups (550,000);
   - every statement of the set-based body scans the whole stage, since the
     stage has no index on `op`. `EXPLAIN QUERY PLAN` of the body shows a
     `SCAN` of the stage in every statement, and index searches on the state
@@ -926,10 +936,11 @@ Raw data:
 
 - [`m1b-phase5.csv`](m1b-phase5.csv): 68 cells × 4 engines.
 - [`m1b-phase5-confirm.csv`](m1b-phase5-confirm.csv): 8 selected cells × 5 repeats × 4 engines.
-- [`m1b-phase5-ablation.csv`](m1b-phase5-ablation.csv): five builds × six cells × five repeats × two engines.
+- [`m1b-phase5-ablation.csv`](m1b-phase5-ablation.csv): five builds × five cells × five repeats × two engines.
 - [`m1b-phase5-ablation-write-amp.csv`](m1b-phase5-ablation-write-amp.csv): ivmlite at 10/200 views for all operations and both trigger modes, across five builds, one run each.
 - [`m1b-phase5-ablation-builds.csv`](m1b-phase5-ablation-builds.csv): the commit behind each ablation label.
-- [`m1b-phase5-demos.csv`](m1b-phase5-demos.csv) and [`m1b-phase5-demos-builds.csv`](m1b-phase5-demos-builds.csv): the four demos against two builds, as median, min and max per metric over five repeats, and the commit behind each label.
+- [`m1b-phase5-demos.csv`](m1b-phase5-demos.csv) and [`m1b-phase5-demos-builds.csv`](m1b-phase5-demos-builds.csv): the four demos against two builds, as median, min and max per metric over five repeats; and, per label, the extension commit, the harness commit and the SQLite version. The harness and SQLite columns were added after the run and re-derived: the harness was `bea7f3b`, the branch head while the demos ran, with no uncommitted changes under `crates/` or the Cargo files, and the bundled SQLite is fixed by `Cargo.lock`, unchanged since.
+- [`m1b-phase5-demos-kener-recheck.csv`](m1b-phase5-demos-kener-recheck.csv): Kener alone, the same two builds in reverse order, run right after the demo run to check its regression.
 - [`phase5_tables.py`](phase5_tables.py): derives every table and figure in this section from the CSVs above.
 
 Charts:
