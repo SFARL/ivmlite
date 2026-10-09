@@ -180,7 +180,8 @@ cargo run --release --locked -p ivmlite-test \
 Run the M1b Phase 4 benchmark (the extension against hand-written triggers and
 full recomputation, with confirmation repeats and a write-amplification
 workload); [`docs/bench/README.md`](docs/bench/README.md) has the full
-reproduce block and the results:
+reproduce block and the results for Phase 4 and for M1b Phase 5's
+refresh-performance follow-up:
 
 ```sh
 scripts/bench.sh matrix > m1b-phase4.csv

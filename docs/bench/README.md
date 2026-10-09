@@ -207,7 +207,7 @@ in-memory.
 
 ### Reproducing
 
-From the repository root, on the commit that holds this README:
+From the repository root, at v0.1.0-alpha.2 (c0f2123):
 
 ```bash
 scripts/bench.sh matrix > docs/bench/m1b-phase4.csv
@@ -704,8 +704,9 @@ got worse" below.
   100,000 groups it is 3.076x, from 1,182.072 to 384.295 ms. As explained
   above, that is mostly the leftover stage leaving the first refresh, not a
   faster steady state. Bootstrap changed by at most 1.7% (setapply to stage:
-  1.001x and 0.983x at 100,000 groups), within the drift control. It is indistinguishable in two cells,
-  and 1.037x and 1.011x in two others.
+  1.001x and 0.983x at 100,000 groups), within the drift control. §5's effect
+  on steady-state refresh is indistinguishable in two cells, and 1.037x and
+  1.011x in two others.
 - **§6 gives the few percent it was kept for.** It is 1.033x, 1.078x and
   1.085x in the batch=1,000 cells, the cells with the most stage rows, and
   indistinguishable in the other two. The §6 amendment's own measurement was

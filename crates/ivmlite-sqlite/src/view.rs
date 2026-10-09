@@ -32,8 +32,9 @@ use crate::state::{BufferedArrangement, Pending};
 ///
 /// Format 4 (Phase 5 spec §4) drops the stage table's `armed` column: its
 /// apply trigger fires once, when the arming `UPDATE` turns the stage's
-/// sentinel row into `apply`, and applies every staged row set-based. A format-3 database's trigger is the
-/// per-row one, so it is refused; since this is an alpha, it is not migrated.
+/// sentinel row into `apply`, and applies every staged row set-based. A
+/// format-3 database's trigger is the per-row one, so it is refused; since
+/// this is an alpha, it is not migrated.
 pub const FORMAT: i64 = 4;
 
 /// The column of the view's output table that holds each row's weight.
@@ -325,6 +326,12 @@ fn same_row(pk: &Option<Vec<String>>, left: &str, right: &str) -> String {
 /// the reserved `__ivm_` prefix, so these aliases cannot collide.
 const BASE_ALIAS: &str = "__ivm_b";
 const PEND_ALIAS: &str = "__ivm_p";
+
+/// The alias a subquery over the output table gives the stage, wherever it
+/// reads the stage's `cN`: an unqualified `c0` there would resolve to an
+/// output column named `c0` first. The reserved `__ivm_` prefix means this
+/// cannot collide with a view's own column names.
+const STAGE_ALIAS: &str = "__ivm_s";
 
 /// The existing rows a new row could replace (spec §6.2), one `UNION`
 /// branch per unique index plus the rowid, each able to use its own index.
@@ -969,7 +976,7 @@ fn create_stage(
     // The trigger body names every table unqualified: SQLite rejects a
     // schema-qualified name on INSERT/UPDATE/DELETE inside a trigger, and a
     // trigger in `main` resolves its body's names in `main` (see
-    // `create_delta_table`). Every statement outside the body is qualified.
+    // `capture_triggers`). Every statement outside the body is qualified.
     let stage = quote(&stage_table(name));
     let out = quote(&out_table(name));
     let progress = quote(PROGRESS);
@@ -988,10 +995,7 @@ fn create_stage(
     // INSERT trigger's `WHEN` cost each staging insert about as much as the
     // set-based body saved). The body filters on `op`, so the sentinel is
     // inert in it.
-    // Wherever a subquery over the output table reads the stage's `cN`, the
-    // stage carries the reserved alias `__ivm_s`: an unqualified `c0` there
-    // would resolve to an output column named `c0` first.
-    let s = "__ivm_s";
+    let s = STAGE_ALIAS;
     let lookup = retraction_lookup(&out, &cols, |i| format!("{s}.c{i}"));
     let mut body = Vec::new();
     // The order is the row trigger's (Phase 3a §5): state, then output, then
@@ -1438,13 +1442,12 @@ pub fn create(conn: &Rc<Connection>, name: &str, sql: &str) -> Result<(CompiledV
         },
     )?;
     // Spec §5: unlike a refresh, a failing CREATE VIRTUAL TABLE is rolled back
-    // as a whole — it writes sqlite_schema — so emptying the stage after the
-    // bootstrap's apply cannot leave an applied-but-reported-failed state
-    // (Phase 3a §5). "Nothing after the apply can fail a refresh" protects a
-    // *refresh* inside an explicit transaction, where a callback's writes are
-    // not undone; a failing `CREATE VIRTUAL TABLE` is rolled back as a whole,
-    // in autocommit and in an explicit transaction alike (Phase 3a §5,
-    // measured), so this DELETE is safe to fail.
+    // as a whole, in autocommit and in an explicit transaction alike (Phase 3a
+    // §5, measured) — it writes sqlite_schema — so emptying the stage after
+    // the bootstrap's apply cannot leave an applied-but-reported-failed state.
+    // "Nothing after the apply can fail a refresh" protects a *refresh* inside
+    // an explicit transaction, where a callback's writes are not undone; that
+    // concern does not apply here, so this DELETE is safe to fail.
     exec(
         conn,
         &format!("DELETE FROM {}", main_qualified(&stage_table(name))),
