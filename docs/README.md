@@ -25,6 +25,7 @@
   Phase 5 adds its own matrix, confirmation, five-build ablation, demo before/after and six charts, and [`phase5_tables.py`](bench/phase5_tables.py), which recomputes every Phase 5 table from the CSVs.
 - **`scripts/`** — build, test and benchmark scripts. For Phase 5: [`bench-demos.sh`](../scripts/bench-demos.sh) runs the demo benchmarks against several builds of the extension, and [`profile-refresh.sh`](../scripts/profile-refresh.sh) with [`profile-refresh.py`](../scripts/profile-refresh.py) profiles refresh (Phase 5 spec §6).
 - **`cases/`** — original real-world reports, queries and implementation snapshots, collected before phase evaluation ([README](cases/README.md)).
+- **`demos/`** — four demand-backed demo benchmarks (FluxFlow, noop, Zcash, Kener) run against the real extension and a SQLite recomputation oracle, sharing one protocol runner (`crates/ivmlite-test/src/demo_bench.rs`), with the protocol, each demo's write-up and its results ([README](demos/README.md)).
 - **`adr/`** — Architecture Decision Records (reserved; see below).
 - **`spikes/`** — feasibility probes and their conclusions. The output is a conclusion, not code to keep.
   - [`2026-09-18-m-1-sqlite-extension-mechanics.md`](spikes/2026-09-18-m-1-sqlite-extension-mechanics.md) — M-1: can the control surface work as designed (blocks M1)

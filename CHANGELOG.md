@@ -26,9 +26,21 @@ SQL subset and persisted shadow-table format without migration.
 - A refresh stages its rows with multi-row `INSERT … VALUES` statements of
   up to 64 rows, bounded by the connection's live
   `SQLITE_LIMIT_VARIABLE_NUMBER` and by 999 parameters.
+- `ivmlite-bench plot --from` now names its charts after the exploration
+  CSV's file stem, so `m1b-phase5.csv` yields `m1b-phase5-*.svg` beside
+  Phase 4's charts instead of overwriting them.
 
 ### Added
 
+- Four demand-backed demo benchmarks — FluxFlow, noop, Zcash and Kener — share
+  one protocol runner, `crates/ivmlite-test/src/demo_bench.rs`: a checked
+  release extension (or an explicit `--extension`), every statement prepared
+  before its timer, a warm-up batch reported apart as `first_refresh_ms`, an
+  indexed-recomputation baseline, and multiset verification against SQLite.
+  FluxFlow lives in `examples/fluxflow_demo.rs`; noop, Zcash and Kener share
+  `examples/demand_case_bench.rs`; `real_case_bench` is refactored onto the
+  same helpers. `docs/demos/` documents the shared protocol, each demo, and
+  its results.
 - `scripts/bench-demos.sh`, which runs the demo benchmarks against the
   extension built at several commits; a batch=1, 200-view ablation cell; and
   `scripts/profile-refresh.sh`, which profiles refresh on macOS.
@@ -46,8 +58,8 @@ SQL subset and persisted shadow-table format without migration.
 
 - ivmlite still does not come close to hand-written triggers on apply +
   refresh time: 1.81x slower at best (10 groups), and 6.64–17.55x slower in
-  the other confirmed cells with batches of 100 or more, and thousands of times slower with
-  one-row batches at 200 views.
+  the other confirmed cells with batches of 100 or more, and thousands of
+  times slower with one-row batches at 200 views.
 - The Kener demo's steady-state refresh is slower than in alpha.2, by 0.80x
   to 0.90x of its speed in two runs (2.547 → 3.179 ms and 2.512 → 2.794 ms
   medians), although its end to end is unchanged; the cause is not yet
