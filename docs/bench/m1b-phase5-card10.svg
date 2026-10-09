@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="420" font-family="sans-serif" font-size="12">
+<rect width="720" height="420" fill="white"/>
+<text x="360" y="24" text-anchor="middle" font-size="15">apply + maintain &#183; views=10 &#183; batch=100 &#183; groups=10</text>
+<line x1="64" y1="356" x2="656" y2="356" stroke="#333"/>
+<line x1="64" y1="64" x2="64" y2="356" stroke="#333"/>
+<text x="360" y="400" text-anchor="middle">base_rows</text>
+<text x="18" y="18" fill="#333">ms (log10)</text>
+<line x1="64.0" y1="356.0" x2="64.0" y2="362.0" stroke="#333"/>
+<text x="64.0" y="374.0" text-anchor="middle">10k</text>
+<line x1="360.0" y1="356.0" x2="360.0" y2="362.0" stroke="#333"/>
+<text x="360.0" y="374.0" text-anchor="middle">100k</text>
+<line x1="656.0" y1="356.0" x2="656.0" y2="362.0" stroke="#333"/>
+<text x="656.0" y="374.0" text-anchor="middle">1M</text>
+<line x1="58.0" y1="346.9" x2="64.0" y2="346.9" stroke="#333"/>
+<text x="54.0" y="346.9" dy="4" text-anchor="end">0.010ms</text>
+<line x1="58.0" y1="301.2" x2="64.0" y2="301.2" stroke="#333"/>
+<text x="54.0" y="301.2" dy="4" text-anchor="end">0.100ms</text>
+<line x1="58.0" y1="255.6" x2="64.0" y2="255.6" stroke="#333"/>
+<text x="54.0" y="255.6" dy="4" text-anchor="end">1.0ms</text>
+<line x1="58.0" y1="210.0" x2="64.0" y2="210.0" stroke="#333"/>
+<text x="54.0" y="210.0" dy="4" text-anchor="end">10.0ms</text>
+<line x1="58.0" y1="164.4" x2="64.0" y2="164.4" stroke="#333"/>
+<text x="54.0" y="164.4" dy="4" text-anchor="end">100ms</text>
+<line x1="58.0" y1="118.8" x2="64.0" y2="118.8" stroke="#333"/>
+<text x="54.0" y="118.8" dy="4" text-anchor="end">1000ms</text>
+<line x1="58.0" y1="73.1" x2="64.0" y2="73.1" stroke="#333"/>
+<text x="54.0" y="73.1" dy="4" text-anchor="end">10000ms</text>
+<polyline fill="none" stroke="#888888" stroke-width="2" points="64.0,256.9 360.0,257.0 656.0,255.5"/>
+<circle cx="64.0" cy="256.9" r="3" fill="#888888"/>
+<circle cx="360.0" cy="257.0" r="3" fill="#888888"/>
+<circle cx="656.0" cy="255.5" r="3" fill="#888888"/>
+<text x="506" y="82" fill="#888888">hand_written_trigger</text>
+<polyline fill="none" stroke="#1f77b4" stroke-width="2" points="64.0,226.3 360.0,225.5 656.0,224.5"/>
+<circle cx="64.0" cy="226.3" r="3" fill="#1f77b4"/>
+<circle cx="360.0" cy="225.5" r="3" fill="#1f77b4"/>
+<circle cx="656.0" cy="224.5" r="3" fill="#1f77b4"/>
+<text x="506" y="100" fill="#1f77b4">ivmlite</text>
+<polyline fill="none" stroke="#d62728" stroke-width="2" points="64.0,199.7 360.0,151.0 656.0,102.9"/>
+<circle cx="64.0" cy="199.7" r="3" fill="#d62728"/>
+<circle cx="360.0" cy="151.0" r="3" fill="#d62728"/>
+<circle cx="656.0" cy="102.9" r="3" fill="#d62728"/>
+<text x="506" y="118" fill="#d62728">naive_recompute</text>
+<polyline fill="none" stroke="#2ca02c" stroke-width="2" points="64.0,322.6 360.0,318.0 656.0,313.5"/>
+<circle cx="64.0" cy="322.6" r="3" fill="#2ca02c"/>
+<circle cx="360.0" cy="318.0" r="3" fill="#2ca02c"/>
+<circle cx="656.0" cy="313.5" r="3" fill="#2ca02c"/>
+<text x="506" y="136" fill="#2ca02c">no_maintenance</text>
+</svg>

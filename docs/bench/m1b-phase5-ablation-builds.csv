@@ -1,0 +1,6 @@
+label,commit,build
+before,c0f21239cdb965e17b04e79bd1898105035a13a5,master at Phase 5 start: v0.1.0-alpha.2 (format 3)
+schemaver,f511c651613c21580751839ebc460d9589d947ce,after the schema-version-gated checks (spec §3)
+setapply,1642e46d56094c63bbbc823ab6a5822812942f2e,after the set-based apply armed on a sentinel row (spec §4 and its amendment; format 4)
+stage,fb5e39f71f0fc28f4fc6fd5c35f9345c74bfc789,after bootstrap empties its stage (spec §5)
+profiled,72880733415aa6be4ea2191b9295974c89ed5c73,after multi-row staging bounded by the live variable limit (spec §6)

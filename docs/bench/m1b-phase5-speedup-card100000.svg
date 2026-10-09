@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="420" font-family="sans-serif" font-size="12">
+<rect width="720" height="420" fill="white"/>
+<text x="360" y="24" text-anchor="middle" font-size="15">naive recompute / ivmlite &#183; views=10 &#183; groups=100000</text>
+<line x1="64" y1="356" x2="656" y2="356" stroke="#333"/>
+<line x1="64" y1="64" x2="64" y2="356" stroke="#333"/>
+<text x="360" y="400" text-anchor="middle">base_rows</text>
+<text x="18" y="18" fill="#333">speedup (log10)</text>
+<line x1="64.0" y1="356.0" x2="64.0" y2="362.0" stroke="#333"/>
+<text x="64.0" y="374.0" text-anchor="middle">100k</text>
+<line x1="656.0" y1="356.0" x2="656.0" y2="362.0" stroke="#333"/>
+<text x="656.0" y="374.0" text-anchor="middle">1M</text>
+<line x1="58.0" y1="343.0" x2="64.0" y2="343.0" stroke="#333"/>
+<text data-y-tick="1x" x="54.0" y="343.0" dy="4" text-anchor="end">1x</text>
+<line x1="58.0" y1="317.0" x2="64.0" y2="317.0" stroke="#333"/>
+<text data-y-tick="2x" x="54.0" y="317.0" dy="4" text-anchor="end">2x</text>
+<line x1="58.0" y1="282.7" x2="64.0" y2="282.7" stroke="#333"/>
+<text data-y-tick="5x" x="54.0" y="282.7" dy="4" text-anchor="end">5x</text>
+<line x1="58.0" y1="256.7" x2="64.0" y2="256.7" stroke="#333"/>
+<text data-y-tick="10x" x="54.0" y="256.7" dy="4" text-anchor="end">10x</text>
+<line x1="58.0" y1="230.7" x2="64.0" y2="230.7" stroke="#333"/>
+<text data-y-tick="20x" x="54.0" y="230.7" dy="4" text-anchor="end">20x</text>
+<line x1="58.0" y1="196.3" x2="64.0" y2="196.3" stroke="#333"/>
+<text data-y-tick="50x" x="54.0" y="196.3" dy="4" text-anchor="end">50x</text>
+<line x1="58.0" y1="170.3" x2="64.0" y2="170.3" stroke="#333"/>
+<text data-y-tick="100x" x="54.0" y="170.3" dy="4" text-anchor="end">100x</text>
+<line x1="58.0" y1="144.3" x2="64.0" y2="144.3" stroke="#333"/>
+<text data-y-tick="200x" x="54.0" y="144.3" dy="4" text-anchor="end">200x</text>
+<line x1="58.0" y1="109.9" x2="64.0" y2="109.9" stroke="#333"/>
+<text data-y-tick="500x" x="54.0" y="109.9" dy="4" text-anchor="end">500x</text>
+<line x1="58.0" y1="83.9" x2="64.0" y2="83.9" stroke="#333"/>
+<text data-y-tick="1000x" x="54.0" y="83.9" dy="4" text-anchor="end">1000x</text>
+<line data-reference="1x" x1="64.0" y1="343.0" x2="656.0" y2="343.0" stroke="#555" stroke-dasharray="4 3"/>
+<text x="656.0" y="343.0" dy="-3" text-anchor="end">1x</text>
+<line data-reference="2x" x1="64.0" y1="317.0" x2="656.0" y2="317.0" stroke="#555" stroke-dasharray="8 3"/>
+<text x="656.0" y="317.0" dy="-3" text-anchor="end">2x</text>
+<polyline fill="none" stroke="#888888" stroke-width="2" points="64.0,160.1 656.0,77.0"/>
+<circle cx="64.0" cy="160.1" r="3" fill="#888888"/>
+<circle cx="656.0" cy="77.0" r="3" fill="#888888"/>
+<text x="72" y="82" fill="#888888">batch=1</text>
+<polyline fill="none" stroke="#1f77b4" stroke-width="2" points="64.0,182.9 656.0,96.9"/>
+<circle cx="64.0" cy="182.9" r="3" fill="#1f77b4"/>
+<circle cx="656.0" cy="96.9" r="3" fill="#1f77b4"/>
+<text x="72" y="100" fill="#1f77b4">batch=10</text>
+<polyline fill="none" stroke="#d62728" stroke-width="2" points="64.0,228.7 656.0,148.1"/>
+<circle cx="64.0" cy="228.7" r="3" fill="#d62728"/>
+<circle cx="656.0" cy="148.1" r="3" fill="#d62728"/>
+<text x="72" y="118" fill="#d62728">batch=100</text>
+<polyline fill="none" stroke="#2ca02c" stroke-width="2" points="64.0,301.3 656.0,220.4"/>
+<circle cx="64.0" cy="301.3" r="3" fill="#2ca02c"/>
+<circle cx="656.0" cy="220.4" r="3" fill="#2ca02c"/>
+<text x="72" y="136" fill="#2ca02c">batch=1000</text>
+</svg>
