@@ -247,4 +247,10 @@ The protocol is Phase 4 spec §3, unchanged.
   - what still loses and why;
   - anything that got worse.
 
+**Amendment 2026-10-08: how §7 was run.** The results are in the "M1b Phase 5" section of [`docs/bench/README.md`](../../bench/README.md). Four details differ from, or add to, the text above:
+- `scripts/bench-ablation.sh` also runs each build's ablation write-amplification workload, as it did in Phase 4. Its output is kept as `docs/bench/m1b-phase5-ablation-write-amp.csv`. It shows the write path unchanged within noise. The full write-amplification run was not repeated.
+- `scripts/bench-demos.sh` also writes `docs/bench/m1b-phase5-demos-builds.csv`, label → commit. Each demo runs at the scale its own page documents (FluxFlow 1,500,000 rows with batch 500; noop 518,400 with 200; Zcash 500,000 with 500; Kener 4,100,000 with 500), with its default five repeats.
+- `plot --from` now names its charts after the CSV, so the Phase 5 charts are `m1b-phase5-*.svg` beside Phase 4's.
+- A matrix or ablation cell runs one batch in a fresh database, so its timed `maintain` is the first refresh after `CREATE`. Before §5, that refresh also emptied bootstrap's stage. The README therefore reads §5's ablation effect as partly a one-time cost, and uses the demos' separate `first_refresh_ms` and `maintain_ms` for the steady state.
+
 **Release.** The phase ends with `v0.1.0-alpha.3`: a CHANGELOG entry, release notes, and format 4.

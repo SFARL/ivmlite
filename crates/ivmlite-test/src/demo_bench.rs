@@ -14,8 +14,9 @@
 //! One addition to §3.2: between the initial verification and the timed
 //! batch, an untimed warm-up batch is applied and maintained. Its maintenance
 //! is reported on its own as `first_refresh_ms`, because ivmlite's first
-//! refresh after `CREATE` also drains the stage its bootstrap left behind, a
-//! one-time cost that is not steady-state refresh (`docs/demos/README.md`).
+//! refresh after `CREATE` is not steady-state refresh: with a format-3 build
+//! it also drains the stage its bootstrap left behind, a one-time cost that
+//! format 4 moves into bootstrap (M1b Phase 5 spec §5; `docs/demos/README.md`).
 
 use std::cmp::Ordering;
 use std::error::Error;
@@ -447,7 +448,8 @@ pub trait Workload {
 pub struct Timing {
     pub bootstrap_ms: f64,
     /// The maintenance after the warm-up batch: for ivmlite, the first
-    /// refresh after `CREATE`, including the bootstrap's leftover stage.
+    /// refresh after `CREATE`, including, with a format-3 build, the
+    /// bootstrap's leftover stage.
     pub first_refresh_ms: f64,
     pub apply_ms: f64,
     pub maintain_ms: f64,

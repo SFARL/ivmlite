@@ -197,6 +197,10 @@ def ablation_write_amp(aw):
                 print(f"  {v:3} {m:5} {op:14} | " + " | ".join(f"{x:7.3f}" for x in vals) + f" | {vals[-1] / vals[0]:.3f}x")
     for v in views:
         print(f"views={v}: profiled/before us per row across ops and modes {min(ratios[v]):.3f}..{max(ratios[v]):.3f}x")
+        latch = [us[("profiled", v, op, m)] for op in OPS if op != "delete" for m in MODES]
+        delete = [us[("profiled", v, "delete", m)] for m in MODES]
+        print(f"views={v}, profiled: insert/update/REPLACE {min(latch):.3f}..{max(latch):.3f} us per row; "
+              f"delete {min(delete):.3f}..{max(delete):.3f}")
 
 
 # ---------------------------------------------------------------------------
@@ -343,6 +347,9 @@ def phase_change(p4, p5, sp4, sp5):
             f"  base_rows={base}: >2 {sum(sp4[k] > 2 for k in ks)} -> {sum(sp5[k] > 2 for k in ks)}, "
             f"<1 {sum(sp4[k] < 1 for k in ks)} -> {sum(sp5[k] < 1 for k in ks)}"
         )
+    for name, cs in (("P4", p4), ("P5", p5)):
+        lower = sum(1 for k in common if float(cs[k]["ivmlite"]["apply_ms"]) < float(cs[k]["hand_written_trigger"]["apply_ms"]))
+        print(f"{name}: cells where ivmlite's apply_ms alone is below the trigger's: {lower} of {len(common)}")
     print("bootstrap ms, ivmlite P4/P5 (median [min, max]): "
           + fmt_mr(med_range([float(p4[k]['ivmlite']['bootstrap_ms']) / float(p5[k]['ivmlite']['bootstrap_ms']) for k in common]), "x"))
     print("bootstrapped used pages, ivmlite P4/P5 (median [min, max]): "

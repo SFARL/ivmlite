@@ -85,8 +85,10 @@ The modes are:
   (`maintain_ms`) and reading the view (`read_ms`).
 
 `first_refresh_ms` is the maintenance after the warm-up batch. For `ivmlite`
-it is the first refresh after `CREATE`, which also drains the stage the
-bootstrap left behind. That one-time cost is reported there, and is not part
+it is the first refresh after `CREATE`. With a format-3 build
+(`v0.1.0-alpha.2` and earlier), that refresh also drains the stage the
+bootstrap left behind; since M1b Phase 5 (format 4), bootstrap empties its
+own stage. Either way, the first refresh is reported there, and is not part
 of the steady-state `maintain_ms`. For the recomputation modes it is simply
 their first recomputation. Recomputation drains its result without storing
 it, which favours those baselines. The recomputation modes are not compared
@@ -97,7 +99,9 @@ allocation after the measured batch, not an on-disk size.
 The checked-in results in [`results/`](results/) were taken while other builds
 and tests ran on the same machine. They show the shape of each comparison; the
 authoritative before/after comparison of M1b Phase 5 comes from its own
-measurement run.
+measurement run. That comparison is in the "M1b Phase 5" section of
+[`docs/bench/README.md`](../bench/README.md), with its data in
+`docs/bench/m1b-phase5-demos.csv`.
 
 ## Run the first two demos
 
