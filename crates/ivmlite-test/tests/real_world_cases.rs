@@ -9,7 +9,7 @@ mod common;
 use common::*;
 
 use ivmlite_test::demand_cases::{DemandCase, KENER, NOOP, ZCASH};
-use ivmlite_test::demo_bench::Workload;
+use ivmlite_test::demo_bench::{measured_rounds, Workload, ROUNDS};
 use ivmlite_test::fluxflow::{
     apply_mixed_batch as apply_fluxflow_batch, seed as seed_fluxflow, FLOW_TABLE_DDL,
     VIEW_SQL as FLUXFLOW_VIEW,
@@ -149,11 +149,11 @@ fn taproot_split_event_counters_are_maintained_on_events_and_roots() {
 fn fluxflow_grouped_rollup_tracks_insert_update_and_reorg_delete() {
     let c = open_with_extension(None).unwrap();
     c.execute_batch(FLOW_TABLE_DDL).unwrap();
-    seed_fluxflow(&c, 200).unwrap();
+    seed_fluxflow(&c, 600).unwrap();
     create(&c, "fluxflow_stats", FLUXFLOW_VIEW).unwrap();
     assert_matches_oracle(&c, "fluxflow_stats", FLUXFLOW_VIEW);
 
-    apply_fluxflow_batch(&c, 200, 50, 0).unwrap();
+    apply_fluxflow_batch(&c, 600, 50, 0).unwrap();
     assert_ne!(
         rows(&c, "SELECT * FROM fluxflow_stats"),
         rows(&c, FLUXFLOW_VIEW),
@@ -162,10 +162,12 @@ fn fluxflow_grouped_rollup_tracks_insert_update_and_reorg_delete() {
     refresh(&c, "fluxflow_stats").unwrap();
     assert_matches_oracle(&c, "fluxflow_stats", FLUXFLOW_VIEW);
 
-    // The benchmark's measured round follows a warm-up round.
-    apply_fluxflow_batch(&c, 200, 50, 1).unwrap();
-    refresh(&c, "fluxflow_stats").unwrap();
-    assert_matches_oracle(&c, "fluxflow_stats", FLUXFLOW_VIEW);
+    // The benchmark's measured rounds follow the warm-up round.
+    for round in measured_rounds() {
+        apply_fluxflow_batch(&c, 600, 50, round).unwrap();
+        refresh(&c, "fluxflow_stats").unwrap();
+        assert_matches_oracle(&c, "fluxflow_stats", FLUXFLOW_VIEW);
+    }
 
     let after_last_refresh = rows(&c, "SELECT * FROM fluxflow_stats");
     refresh(&c, "fluxflow_stats").unwrap();
@@ -176,17 +178,17 @@ fn fluxflow_grouped_rollup_tracks_insert_update_and_reorg_delete() {
     );
 }
 
-/// Runs both rounds of `case`'s mixed batch through the extension, checking
-/// the view against SQLite after each refresh, and returns the result groups
-/// (the leading `key_columns` of each row) that existed after bootstrap but
-/// no longer exist at the end.
+/// Runs every round the benchmark applies of `case`'s mixed batch through
+/// the extension, checking the view against SQLite after each refresh, and
+/// returns the result groups (the leading `key_columns` of each row) that
+/// existed after bootstrap but no longer exist at the end.
 fn assert_demand_case_tracks_mixed_changes(
     case: &DemandCase,
     key_columns: usize,
 ) -> Vec<Vec<rusqlite::types::Value>> {
     let c = open_with_extension(None).unwrap();
     c.execute_batch(case.ddl).unwrap();
-    case.seed(&c, 600).unwrap();
+    case.seed(&c, 1_200).unwrap();
     create(&c, case.view_name, case.view_sql).unwrap();
     assert_matches_oracle(&c, case.view_name, case.view_sql);
     let view = format!("SELECT * FROM {}", case.view_name);
@@ -197,8 +199,8 @@ fn assert_demand_case_tracks_mixed_changes(
     };
     let initial_keys = keys(rows(&c, &view));
 
-    for round in 0..2 {
-        case.apply_mixed_batch(&c, 600, 40, round).unwrap();
+    for round in 0..ROUNDS {
+        case.apply_mixed_batch(&c, 1_200, 40, round).unwrap();
         assert_ne!(
             rows(&c, &view),
             rows(&c, case.view_sql),

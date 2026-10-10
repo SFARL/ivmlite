@@ -11,13 +11,23 @@
 //! order rotates across repeats (§3.3); and every median is reported with its
 //! min–max (§3.5).
 //!
-//! One addition to §3.2: between the initial verification and the timed
-//! batch, an untimed warm-up batch is applied and maintained. Its
+//! Two additions to §3.2. First, between the initial verification and the
+//! timed batches, an untimed warm-up batch is applied and maintained. Its
 //! maintenance is reported on its own as `first_refresh_ms`, because
 //! ivmlite's first refresh after `CREATE` is not steady-state refresh:
 //! with a build before format 4 it also drains the stage its bootstrap
 //! left behind, a one-time cost that format 4 moves into bootstrap (M1b
 //! Phase 5 spec §5; `docs/demos/README.md`).
+//!
+//! Second, each run times `MEASURED_ROUNDS` steady-state batches, not one,
+//! and reports each of `apply_ms`, `maintain_ms` and `read_ms` as its median
+//! over those rounds. A single refresh is too noisy to resolve a change of
+//! about 10%: one Kener refresh varies by about ±15%, with occasional spikes
+//! of 10 ms or more, and a median over five single refreshes once reported a
+//! regression that a longer measurement did not confirm (M1b Phase 5 spec §7,
+//! amendment 2026-10-09). The state is verified after the warm-up and after
+//! the last measured round, outside the timers, and not between measured
+//! rounds.
 
 use std::cmp::Ordering;
 use std::error::Error;
@@ -35,10 +45,20 @@ pub type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 /// The batch that warms each mode up; its maintenance is `first_refresh_ms`.
 pub const WARM_UP_ROUND: usize = 0;
-/// The batch whose apply, maintenance and read are the steady-state timings.
-pub const MEASURED_ROUND: usize = 1;
+/// How many steady-state batches each run times after the warm-up. Their
+/// apply, maintenance and read are each reported as the median over these
+/// rounds, because one refresh is too noisy to resolve a ~10% change.
+pub const MEASURED_ROUNDS: usize = 10;
 /// How many mixed batches one run applies; workloads validate against it.
-pub const ROUNDS: usize = 2;
+pub const ROUNDS: usize = 1 + MEASURED_ROUNDS;
+
+const _: () = assert!(MEASURED_ROUNDS > 0, "a run must time at least one round");
+
+/// The rounds whose apply, maintenance and read are timed: every round after
+/// the warm-up, `1..=MEASURED_ROUNDS`.
+pub fn measured_rounds() -> std::ops::RangeInclusive<usize> {
+    WARM_UP_ROUND + 1..=MEASURED_ROUNDS
+}
 
 /// The `ivmlite-sqlite` manifest, whose version names the extension's sources.
 const EXTENSION_MANIFEST: &str = include_str!("../../ivmlite-sqlite/Cargo.toml");
@@ -346,7 +366,7 @@ pub fn rotated(modes: &[Mode], repeat: usize) -> Vec<Mode> {
 
 /// Applies one round of a workload's mixed batch with its prepared
 /// statements: `(statements, base_rows, batch, round)`. Different rounds
-/// touch different rows, so the warm-up never repeats the measured batch.
+/// touch different rows, so no round repeats the warm-up or another round.
 pub type ApplyFn = fn(&mut [Statement<'_>], usize, usize, usize) -> rusqlite::Result<()>;
 
 /// A mixed batch's statements, prepared before any timer (Phase 4 spec §3.2
@@ -452,10 +472,35 @@ pub struct Timing {
     /// refresh after `CREATE`, including, with a build before format 4,
     /// the bootstrap's leftover stage.
     pub first_refresh_ms: f64,
+    /// The median over the run's measured rounds, as are `maintain_ms` and
+    /// `read_ms` (`steady_state`).
     pub apply_ms: f64,
     pub maintain_ms: f64,
     pub read_ms: f64,
     pub database_kib: f64,
+}
+
+/// The timed steps of one measured round, in milliseconds.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RoundTiming {
+    pub apply_ms: f64,
+    pub maintain_ms: f64,
+    pub read_ms: f64,
+}
+
+/// A run's steady-state timings: each step's median over the measured
+/// rounds, taken step by step, so the three medians may come from different
+/// rounds. `None` for no rounds.
+pub fn steady_state(rounds: &[RoundTiming]) -> Option<RoundTiming> {
+    let median = |step: fn(&RoundTiming) -> f64| {
+        let values: Vec<f64> = rounds.iter().map(step).collect();
+        Summary::of(&values).map(|summary| summary.median)
+    };
+    Some(RoundTiming {
+        apply_ms: median(|r| r.apply_ms)?,
+        maintain_ms: median(|r| r.maintain_ms)?,
+        read_ms: median(|r| r.read_ms)?,
+    })
 }
 
 impl Timing {
@@ -556,9 +601,10 @@ fn bootstrap(c: &Connection, workload: &dyn Workload, mode: Mode) -> rusqlite::R
 }
 
 /// One fresh database, one mode: seed, bootstrap (timed), verify, prepare,
-/// warm-up batch (maintenance timed as `first_refresh_ms`), verify, then the
-/// measured batch's apply, maintenance and read (each timed), and a final
-/// verify.
+/// warm-up batch (maintenance timed as `first_refresh_ms`), verify, then
+/// `MEASURED_ROUNDS` batches whose apply, maintenance and read are each
+/// timed, and a final verify. The steady-state timings are the per-step
+/// medians over those rounds (`steady_state`).
 pub fn run_once(
     workload: &dyn Workload,
     mode: Mode,
@@ -599,27 +645,37 @@ pub fn run_once(
     }
     verify(&c, workload, mode, "after the warm-up batch")?;
 
-    let start = Instant::now();
-    writes.execute(rows, batch, MEASURED_ROUND)?;
-    let apply_ms = elapsed_ms(start);
+    let mut rounds = Vec::with_capacity(MEASURED_ROUNDS);
+    for round in measured_rounds() {
+        let start = Instant::now();
+        writes.execute(rows, batch, round)?;
+        let apply_ms = elapsed_ms(start);
 
-    let start = Instant::now();
-    maintenance.run()?;
-    let maintain_ms = elapsed_ms(start);
+        let start = Instant::now();
+        maintenance.run()?;
+        let maintain_ms = elapsed_ms(start);
 
-    let start = Instant::now();
-    if let Some(read) = read.as_mut() {
-        black_box(drain(read)?);
+        let start = Instant::now();
+        if let Some(read) = read.as_mut() {
+            black_box(drain(read)?);
+        }
+        let read_ms = elapsed_ms(start);
+
+        rounds.push(RoundTiming {
+            apply_ms,
+            maintain_ms,
+            read_ms,
+        });
     }
-    let read_ms = elapsed_ms(start);
 
-    verify(&c, workload, mode, "after the measured batch")?;
+    verify(&c, workload, mode, "after the last measured batch")?;
+    let steady = steady_state(&rounds).expect("MEASURED_ROUNDS is positive");
     Ok(Timing {
         bootstrap_ms,
         first_refresh_ms,
-        apply_ms,
-        maintain_ms,
-        read_ms,
+        apply_ms: steady.apply_ms,
+        maintain_ms: steady.maintain_ms,
+        read_ms: steady.read_ms,
         database_kib: database_kib(&c)? as f64,
     })
 }
@@ -688,6 +744,10 @@ fn print_provenance(workload: &dyn Workload, config: &RunConfig, extension: &Ext
         config.rows,
         config.batch,
         config.repeats
+    );
+    println!(
+        "# rounds: one warm-up batch, then {MEASURED_ROUNDS} measured batches per run; \
+         apply_ms, maintain_ms and read_ms are each a run's median over its measured batches"
     );
 }
 
@@ -783,6 +843,75 @@ mod tests {
         );
         assert_eq!(Summary::of(&[7.0]).unwrap().median, 7.0);
         assert_eq!(Summary::of(&[]), None);
+    }
+
+    fn round(apply_ms: f64, maintain_ms: f64, read_ms: f64) -> RoundTiming {
+        RoundTiming {
+            apply_ms,
+            maintain_ms,
+            read_ms,
+        }
+    }
+
+    #[test]
+    fn steady_state_is_each_steps_median_over_the_rounds() {
+        // Each step's median comes from a different round, and no round is
+        // the median of all three; the spike in round 2's refresh does not
+        // move the refresh's median.
+        let rounds = [
+            round(1.0, 30.0, 300.0),
+            round(5.0, 10.0, 100.0),
+            round(3.0, 90.0, 500.0),
+            round(4.0, 20.0, 400.0),
+            round(2.0, 25.0, 200.0),
+        ];
+        assert_eq!(steady_state(&rounds), Some(round(3.0, 25.0, 300.0)));
+        // The last round alone, or the first, is not the steady state.
+        assert_ne!(steady_state(&rounds), Some(rounds[4]));
+        assert_ne!(steady_state(&rounds), Some(rounds[0]));
+    }
+
+    #[test]
+    fn steady_state_of_an_even_count_averages_the_middle_rounds() {
+        let rounds = [
+            round(4.0, 1.0, 8.0),
+            round(1.0, 2.0, 6.0),
+            round(3.0, 9.0, 2.0),
+            round(2.0, 3.0, 4.0),
+        ];
+        assert_eq!(steady_state(&rounds), Some(round(2.5, 2.5, 5.0)));
+        assert_eq!(steady_state(&rounds[..1]), Some(rounds[0]));
+        assert_eq!(steady_state(&[]), None);
+    }
+
+    #[test]
+    fn a_run_times_every_round_after_the_warm_up() {
+        let measured: Vec<usize> = measured_rounds().collect();
+        assert_eq!(measured.len(), MEASURED_ROUNDS);
+        assert_eq!(MEASURED_ROUNDS, 10);
+        assert!(!measured.contains(&WARM_UP_ROUND));
+        assert_eq!(measured.first(), Some(&(WARM_UP_ROUND + 1)));
+        // `ROUNDS` counts the warm-up and every measured round, so each
+        // workload validates exactly the rounds a run applies.
+        assert_eq!(ROUNDS, 1 + MEASURED_ROUNDS);
+        assert_eq!(measured.last(), Some(&(ROUNDS - 1)));
+    }
+
+    #[test]
+    fn every_documented_demo_scale_fits_every_round() {
+        // The source-scale runs (`docs/demos/*.md`, `scripts/bench-demos.sh`).
+        crate::fluxflow::FLUXFLOW
+            .validate(1_500_000, 500, ROUNDS)
+            .unwrap();
+        crate::demand_cases::NOOP
+            .validate(518_400, 200, ROUNDS)
+            .unwrap();
+        crate::demand_cases::ZCASH
+            .validate(500_000, 500, ROUNDS)
+            .unwrap();
+        crate::demand_cases::KENER
+            .validate(4_100_000, 500, ROUNDS)
+            .unwrap();
     }
 
     #[test]
