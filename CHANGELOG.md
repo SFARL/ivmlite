@@ -5,7 +5,7 @@ All notable changes to ivmlite will be documented in this file.
 The project uses semantic versioning after `0.1.0`; prereleases may change the
 SQL subset and persisted shadow-table format without migration.
 
-## [Unreleased]
+## [0.1.0-alpha.3] - 2026-10-09
 
 ### Changed
 
@@ -137,5 +137,6 @@ First public technical preview.
 - The Org-roam join/count case is slower than full recomputation at both
   measured configurations.
 
+[0.1.0-alpha.3]: https://github.com/SFARL/ivmlite/releases/tag/v0.1.0-alpha.3
 [0.1.0-alpha.2]: https://github.com/SFARL/ivmlite/releases/tag/v0.1.0-alpha.2
 [0.1.0-alpha.1]: https://github.com/SFARL/ivmlite/releases/tag/v0.1.0-alpha.1
