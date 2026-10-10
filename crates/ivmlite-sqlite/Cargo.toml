@@ -5,7 +5,7 @@
 # `cargo build --manifest-path crates/ivmlite-sqlite/Cargo.toml`.
 [package]
 name = "ivmlite-sqlite"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 edition = "2021"
 rust-version = "1.95"
 license = "MIT"

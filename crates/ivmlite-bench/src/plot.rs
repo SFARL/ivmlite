@@ -364,24 +364,39 @@ pub fn write_speedup_svg(
     fs::write(path, svg)
 }
 
-/// Parse the exploration CSV and write the six Phase 4 charts beside it.
-pub fn write_phase4_charts(from: &Path) -> Result<Vec<std::path::PathBuf>, String> {
+/// Parse the exploration CSV and write its six charts beside it, named after
+/// the CSV: `m1b-phase4.csv` gives `m1b-phase4-card10.svg`, …, and
+/// `m1b-phase5.csv` gives the same charts under Phase 5's names (M1b Phase 5
+/// spec §7).
+pub fn write_charts(from: &Path) -> Result<Vec<std::path::PathBuf>, String> {
     let text = fs::read_to_string(from).map_err(|error| format!("{}: {error}", from.display()))?;
     let records = crate::confirm::parse_csv(&text)?;
-    let directory = from.parent().unwrap_or_else(|| Path::new("."));
+    let (directory, stem) = chart_location(from)?;
     let mut written = Vec::new();
     for cardinality in [10, 1_000, 100_000] {
-        let time_path = directory.join(format!("m1b-phase4-card{cardinality}.svg"));
+        let time_path = directory.join(format!("{stem}-card{cardinality}.svg"));
         write_svg(&time_path, &records, 10, 100, cardinality)
             .map_err(|error| format!("{}: {error}", time_path.display()))?;
         written.push(time_path);
 
-        let speedup_path = directory.join(format!("m1b-phase4-speedup-card{cardinality}.svg"));
+        let speedup_path = directory.join(format!("{stem}-speedup-card{cardinality}.svg"));
         write_speedup_svg(&speedup_path, &records, 10, cardinality)
             .map_err(|error| format!("{}: {error}", speedup_path.display()))?;
         written.push(speedup_path);
     }
     Ok(written)
+}
+
+/// The directory beside the exploration CSV and the CSV's file stem, which
+/// prefixes every chart's name.
+fn chart_location(from: &Path) -> Result<(&Path, &str), String> {
+    let directory = from.parent().unwrap_or_else(|| Path::new("."));
+    let stem = from
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| !stem.is_empty())
+        .ok_or_else(|| format!("{}: no file name to name the charts after", from.display()))?;
+    Ok((directory, stem))
 }
 
 #[cfg(test)]
@@ -563,6 +578,16 @@ mod tests {
         let ticks = ratio_ticks(-1.0, 1.0);
         let labels: Vec<String> = ticks.iter().map(|r| fmt_ratio(*r)).collect();
         assert_eq!(labels, ["0.1x", "0.2x", "0.5x", "1x", "2x", "5x", "10x"]);
+    }
+
+    #[test]
+    fn charts_are_named_after_the_exploration_csv() {
+        let (directory, stem) = chart_location(Path::new("docs/bench/m1b-phase5.csv")).unwrap();
+        assert_eq!(directory, Path::new("docs/bench"));
+        assert_eq!(stem, "m1b-phase5");
+        let (_, stem) = chart_location(Path::new("docs/bench/m1b-phase4.csv")).unwrap();
+        assert_eq!(stem, "m1b-phase4");
+        assert!(chart_location(Path::new("/")).is_err());
     }
 
     #[test]

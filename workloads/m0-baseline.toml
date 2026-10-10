@@ -91,3 +91,11 @@ base_rows = 100000
 group_cardinality = 100000
 views = 200
 batch_size = 100
+
+# M1b Phase 5 (spec §7): one batch=1 cell at 200 views, where a refresh's
+# fixed cost dominates, isolates the schema-version-gated checks (spec §3).
+[[ablation.cells]]
+base_rows = 100000
+group_cardinality = 1000
+views = 200
+batch_size = 1

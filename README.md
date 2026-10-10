@@ -10,7 +10,7 @@ filter and one two-table inner equi-join, captures ordinary SQL writes with
 triggers, and updates a materialized result when the application explicitly
 refreshes it.
 
-**Current status: `v0.1.0-alpha.2` technical preview.** Use it to test real
+**Current status: `v0.1.0-alpha.3` technical preview.** Use it to test real
 workloads and help shape the SQL subset. The on-disk format and supported SQL
 may change before a stable release.
 
@@ -30,7 +30,7 @@ usually a better fit.
 ## Quick start
 
 Download the archive for your platform from the
-[v0.1.0-alpha.2 release](https://github.com/SFARL/ivmlite/releases/tag/v0.1.0-alpha.2),
+[v0.1.0-alpha.3 release](https://github.com/SFARL/ivmlite/releases/tag/v0.1.0-alpha.3),
 extract it, and start a SQLite CLI that supports loadable extensions.
 
 On macOS, the system SQLite omits extension loading. Install SQLite with
@@ -180,7 +180,8 @@ cargo run --release --locked -p ivmlite-test \
 Run the M1b Phase 4 benchmark (the extension against hand-written triggers and
 full recomputation, with confirmation repeats and a write-amplification
 workload); [`docs/bench/README.md`](docs/bench/README.md) has the full
-reproduce block and the results:
+reproduce block and the results for Phase 4 and for M1b Phase 5's
+refresh-performance follow-up:
 
 ```sh
 scripts/bench.sh matrix > m1b-phase4.csv

@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="420" font-family="sans-serif" font-size="12">
+<rect width="720" height="420" fill="white"/>
+<text x="360" y="24" text-anchor="middle" font-size="15">naive recompute / ivmlite &#183; views=10 &#183; groups=1000</text>
+<line x1="64" y1="356" x2="656" y2="356" stroke="#333"/>
+<line x1="64" y1="64" x2="64" y2="356" stroke="#333"/>
+<text x="360" y="400" text-anchor="middle">base_rows</text>
+<text x="18" y="18" fill="#333">speedup (log10)</text>
+<line x1="64.0" y1="356.0" x2="64.0" y2="362.0" stroke="#333"/>
+<text x="64.0" y="374.0" text-anchor="middle">10k</text>
+<line x1="360.0" y1="356.0" x2="360.0" y2="362.0" stroke="#333"/>
+<text x="360.0" y="374.0" text-anchor="middle">100k</text>
+<line x1="656.0" y1="356.0" x2="656.0" y2="362.0" stroke="#333"/>
+<text x="656.0" y="374.0" text-anchor="middle">1M</text>
+<line x1="58.0" y1="330.1" x2="64.0" y2="330.1" stroke="#333"/>
+<text data-y-tick="0.5x" x="54.0" y="330.1" dy="4" text-anchor="end">0.5x</text>
+<line x1="58.0" y1="307.1" x2="64.0" y2="307.1" stroke="#333"/>
+<text data-y-tick="1x" x="54.0" y="307.1" dy="4" text-anchor="end">1x</text>
+<line x1="58.0" y1="284.1" x2="64.0" y2="284.1" stroke="#333"/>
+<text data-y-tick="2x" x="54.0" y="284.1" dy="4" text-anchor="end">2x</text>
+<line x1="58.0" y1="253.7" x2="64.0" y2="253.7" stroke="#333"/>
+<text data-y-tick="5x" x="54.0" y="253.7" dy="4" text-anchor="end">5x</text>
+<line x1="58.0" y1="230.7" x2="64.0" y2="230.7" stroke="#333"/>
+<text data-y-tick="10x" x="54.0" y="230.7" dy="4" text-anchor="end">10x</text>
+<line x1="58.0" y1="207.8" x2="64.0" y2="207.8" stroke="#333"/>
+<text data-y-tick="20x" x="54.0" y="207.8" dy="4" text-anchor="end">20x</text>
+<line x1="58.0" y1="177.4" x2="64.0" y2="177.4" stroke="#333"/>
+<text data-y-tick="50x" x="54.0" y="177.4" dy="4" text-anchor="end">50x</text>
+<line x1="58.0" y1="154.4" x2="64.0" y2="154.4" stroke="#333"/>
+<text data-y-tick="100x" x="54.0" y="154.4" dy="4" text-anchor="end">100x</text>
+<line x1="58.0" y1="131.4" x2="64.0" y2="131.4" stroke="#333"/>
+<text data-y-tick="200x" x="54.0" y="131.4" dy="4" text-anchor="end">200x</text>
+<line x1="58.0" y1="101.0" x2="64.0" y2="101.0" stroke="#333"/>
+<text data-y-tick="500x" x="54.0" y="101.0" dy="4" text-anchor="end">500x</text>
+<line x1="58.0" y1="78.0" x2="64.0" y2="78.0" stroke="#333"/>
+<text data-y-tick="1000x" x="54.0" y="78.0" dy="4" text-anchor="end">1000x</text>
+<line data-reference="1x" x1="64.0" y1="307.1" x2="656.0" y2="307.1" stroke="#555" stroke-dasharray="4 3"/>
+<text x="656.0" y="307.1" dy="-3" text-anchor="end">1x</text>
+<line data-reference="2x" x1="64.0" y1="284.1" x2="656.0" y2="284.1" stroke="#555" stroke-dasharray="8 3"/>
+<text x="656.0" y="284.1" dy="-3" text-anchor="end">2x</text>
+<polyline fill="none" stroke="#888888" stroke-width="2" points="64.0,233.6 360.0,152.8 656.0,75.5"/>
+<circle cx="64.0" cy="233.6" r="3" fill="#888888"/>
+<circle cx="360.0" cy="152.8" r="3" fill="#888888"/>
+<circle cx="656.0" cy="75.5" r="3" fill="#888888"/>
+<text x="72" y="82" fill="#888888">batch=1</text>
+<polyline fill="none" stroke="#1f77b4" stroke-width="2" points="64.0,247.7 360.0,167.3 656.0,88.8"/>
+<circle cx="64.0" cy="247.7" r="3" fill="#1f77b4"/>
+<circle cx="360.0" cy="167.3" r="3" fill="#1f77b4"/>
+<circle cx="656.0" cy="88.8" r="3" fill="#1f77b4"/>
+<text x="72" y="100" fill="#1f77b4">batch=10</text>
+<polyline fill="none" stroke="#d62728" stroke-width="2" points="64.0,288.6 360.0,207.6 656.0,130.8"/>
+<circle cx="64.0" cy="288.6" r="3" fill="#d62728"/>
+<circle cx="360.0" cy="207.6" r="3" fill="#d62728"/>
+<circle cx="656.0" cy="130.8" r="3" fill="#d62728"/>
+<text x="72" y="118" fill="#d62728">batch=100</text>
+<polyline fill="none" stroke="#2ca02c" stroke-width="2" points="64.0,344.5 360.0,264.2 656.0,186.5"/>
+<circle cx="64.0" cy="344.5" r="3" fill="#2ca02c"/>
+<circle cx="360.0" cy="264.2" r="3" fill="#2ca02c"/>
+<circle cx="656.0" cy="186.5" r="3" fill="#2ca02c"/>
+<text x="72" y="136" fill="#2ca02c">batch=1000</text>
+</svg>

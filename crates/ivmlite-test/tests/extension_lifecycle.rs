@@ -6,6 +6,7 @@ mod common;
 use common::*;
 
 use ivmlite_test::open_with_extension;
+use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 use rusqlite::types::Value;
 use rusqlite::Connection;
 
@@ -140,6 +141,99 @@ fn creating_a_view_is_atomic() {
     // Bootstrap over tables that already hold rows.
     create(&c, "sums", SUMS).unwrap();
     assert_matches_oracle(&c, "sums", SUMS);
+}
+
+/// Phase 5 spec §5: bootstrap leaves no staged rows behind.
+#[test]
+fn bootstrap_leaves_the_stage_empty() {
+    let c = open_with_extension(None).unwrap();
+    setup(&c);
+    create(&c, "sums", SUMS).unwrap();
+    assert_eq!(count(&c, "SELECT count(*) FROM __ivm_stage_sums"), 0);
+}
+
+/// Phase 5 spec §5: a fault on the cleanup `DELETE` fails the whole `CREATE
+/// VIRTUAL TABLE`, in autocommit and inside an explicit transaction, and
+/// leaves nothing of the view behind.
+///
+/// The fault cannot be a `BEFORE DELETE` trigger created ahead of time on
+/// `__ivm_stage_sums`: that table does not exist until `create` creates it,
+/// and SQLite refuses `CREATE TRIGGER … ON <table>` for a table that is not
+/// there yet (measured: "no such table"). A trigger body cannot create one
+/// either — `CREATE TRIGGER` is DDL, and a trigger body's grammar admits only
+/// `INSERT`/`UPDATE`/`DELETE`/`SELECT` (measured: a `CREATE TRIGGER` inside a
+/// trigger body is a parse error, not merely refused at run time), so there
+/// is no way to arm the real trigger the moment the stage table appears.
+///
+/// The authorizer (`sqlite3_set_authorizer`) is a sound substitute: it is a
+/// Rust-level callback, not SQL, so it is never limited to a trigger body's
+/// grammar, and it can be registered before `__ivm_stage_sums` exists —
+/// SQLite consults it by name when it later prepares a statement against
+/// that name, not when the callback is registered. One `create` issues
+/// exactly two `DELETE FROM __ivm_stage_sums` statements in order: the
+/// bootstrap's own apply empties the (still-empty) stage first, and this
+/// task's new cleanup empties it second, after the bootstrap's apply has
+/// filled it. Counting authorized deletes on that table name and denying
+/// only the second therefore targets this task's own `DELETE`, not the
+/// apply's.
+#[test]
+fn a_failing_stage_cleanup_fails_the_create_and_leaves_nothing() {
+    use std::cell::Cell;
+
+    for explicit_transaction in [false, true] {
+        let c = open_with_extension(None).unwrap();
+        setup(&c);
+        let user_objects = objects(&c);
+
+        let deletes_of_stage = Cell::new(0);
+        c.authorizer(Some(move |ctx: AuthContext| {
+            if let AuthAction::Delete { table_name } = ctx.action {
+                if table_name == "__ivm_stage_sums" {
+                    deletes_of_stage.set(deletes_of_stage.get() + 1);
+                    // The first is the bootstrap's own apply, emptying a
+                    // stage that is still empty; the second is this task's
+                    // cleanup, emptying the stage the bootstrap just filled.
+                    if deletes_of_stage.get() == 2 {
+                        return Authorization::Deny;
+                    }
+                }
+            }
+            Authorization::Allow
+        }))
+        .unwrap();
+
+        if explicit_transaction {
+            c.execute_batch("BEGIN; INSERT INTO orders VALUES ('z', 1);")
+                .unwrap();
+        }
+        let err = create(&c, "sums", SUMS).expect_err("the cleanup DELETE is denied");
+        assert!(
+            err.to_string().contains("not authorized"),
+            "transaction: {explicit_transaction}, {err}"
+        );
+        assert_eq!(
+            objects(&c),
+            user_objects,
+            "a failing cleanup DELETE left __ivm_ objects behind (transaction: {explicit_transaction})"
+        );
+
+        // Scope the authorizer to this one `create`: later statements in
+        // this test run under the ordinary, unauthorized connection.
+        c.authorizer(None::<fn(AuthContext) -> Authorization>)
+            .unwrap();
+        if explicit_transaction {
+            c.execute_batch("COMMIT").unwrap();
+            assert_eq!(
+                rows(&c, "SELECT count(*) FROM orders WHERE region = 'z'"),
+                vec![vec![Value::Integer(1)]],
+                "the transaction's earlier work must survive"
+            );
+        }
+
+        // The connection, and a fresh create on it, still work.
+        create(&c, "sums", SUMS).unwrap();
+        assert_matches_oracle(&c, "sums", SUMS);
+    }
 }
 
 /// Spec §6 scenario 5: each rejection names its problem.
@@ -453,20 +547,21 @@ fn a_capture_trigger_left_on_a_renamed_table_breaks_the_view() {
 
 /// Once the arming `UPDATE` has applied a refresh, nothing may fail the
 /// refresh: in an explicit transaction a failure would report an error for
-/// changes that stay applied. Here the stage table refuses to be emptied.
-/// The refresh that fills the stage must still succeed. The next refresh,
-/// which empties the stage before staging anything, fails with nothing
-/// changed.
+/// changes that stay applied. Here the stage table refuses to be emptied of
+/// staged changes. The refresh that fills the stage must still succeed. The
+/// next refresh, which empties the stage before staging anything, fails
+/// with nothing changed.
 #[test]
 fn nothing_after_the_apply_can_fail_a_refresh() {
     let c = open_with_extension(None).unwrap();
     setup(&c);
     create(&c, "sums", SUMS).unwrap();
-    // The bootstrap leaves its changes staged; a refresh with nothing to
-    // apply empties the stage and stages nothing.
-    refresh(&c, "sums").unwrap();
+    // `create` empties the stage itself once the bootstrap's apply is done
+    // (spec §5), so no setup refresh is needed to reach a stage the fault
+    // can delete without firing: the fault's `WHEN OLD.op <> 'apply'` never
+    // matches a row that is not there.
     c.execute_batch(
-        "CREATE TRIGGER fault BEFORE DELETE ON __ivm_stage_sums \
+        "CREATE TRIGGER fault BEFORE DELETE ON __ivm_stage_sums WHEN OLD.op <> 'apply' \
          BEGIN SELECT RAISE(ABORT, 'injected fault'); END;
          BEGIN;
          INSERT INTO orders VALUES ('a', 1);",
@@ -613,8 +708,7 @@ fn temp_tables_named_like_the_shadow_tables_are_never_touched() {
          CREATE TEMP TABLE __ivm_outidx_sums(x INTEGER);
          INSERT INTO temp.__ivm_outidx_sums VALUES (1000);
          CREATE TEMP TABLE __ivm_stage_sums(op TEXT NOT NULL, arr INTEGER, key BLOB, val BLOB,
-             w INTEGER, tbl TEXT, seq INTEGER, c0 TEXT, c1 INTEGER, c2 INTEGER,
-             armed INTEGER NOT NULL DEFAULT 0);
+             w INTEGER, tbl TEXT, seq INTEGER, c0 TEXT, c1 INTEGER, c2 INTEGER);
          INSERT INTO temp.__ivm_stage_sums(op) VALUES ('temp');
          CREATE TEMP TABLE __ivm_state_sums_0_agg_groups(key BLOB NOT NULL, val BLOB NOT NULL,
              w INTEGER NOT NULL, PRIMARY KEY(key, val)) WITHOUT ROWID;
@@ -1037,13 +1131,14 @@ fn the_retraction_lookup_searches_the_output_index() {
         )
         .unwrap();
 
-    // The RAISE's `NOT EXISTS (…)` and the DELETE's `rowid = (… LIMIT 1)`
+    // The RAISE's `NOT EXISTS (…)` and the DELETE's `SELECT (… LIMIT 1)`
     // must embed byte-identical lookup text (Phase 4 spec §4: one function
-    // builds it once, and both sites use it unchanged).
+    // builds it once, and both sites use it unchanged; Phase 5 spec §4: both
+    // now sit in set-based statements over the stage aliased `__ivm_s`).
     let not_exists = extract_parenthesized(&trigger_sql, "NOT EXISTS (")
         .unwrap_or_else(|| panic!("no NOT EXISTS clause in {trigger_sql}"));
-    let delete_paren = extract_parenthesized(&trigger_sql, "rowid = (")
-        .unwrap_or_else(|| panic!("no `rowid = (…)` clause in {trigger_sql}"));
+    let delete_paren = extract_parenthesized(&trigger_sql, "rowid IN (SELECT (")
+        .unwrap_or_else(|| panic!("no `rowid IN (SELECT (…)` clause in {trigger_sql}"));
     let delete_lookup = delete_paren.strip_suffix(" LIMIT 1").unwrap_or_else(|| {
         panic!("the DELETE's subquery does not end with LIMIT 1: {delete_paren}")
     });
@@ -1067,15 +1162,15 @@ fn the_retraction_lookup_searches_the_output_index() {
         .collect();
     assert_eq!(names.len(), 3, "SUMS has 3 output columns: {names:?}");
 
-    // Substitute `NEW.cN` with a bound parameter, highest N first, so `c1`
-    // cannot match inside `c10`.
+    // Substitute `__ivm_s.cN` with a bound parameter, highest N first, so
+    // `c1` cannot match inside `c10`.
     let mut probe = not_exists.clone();
     for i in (0..names.len()).rev() {
-        probe = probe.replace(&format!("NEW.c{i}"), &format!("?{}", i + 1));
+        probe = probe.replace(&format!("__ivm_s.c{i}"), &format!("?{}", i + 1));
     }
     assert!(
-        !probe.contains("NEW.c"),
-        "every NEW.cN must have been substituted: {probe}"
+        !probe.contains("__ivm_s.c"),
+        "every __ivm_s.cN must have been substituted: {probe}"
     );
 
     let plan: Vec<String> = c
@@ -1135,8 +1230,226 @@ fn one_retraction_removes_one_copy_of_a_duplicated_output_row() {
         "INSERT INTO __ivm_out_v SELECT * FROM __ivm_out_v;
          DELETE FROM __ivm_stage_v;
          INSERT INTO __ivm_stage_v(op, c0, c1) VALUES ('out-', 'a', 1);
-         UPDATE __ivm_stage_v SET armed = 1;",
+         INSERT INTO __ivm_stage_v(op) VALUES ('arm');
+         UPDATE __ivm_stage_v SET op = 'apply' WHERE op = 'arm';",
     )
     .unwrap();
     assert_eq!(count(&c, "SELECT count(*) FROM __ivm_out_v"), 1);
+}
+
+/// Phase 5 spec §4: one refresh arms the stage once and runs the apply
+/// trigger's body once, however many rows it stages. The body's one
+/// watermark `UPDATE` updates each staged base table's progress row once, so
+/// counting progress updates counts body runs. The counters are TEMP
+/// triggers on main tables, which SQLite allows (a TEMP trigger may name a
+/// table in any attached schema); they live in `sqlite_temp_schema`, so none
+/// of the view's checks of `main`'s catalog see them.
+#[test]
+fn one_refresh_fires_the_apply_body_once() {
+    let c = open_with_extension(None).unwrap();
+    setup(&c);
+    create(&c, "sums", SUMS).unwrap();
+    c.execute_batch(
+        "CREATE TEMP TABLE fired(n INTEGER);
+         CREATE TRIGGER temp.count_apply AFTER UPDATE OF op ON main.__ivm_stage_sums
+             WHEN NEW.op = 'apply' BEGIN INSERT INTO fired VALUES (1); END;
+         CREATE TEMP TABLE progress_updates(n INTEGER);
+         CREATE TRIGGER temp.count_progress AFTER UPDATE ON main.__ivm_progress
+             BEGIN INSERT INTO progress_updates VALUES (1); END;
+         WITH RECURSIVE i(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM i WHERE n < 300)
+         INSERT INTO orders SELECT 'r' || (n % 60), n FROM i;
+         DELETE FROM orders WHERE region = 'b';",
+    )
+    .unwrap();
+    refresh(&c, "sums").unwrap();
+    assert!(
+        count(
+            &c,
+            "SELECT count(*) FROM __ivm_stage_sums WHERE op NOT IN ('arm', 'apply')"
+        ) > 60,
+        "the batch must stage many rows"
+    );
+    assert_eq!(count(&c, "SELECT count(*) FROM temp.fired"), 1);
+    let staged_tables = count(
+        &c,
+        "SELECT count(*) FROM __ivm_stage_sums WHERE op = 'progress'",
+    );
+    assert_eq!(staged_tables, 1, "SUMS reads one base table");
+    assert_eq!(
+        count(&c, "SELECT count(*) FROM temp.progress_updates"),
+        staged_tables,
+        "the body must run once: one progress update per staged base table"
+    );
+    assert_matches_oracle(&c, "sums", SUMS);
+}
+
+/// Phase 5 spec §6 (amendments 2026-10-08): rows are staged up to 64 per
+/// `INSERT`, then one remainder `INSERT` takes the rest. A refresh that stages
+/// exactly 64 rows of each kind (`state` and `out+`) has no remainder; one
+/// that stages 65 has a remainder of one row.
+#[test]
+fn a_refresh_staging_one_chunk_or_one_chunk_and_one_row_is_maintained() {
+    for rows in [64_i64, 65] {
+        let c = open_with_extension(None).unwrap();
+        setup(&c);
+        create(&c, "sums", SUMS).unwrap();
+        // One row in each of `rows` new regions: one new group, so one
+        // state row and one `out+` row, per inserted row.
+        insert_new_regions(&c, rows);
+        refresh(&c, "sums").unwrap();
+        for op in ["state", "out+"] {
+            assert_eq!(
+                count(
+                    &c,
+                    &format!("SELECT count(*) FROM __ivm_stage_sums WHERE op = '{op}'")
+                ),
+                rows,
+                "{op} rows staged"
+            );
+        }
+        assert_matches_oracle(&c, "sums", SUMS);
+    }
+}
+
+/// Lower this connection's `SQLITE_LIMIT_VARIABLE_NUMBER` to `n`, as an
+/// application may.
+fn limit_variables(c: &Connection, n: i32) {
+    // SAFETY: `c`'s own live handle; `sqlite3_limit` only sets one of its
+    // run-time limits.
+    unsafe {
+        rusqlite::ffi::sqlite3_limit(c.handle(), rusqlite::ffi::SQLITE_LIMIT_VARIABLE_NUMBER, n);
+    }
+}
+
+/// Insert `groups` rows into `orders`, each in a new region.
+fn insert_new_regions(c: &Connection, groups: i64) {
+    c.execute(
+        "WITH RECURSIVE i(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM i WHERE n < ?1)
+         INSERT INTO orders SELECT 'new' || n, n FROM i",
+        [groups],
+    )
+    .unwrap();
+}
+
+/// Phase 5 spec §6 (amendments 2026-10-08): no staging `INSERT` binds more
+/// than 999 parameters, the default limit before SQLite 3.32, however wide
+/// the view: 64 output rows of a 16-column view would bind 1,088.
+#[test]
+fn a_wide_view_stages_within_999_parameters() {
+    let cols: Vec<String> = (0..15).map(|i| format!("g{i}")).collect();
+    let sql = format!(
+        "SELECT {cols}, COUNT(*) FROM wide GROUP BY {cols}",
+        cols = cols.join(", ")
+    );
+    let c = open_with_extension(None).unwrap();
+    limit_variables(&c, 999);
+    c.execute_batch(&format!(
+        "CREATE TABLE wide({}) STRICT",
+        cols.iter()
+            .map(|g| format!("{g} INTEGER"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    ))
+    .unwrap();
+    create(&c, "wide_v", &sql).unwrap();
+    // 130 new groups: two full chunks' worth of output rows and more.
+    c.execute(
+        &format!(
+            "WITH RECURSIVE i(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM i WHERE n < 130)
+             INSERT INTO wide SELECT {} FROM i",
+            vec!["n"; cols.len()].join(", ")
+        ),
+        [],
+    )
+    .unwrap();
+    refresh(&c, "wide_v").unwrap();
+    assert_eq!(
+        count(
+            &c,
+            "SELECT count(*) FROM __ivm_stage_wide_v WHERE op = 'out+'"
+        ),
+        130
+    );
+    assert_matches_oracle(&c, "wide_v", &sql);
+}
+
+/// Phase 5 spec §6 (amendments 2026-10-08): the bound is also the
+/// connection's live `SQLITE_LIMIT_VARIABLE_NUMBER` when an application has
+/// lowered it: at 100, 64 rows of a narrow view (4 parameters each) would
+/// bind 256.
+#[test]
+fn a_lowered_variable_limit_bounds_every_staging_insert() {
+    let c = open_with_extension(None).unwrap();
+    limit_variables(&c, 100);
+    setup(&c);
+    create(&c, "sums", SUMS).unwrap();
+    insert_new_regions(&c, 130);
+    refresh(&c, "sums").unwrap();
+    for op in ["state", "out+"] {
+        assert_eq!(
+            count(
+                &c,
+                &format!("SELECT count(*) FROM __ivm_stage_sums WHERE op = '{op}'")
+            ),
+            130,
+            "{op} rows staged"
+        );
+    }
+    assert_matches_oracle(&c, "sums", SUMS);
+}
+
+/// Phase 3a §5, Phase 5 spec §4: a retraction whose row the output table
+/// does not hold fails the whole apply, which changes nothing durable. The
+/// output row is removed behind the view's back (white-box), so the next
+/// refresh stages an `out-` that finds no row.
+#[test]
+fn a_retraction_of_a_missing_output_row_fails_and_changes_nothing() {
+    for explicit_transaction in [false, true] {
+        let c = open_with_extension(None).unwrap();
+        setup(&c);
+        create(&c, "sums", SUMS).unwrap();
+        c.execute_batch("DELETE FROM __ivm_out_sums WHERE region = 'a'")
+            .unwrap();
+        if explicit_transaction {
+            c.execute_batch("BEGIN").unwrap();
+        }
+        c.execute_batch("INSERT INTO orders VALUES ('a', 10), ('b', 1)")
+            .unwrap();
+        let before = durable_state(&c, "sums");
+        let err = refresh(&c, "sums").expect_err("the retraction finds no row");
+        assert!(
+            err.to_string().contains(
+                "ivmlite broken invariant: the view retracted a row its output table does not hold"
+            ),
+            "{err}"
+        );
+        assert_eq!(
+            durable_state(&c, "sums"),
+            before,
+            "transaction: {explicit_transaction}"
+        );
+        if explicit_transaction {
+            assert!(!c.is_autocommit(), "the transaction must still be open");
+        }
+    }
+}
+
+/// Phase 5 spec §4: the apply trigger's subqueries name the stage by the
+/// reserved alias `__ivm_s`, so result columns named like the stage's own
+/// columns (`op`, `key`, `c0`) never capture a reference to it.
+#[test]
+fn result_columns_named_like_stage_columns_are_maintained() {
+    let q = "SELECT region AS op, SUM(amount) AS key, COUNT(*) AS c0 FROM orders GROUP BY region";
+    let c = open_with_extension(None).unwrap();
+    setup(&c);
+    create(&c, "v", q).unwrap();
+    assert_matches_oracle(&c, "v", q);
+    c.execute_batch(
+        "INSERT INTO orders VALUES ('a', 10), ('c', 3);
+         DELETE FROM orders WHERE region = 'b';
+         UPDATE orders SET amount = 7 WHERE region IS NULL;",
+    )
+    .unwrap();
+    refresh(&c, "v").unwrap();
+    assert_matches_oracle(&c, "v", q);
 }

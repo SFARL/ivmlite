@@ -29,14 +29,20 @@ use crate::state::{BufferedArrangement, Pending};
 /// Format 3 (Phase 4 spec §4) adds the output table's index, `out_index`: a
 /// database built in format 2 has no such index, and no release ever wrote
 /// format 2, so it is refused rather than migrated.
-pub const FORMAT: i64 = 3;
+///
+/// Format 4 (Phase 5 spec §4) drops the stage table's `armed` column: its
+/// apply trigger fires once, when the arming `UPDATE` turns the stage's
+/// sentinel row into `apply`, and applies every staged row set-based. A
+/// format-3 database's trigger is the per-row one, so it is refused; since
+/// this is an alpha, it is not migrated.
+pub const FORMAT: i64 = 4;
 
 /// The column of the view's output table that holds each row's weight.
 const WEIGHT: &str = "__w";
 
 /// Names SQLite reserves for a table's rowid (spec §7): a result column with
 /// one of these would shadow the alias `__ivm_out_<view>`'s own rowid needs —
-/// the apply trigger's `DELETE … WHERE rowid = …` and the cursor's
+/// the apply trigger's `DELETE … WHERE rowid IN …` and the cursor's
 /// `SELECT rowid, …` both rely on `rowid` naming the real row id, not a
 /// same-named result column (reproduced: `SELECT k AS rowid, SUM(x) FROM t
 /// GROUP BY k` left the output empty after an UPDATE).
@@ -107,6 +113,21 @@ fn check_trigger(conn: &Connection, trigger: &str, table: &str) -> Result<()> {
     }
 }
 
+/// What a view's last passing catalog check saw (Phase 5 spec §3): the
+/// schema cookie, and its base tables' schemas in `view.tables` order.
+pub struct Checked {
+    pub schema_version: i64,
+    pub schemas: Vec<Schema>,
+}
+
+/// `main`'s schema cookie (Phase 5 spec §3), which SQLite increments on every
+/// schema change any connection makes to the database. Reading it, unlike
+/// setting it, expires no prepared statement.
+pub fn schema_version(conn: &Connection) -> Result<i64> {
+    conn.query_row("PRAGMA \"main\".schema_version", [], |r| r.get(0))
+        .map_err(sql_error)
+}
+
 fn base_schema(conn: &Connection, table: &str) -> Result<Schema> {
     SqliteCatalog { conn }
         .table(table)
@@ -136,7 +157,8 @@ fn sql_type(column: &ivmlite_core::Column) -> &'static str {
 /// default, and its partial and expression flags — in a canonical order,
 /// so an index's name never matters. Stored in `__ivm_tracked` when the
 /// table is first tracked and compared on every later create over it, every
-/// connect and every refresh. A table dropped and recreated with other
+/// connect and every refresh that runs the catalog checks (Phase 5 spec §3:
+/// those after a schema change). A table dropped and recreated with other
 /// column types can compile to the same plan, since the plan names columns
 /// by position only.
 fn shape(schema: &Schema, capture: &CaptureInfo) -> String {
@@ -304,6 +326,12 @@ fn same_row(pk: &Option<Vec<String>>, left: &str, right: &str) -> String {
 /// the reserved `__ivm_` prefix, so these aliases cannot collide.
 const BASE_ALIAS: &str = "__ivm_b";
 const PEND_ALIAS: &str = "__ivm_p";
+
+/// The alias a subquery over the output table gives the stage, wherever it
+/// reads the stage's `cN`: an unqualified `c0` there would resolve to an
+/// output column named `c0` first. The reserved `__ivm_` prefix means this
+/// cannot collide with a view's own column names.
+const STAGE_ALIAS: &str = "__ivm_s";
 
 /// The existing rows a new row could replace (spec §6.2), one `UNION`
 /// branch per unique index plus the rowid, each able to use its own index.
@@ -622,7 +650,7 @@ fn capture_triggers(schema: &Schema, capture: &CaptureInfo, fingerprint: &Finger
 /// Start capturing `table`'s writes (Phase 3a §8.1, shared since Phase 3b
 /// §4): its delta and pend tables, its `CAPTURE_EVENTS` triggers, and the
 /// `__ivm_tracked` row that every later view of it, and every connect and
-/// refresh, checks its capture against.
+/// checking refresh, checks its capture against.
 fn track(conn: &Connection, schema: &Schema) -> Result<()> {
     let t = &schema.table;
     let capture = SqliteCatalog { conn }.capture(t)?;
@@ -710,11 +738,12 @@ fn collect_garbage(conn: &Connection, table: &str) -> Result<()> {
     .map_err(sql_error)
 }
 
-/// `table`'s capture as every view of it relies on: no capture trigger has
-/// latched a change to its definition, unique indexes or capture triggers,
-/// the shape its triggers were generated from, and every capture trigger on
-/// `table` itself.
-fn check_table_capture(conn: &Connection, table: &str) -> Result<()> {
+/// `table` is tracked and no capture trigger has latched a change to its
+/// definition, unique indexes or capture triggers; returns the shape its
+/// triggers were generated from. The latch is set by a data write, never by
+/// a schema change, so a refresh reads it even when it skips every other
+/// check (Phase 5 spec §3).
+fn check_latch(conn: &Connection, table: &str) -> Result<String> {
     let recorded: Option<(String, Option<String>)> = conn
         .query_row(
             &format!(
@@ -727,11 +756,20 @@ fn check_table_capture(conn: &Connection, table: &str) -> Result<()> {
         .optional()
         .map_err(sql_error)?;
     let (recorded, latched) = recorded.ok_or_else(|| format!("table {table} is not tracked"))?;
-    if let Some(why) = latched {
-        return Err(why);
+    match latched {
+        Some(why) => Err(why),
+        None => Ok(recorded),
     }
+}
+
+/// `table`'s capture as every view of it relies on: `check_latch`, the shape
+/// its triggers were generated from, and every capture trigger on `table`
+/// itself. Returns `table`'s schema as read for the shape.
+fn check_table_capture(conn: &Connection, table: &str) -> Result<Schema> {
+    let recorded = check_latch(conn, table)?;
     let capture = SqliteCatalog { conn }.capture(table)?;
-    let now = shape(&base_schema(conn, table)?, &capture);
+    let schema = base_schema(conn, table)?;
+    let now = shape(&schema, &capture);
     if now != recorded {
         return Err(format!(
             "base table {table} changed shape since it was first tracked \
@@ -752,7 +790,7 @@ fn check_table_capture(conn: &Connection, table: &str) -> Result<()> {
             return Err(format!("its shadow table {shadow} is missing"));
         }
     }
-    Ok(())
+    Ok(schema)
 }
 
 /// Stop capturing `table`: triggers first, so it stays writable.
@@ -901,8 +939,9 @@ fn read_deltas(conn: &Connection, schema: &Schema, after: i64) -> Result<(ZSet, 
 /// `create_out_table` indexed them in — so SQLite can plan this as a SEARCH
 /// on `out_index`, not a SCAN. `operand` gives each column's `IS`
 /// comparison's right-hand side; the only caller is `create_stage`, which
-/// passes `NEW.cN` and uses the result, unchanged, in both the RAISE's
-/// existence check and the retracting `DELETE`.
+/// passes `__ivm_s.cN`, the stage row under its reserved alias (Phase 5
+/// spec §4), and uses the result, unchanged, in both the RAISE's existence
+/// check and the retracting `DELETE`.
 ///
 /// This crate cannot open a live `Connection` to check the resulting plan
 /// itself — it builds `rusqlite` with only the `loadable_extension`
@@ -924,8 +963,10 @@ fn retraction_lookup(out: &str, cols: &[String], operand: impl Fn(usize) -> Stri
 
 /// The stage table and the trigger that applies it (see `apply`). One stage
 /// row is one change: `op` is `state` (a weight change of arrangement `arr`),
-/// `out+` / `out-` (an output row, in `c0`, `c1`, …), or `progress` (table
-/// `tbl` consumed through `seq`).
+/// `out+` / `out-` (an output row, in `c0`, `c1`, …), `progress` (table
+/// `tbl` consumed through `seq`), or the sentinel: staged first as `arm`, and
+/// updated to `apply` by the arming statement, which fires the trigger
+/// (Phase 5 spec §4, amendment 2026-10-08).
 fn create_stage(
     conn: &Connection,
     name: &str,
@@ -935,7 +976,7 @@ fn create_stage(
     // The trigger body names every table unqualified: SQLite rejects a
     // schema-qualified name on INSERT/UPDATE/DELETE inside a trigger, and a
     // trigger in `main` resolves its body's names in `main` (see
-    // `create_delta_table`). Every statement outside the body is qualified.
+    // `capture_triggers`). Every statement outside the body is qualified.
     let stage = quote(&stage_table(name));
     let out = quote(&out_table(name));
     let progress = quote(PROGRESS);
@@ -947,46 +988,78 @@ fn create_stage(
         .map(|(i, c)| format!("c{i} {}", sql_type(c)))
         .collect();
     let cols: Vec<String> = view.columns.iter().map(|c| quote(&c.name)).collect();
-    let new_cols: Vec<String> = (0..n).map(|i| format!("NEW.c{i}")).collect();
-    let lookup = retraction_lookup(&out, &cols, |i| format!("NEW.c{i}"));
+    // Phase 5 spec §4: the trigger fires once, when the arming `UPDATE` turns
+    // the sentinel into `apply`, and each statement of its body applies every
+    // staged row of one kind at once. It fires on `UPDATE OF op`, not on
+    // INSERT, so no staging insert evaluates it (amendment 2026-10-08: an
+    // INSERT trigger's `WHEN` cost each staging insert about as much as the
+    // set-based body saved). The body filters on `op`, so the sentinel is
+    // inert in it.
+    let s = STAGE_ALIAS;
+    let lookup = retraction_lookup(&out, &cols, |i| format!("{s}.c{i}"));
     let mut body = Vec::new();
+    // The order is the row trigger's (Phase 3a §5): state, then output, then
+    // watermarks, then GC, which reads the watermarks just written.
     for (i, id) in ids.iter().enumerate() {
         let t = quote(&state_table(name, *id));
+        // One upsert per arrangement adds every staged weight change. SQLite
+        // documents that an upsert over a SELECT needs a WHERE clause (even
+        // `WHERE true`), or ON CONFLICT can parse as a join's ON; the filter
+        // is that clause, and the trailing `AND true` (as spec §4 writes it)
+        // changes nothing. A pending map holds each (key, val) once, so no
+        // row is upserted twice.
         body.push(format!(
-            "INSERT INTO {t}(key, val, w) SELECT NEW.key, NEW.val, NEW.w \
-             WHERE NEW.op = 'state' AND NEW.arr = {i} \
+            "INSERT INTO {t}(key, val, w) SELECT key, val, w FROM {stage} \
+             WHERE op = 'state' AND arr = {i} AND true \
              ON CONFLICT(key, val) DO UPDATE SET w = w + excluded.w;"
         ));
+        // Then every staged key whose weight reached 0 is removed, after
+        // the whole upsert: the final weight is the same either way.
         body.push(format!(
-            "DELETE FROM {t} WHERE NEW.op = 'state' AND NEW.arr = {i} \
-             AND key = NEW.key AND val = NEW.val AND w = 0;"
+            "DELETE FROM {t} WHERE w = 0 AND (key, val) IN \
+             (SELECT key, val FROM {stage} WHERE op = 'state' AND arr = {i});"
         ));
     }
+    // Every retraction is checked before any is applied, so one with no
+    // output row aborts the whole statement.
     body.push(format!(
         "SELECT RAISE(ABORT, 'ivmlite broken invariant: the view retracted a row its output table does not hold') \
-         WHERE NEW.op = 'out-' AND NOT EXISTS ({lookup});"
+         WHERE EXISTS (SELECT 1 FROM {stage} AS {s} WHERE {s}.op = 'out-' AND NOT EXISTS ({lookup}));"
     ));
+    // Each `out-` row picks one output rowid. v0's output Z-set is
+    // consolidated, so each output row is staged at most once, with weight
+    // ±1: no two `out-` rows are identical, and each removes exactly one
+    // copy. Two identical ones would pick the same rowid and remove one copy
+    // between them; v0 cannot stage them (Phase 5 spec §4).
     body.push(format!(
-        "DELETE FROM {out} WHERE NEW.op = 'out-' \
-         AND rowid = ({lookup} LIMIT 1);"
+        "DELETE FROM {out} WHERE rowid IN \
+         (SELECT ({lookup} LIMIT 1) FROM {stage} AS {s} WHERE {s}.op = 'out-');"
     ));
+    // After the retractions, so no `out-` can match a row inserted here;
+    // the consolidated Z-set never stages one row as both `out+` and `out-`.
     body.push(format!(
-        "INSERT INTO {out}({}, {WEIGHT}) SELECT {}, 1 WHERE NEW.op = 'out+';",
+        "INSERT INTO {out}({}, {WEIGHT}) SELECT {}, 1 FROM {stage} WHERE op = 'out+';",
         cols.join(", "),
-        new_cols.join(", ")
+        (0..n)
+            .map(|i| format!("c{i}"))
+            .collect::<Vec<_>>()
+            .join(", ")
     ));
+    // Every staged watermark of this view at once; a view reads each base
+    // table once (a self-join is refused), so each `tbl` is staged once.
     body.push(format!(
-        "UPDATE {progress} SET applied_seq = NEW.seq \
-         WHERE NEW.op = 'progress' AND view = {} AND tbl = NEW.tbl;",
+        "UPDATE {progress} SET applied_seq = \
+         (SELECT seq FROM {stage} WHERE op = 'progress' AND tbl = {progress}.tbl) \
+         WHERE view = {} AND tbl IN (SELECT tbl FROM {stage} WHERE op = 'progress');",
         literal(name)
     ));
-    // Spec §5: once this view's watermark for `t` moves, delete every delta
-    // row of `t` that every reader has consumed. Only on the stage row that
-    // moves `t`'s watermark, inside the one arming statement.
+    // Phase 3b spec §5: once this view's watermark for `t` moves, delete
+    // every delta row of `t` that every reader has consumed — only when this
+    // apply stages `t`'s watermark, inside the one arming statement.
     for t in &view.tables {
         body.push(format!(
-            "DELETE FROM {delta} WHERE NEW.op = 'progress' AND NEW.tbl = {lit} \
-             AND {DELTA_SEQ} <= (SELECT MIN(applied_seq) FROM {progress} WHERE tbl = {lit});",
+            "DELETE FROM {delta} WHERE {DELTA_SEQ} <= (SELECT MIN(applied_seq) FROM {progress} WHERE tbl = {lit}) \
+             AND EXISTS (SELECT 1 FROM {stage} WHERE op = 'progress' AND tbl = {lit});",
             delta = quote(&delta_table(t)),
             lit = literal(t),
         ));
@@ -995,9 +1068,9 @@ fn create_stage(
         conn,
         &format!(
             "CREATE TABLE {}(op TEXT NOT NULL, arr INTEGER, key BLOB, val BLOB, w INTEGER,
-                 tbl TEXT, seq INTEGER, {}, armed INTEGER NOT NULL DEFAULT 0);
-             CREATE TRIGGER {} AFTER UPDATE OF armed ON {stage}
-                 WHEN OLD.armed = 0 AND NEW.armed = 1
+                 tbl TEXT, seq INTEGER, {});
+             CREATE TRIGGER {} AFTER UPDATE OF op ON {stage}
+                 WHEN NEW.op = 'apply'
              BEGIN
                  {}
              END;",
@@ -1057,6 +1130,130 @@ fn sql_value(v: &Value) -> rusqlite::types::Value {
     }
 }
 
+/// How many rows one staging `INSERT` carries (Phase 5 spec §6, amendments
+/// 2026-10-08), unless the parameter bound allows fewer.
+const STAGE_CHUNK: usize = 64;
+
+/// The most parameters one staging `INSERT` binds, even where the
+/// connection allows more: `SQLITE_MAX_VARIABLE_NUMBER` defaults to 999
+/// before SQLite 3.32 (32766 since), and the extension may run on an older
+/// SQLite.
+const MAX_PARAMS: usize = 999;
+
+/// The parameters a `state` stage row binds: `arr`, `key`, `val`, `w`.
+const STATE_WIDTH: usize = 4;
+
+/// The most parameters one staging `INSERT` may bind on `conn`: `MAX_PARAMS`,
+/// or the connection's live `SQLITE_LIMIT_VARIABLE_NUMBER` when an
+/// application has lowered it below that with `sqlite3_limit`.
+fn max_params(conn: &Connection) -> usize {
+    // SAFETY: `conn` wraps the live handle SQLite called the extension on;
+    // a negative new value only reads the limit, changing nothing.
+    let live = unsafe {
+        rusqlite::ffi::sqlite3_limit(
+            conn.handle(),
+            rusqlite::ffi::SQLITE_LIMIT_VARIABLE_NUMBER,
+            -1,
+        )
+    };
+    usize::try_from(live).map_or(0, |live| live.min(MAX_PARAMS))
+}
+
+/// The rows one staging `INSERT` carries for rows of `width` parameters:
+/// `STAGE_CHUNK`, or fewer when that many would bind more than `max_params`.
+/// An output row's width is the view's column count plus one, so the chunk is
+/// derived here rather than assumed. A row wider than `max_params` still goes
+/// one row per statement, as before chunking, and fails as it did then. (With
+/// SQLite's default limits, its expression-depth limit caps a view at about
+/// 329 output columns, so a width over 999 is not reachable.)
+fn rows_per_statement(width: usize, max_params: usize) -> usize {
+    (max_params / width).clamp(1, STAGE_CHUNK)
+}
+
+/// Stages rows of one shape with multi-row `INSERT … VALUES (…), (…), …`
+/// statements, `chunk` rows at a time, then one remainder statement for the
+/// rows left over (Phase 5 spec §6, amendments 2026-10-08). Each shape is a
+/// `prepare_cached` statement. Rows are inserted in the order they are pushed,
+/// each with exactly the values it would have had as a one-row insert.
+struct Stager<'c> {
+    conn: &'c Connection,
+    /// `INSERT INTO <stage>(<columns>) VALUES `.
+    head: String,
+    /// One row's `(…)`, with `width` anonymous `?` parameters.
+    row: String,
+    width: usize,
+    chunk: usize,
+    /// The full chunk's SQL, built at the first full chunk.
+    full: Option<String>,
+    values: Vec<rusqlite::types::Value>,
+}
+
+impl<'c> Stager<'c> {
+    fn new(
+        conn: &'c Connection,
+        head: String,
+        row: String,
+        width: usize,
+        max_params: usize,
+    ) -> Self {
+        let chunk = rows_per_statement(width, max_params);
+        Stager {
+            conn,
+            head,
+            row,
+            width,
+            chunk,
+            full: None,
+            values: Vec::with_capacity(chunk * width),
+        }
+    }
+
+    fn sql(&self, rows: usize) -> String {
+        let mut sql = self.head.clone();
+        for i in 0..rows {
+            if i > 0 {
+                sql.push_str(", ");
+            }
+            sql.push_str(&self.row);
+        }
+        sql
+    }
+
+    fn push(&mut self, row: impl IntoIterator<Item = rusqlite::types::Value>) -> Result<()> {
+        let before = self.values.len();
+        self.values.extend(row);
+        debug_assert_eq!(self.values.len() - before, self.width);
+        if self.values.len() == self.chunk * self.width {
+            if self.full.is_none() {
+                self.full = Some(self.sql(self.chunk));
+            }
+            let sql = self.full.as_deref().expect("filled just above");
+            execute_staging(self.conn, sql, &mut self.values)?;
+        }
+        Ok(())
+    }
+
+    /// Stage the rows left over, fewer than one chunk, in one statement.
+    fn finish(mut self) -> Result<()> {
+        if self.values.is_empty() {
+            return Ok(());
+        }
+        let sql = self.sql(self.values.len() / self.width);
+        execute_staging(self.conn, &sql, &mut self.values)
+    }
+}
+
+fn execute_staging(
+    conn: &Connection,
+    sql: &str,
+    values: &mut Vec<rusqlite::types::Value>,
+) -> Result<()> {
+    conn.prepare_cached(sql)
+        .and_then(|mut s| s.execute(rusqlite::params_from_iter(values.drain(..))))
+        .map(|_| ())
+        .map_err(sql_error)
+}
+
 /// Apply `changes` to the state tables, the output table and the watermarks
 /// **in one statement**, so they change together or not at all.
 ///
@@ -1065,36 +1262,51 @@ fn sql_value(v: &Value) -> rusqlite::types::Value {
 /// rolled back (both measured, Phase 3a). One statement is atomic on its own:
 /// the changes are first written to the stage table — harmless if that fails
 /// part way, since the stage is emptied at the start of every apply — and then
-/// a single `UPDATE … SET armed = 1` fires the apply trigger for every row.
-/// If any row fails, SQLite rolls that whole statement back.
+/// a single `UPDATE` of the sentinel row, staged first as `arm`, to `apply`
+/// fires the apply trigger once, whose set-based statements apply every
+/// staged row (Phase 5 spec §4 and its amendment 2026-10-08). If any of them
+/// fails, SQLite rolls that whole statement back. The stage keeps its rows,
+/// the sentinel included, until the next apply empties it — except after the
+/// bootstrap's own apply, which `create` empties itself at the end (spec §5),
+/// so no view's stage is ever left full once `create` returns.
 fn apply(conn: &Connection, name: &str, view: &CompiledView, changes: &Changes) -> Result<()> {
+    use rusqlite::types::Value as SqlValue;
     let stage = main_qualified(&stage_table(name));
     exec(conn, &format!("DELETE FROM {stage}"))?;
-    let stage_state =
-        format!("INSERT INTO {stage}(op, arr, key, val, w) VALUES ('state', ?1, ?2, ?3, ?4)");
+    // The sentinel the arming statement turns into `apply` (Phase 5 spec §4,
+    // amendment 2026-10-08), found again by its rowid, not by a scan. It
+    // stays a one-row insert of its own, so `last_insert_rowid` is its rowid.
+    exec(conn, &format!("INSERT INTO {stage}(op) VALUES ('arm')"))?;
+    let sentinel = conn.last_insert_rowid();
+    let max_params = max_params(conn);
+    let mut state = Stager::new(
+        conn,
+        format!("INSERT INTO {stage}(op, arr, key, val, w) VALUES "),
+        "('state', ?, ?, ?, ?)".to_string(),
+        STATE_WIDTH,
+        max_params,
+    );
     for (i, pending) in changes.state.iter().enumerate() {
         for (key, vals) in pending.borrow().iter() {
             for (val, w) in vals {
-                conn.prepare_cached(&stage_state)
-                    .and_then(|mut s| {
-                        s.execute(params![
-                            i as i64,
-                            crate::encode::encode(key),
-                            crate::encode::encode(val),
-                            w
-                        ])
-                    })
-                    .map_err(sql_error)?;
+                state.push([
+                    SqlValue::Integer(i as i64),
+                    SqlValue::Blob(crate::encode::encode(key)),
+                    SqlValue::Blob(crate::encode::encode(val)),
+                    SqlValue::Integer(*w),
+                ])?;
             }
         }
     }
+    state.finish()?;
     let n = view.columns.len();
-    let placeholders: Vec<String> = (0..n).map(|i| format!("?{}", i + 2)).collect();
     let cs: Vec<String> = (0..n).map(|i| format!("c{i}")).collect();
-    let stage_out = format!(
-        "INSERT INTO {stage}(op, {}) VALUES (?1, {})",
-        cs.join(", "),
-        placeholders.join(", ")
+    let mut output = Stager::new(
+        conn,
+        format!("INSERT INTO {stage}(op, {}) VALUES ", cs.join(", ")),
+        format!("({})", vec!["?"; n + 1].join(", ")),
+        n + 1,
+        max_params,
     );
     for (row, &w) in changes.output.iter() {
         let op = match w {
@@ -1106,12 +1318,11 @@ fn apply(conn: &Connection, name: &str, view: &CompiledView, changes: &Changes) 
                 ))
             }
         };
-        let mut values = vec![rusqlite::types::Value::Text(op.to_string())];
-        values.extend(row.0.iter().map(sql_value));
-        conn.prepare_cached(&stage_out)
-            .and_then(|mut s| s.execute(rusqlite::params_from_iter(values.iter())))
-            .map_err(sql_error)?;
+        output.push(
+            std::iter::once(SqlValue::Text(op.to_string())).chain(row.0.iter().map(sql_value)),
+        )?;
     }
+    output.finish()?;
     for (table, seq) in &changes.progress {
         conn.execute(
             &format!("INSERT INTO {stage}(op, tbl, seq) VALUES ('progress', ?1, ?2)"),
@@ -1120,14 +1331,23 @@ fn apply(conn: &Connection, name: &str, view: &CompiledView, changes: &Changes) 
         .map_err(sql_error)?;
     }
     // The one statement that changes durable state, and the last one: a
-    // failure after it would report an error for changes that stay applied.
-    // The stage is left full and emptied by the next apply.
-    exec(conn, &format!("UPDATE {stage} SET armed = 1"))
+    // failure after it would report an error for changes that stay applied
+    // (Phase 3a §5). The stage is left full here; a refresh's apply is
+    // emptied by the next apply, while the bootstrap's is emptied right
+    // after by `create`'s own cleanup DELETE (spec §5). Cached like the
+    // staging inserts, though the cache lasts one callback: `vtab.rs` wraps
+    // the handle in a new `Connection` for each.
+    conn.prepare_cached(&format!("UPDATE {stage} SET op = 'apply' WHERE rowid = ?1"))
+        .and_then(|mut s| s.execute(params![sentinel]))
+        .map(|_| ())
+        .map_err(sql_error)
 }
 
 /// `CREATE VIRTUAL TABLE <name> USING ivm('<sql>')`, inside the statement's
 /// own transaction: create every shadow object, then bootstrap (spec §7.3).
-pub fn create(conn: &Rc<Connection>, name: &str, sql: &str) -> Result<CompiledView> {
+/// Returns the view and what its catalog checks would now see (Phase 5 spec
+/// §3): everything they inspect was just created or checked here.
+pub fn create(conn: &Rc<Connection>, name: &str, sql: &str) -> Result<(CompiledView, Checked)> {
     if has_reserved_prefix(name) {
         return Err(format!(
             "the view name {name} starts with {PREFIX}, which ivmlite reserves for its own shadow tables"
@@ -1221,14 +1441,34 @@ pub fn create(conn: &Rc<Connection>, name: &str, sql: &str) -> Result<CompiledVi
             progress: Vec::new(),
         },
     )?;
-    Ok(view)
+    // Spec §5: unlike a refresh, a failing CREATE VIRTUAL TABLE is rolled back
+    // as a whole, in autocommit and in an explicit transaction alike (Phase 3a
+    // §5, measured) — it writes sqlite_schema — so emptying the stage after
+    // the bootstrap's apply cannot leave an applied-but-reported-failed state.
+    // "Nothing after the apply can fail a refresh" protects a *refresh* inside
+    // an explicit transaction, where a callback's writes are not undone; that
+    // concern does not apply here, so this DELETE is safe to fail.
+    exec(
+        conn,
+        &format!("DELETE FROM {}", main_qualified(&stage_table(name))),
+    )?;
+    // Read last, once this function's own DDL has moved the cookie. The
+    // write transaction `CREATE VIRTUAL TABLE` runs in keeps every other
+    // connection from moving it in between.
+    let checked = Checked {
+        schema_version: schema_version(conn)?,
+        schemas,
+    };
+    Ok((view, checked))
 }
 
-/// A reopened view: the table declaration it was created with, and either the
-/// compiled view or why it can no longer be maintained.
+/// A reopened view: the table declaration it was created with, either the
+/// compiled view or why it can no longer be maintained, and, when it can, what
+/// its passing catalog checks saw (Phase 5 spec §3).
 pub struct Reopened {
     pub declaration: String,
     pub view: std::result::Result<CompiledView, String>,
+    pub checked: Option<Checked>,
 }
 
 /// Reopen an existing view. Its stored SQL must compile to the same plan and
@@ -1250,8 +1490,15 @@ pub fn connect(conn: &Connection, name: &str) -> Result<Reopened> {
     let Some((sql, plan, declaration, format)) = stored else {
         return Err(format!("ivmlite has no record of the view {name}"));
     };
-    let view = verify(conn, name, &sql, &plan, format).map_err(|why| broken(name, &why));
-    Ok(Reopened { declaration, view })
+    let (view, checked) = match verify(conn, name, &sql, &plan, format) {
+        Ok((view, checked)) => (Ok(view), Some(checked)),
+        Err(why) => (Err(broken(name, &why)), None),
+    };
+    Ok(Reopened {
+        declaration,
+        view,
+        checked,
+    })
 }
 
 /// The error every read and refresh of a broken view reports (spec §5).
@@ -1265,7 +1512,12 @@ fn verify(
     sql: &str,
     plan: &str,
     format: i64,
-) -> Result<CompiledView> {
+) -> Result<(CompiledView, Checked)> {
+    // Read before the checks (Phase 5 spec §3): a connect need not run inside
+    // a transaction, so another connection may change the schema while they
+    // run, and the cookie read first is then older than the one the next
+    // refresh reads, which runs every check again.
+    let version = schema_version(conn)?;
     if format != FORMAT {
         return Err(format!(
             "it was stored in format {format}, and this extension reads format {FORMAT}"
@@ -1294,14 +1546,21 @@ fn verify(
             return Err(format!("its shadow {kind} {object} is missing"));
         }
     }
-    check_capture(conn, name, &view)?;
-    Ok(view)
+    let schemas = check_capture(conn, name, &view)?;
+    Ok((
+        view,
+        Checked {
+            schema_version: version,
+            schemas,
+        },
+    ))
 }
 
-/// The output table's index must exist too (Phase 4 spec §4), checked at
-/// every refresh — `verify`'s own `needed` list above already checks it at
-/// every connect, but `refresh` runs on the same connection a view was
-/// created on and never calls `verify`. Without this, a user who drops
+/// The output table's index must exist too (Phase 4 spec §4), checked by
+/// every refresh that runs the catalog checks (Phase 5 spec §3) —
+/// `verify`'s own `needed` list above already checks it at every connect,
+/// but `refresh` runs on the same connection a view was created on and never
+/// calls `verify`. Without this, a user who drops
 /// `__ivm_outidx_<view>` on the connection that already holds the view
 /// would see a refresh silently fall back to a full table scan instead of a
 /// broken view (Phase 4 spec §4: the index is what keeps a retraction a
@@ -1314,15 +1573,18 @@ fn check_output_index(conn: &Connection, name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Checked on every connect and every refresh: each base table the view
+/// Checked on every connect, and by every refresh after a schema change
+/// (Phase 5 spec §3): each base table the view
 /// reads is still tracked with its recorded shape and its capture triggers
 /// (now `__ivm_tracked`'s concern, shared across every view of the table —
 /// Phase 3b spec §3), and the view still has its apply trigger, each on the
 /// table it was created on. `DROP TABLE t` drops `t`'s triggers but not its
 /// delta table, so a recreated `t` would otherwise leave every later write
 /// uncaptured; without the apply trigger, a refresh would apply nothing.
-/// Either way the view would go stale with no error.
-fn check_capture(conn: &Connection, name: &str, view: &CompiledView) -> Result<()> {
+/// Either way the view would go stale with no error. Returns the base
+/// tables' schemas, in `view.tables` order.
+fn check_capture(conn: &Connection, name: &str, view: &CompiledView) -> Result<Vec<Schema>> {
+    let mut schemas = Vec::with_capacity(view.tables.len());
     for table in &view.tables {
         let recorded: Option<i64> = conn
             .query_row(
@@ -1338,21 +1600,64 @@ fn check_capture(conn: &Connection, name: &str, view: &CompiledView) -> Result<(
         if recorded.is_none() {
             return Err(format!("its dependency on table {table} is not recorded"));
         }
-        check_table_capture(conn, table)?;
+        schemas.push(check_table_capture(conn, table)?);
     }
     check_trigger(conn, &apply_trigger(name), &stage_table(name))
-        .map_err(|why| format!("its apply trigger {why}"))
+        .map_err(|why| format!("its apply trigger {why}"))?;
+    Ok(schemas)
+}
+
+/// The base tables' schemas a refresh reads deltas with, after the catalog
+/// checks (Phase 5 spec §3). While `main`'s schema cookie still has the value
+/// `checked` passed at, no object those checks inspect can have changed, so
+/// only each table's latch is read: a data write sets it, and moves no
+/// cookie. Otherwise every check runs, and `checked` holds the new cookie
+/// and schemas only once they pass.
+fn checked_schemas<'a>(
+    conn: &Connection,
+    name: &str,
+    view: &CompiledView,
+    checked: &'a mut Option<Checked>,
+) -> Result<&'a [Schema]> {
+    let version = schema_version(conn)?;
+    // The hit arm returns nothing borrowed from `checked`, so the miss arm
+    // may assign to it; the borrow is taken once both arms are done.
+    match checked {
+        Some(c) if c.schema_version == version => {
+            for table in &view.tables {
+                check_latch(conn, table).map_err(|why| broken(name, &why))?;
+            }
+        }
+        _ => {
+            *checked = None;
+            let schemas = check_capture(conn, name, view).map_err(|why| broken(name, &why))?;
+            check_output_index(conn, name).map_err(|why| broken(name, &why))?;
+            *checked = Some(Checked {
+                schema_version: version,
+                schemas,
+            });
+        }
+    }
+    Ok(&checked
+        .as_ref()
+        .expect("a hit found the cache filled, and a miss filled it")
+        .schemas)
 }
 
 /// `INSERT INTO v(v) VALUES('refresh')`: bring the view up to date. State,
 /// output and watermarks change together or not at all (see `apply`).
-pub fn refresh(conn: &Rc<Connection>, name: &str, view: &CompiledView) -> Result<()> {
-    check_capture(conn, name, view).map_err(|why| broken(name, &why))?;
-    check_output_index(conn, name).map_err(|why| broken(name, &why))?;
+/// `checked` is the view's per-connection cache of its last passing catalog
+/// check (Phase 5 spec §3), updated here.
+pub fn refresh(
+    conn: &Rc<Connection>,
+    name: &str,
+    view: &CompiledView,
+    checked: &mut Option<Checked>,
+) -> Result<()> {
+    let schemas = checked_schemas(conn, name, view, checked)?;
     let mut batches = Vec::new();
     let mut progress = Vec::new();
-    for table in &view.tables {
-        let schema = base_schema(conn, table)?;
+    for (table, schema) in view.tables.iter().zip(schemas) {
         let applied: i64 = conn
             .query_row(
                 &format!(
@@ -1363,7 +1668,7 @@ pub fn refresh(conn: &Rc<Connection>, name: &str, view: &CompiledView) -> Result
                 |r| r.get(0),
             )
             .map_err(sql_error)?;
-        let (delta, last) = read_deltas(conn, &schema, applied)?;
+        let (delta, last) = read_deltas(conn, schema, applied)?;
         batches.push((table.clone(), delta));
         if last > applied {
             progress.push((table.clone(), last));
@@ -1533,6 +1838,29 @@ mod tests {
         assert!(!is_state_table_of("__ivm_state_v_x_agg_groups", "v"));
         assert!(!is_state_table_of("__ivm_state_v__agg_groups", "v"));
         assert!(!is_state_table_of("__ivm_out_v", "v"));
+    }
+
+    #[test]
+    fn a_staging_insert_binds_at_most_999_parameters() {
+        assert_eq!(rows_per_statement(STATE_WIDTH, MAX_PARAMS), 64);
+        assert_eq!(
+            rows_per_statement(15, MAX_PARAMS),
+            64,
+            "64 rows of 15 bind 960"
+        );
+        assert_eq!(
+            rows_per_statement(16, MAX_PARAMS),
+            62,
+            "64 rows of 16 would bind 1,024"
+        );
+        assert_eq!(rows_per_statement(999, MAX_PARAMS), 1);
+        assert_eq!(
+            rows_per_statement(1000, MAX_PARAMS),
+            1,
+            "one row per statement, as before"
+        );
+        assert_eq!(rows_per_statement(2, 100), 50, "a lowered live limit");
+        assert_eq!(rows_per_statement(4, 0), 1, "never zero rows");
     }
 
     // This crate builds `rusqlite` with only the `loadable_extension`

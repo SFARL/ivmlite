@@ -504,7 +504,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let from = args
             .from
             .ok_or("plot mode needs --from <exploration CSV path>")?;
-        for path in plot::write_phase4_charts(&from)? {
+        for path in plot::write_charts(&from)? {
             eprintln!("wrote {}", path.display());
         }
         return Ok(());

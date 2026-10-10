@@ -92,11 +92,11 @@ dependencies = [
 
 [[package]]
 name = "ivmlite-core"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 
 [[package]]
 name = "ivmlite-sql"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "ivmlite-core",
  "sqlparser",
@@ -104,7 +104,7 @@ dependencies = [
 
 [[package]]
 name = "ivmlite-sqlite"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "ivmlite-core",
  "ivmlite-sql",

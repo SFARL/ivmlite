@@ -17,7 +17,7 @@ use rusqlite::vtab::{
 use rusqlite::{ffi, Connection, Error};
 
 use crate::names::{main_qualified, out_table, quote};
-use crate::view;
+use crate::view::{self, Checked};
 
 /// Run a callback body, turning its error and any panic into an SQLite error.
 fn guard<T>(body: impl FnOnce() -> Result<T, String>) -> rusqlite::Result<T> {
@@ -50,6 +50,10 @@ fn utf8<'a>(bytes: &'a [u8], what: &str) -> Result<&'a str, String> {
     std::str::from_utf8(bytes).map_err(|_| format!("the {what} is not UTF-8"))
 }
 
+/// What create or connect hands `IvmTab::open_view`: the table declaration,
+/// the view or why it is broken, and what its passing checks saw.
+type Opened = (String, Result<CompiledView, String>, Option<Checked>);
+
 #[repr(C)]
 pub struct IvmTab {
     /// Must come first: SQLite sees this struct as a `sqlite3_vtab`.
@@ -58,19 +62,19 @@ pub struct IvmTab {
     name: String,
     /// The compiled view, or why a reopened view can no longer be maintained.
     view: Result<CompiledView, String>,
+    /// What the view's last passing catalog check on this connection saw
+    /// (Phase 5 spec §3); `None` for a broken view.
+    checked: Option<Checked>,
 }
 
 impl IvmTab {
-    /// Shared by create and connect: `make` returns the declaration and the
-    /// view (or why it is broken).
+    /// Shared by create and connect: `make` returns the declaration, the
+    /// view (or why it is broken) and what its passing checks saw.
     fn open_view(
         db: &mut VTabConnection,
         database: &[u8],
         table: &[u8],
-        make: impl FnOnce(
-            &Rc<Connection>,
-            &str,
-        ) -> Result<(String, Result<CompiledView, String>), String>,
+        make: impl FnOnce(&Rc<Connection>, &str) -> Result<Opened, String>,
     ) -> rusqlite::Result<(Cow<'static, CStr>, Self)> {
         guard(|| {
             if database != b"main" {
@@ -80,7 +84,7 @@ impl IvmTab {
             // SAFETY: the handle of the connection running this statement.
             let handle = unsafe { db.handle() };
             let conn = connection(handle)?;
-            let (declaration, view) = make(&conn, &name)?;
+            let (declaration, view, checked) = make(&conn, &name)?;
             let declared = CString::new(declaration)
                 .map(Cow::Owned)
                 .map_err(|_| "a column name contains a NUL byte".to_string())?;
@@ -91,6 +95,7 @@ impl IvmTab {
                     db: handle,
                     name,
                     view,
+                    checked,
                 },
             ))
         })
@@ -117,7 +122,7 @@ unsafe impl<'vtab> VTab<'vtab> for IvmTab {
     ) -> rusqlite::Result<(Cow<'static, CStr>, Self)> {
         IvmTab::open_view(db, database, table, |conn, name| {
             let reopened = view::connect(conn, name)?;
-            Ok((reopened.declaration, reopened.view))
+            Ok((reopened.declaration, reopened.view, reopened.checked))
         })
     }
 
@@ -170,8 +175,12 @@ impl CreateVTab<'_> for IvmTab {
                 );
             };
             let sql = dequote(utf8(arg, "view's SQL")?).into_owned();
-            let compiled = view::create(conn, name, &sql)?;
-            Ok((view::declaration(name, &compiled)?, Ok(compiled)))
+            let (compiled, checked) = view::create(conn, name, &sql)?;
+            Ok((
+                view::declaration(name, &compiled)?,
+                Ok(compiled),
+                Some(checked),
+            ))
         })
     }
 
@@ -188,8 +197,9 @@ impl UpdateVTab<'_> for IvmTab {
     fn insert(&mut self, args: &Inserts<'_>) -> rusqlite::Result<i64> {
         guard(|| {
             // argv: old rowid (NULL), new rowid, the output columns, then the
-            // hidden command column.
-            let view = self.view()?;
+            // hidden command column. The field, not `self.view()`, so that
+            // `self.checked` can be borrowed mutably alongside it.
+            let view = self.view.as_ref().map_err(Clone::clone)?;
             let n = view.columns.len();
             let command_at = 2 + n;
             let command: Option<String> = args.get(command_at).map_err(|e| e.to_string())?;
@@ -207,7 +217,7 @@ impl UpdateVTab<'_> for IvmTab {
                             );
                         }
                     }
-                    view::refresh(&connection(self.db)?, &self.name, view)?;
+                    view::refresh(&connection(self.db)?, &self.name, view, &mut self.checked)?;
                     Ok(0)
                 }
                 Some(other) => Err(format!(
