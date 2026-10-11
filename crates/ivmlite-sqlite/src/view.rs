@@ -58,6 +58,15 @@ fn exec(conn: &Connection, sql: &str) -> Result<()> {
     conn.execute_batch(sql).map_err(sql_error)
 }
 
+/// Run one statement of the refresh path through the view's statement cache
+/// (Phase 6 spec §3), which resets it before returning it.
+fn execute_cached(conn: &Connection, sql: &str, params: impl rusqlite::Params) -> Result<()> {
+    conn.prepare_cached(sql)
+        .and_then(|mut s| s.execute(params))
+        .map(|_| ())
+        .map_err(sql_error)
+}
+
 /// Compile `sql` against the database's catalog, refusing a non-UTF-8 database.
 fn compile_view(conn: &Connection, sql: &str) -> Result<CompiledView> {
     require_utf8(conn)?;
@@ -73,6 +82,24 @@ fn arrangement_ids(plan: &Plan) -> Vec<ArrangementId> {
     })
     .expect("an in-memory provider cannot fail");
     ids
+}
+
+/// Phase 6 spec §3: the fixed statements one view's refresh prepares, so the
+/// cache never evicts one of them for another.
+pub fn statement_capacity(view: &CompiledView) -> usize {
+    const STAGING_SHAPES_PER_KIND: usize = 7; // the full chunk, then 32, 16, 8, 4, 2, 1
+    const MARGIN: usize = 4;
+    let tables = view.tables.len();
+    let arrangements = arrangement_ids(&view.plan).len();
+    let fixed = 1 // schema_version
+        + 1 // latch (one text, bound per table)
+        + 1 // watermark read
+        + tables // delta reads
+        + 2 * arrangements // BufferedArrangement get and scan
+        + 3 // stage delete, sentinel insert, progress insert
+        + 2 * STAGING_SHAPES_PER_KIND
+        + 1; // arming UPDATE
+    fixed + MARGIN
 }
 
 /// Whether the main schema holds an object of `kind` (`table`, `index`,
@@ -122,9 +149,11 @@ pub struct Checked {
 
 /// `main`'s schema cookie (Phase 5 spec §3), which SQLite increments on every
 /// schema change any connection makes to the database. Reading it, unlike
-/// setting it, expires no prepared statement.
+/// setting it, expires no prepared statement. Cached (Phase 6 spec §3):
+/// every refresh reads it.
 pub fn schema_version(conn: &Connection) -> Result<i64> {
-    conn.query_row("PRAGMA \"main\".schema_version", [], |r| r.get(0))
+    conn.prepare_cached("PRAGMA \"main\".schema_version")
+        .and_then(|mut s| s.query_row([], |r| r.get(0)))
         .map_err(sql_error)
 }
 
@@ -742,17 +771,15 @@ fn collect_garbage(conn: &Connection, table: &str) -> Result<()> {
 /// definition, unique indexes or capture triggers; returns the shape its
 /// triggers were generated from. The latch is set by a data write, never by
 /// a schema change, so a refresh reads it even when it skips every other
-/// check (Phase 5 spec §3).
+/// check (Phase 5 spec §3). Cached, one text bound per table (Phase 6 spec
+/// §3).
 fn check_latch(conn: &Connection, table: &str) -> Result<String> {
     let recorded: Option<(String, Option<String>)> = conn
-        .query_row(
-            &format!(
-                "SELECT shape, broken FROM {} WHERE tbl = ?1",
-                main_qualified(TRACKED)
-            ),
-            [table],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
+        .prepare_cached(&format!(
+            "SELECT shape, broken FROM {} WHERE tbl = ?1",
+            main_qualified(TRACKED)
+        ))
+        .and_then(|mut s| s.query_row([table], |r| Ok((r.get(0)?, r.get(1)?))))
         .optional()
         .map_err(sql_error)?;
     let (recorded, latched) = recorded.ok_or_else(|| format!("table {table} is not tracked"))?;
@@ -910,7 +937,7 @@ fn read_base(conn: &Connection, schema: &Schema) -> Result<ZSet> {
 /// The deltas of `table` after `after`, consolidated, and the highest `seq` read.
 fn read_deltas(conn: &Connection, schema: &Schema, after: i64) -> Result<(ZSet, i64)> {
     let mut stmt = conn
-        .prepare(&format!(
+        .prepare_cached(&format!(
             "SELECT {DELTA_SEQ}, {DELTA_W}, {} FROM {} WHERE {DELTA_SEQ} > ?1 ORDER BY {DELTA_SEQ}",
             column_list(schema, ""),
             main_qualified(&delta_table(&schema.table))
@@ -1171,9 +1198,10 @@ fn rows_per_statement(width: usize, max_params: usize) -> usize {
 }
 
 /// Stages rows of one shape with multi-row `INSERT … VALUES (…), (…), …`
-/// statements, `chunk` rows at a time, then one remainder statement for the
-/// rows left over (Phase 5 spec §6, amendments 2026-10-08). Each shape is a
-/// `prepare_cached` statement. Rows are inserted in the order they are pushed,
+/// statements, `chunk` rows at a time (Phase 5 spec §6, amendments
+/// 2026-10-08), then the rows left over in chunks of the binary digits of
+/// their count (Phase 6 spec §3). Each shape is a `prepare_cached` statement,
+/// at most seven per kind. Rows are inserted in the order they are pushed,
 /// each with exactly the values it would have had as a one-row insert.
 struct Stager<'c> {
     conn: &'c Connection,
@@ -1228,30 +1256,36 @@ impl<'c> Stager<'c> {
                 self.full = Some(self.sql(self.chunk));
             }
             let sql = self.full.as_deref().expect("filled just above");
-            execute_staging(self.conn, sql, &mut self.values)?;
+            let count = self.values.len();
+            execute_staging(self.conn, sql, &mut self.values, count)?;
         }
         Ok(())
     }
 
-    /// Stage the rows left over, fewer than one chunk, in one statement.
+    /// Stage the rows left over, fewer than one chunk, in chunks of the binary
+    /// digits of their count (32, 16, 8, 4, 2, 1 rows), front first, so every
+    /// staging statement has one of a few cached shapes (Phase 6 spec §3) and
+    /// the rows keep their push order.
     fn finish(mut self) -> Result<()> {
-        if self.values.is_empty() {
-            return Ok(());
+        let mut rows = self.values.len() / self.width;
+        while rows > 0 {
+            let take = 1usize << (usize::BITS - 1 - rows.leading_zeros());
+            let sql = self.sql(take);
+            execute_staging(self.conn, &sql, &mut self.values, take * self.width)?;
+            rows -= take;
         }
-        let sql = self.sql(self.values.len() / self.width);
-        execute_staging(self.conn, &sql, &mut self.values)
+        Ok(())
     }
 }
 
+/// Stage the first `count` of `values`, removing them from the buffer.
 fn execute_staging(
     conn: &Connection,
     sql: &str,
     values: &mut Vec<rusqlite::types::Value>,
+    count: usize,
 ) -> Result<()> {
-    conn.prepare_cached(sql)
-        .and_then(|mut s| s.execute(rusqlite::params_from_iter(values.drain(..))))
-        .map(|_| ())
-        .map_err(sql_error)
+    execute_cached(conn, sql, rusqlite::params_from_iter(values.drain(..count)))
 }
 
 /// Apply `changes` to the state tables, the output table and the watermarks
@@ -1272,11 +1306,11 @@ fn execute_staging(
 fn apply(conn: &Connection, name: &str, view: &CompiledView, changes: &Changes) -> Result<()> {
     use rusqlite::types::Value as SqlValue;
     let stage = main_qualified(&stage_table(name));
-    exec(conn, &format!("DELETE FROM {stage}"))?;
+    execute_cached(conn, &format!("DELETE FROM {stage}"), [])?;
     // The sentinel the arming statement turns into `apply` (Phase 5 spec §4,
     // amendment 2026-10-08), found again by its rowid, not by a scan. It
     // stays a one-row insert of its own, so `last_insert_rowid` is its rowid.
-    exec(conn, &format!("INSERT INTO {stage}(op) VALUES ('arm')"))?;
+    execute_cached(conn, &format!("INSERT INTO {stage}(op) VALUES ('arm')"), [])?;
     let sentinel = conn.last_insert_rowid();
     let max_params = max_params(conn);
     let mut state = Stager::new(
@@ -1323,24 +1357,23 @@ fn apply(conn: &Connection, name: &str, view: &CompiledView, changes: &Changes) 
         )?;
     }
     output.finish()?;
+    let progress = format!("INSERT INTO {stage}(op, tbl, seq) VALUES ('progress', ?1, ?2)");
     for (table, seq) in &changes.progress {
-        conn.execute(
-            &format!("INSERT INTO {stage}(op, tbl, seq) VALUES ('progress', ?1, ?2)"),
-            params![table, seq],
-        )
-        .map_err(sql_error)?;
+        execute_cached(conn, &progress, params![table, seq])?;
     }
     // The one statement that changes durable state, and the last one: a
     // failure after it would report an error for changes that stay applied
     // (Phase 3a §5). The stage is left full here; a refresh's apply is
     // emptied by the next apply, while the bootstrap's is emptied right
-    // after by `create`'s own cleanup DELETE (spec §5). Cached like the
-    // staging inserts, though the cache lasts one callback: `vtab.rs` wraps
-    // the handle in a new `Connection` for each.
-    conn.prepare_cached(&format!("UPDATE {stage} SET op = 'apply' WHERE rowid = ?1"))
-        .and_then(|mut s| s.execute(params![sentinel]))
-        .map(|_| ())
-        .map_err(sql_error)
+    // after by `create`'s own cleanup DELETE (spec §5). Cached like every
+    // statement here, for the view's lifetime (Phase 6 spec §3): preparing it
+    // compiles the apply trigger's whole body, and a statement that is kept
+    // and reset never recompiles it. Returning it to the cache runs no SQL.
+    execute_cached(
+        conn,
+        &format!("UPDATE {stage} SET op = 'apply' WHERE rowid = ?1"),
+        params![sentinel],
+    )
 }
 
 /// `CREATE VIRTUAL TABLE <name> USING ivm('<sql>')`, inside the statement's
@@ -1659,14 +1692,11 @@ pub fn refresh(
     let mut progress = Vec::new();
     for (table, schema) in view.tables.iter().zip(schemas) {
         let applied: i64 = conn
-            .query_row(
-                &format!(
-                    "SELECT applied_seq FROM {} WHERE view = ?1 AND tbl = ?2",
-                    main_qualified(PROGRESS)
-                ),
-                params![name, table],
-                |r| r.get(0),
-            )
+            .prepare_cached(&format!(
+                "SELECT applied_seq FROM {} WHERE view = ?1 AND tbl = ?2",
+                main_qualified(PROGRESS)
+            ))
+            .and_then(|mut s| s.query_row(params![name, table], |r| r.get(0)))
             .map_err(sql_error)?;
         let (delta, last) = read_deltas(conn, schema, applied)?;
         batches.push((table.clone(), delta));
