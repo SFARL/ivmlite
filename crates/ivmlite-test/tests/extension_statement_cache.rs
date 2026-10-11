@@ -353,3 +353,46 @@ fn a_lowered_variable_limit_after_caching_still_refreshes() {
     }
     assert_matches_oracle(&c, "sums", SUMS);
 }
+
+/// The memory `c`'s prepared statements use now (`SQLITE_DBSTATUS_STMT_USED`).
+fn statement_memory(c: &Connection) -> c_int {
+    let (mut current, mut highwater) = (0, 0);
+    // SAFETY: `c`'s own live handle; the call only reads a counter.
+    let rc = unsafe {
+        ffi::sqlite3_db_status(
+            c.handle(),
+            ffi::SQLITE_DBSTATUS_STMT_USED,
+            &mut current,
+            &mut highwater,
+            0,
+        )
+    };
+    assert_eq!(rc, ffi::SQLITE_OK);
+    current
+}
+
+/// Spec §3: `create` flushes the view's cache once the bootstrap is done, so
+/// the bootstrap's large staging shapes, which a steady refresh never
+/// reuses, are not kept for the view's lifetime. The test connection holds
+/// no statement of its own around the `create`, so statement memory right
+/// after it is what it was before.
+#[test]
+fn create_keeps_no_bootstrap_statement() {
+    let c = open_with_extension(None).unwrap();
+    setup(&c);
+    c.execute_batch(
+        "WITH RECURSIVE i(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM i WHERE n < 10000)
+         INSERT INTO orders SELECT 'r' || (n % 1000), n FROM i",
+    )
+    .unwrap();
+    let before = statement_memory(&c);
+    create(&c, "sums", SUMS).unwrap();
+    assert_eq!(
+        statement_memory(&c),
+        before,
+        "statement memory after create"
+    );
+    insert_rows(&c, 1);
+    refresh(&c, "sums").unwrap();
+    assert_matches_oracle(&c, "sums", SUMS);
+}

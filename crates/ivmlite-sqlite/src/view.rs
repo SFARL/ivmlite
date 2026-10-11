@@ -1492,6 +1492,11 @@ pub fn create(conn: &Rc<Connection>, name: &str, sql: &str) -> Result<(CompiledV
         schema_version: schema_version(conn)?,
         schemas,
     };
+    // Phase 6 spec §3: the bootstrap staged the whole base table, so the
+    // cache now holds its large staging shapes, which a steady refresh never
+    // reuses; finalizing them runs no SQL, so nothing above can be undone by
+    // it. The first refresh prepares what it needs.
+    conn.flush_prepared_statement_cache();
     Ok((view, checked))
 }
 
