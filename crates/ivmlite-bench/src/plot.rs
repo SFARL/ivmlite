@@ -94,7 +94,7 @@ pub fn write_svg(
             && r.batch_size == fixed_batch
             && r.group_cardinality == fixed_card
         {
-            let total_ms = (r.apply_ms + r.maintain_ms).max(1e-6); // a log scale cannot take 0 or negatives
+            let total_ms = r.total_ms().max(1e-6); // a log scale cannot take 0 or negatives
             series
                 .entry(r.engine.as_str())
                 .or_default()
@@ -236,7 +236,7 @@ pub fn write_speedup_svg(
         if r.views != fixed_views || r.group_cardinality != fixed_card {
             continue;
         }
-        let total = r.apply_ms + r.maintain_ms;
+        let total = r.total_ms();
         match r.engine.as_str() {
             "naive_recompute" => {
                 naive.insert((r.base_rows, r.batch_size), total);
@@ -428,6 +428,7 @@ mod tests {
             group_cardinality: cardinality,
             apply_ms,
             maintain_ms,
+            apply_plus_maintain_ms: None,
         }
     }
 

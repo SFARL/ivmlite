@@ -5,7 +5,8 @@
 use std::path::Path;
 use std::time::Instant;
 
-use ivmlite_workload::{ViewSpec, Workload};
+use ivmlite_test::demo_bench::{median_of_sums, Summary};
+use ivmlite_workload::{ViewSpec, Workload, MEASURED_ROUNDS};
 use rusqlite::{Connection, Statement};
 
 use crate::baseline::{
@@ -62,6 +63,39 @@ pub fn engine_order(cell_index: usize) -> [Engine; 4] {
     [v[0], v[1], v[2], v[3]]
 }
 
+/// One measured round's timed steps, in milliseconds.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct RoundTiming {
+    pub apply_ms: f64,
+    pub maintain_ms: f64,
+}
+
+/// A cell's steady state over its measured rounds (M1b Phase 6 spec §6).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct SteadyState {
+    pub apply_ms: f64,
+    pub maintain_ms: f64,
+    pub apply_plus_maintain_ms: f64,
+}
+
+/// Spec §6's median rule, the demo runner's (`demo_bench::steady_state`):
+/// each step's own median over the rounds, and for the total the median of
+/// each round's `apply + maintain`, so the total is what one round cost and
+/// not a sum of medians taken from different rounds. An even count's median
+/// is the mean of the two middle values. `None` for no rounds.
+pub(crate) fn steady_state(rounds: &[RoundTiming]) -> Option<SteadyState> {
+    let median = |step: fn(&RoundTiming) -> f64| {
+        let values: Vec<f64> = rounds.iter().map(step).collect();
+        Summary::of(&values).map(|summary| summary.median)
+    };
+    let parts: Vec<(f64, f64)> = rounds.iter().map(|r| (r.apply_ms, r.maintain_ms)).collect();
+    Some(SteadyState {
+        apply_ms: median(|r| r.apply_ms)?,
+        maintain_ms: median(|r| r.maintain_ms)?,
+        apply_plus_maintain_ms: median_of_sums(&parts)?,
+    })
+}
+
 /// One space sample: `PRAGMA page_count` and `PRAGMA freelist_count` (spec §3.4).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Space {
@@ -69,13 +103,22 @@ pub struct Space {
     pub freelist_count: i64,
 }
 
-/// Everything one engine's run of one cell measures (spec §3.2, §3.4).
+/// Everything one engine's run of one cell measures (spec §3.2, §3.4). The
+/// timings after `bootstrap_ms` follow M1b Phase 6 spec §6's steady state.
 #[derive(Debug, Clone)]
 pub struct Measurement {
     pub engine: Engine,
     pub bootstrap_ms: f64,
+    /// The maintenance of the warm-up batch: for ivmlite, the first refresh
+    /// after `CREATE`.
+    pub first_refresh_ms: f64,
+    /// The median apply over the measured rounds.
     pub apply_ms: f64,
+    /// The median maintenance over the measured rounds.
     pub maintain_ms: f64,
+    /// The median over the measured rounds of each round's own
+    /// `apply + maintain`, not the sum of the two medians above.
+    pub apply_plus_maintain_ms: f64,
     pub page_size: i64,
     pub base: Space,
     pub bootstrapped: Space,
@@ -173,107 +216,69 @@ pub(crate) fn prepare_refresh_statements<'c>(
         .collect()
 }
 
-/// Run spec §3.2's sequence for one engine on one cell, in a fresh in-memory
-/// database. `lib` is the extension library, used only for `Engine::Ivmlite`.
-pub fn run_cell(engine: Engine, cell: &Workload, lib: &Path) -> Result<Measurement, String> {
+/// The statements one engine's maintenance step runs, prepared before any
+/// timer (spec §3.2 step 4).
+enum Maintenance<'c> {
+    /// `no_maintenance` and `hand_written_trigger`: nothing runs on refresh.
+    Nothing,
+    Recompute(RecomputeStatements<'c>),
+    Refresh(Vec<Statement<'c>>),
+}
+
+impl<'c> Maintenance<'c> {
+    fn prepare(engine: Engine, conn: &'c Connection, cell: &Workload) -> Result<Self, String> {
+        Ok(match engine {
+            Engine::NaiveRecompute => Maintenance::Recompute(
+                RecomputeStatements::prepare(conn, cell).map_err(|e| e.to_string())?,
+            ),
+            Engine::Ivmlite => Maintenance::Refresh(prepare_refresh_statements(conn, &cell.views)?),
+            Engine::NoMaintenance | Engine::HandWrittenTrigger => Maintenance::Nothing,
+        })
+    }
+
+    /// Run the step and return its milliseconds; an engine with nothing to
+    /// run reports `0.0` rather than the time of an empty timer. No
+    /// statement may have been recompiled (spec §3.2 step 4).
+    fn run(&mut self) -> Result<f64, String> {
+        match self {
+            Maintenance::Nothing => Ok(0.0),
+            Maintenance::Recompute(stmts) => recompute_all(stmts),
+            Maintenance::Refresh(stmts) => {
+                let start = Instant::now();
+                for stmt in stmts.iter_mut() {
+                    stmt.execute([]).map_err(|e| e.to_string())?;
+                }
+                let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+                for (i, stmt) in stmts.iter().enumerate() {
+                    assert_not_reprepared(&format!("refresh view {i}"), stmt)?;
+                }
+                Ok(elapsed_ms)
+            }
+        }
+    }
+}
+
+/// Check every maintained view against the oracle (spec §3.2 steps 3 and 7).
+fn verify(engine: Engine, conn: &Connection, cell: &Workload) -> Result<(), String> {
     let table = &cell.schema.table;
-
-    // ---- step 1: seed (untimed) ----
-    let conn = if engine == Engine::Ivmlite {
-        ivmlite_test::open_with_extension_at(None, lib).map_err(|e| e.to_string())?
-    } else {
-        Connection::open_in_memory().map_err(|e| e.to_string())?
-    };
-    seed_base(&conn, cell).map_err(|e| e.to_string())?;
-    let page_size_val = page_size(&conn).map_err(|e| e.to_string())?;
-    let base = space(&conn).map_err(|e| e.to_string())?;
-
-    // ---- step 2: bootstrap (timed) ----
-    let bootstrap_start = Instant::now();
-    match engine {
-        Engine::HandWrittenTrigger => {
-            for v in &cell.views {
-                install_trigger_view(&conn, table, v).map_err(|e| e.to_string())?;
-            }
-        }
-        Engine::Ivmlite => create_ivmlite_views(&conn, table, &cell.views)?,
-        Engine::NoMaintenance | Engine::NaiveRecompute => {}
-    }
-    let bootstrap_ms = bootstrap_start.elapsed().as_secs_f64() * 1000.0;
-    let bootstrapped = space(&conn).map_err(|e| e.to_string())?;
-
-    // ---- step 3: verify the initial state (untimed) ----
-    if matches!(engine, Engine::HandWrittenTrigger | Engine::Ivmlite) {
-        for v in &cell.views {
-            verify_view(&conn, table, v, &v.table())?;
-        }
-    }
-
-    // ---- step 4: prepare every timed statement ----
-    let ops = cell.update_trace();
-    let mut apply_stmts = ApplyStatements::prepare(&conn, table).map_err(|e| e.to_string())?;
-    let mut recompute_stmts = match engine {
-        Engine::NaiveRecompute => {
-            Some(RecomputeStatements::prepare(&conn, cell).map_err(|e| e.to_string())?)
-        }
-        Engine::NoMaintenance | Engine::HandWrittenTrigger | Engine::Ivmlite => None,
-    };
-    let mut refresh_stmts = if engine == Engine::Ivmlite {
-        prepare_refresh_statements(&conn, &cell.views)?
-    } else {
-        Vec::new()
-    };
-
-    // ---- step 5: timed apply ----
-    let apply_ms = apply(&conn, &mut apply_stmts, &ops).map_err(|e| e.to_string())?;
-    // Spec §3.2 step 4: no timed statement may have been recompiled — see
-    // `baseline::assert_not_reprepared`.
-    apply_stmts.assert_not_reprepared()?;
-    let written = space(&conn).map_err(|e| e.to_string())?;
-
-    // ---- step 6: timed maintain ----
-    let maintain_start = Instant::now();
-    match engine {
-        Engine::NaiveRecompute => {
-            let stmts = recompute_stmts
-                .as_mut()
-                .expect("prepared above for NaiveRecompute");
-            recompute_all(stmts)?;
-        }
-        Engine::Ivmlite => {
-            for stmt in &mut refresh_stmts {
-                stmt.execute([]).map_err(|e| e.to_string())?;
-            }
-        }
-        Engine::NoMaintenance | Engine::HandWrittenTrigger => {}
-    }
-    let maintain_ms = maintain_start.elapsed().as_secs_f64() * 1000.0;
-    if engine == Engine::Ivmlite {
-        for (i, stmt) in refresh_stmts.iter().enumerate() {
-            assert_not_reprepared(&format!("refresh view {i}"), stmt)?;
-        }
-    }
-    let maintained = space(&conn).map_err(|e| e.to_string())?;
-
-    // ---- step 7: verify the final state (untimed) ----
     match engine {
         Engine::HandWrittenTrigger | Engine::Ivmlite => {
             for v in &cell.views {
-                verify_view(&conn, table, v, &v.table())?;
+                verify_view(conn, table, v, &v.table())?;
             }
         }
         Engine::NaiveRecompute => {
             // Sanity check only (spec §3.2 step 7): naive recompute's
-            // "maintenance" already ran the oracle query itself in step 6, so
-            // there is no separate materialized relation to check it against.
+            // "maintenance" already ran the oracle query itself, so there is
+            // no separate materialized relation to check it against.
             // Re-running the same query and comparing it with itself catches a
             // query that errors or a nondeterministic result set, not a wrong
             // answer — the naive baseline cannot compute a wrong answer by
             // construction.
             for v in &cell.views {
                 let sql = v.sql(table);
-                let mut a = read_triples(&conn, &sql).map_err(|e| e.to_string())?;
-                let mut b = read_triples(&conn, &sql).map_err(|e| e.to_string())?;
+                let mut a = read_triples(conn, &sql).map_err(|e| e.to_string())?;
+                let mut b = read_triples(conn, &sql).map_err(|e| e.to_string())?;
                 a.sort();
                 b.sort();
                 if a != b {
@@ -286,12 +291,97 @@ pub fn run_cell(engine: Engine, cell: &Workload, lib: &Path) -> Result<Measureme
         }
         Engine::NoMaintenance => {}
     }
+    Ok(())
+}
 
+/// The fresh in-memory database one engine's run of a cell uses. `lib` is
+/// the extension library, loaded only for `Engine::Ivmlite`.
+fn open(engine: Engine, lib: &Path) -> Result<Connection, String> {
+    if engine == Engine::Ivmlite {
+        ivmlite_test::open_with_extension_at(None, lib).map_err(|e| e.to_string())
+    } else {
+        Connection::open_in_memory().map_err(|e| e.to_string())
+    }
+}
+
+/// Run spec §3.2's sequence for one engine on one cell, in a fresh in-memory
+/// database, with M1b Phase 6 spec §6's steady state: a warm-up batch whose
+/// maintenance alone is timed, then `MEASURED_ROUNDS` timed batches.
+pub fn run_cell(engine: Engine, cell: &Workload, lib: &Path) -> Result<Measurement, String> {
+    let conn = open(engine, lib)?;
+    measure(engine, cell, &conn)
+}
+
+/// `run_cell` on a connection the caller opened (`open`), so a test can
+/// inspect the database afterwards.
+fn measure(engine: Engine, cell: &Workload, conn: &Connection) -> Result<Measurement, String> {
+    let table = &cell.schema.table;
+
+    // ---- seed (untimed) ----
+    seed_base(conn, cell).map_err(|e| e.to_string())?;
+    let page_size_val = page_size(conn).map_err(|e| e.to_string())?;
+    let base = space(conn).map_err(|e| e.to_string())?;
+
+    // ---- bootstrap (timed), then verify (untimed) ----
+    let bootstrap_start = Instant::now();
+    match engine {
+        Engine::HandWrittenTrigger => {
+            for v in &cell.views {
+                install_trigger_view(conn, table, v).map_err(|e| e.to_string())?;
+            }
+        }
+        Engine::Ivmlite => create_ivmlite_views(conn, table, &cell.views)?,
+        Engine::NoMaintenance | Engine::NaiveRecompute => {}
+    }
+    let bootstrap_ms = bootstrap_start.elapsed().as_secs_f64() * 1000.0;
+    let bootstrapped = space(conn).map_err(|e| e.to_string())?;
+    // Spec §3.2 step 3 checks the materialized views; naive recompute's
+    // self-comparison (`verify`) runs after the batches only, as before.
+    if matches!(engine, Engine::HandWrittenTrigger | Engine::Ivmlite) {
+        verify(engine, conn, cell)?;
+    }
+
+    // ---- prepare every timed statement ----
+    let mut apply_stmts = ApplyStatements::prepare(conn, table).map_err(|e| e.to_string())?;
+    let mut maintenance = Maintenance::prepare(engine, conn, cell)?;
+
+    // ---- the batches: one warm-up, then the measured rounds (spec §6) ----
+    let rounds = 1 + MEASURED_ROUNDS;
+    cell.check_rounds(rounds).map_err(|e| e.to_string())?;
+    let batches = cell.update_rounds(rounds);
+    let (warm_up, measured) = batches.split_first().expect("rounds is at least 1");
+
+    // Spec §3.2 step 4: no timed statement may have been recompiled — see
+    // `baseline::assert_not_reprepared`.
+    apply(conn, &mut apply_stmts, warm_up).map_err(|e| e.to_string())?;
+    apply_stmts.assert_not_reprepared()?;
+    let first_refresh_ms = maintenance.run()?;
+    verify(engine, conn, cell)?;
+
+    let mut timings = Vec::with_capacity(measured.len());
+    let mut written = Space::default();
+    let mut maintained = Space::default();
+    for ops in measured {
+        let apply_ms = apply(conn, &mut apply_stmts, ops).map_err(|e| e.to_string())?;
+        apply_stmts.assert_not_reprepared()?;
+        written = space(conn).map_err(|e| e.to_string())?;
+        let maintain_ms = maintenance.run()?;
+        maintained = space(conn).map_err(|e| e.to_string())?;
+        timings.push(RoundTiming {
+            apply_ms,
+            maintain_ms,
+        });
+    }
+    verify(engine, conn, cell)?;
+
+    let steady = steady_state(&timings).expect("MEASURED_ROUNDS is positive");
     Ok(Measurement {
         engine,
         bootstrap_ms,
-        apply_ms,
-        maintain_ms,
+        first_refresh_ms,
+        apply_ms: steady.apply_ms,
+        maintain_ms: steady.maintain_ms,
+        apply_plus_maintain_ms: steady.apply_plus_maintain_ms,
         page_size: page_size_val,
         base,
         bootstrapped,
@@ -335,11 +425,7 @@ mod tests {
     fn every_engine_runs_a_tiny_cell_and_verifies_its_views() {
         let lib = ivmlite_test::extension_library_for(ivmlite_test::Profile::Debug)
             .unwrap_or_else(|why| panic!("{why}"));
-        let mut w = Workload::load(&repo_path("workloads/m0-baseline.toml")).unwrap();
-        w.data.base_rows = 500;
-        w.data.group_cardinality = 20;
-        w.updates.batch_size = 30;
-        w.views.truncate(2);
+        let w = small_cell();
         for engine in ENGINES {
             let m =
                 run_cell(engine, &w, &lib).unwrap_or_else(|e| panic!("{}: {e}", engine.label()));
@@ -353,6 +439,111 @@ mod tests {
                 assert!(m.maintain_ms > 0.0);
             }
         }
+    }
+
+    /// A 1,000-row cell with two views, small enough for the workspace suite.
+    fn small_cell() -> Workload {
+        let mut w = Workload::load(&repo_path("workloads/m0-baseline.toml")).unwrap();
+        w.data.base_rows = 1_000;
+        w.data.group_cardinality = 20;
+        w.updates.batch_size = 30;
+        w.views.truncate(2);
+        w
+    }
+
+    /// M1b Phase 6 spec §6: the warm-up batch's maintenance is reported as
+    /// `first_refresh_ms` — real work for the engines that maintain on
+    /// refresh, and exactly `0` for one that maintains nothing.
+    #[test]
+    fn the_warm_up_maintenance_is_reported_as_first_refresh_ms() {
+        let lib = ivmlite_test::extension_library_for(ivmlite_test::Profile::Debug)
+            .unwrap_or_else(|why| panic!("{why}"));
+        let w = small_cell();
+        for engine in [Engine::Ivmlite, Engine::NaiveRecompute] {
+            let m =
+                run_cell(engine, &w, &lib).unwrap_or_else(|e| panic!("{}: {e}", engine.label()));
+            assert!(m.first_refresh_ms > 0.0, "{}: {m:?}", engine.label());
+        }
+        let m = run_cell(Engine::NoMaintenance, &w, &lib).unwrap();
+        assert_eq!(m.first_refresh_ms, 0.0, "{m:?}");
+    }
+
+    /// M1b Phase 6 spec §6: the cell runner applies the warm-up batch and
+    /// every measured batch, each once, in order — the base table ends as
+    /// the base rows plus the net effect of all `1 + MEASURED_ROUNDS`
+    /// rounds — and verifies after the last.
+    #[test]
+    fn the_cell_runner_applies_the_warm_up_and_every_measured_batch() {
+        let lib = ivmlite_test::extension_library_for(ivmlite_test::Profile::Debug)
+            .unwrap_or_else(|why| panic!("{why}"));
+        let w = small_cell();
+        let mut want: std::collections::BTreeSet<i64> = w.rows().map(|(id, _, _)| id).collect();
+        for op in w.update_rounds(1 + MEASURED_ROUNDS).iter().flatten() {
+            match op {
+                ivmlite_workload::TraceOp::Insert { id, .. } => want.insert(*id),
+                ivmlite_workload::TraceOp::Delete { id } => want.remove(id),
+            };
+        }
+        for engine in ENGINES {
+            let conn = open(engine, &lib).unwrap();
+            measure(engine, &w, &conn).unwrap_or_else(|e| panic!("{}: {e}", engine.label()));
+            let mut stmt = conn
+                .prepare("SELECT id FROM \"orders\" ORDER BY id")
+                .unwrap();
+            let got: std::collections::BTreeSet<i64> = stmt
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            assert_eq!(
+                got,
+                want,
+                "{}: the table's ids after the run",
+                engine.label()
+            );
+        }
+    }
+
+    /// M1b Phase 6 spec §6: a cell that cannot fit the warm-up plus the
+    /// measured batches is refused before anything is timed.
+    #[test]
+    fn the_cell_runner_refuses_a_cell_that_cannot_fit_its_batches() {
+        let lib = ivmlite_test::extension_library_for(ivmlite_test::Profile::Debug)
+            .unwrap_or_else(|why| panic!("{why}"));
+        let mut w = small_cell();
+        w.data.base_rows = 10;
+        w.data.group_cardinality = 5;
+        w.updates.batch_size = 100;
+        let err = run_cell(Engine::NoMaintenance, &w, &lib).unwrap_err();
+        assert!(err.contains("base_rows = 10"), "{err}");
+    }
+
+    /// M1b Phase 6 spec §6's median rule: each step is its own median over
+    /// the rounds, and the total is the median of each round's sum. Here the
+    /// two differ: the step medians are 3 and 1, summing to 4, while the
+    /// rounds' sums are 6, 3, 4, 5 and 10, whose median is 5.
+    #[test]
+    fn the_total_is_the_median_of_each_rounds_sum_not_the_sum_of_medians() {
+        let rounds: Vec<RoundTiming> = [(1.0, 5.0), (2.0, 1.0), (3.0, 1.0), (4.0, 1.0), (5.0, 5.0)]
+            .into_iter()
+            .map(|(apply_ms, maintain_ms)| RoundTiming {
+                apply_ms,
+                maintain_ms,
+            })
+            .collect();
+        assert_eq!(
+            steady_state(&rounds),
+            Some(SteadyState {
+                apply_ms: 3.0,
+                maintain_ms: 1.0,
+                apply_plus_maintain_ms: 5.0,
+            })
+        );
+        // An even count takes the mean of the two middle values: apply
+        // 2, 3, 4, 5 gives 3.5; the sums 3, 4, 5, 10 give 4.5.
+        let even = steady_state(&rounds[1..]).unwrap();
+        assert_eq!((even.apply_ms, even.apply_plus_maintain_ms), (3.5, 4.5));
+        assert_eq!(steady_state(&[]), None);
     }
 
     /// A wrong engine must never produce numbers (spec §3.2 step 7).

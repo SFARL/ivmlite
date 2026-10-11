@@ -36,6 +36,11 @@ def cell_key(r):
 
 
 def total(r):
+    """A run's apply + maintain: the steady state's own median of each
+    batch's sum when the CSV has that column (M1b Phase 6 spec §6), else the
+    single batch's apply_ms + maintain_ms of a Phase 4 or Phase 5 CSV."""
+    if r.get("apply_plus_maintain_ms"):
+        return float(r["apply_plus_maintain_ms"])
     return float(r["apply_ms"]) + float(r["maintain_ms"])
 
 

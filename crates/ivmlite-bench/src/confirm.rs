@@ -28,7 +28,7 @@ pub fn order(cell_index: usize, repeat: usize) -> [Engine; 4] {
 
 /// One exploration row, parsed back from the Task 1 CSV (`main::CSV_HEADER`).
 /// Only the fields `select` needs: the cell's four dimensions, the engine
-/// label, and the two timed columns. The space columns are discarded.
+/// label, and the timed columns. The space columns are discarded.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Row {
     pub engine: String,
@@ -38,33 +38,53 @@ pub struct Row {
     pub group_cardinality: usize,
     pub apply_ms: f64,
     pub maintain_ms: f64,
+    /// The steady state's median of each batch's own sum (M1b Phase 6 spec
+    /// §6); `None` in a Phase 4 or Phase 5 CSV, which has no such column.
+    pub apply_plus_maintain_ms: Option<f64>,
 }
 
-/// The number of comma-separated fields `crate::CSV_HEADER` has.
-const FIELD_COUNT: usize = 17;
+impl Row {
+    /// The timed total a cell's speedup and trigger comparison are computed
+    /// from (spec §3.5's "ivmlite's apply_ms + maintain_ms"): the steady
+    /// state's `apply_plus_maintain_ms` when the CSV has it (M1b Phase 6
+    /// spec §6), and `apply_ms + maintain_ms` in an older CSV.
+    pub fn total_ms(&self) -> f64 {
+        self.apply_plus_maintain_ms
+            .unwrap_or(self.apply_ms + self.maintain_ms)
+    }
+}
+
+/// The index of `apply_plus_maintain_ms` in `crate::CSV_HEADER`.
+const APPLY_PLUS_MAINTAIN_FIELD: usize = 18;
 
 /// Parse the Task 1 exploration CSV. A minimal hand-written parse, like
 /// `main.rs`'s own `read_csv_cell_keys`: the file has no quoting and no
 /// embedded commas, so it does not justify a csv dependency. `parse_csv`
 /// refuses any header other than `crate::CSV_HEADER` (the same constant
-/// `main.rs` prints), since the field positions below are read by index and
-/// a changed header would silently misread the columns.
+/// `main.rs` prints) or the Phase 4 and Phase 5 files'
+/// `crate::LEGACY_CSV_HEADER`, since the field positions below are read by
+/// index and a changed header would silently misread the columns.
 pub fn parse_csv(text: &str) -> Result<Vec<Row>, String> {
     let mut lines = text.lines();
     let header = lines.next().ok_or("empty CSV: no header row")?;
-    if header != crate::CSV_HEADER {
+    let steady = if header == crate::CSV_HEADER {
+        true
+    } else if header == crate::LEGACY_CSV_HEADER {
+        false
+    } else {
         return Err(format!(
             "unexpected CSV header (the exploration CSV must be Task 1's own): {header}"
         ));
-    }
+    };
+    let field_count = header.split(',').count();
 
     lines
         .filter(|l| !l.is_empty())
         .map(|line| {
             let f: Vec<&str> = line.split(',').collect();
-            if f.len() != FIELD_COUNT {
+            if f.len() != field_count {
                 return Err(format!(
-                    "wrong number of CSV fields ({}, want {FIELD_COUNT}): {line}",
+                    "wrong number of CSV fields ({}, want {field_count}): {line}",
                     f.len()
                 ));
             }
@@ -89,6 +109,14 @@ pub fn parse_csv(text: &str) -> Result<Vec<Row>, String> {
                 group_cardinality: parse(4, "group_cardinality")?,
                 apply_ms: parse_f64(6, "apply_ms")?,
                 maintain_ms: parse_f64(7, "maintain_ms")?,
+                apply_plus_maintain_ms: if steady {
+                    Some(parse_f64(
+                        APPLY_PLUS_MAINTAIN_FIELD,
+                        "apply_plus_maintain_ms",
+                    )?)
+                } else {
+                    None
+                },
             })
         })
         .collect()
@@ -99,12 +127,6 @@ pub type CellKey = (usize, usize, usize, usize);
 
 fn key(r: &Row) -> CellKey {
     (r.views, r.base_rows, r.batch_size, r.group_cardinality)
-}
-
-/// The timed total a cell's speedup and trigger comparison are computed from:
-/// apply plus maintain (spec §3.5 says "ivmlite's apply_ms + maintain_ms").
-fn total_ms(r: &Row) -> f64 {
-    r.apply_ms + r.maintain_ms
 }
 
 /// Spec §3.5: select every cell where
@@ -123,7 +145,7 @@ pub fn select(rows: &[Row]) -> Vec<CellKey> {
     let mut triggers: BTreeMap<CellKey, f64> = BTreeMap::new();
     for r in rows {
         let k = key(r);
-        let total = total_ms(r);
+        let total = r.total_ms();
         match r.engine.as_str() {
             "naive_recompute" => {
                 naive.insert(k, total);
@@ -167,6 +189,16 @@ mod tests {
             group_cardinality: key.3,
             apply_ms: apply,
             maintain_ms: maintain,
+            apply_plus_maintain_ms: None,
+        }
+    }
+
+    /// A steady-state row (M1b Phase 6 spec §6), whose total is its own
+    /// `apply_plus_maintain_ms` column.
+    fn steady_row(engine: &str, key: CellKey, apply: f64, maintain: f64, total: f64) -> Row {
+        Row {
+            apply_plus_maintain_ms: Some(total),
+            ..row(engine, key, apply, maintain)
         }
     }
 
@@ -194,15 +226,66 @@ mod tests {
     #[test]
     fn parse_csv_round_trips_the_task_1_header() {
         let text = format!(
-            "{}\nivmlite,10,1000,10,10,1.0,2.5,3.5,4096,1,0,2,0,3,0,3,0\n",
+            "{}\nivmlite,10,1000,10,10,1.0,2.5,3.5,4096,1,0,2,0,3,0,3,0,7.25,5.5\n",
             crate::CSV_HEADER
         );
         let rows = parse_csv(&text).unwrap();
         assert_eq!(
-            (rows[0].views, rows[0].apply_ms, rows[0].maintain_ms),
-            (10, 2.5, 3.5)
+            (
+                rows[0].views,
+                rows[0].apply_ms,
+                rows[0].maintain_ms,
+                rows[0].apply_plus_maintain_ms
+            ),
+            (10, 2.5, 3.5, Some(5.5))
         );
         assert!(parse_csv("wrong,header\n").is_err());
+    }
+
+    /// M1b Phase 6 spec §6: the Phase 4 and Phase 5 CSVs, which end at
+    /// `maintained_free`, still parse, with no steady-state total; a row of
+    /// the other shape under either header is refused.
+    #[test]
+    fn parse_csv_reads_the_phase_4_and_5_header_without_the_steady_state_columns() {
+        let legacy_row = "ivmlite,10,1000,10,10,1.0,2.5,3.5,4096,1,0,2,0,3,0,3,0";
+        let rows = parse_csv(&format!("{}\n{legacy_row}\n", crate::LEGACY_CSV_HEADER)).unwrap();
+        assert_eq!(rows[0].apply_plus_maintain_ms, None);
+        assert_eq!(rows[0].total_ms(), 6.0);
+        assert!(parse_csv(&format!("{}\n{legacy_row}\n", crate::CSV_HEADER)).is_err());
+        assert!(parse_csv(&format!(
+            "{}\n{legacy_row},7.25,5.5\n",
+            crate::LEGACY_CSV_HEADER
+        ))
+        .is_err());
+        for name in ["m1b-phase4.csv", "m1b-phase5.csv"] {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../docs/bench")
+                .join(name);
+            let text = std::fs::read_to_string(&path).unwrap();
+            let rows = parse_csv(&text).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(!rows.is_empty(), "{name}");
+        }
+    }
+
+    /// M1b Phase 6 spec §6: selection compares the steady state's own total
+    /// when the CSV has it. Every row's `apply_ms + maintain_ms` here says
+    /// ivmlite is 10x faster than naive recompute and slower than the
+    /// trigger; the steady totals put the speedup at 2x and ivmlite below
+    /// the trigger, so the cell is selected on both counts.
+    #[test]
+    fn selection_uses_the_steady_state_total_when_present() {
+        let k = (10, 100_000, 100, 1_000);
+        let rows = vec![
+            steady_row("naive_recompute", k, 1.0, 99.0, 20.0),
+            steady_row("ivmlite", k, 5.0, 5.0, 10.0),
+            steady_row("hand_written_trigger", k, 5.0, 0.0, 11.0),
+        ];
+        assert_eq!(select(&rows), vec![k]);
+        let mut beats_only = rows.clone();
+        beats_only[0].apply_plus_maintain_ms = Some(100.0); // 10x: not near a bar
+        assert_eq!(select(&beats_only), vec![k], "ivmlite 10 < trigger 11");
+        beats_only[2].apply_plus_maintain_ms = Some(9.0);
+        assert_eq!(select(&beats_only), Vec::<CellKey>::new());
     }
 
     /// A header alone (no data rows) is a legal, empty exploration CSV.
