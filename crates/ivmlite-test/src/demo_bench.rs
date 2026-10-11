@@ -21,7 +21,9 @@
 //!
 //! Second, each run times `MEASURED_ROUNDS` steady-state batches, not one,
 //! and reports each of `apply_ms`, `maintain_ms` and `read_ms` as its median
-//! over those rounds. A single refresh is too noisy to resolve a change of
+//! over those rounds. Its `apply_plus_maintain_ms` and `end_to_end_ms` are
+//! the medians of each round's own sum, not sums of the per-step medians,
+//! which may come from different rounds. A single refresh is too noisy to resolve a change of
 //! about 10%: in the first published M1b Phase 5 run, one build's five single
 //! Kener refreshes ranged from 2.743 to 8.828 ms, and a median over five
 //! single refreshes reported a regression that a longer measurement did not
@@ -46,8 +48,9 @@ pub type Result<T> = std::result::Result<T, Box<dyn Error>>;
 /// The batch that warms each mode up; its maintenance is `first_refresh_ms`.
 pub const WARM_UP_ROUND: usize = 0;
 /// How many steady-state batches each run times after the warm-up. Their
-/// apply, maintenance and read are each reported as the median over these
-/// rounds, because one refresh is too noisy to resolve a ~10% change.
+/// apply, maintenance and read, and each round's totals, are each reported
+/// as the median over these rounds, because one refresh is too noisy to
+/// resolve a ~10% change.
 pub const MEASURED_ROUNDS: usize = 10;
 /// How many mixed batches one run applies; workloads validate against it.
 pub const ROUNDS: usize = 1 + MEASURED_ROUNDS;
@@ -472,11 +475,8 @@ pub struct Timing {
     /// refresh after `CREATE`, including, with a build before format 4,
     /// the bootstrap's leftover stage.
     pub first_refresh_ms: f64,
-    /// The median over the run's measured rounds, as are `maintain_ms` and
-    /// `read_ms` (`steady_state`).
-    pub apply_ms: f64,
-    pub maintain_ms: f64,
-    pub read_ms: f64,
+    /// The steady state over the run's measured rounds (`steady_state`).
+    pub steady: SteadyState,
     pub database_kib: f64,
 }
 
@@ -488,22 +488,7 @@ pub struct RoundTiming {
     pub read_ms: f64,
 }
 
-/// A run's steady-state timings: each step's median over the measured
-/// rounds, taken step by step, so the three medians may come from different
-/// rounds. `None` for no rounds.
-pub fn steady_state(rounds: &[RoundTiming]) -> Option<RoundTiming> {
-    let median = |step: fn(&RoundTiming) -> f64| {
-        let values: Vec<f64> = rounds.iter().map(step).collect();
-        Summary::of(&values).map(|summary| summary.median)
-    };
-    Some(RoundTiming {
-        apply_ms: median(|r| r.apply_ms)?,
-        maintain_ms: median(|r| r.maintain_ms)?,
-        read_ms: median(|r| r.read_ms)?,
-    })
-}
-
-impl Timing {
+impl RoundTiming {
     fn apply_plus_maintain_ms(&self) -> f64 {
         self.apply_ms + self.maintain_ms
     }
@@ -513,17 +498,54 @@ impl Timing {
     }
 }
 
+/// A run's steady-state timings, in milliseconds, each a median over the
+/// measured rounds.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SteadyState {
+    /// Each step's own median, taken step by step, so the three medians may
+    /// come from different rounds.
+    pub apply_ms: f64,
+    pub maintain_ms: f64,
+    pub read_ms: f64,
+    /// The median over the rounds of each round's `apply + maintain`.
+    pub apply_plus_maintain_ms: f64,
+    /// The median over the rounds of each round's `apply + maintain + read`.
+    pub end_to_end_ms: f64,
+}
+
+/// A run's steady state: each step's median over the measured rounds, and
+/// the median of each round's totals. A total is summed within each round
+/// before the median, so it is the median of what one round cost, not a sum
+/// of medians from different rounds. `None` for no rounds.
+pub fn steady_state(rounds: &[RoundTiming]) -> Option<SteadyState> {
+    let median = |value: fn(&RoundTiming) -> f64| {
+        let values: Vec<f64> = rounds.iter().map(value).collect();
+        Summary::of(&values).map(|summary| summary.median)
+    };
+    Some(SteadyState {
+        apply_ms: median(|r| r.apply_ms)?,
+        maintain_ms: median(|r| r.maintain_ms)?,
+        read_ms: median(|r| r.read_ms)?,
+        apply_plus_maintain_ms: median(RoundTiming::apply_plus_maintain_ms)?,
+        end_to_end_ms: median(RoundTiming::end_to_end_ms)?,
+    })
+}
+
 type Metric = (&'static str, fn(&Timing) -> f64, usize);
 
 /// The CSV's metrics: name, value, decimals.
 const METRICS: [Metric; 8] = [
     ("bootstrap_ms", |t| t.bootstrap_ms, 3),
     ("first_refresh_ms", |t| t.first_refresh_ms, 3),
-    ("apply_ms", |t| t.apply_ms, 3),
-    ("maintain_ms", |t| t.maintain_ms, 3),
-    ("read_ms", |t| t.read_ms, 3),
-    ("apply_plus_maintain_ms", Timing::apply_plus_maintain_ms, 3),
-    ("end_to_end_ms", Timing::end_to_end_ms, 3),
+    ("apply_ms", |t| t.steady.apply_ms, 3),
+    ("maintain_ms", |t| t.steady.maintain_ms, 3),
+    ("read_ms", |t| t.steady.read_ms, 3),
+    (
+        "apply_plus_maintain_ms",
+        |t| t.steady.apply_plus_maintain_ms,
+        3,
+    ),
+    ("end_to_end_ms", |t| t.steady.end_to_end_ms, 3),
     ("database_kib", |t| t.database_kib, 1),
 ];
 
@@ -604,7 +626,8 @@ fn bootstrap(c: &Connection, workload: &dyn Workload, mode: Mode) -> rusqlite::R
 /// warm-up batch (maintenance timed as `first_refresh_ms`), verify, then
 /// `MEASURED_ROUNDS` batches whose apply, maintenance and read are each
 /// timed, and a final verify. The steady-state timings are the per-step
-/// medians over those rounds (`steady_state`).
+/// medians, and the medians of each round's totals, over those rounds
+/// (`steady_state`).
 pub fn run_once(
     workload: &dyn Workload,
     mode: Mode,
@@ -669,13 +692,10 @@ pub fn run_once(
     }
 
     verify(&c, workload, mode, "after the last measured batch")?;
-    let steady = steady_state(&rounds).expect("MEASURED_ROUNDS is positive");
     Ok(Timing {
         bootstrap_ms,
         first_refresh_ms,
-        apply_ms: steady.apply_ms,
-        maintain_ms: steady.maintain_ms,
-        read_ms: steady.read_ms,
+        steady: steady_state(&rounds).expect("MEASURED_ROUNDS is positive"),
         database_kib: database_kib(&c)? as f64,
     })
 }
@@ -747,7 +767,8 @@ fn print_provenance(workload: &dyn Workload, config: &RunConfig, extension: &Ext
     );
     println!(
         "# rounds: one warm-up batch, then {MEASURED_ROUNDS} measured batches per run; \
-         apply_ms, maintain_ms and read_ms are each a run's median over its measured batches"
+         apply_ms, maintain_ms and read_ms are each a run's median over its measured batches, \
+         and apply_plus_maintain_ms and end_to_end_ms the median of each batch's own sum"
     );
 }
 
@@ -853,6 +874,11 @@ mod tests {
         }
     }
 
+    /// The per-step medians of a steady state: `(apply, maintain, read)`.
+    fn step_medians(steady: SteadyState) -> (f64, f64, f64) {
+        (steady.apply_ms, steady.maintain_ms, steady.read_ms)
+    }
+
     #[test]
     fn steady_state_is_each_steps_median_over_the_rounds() {
         // Each step's median comes from a different round, and no round is
@@ -865,10 +891,15 @@ mod tests {
             round(4.0, 20.0, 400.0),
             round(2.0, 25.0, 200.0),
         ];
-        assert_eq!(steady_state(&rounds), Some(round(3.0, 25.0, 300.0)));
+        let steady = steady_state(&rounds).unwrap();
+        assert_eq!(step_medians(steady), (3.0, 25.0, 300.0));
         // The last round alone, or the first, is not the steady state.
-        assert_ne!(steady_state(&rounds), Some(rounds[4]));
-        assert_ne!(steady_state(&rounds), Some(rounds[0]));
+        for alone in [rounds[4], rounds[0]] {
+            assert_ne!(
+                step_medians(steady),
+                (alone.apply_ms, alone.maintain_ms, alone.read_ms)
+            );
+        }
     }
 
     #[test]
@@ -879,9 +910,40 @@ mod tests {
             round(3.0, 9.0, 2.0),
             round(2.0, 3.0, 4.0),
         ];
-        assert_eq!(steady_state(&rounds), Some(round(2.5, 2.5, 5.0)));
-        assert_eq!(steady_state(&rounds[..1]), Some(rounds[0]));
+        assert_eq!(
+            step_medians(steady_state(&rounds).unwrap()),
+            (2.5, 2.5, 5.0)
+        );
+        let one = steady_state(&rounds[..1]).unwrap();
+        assert_eq!(step_medians(one), (4.0, 1.0, 8.0));
+        assert_eq!((one.apply_plus_maintain_ms, one.end_to_end_ms), (5.0, 13.0));
         assert_eq!(steady_state(&[]), None);
+    }
+
+    #[test]
+    fn steady_state_totals_are_the_median_of_each_rounds_sum() {
+        // Round totals (apply + maintain, then + read): 31/131, 22/23,
+        // 33/34, 24/124, 25/26. The median round totals are 25 and 34; the
+        // sums of the per-step medians (3 + 20 = 23, then + 1 = 24) differ.
+        let rounds = [
+            round(1.0, 30.0, 100.0),
+            round(2.0, 20.0, 1.0),
+            round(3.0, 30.0, 1.0),
+            round(4.0, 20.0, 100.0),
+            round(5.0, 20.0, 1.0),
+        ];
+        let steady = steady_state(&rounds).unwrap();
+        assert_eq!(step_medians(steady), (3.0, 20.0, 1.0));
+        assert_eq!(steady.apply_plus_maintain_ms, 25.0);
+        assert_eq!(steady.end_to_end_ms, 34.0);
+        assert_ne!(
+            steady.apply_plus_maintain_ms,
+            steady.apply_ms + steady.maintain_ms
+        );
+        assert_ne!(
+            steady.end_to_end_ms,
+            steady.apply_ms + steady.maintain_ms + steady.read_ms
+        );
     }
 
     #[test]
