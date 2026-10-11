@@ -22,10 +22,10 @@
 //! Second, each run times `MEASURED_ROUNDS` steady-state batches, not one,
 //! and reports each of `apply_ms`, `maintain_ms` and `read_ms` as its median
 //! over those rounds. A single refresh is too noisy to resolve a change of
-//! about 10%: one Kener refresh varies by about ±15%, with occasional spikes
-//! of 10 ms or more, and a median over five single refreshes once reported a
-//! regression that a longer measurement did not confirm (M1b Phase 5 spec §7,
-//! amendment 2026-10-09). The state is verified after the warm-up and after
+//! about 10%: in the first published M1b Phase 5 run, one build's five single
+//! Kener refreshes ranged from 2.743 to 8.828 ms, and a median over five
+//! single refreshes reported a regression that a longer measurement did not
+//! confirm (M1b Phase 5 spec §7, amendment 2026-10-09). The state is verified after the warm-up and after
 //! the last measured round, outside the timers, and not between measured
 //! rounds.
 

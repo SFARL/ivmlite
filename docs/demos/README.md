@@ -66,8 +66,8 @@ Phase 4 benchmark protocol
   integer 5 differs from the real 5.0. A mismatch aborts the run.
 
   **Why ten batches.** A single refresh is too noisy to resolve a change of
-  about 10%. One Kener refresh varies by about ±15%, with occasional spikes
-  of 10 ms or more. Until 2026-10-09 each run timed one batch, so a median
+  about 10%. In the first published M1b Phase 5 run, one build's five single
+  Kener refreshes ranged from 2.743 to 8.828 ms. Until 2026-10-09 each run timed one batch, so a median
   over five repeats rested on five single refreshes. That is how the first
   M1b Phase 5 publication came to report a Kener refresh regression that a
   longer measurement did not confirm (see the "M1b Phase 5" section of
