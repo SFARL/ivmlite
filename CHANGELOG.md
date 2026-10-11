@@ -22,9 +22,10 @@ SQL subset and persisted shadow-table format without migration.
   correction above had given Kener 2.772 → 2.235 ms and 1.14–1.45x.
 - `real_case_bench` prepares every view's refresh and its transaction's
   `BEGIN IMMEDIATE` and `COMMIT` before the timers that run them; they were
-  compiled inside them. `docs/cases/evaluation/` was re-run with the
-  `0.1.0-alpha.3` extension, and its claim that statement preparation was
-  untimed is corrected.
+  compiled inside them. Its `total_ms` is the median of each repeat's own
+  `apply + maintain`, not the sum of the two medians. `docs/cases/evaluation/`
+  was re-run with the `0.1.0-alpha.3` extension, and its claim that statement
+  preparation was untimed is corrected.
 - A workload file whose list field repeats an entry (`view_counts`,
   `ablation_view_counts`, `ops`, `recursive_triggers`, the four `[matrix]`
   lists, or two equal `[[ablation.cells]]`) is rejected at load. A repeated

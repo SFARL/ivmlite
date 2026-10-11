@@ -70,9 +70,10 @@ database, so the timed `ivmlite` maintenance is the first refresh after
 `CREATE`. Since shadow-table format 4, bootstrap empties its own stage, so that
 refresh no longer drains a leftover stage, but no warm-up refresh precedes it.
 Full recomputation is not written to a table, which deliberately favours that
-baseline. Results are the median of independent runs; `total_ms` is the median
-`apply_ms` plus the median `maintain_ms`. The runner refuses to use the debug
-extension.
+baseline. `apply_ms` and `maintain_ms` are each the median of independent
+runs, and `total_ms` is the median of each run's own `apply + maintain`. Until
+2026-10-10 it was the sum of the two medians, which may come from different
+runs. The runner refuses to use the debug extension.
 
 Build and run the release binaries with:
 
@@ -91,17 +92,17 @@ measurements are in [2026-10-10-apple-m2-pro.csv](2026-10-10-apple-m2-pro.csv).
 
 | Slice | 25k base + 1k delta | 250k base + 100 delta |
 |---|---:|---:|
-| Datasette county facet | ivmlite 9.027 ms; recompute 1.561 ms (**5.78× slower**) | ivmlite 1.234 ms; recompute 11.951 ms (**9.68× faster**) |
-| Org-roam tag counts | ivmlite 20.387 ms; recompute 7.404 ms (**2.75× slower**) | ivmlite 2.748 ms; recompute 87.624 ms (**31.89× faster**) |
-| Taproot event counts | ivmlite 25.395 ms; recompute 9.775 ms (**2.60× slower**) | ivmlite 3.700 ms; recompute 113.150 ms (**30.58× faster**) |
+| Datasette county facet | ivmlite 9.043 ms; recompute 1.684 ms (**5.37× slower**) | ivmlite 1.320 ms; recompute 11.675 ms (**8.84× faster**) |
+| Org-roam tag counts | ivmlite 21.274 ms; recompute 7.208 ms (**2.95× slower**) | ivmlite 2.804 ms; recompute 89.713 ms (**31.99× faster**) |
+| Taproot event counts | ivmlite 26.502 ms; recompute 9.586 ms (**2.76× slower**) | ivmlite 4.161 ms; recompute 119.405 ms (**28.70× faster**) |
 
 These measurements show a real crossover for all three slices: small deltas
 over a larger base table amortize capture and refresh costs, and a large delta
 over a small table still loses to recomputation. **This changed since the
 2026-09-28 snapshot**, which found the Org-roam slice slower at both points
 (24.97× and 2.03×) and called it evidence of a performance problem in the join
-path. Its refresh fell from 167.872 to 12.745 ms at 25k + 1k and from 192.585
-to 1.940 ms at 250k + 100. That change comes from the extension, not from
+path. Its refresh fell from 167.872 to 13.442 ms at 25k + 1k and from 192.585
+to 1.987 ms at 250k + 100. That change comes from the extension, not from
 moving statement preparation out of the timers: the harness before that fix
 (commit `e1346ce`), re-run against the same `0.1.0-alpha.3` extension on
 2026-10-10, gave `ivmlite` totals within run-to-run noise of this harness's
@@ -118,6 +119,6 @@ in public project claims, run a matrix with more sizes, mixed update traces,
 on-disk databases and the recovered application data where available.
 
 Machine for this snapshot: Apple M2 Pro, macOS 26.2, arm64; Rust 1.95.0;
-SQLite 3.53.2. The 2026-10-10 runs took 2.48 s and 11.68 s of wall time, with a
-one-minute load average of 4.77 to 4.84 while desktop applications stayed
-open, so the machine was not idle.
+SQLite 3.53.2. The 2026-10-10 runs took 2.65 s and 12.09 s of wall time, with a
+one-minute load average of 18.75 to 21.06 while desktop applications and
+system services stayed busy, so the machine was far from idle.
