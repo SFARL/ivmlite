@@ -1080,6 +1080,60 @@ fn a_dropped_output_index_breaks_a_refresh_on_the_same_connection_and_still_drop
     );
 }
 
+/// Phase 6 spec §5: creating any view recreates the progress index, and views
+/// that broke because it was missing work again after the next connect.
+#[test]
+fn creating_a_view_recreates_the_progress_index_and_heals_the_broken_views() {
+    let file = TempFile::new("progidx-heal");
+    {
+        let c = open_with_extension(Some(file.path())).unwrap();
+        setup(&c);
+        create(&c, "sums", SUMS).unwrap();
+        create(
+            &c,
+            "counts",
+            "SELECT region, COUNT(*) FROM orders GROUP BY region",
+        )
+        .unwrap();
+        c.execute_batch("DROP INDEX __ivm_progress_tbl").unwrap();
+    }
+    let message = "its shadow index __ivm_progress_tbl is missing";
+    {
+        let c = open_with_extension(Some(file.path())).unwrap();
+        for view in ["sums", "counts"] {
+            let err = c
+                .execute_batch(&format!("SELECT * FROM {view}"))
+                .expect_err("the progress index is missing");
+            assert!(err.to_string().contains(message), "{view}: {err}");
+        }
+        create(
+            &c,
+            "regions_seen",
+            "SELECT name, COUNT(*) FROM regions GROUP BY name",
+        )
+        .unwrap();
+    }
+    let c = open_with_extension(Some(file.path())).unwrap();
+    c.execute_batch(
+        "INSERT INTO orders VALUES ('a', 7), ('c', 9); INSERT INTO regions VALUES ('d', 'dan')",
+    )
+    .unwrap();
+    for (view, sql) in [
+        ("sums", SUMS),
+        (
+            "counts",
+            "SELECT region, COUNT(*) FROM orders GROUP BY region",
+        ),
+        (
+            "regions_seen",
+            "SELECT name, COUNT(*) FROM regions GROUP BY name",
+        ),
+    ] {
+        refresh(&c, view).unwrap();
+        assert_matches_oracle(&c, view, sql);
+    }
+}
+
 /// The text inside the first balanced `(...)` that immediately follows
 /// `marker` in `text` (`marker` must end in `(`, whose own open paren counts
 /// as depth 1) — so a `(` nested inside the match does not end it early.
@@ -1220,9 +1274,12 @@ fn query_plan(c: &Connection, sql: &str) -> Vec<String> {
 }
 
 /// Phase 6 spec §5: the apply trigger's own stored garbage collection and
-/// watermark update, read out of `sqlite_schema`, search `__ivm_progress` by
-/// `tbl` and never scan it. Both reference only regular tables, so they are
-/// explained as the trigger stores them.
+/// watermark update, read out of `sqlite_schema`, never scan `__ivm_progress`.
+/// The garbage collection's `MIN(applied_seq) … WHERE tbl = …` is what the new
+/// index serves: it becomes a SEARCH on `__ivm_progress_tbl`. The watermark
+/// update already was a SEARCH, on the table's `(view, tbl)` key, so it is
+/// only guarded against a regression. Both reference only regular tables, so
+/// they are explained as the trigger stores them.
 #[test]
 fn the_gc_and_watermark_update_search_the_progress_index() {
     let c = open_with_extension(None).unwrap();
@@ -1247,6 +1304,12 @@ fn the_gc_and_watermark_update_search_the_progress_index() {
 
     let watermark = statement_starting_with(&trigger_sql, "UPDATE \"__ivm_progress\"");
     let watermark_plan = query_plan(&c, &watermark);
+    assert!(
+        watermark_plan
+            .iter()
+            .any(|d| d.contains("SEARCH __ivm_progress")),
+        "the watermark update must be a SEARCH on __ivm_progress: {watermark_plan:?}"
+    );
     for (what, plan) in [
         ("garbage collection", &gc_plan),
         ("watermark", &watermark_plan),

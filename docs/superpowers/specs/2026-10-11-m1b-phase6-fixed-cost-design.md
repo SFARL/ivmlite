@@ -181,14 +181,15 @@ The capture verdict is `check_table_capture` without the latch: shape, capture t
 
 ## 5. Progress index (format 5)
 
-The global tables gain `CREATE INDEX "main"."__ivm_progress_tbl" ON "__ivm_progress"(tbl, applied_seq)`. It is created with them, under `IF NOT EXISTS`. With it, the body's GC minimum and the watermark update are searches, not scans.
+The global tables gain `CREATE INDEX "main"."__ivm_progress_tbl" ON "__ivm_progress"(tbl, applied_seq)`. It is created with them, under `IF NOT EXISTS`. With it, the body's GC minimum becomes a search on the new index; the watermark update already was a search, on the table's `(view, tbl)` key, and stays one.
 
 **Its absence breaks the view.** Every view's check (§4) requires the index, as Phase 4 §4 requires each view's output index. Without the index a refresh does not fail; it silently degrades to O(views), and a missing index is reported, not tolerated. A broken view can still be dropped. Creating any view recreates the index, and views that broke because it was missing work again after the next connect.
 
 **The format becomes 5.** A format-4 database is refused, and its views still open as broken views that can be dropped (Phase 3a §5). There is no migration; this is an alpha.
 
 **Tests:**
-- The query plans of the GC statement and of the watermark update, read from the stored trigger, show a SEARCH on `__ivm_progress_tbl`.
+- The query plans of the GC statement and of the watermark update, read from the stored trigger: the GC's shows a SEARCH on `__ivm_progress_tbl`, the watermark update's a SEARCH on `__ivm_progress`, and neither scans it.
+- Creating a view after the index was dropped recreates it, and the broken views work again after the next connect.
 - The format test is tampered to 4.
 - Dropping the index breaks the next refresh with a message naming it.
 
