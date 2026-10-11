@@ -1597,7 +1597,11 @@ fn broken(name: &str, why: &str) -> String {
 /// The checks at connect, against the connection's snapshot read afresh
 /// (Phase 6 spec §4; see `snapshot::with_rebuilt` for why afresh). The SQL is
 /// compiled before the snapshot is locked: compiling reads `pragma_table_list`,
-/// which connects every view of the connection not yet connected.
+/// which connects every view of the connection not yet connected, so most
+/// nested connects happen here, outside the lock. Not all: a view whose
+/// nested connect failed is connected again by the `pragma_table_list` reads
+/// behind a verdict, inside the lock, which is why `snapshot::with_slot`
+/// never waits for it.
 fn verify(
     conn: &Connection,
     shared: &snapshot::Shared,

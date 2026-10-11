@@ -5,8 +5,9 @@
 mod common;
 use common::*;
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{mpsc, Arc};
+use std::time::Duration;
 
 use ivmlite_test::open_with_extension;
 use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
@@ -290,4 +291,123 @@ fn a_failure_to_read_the_catalog_is_not_kept() {
         .unwrap();
     refresh(&c, "sums").unwrap();
     assert_matches_oracle(&c, "sums", SUMS);
+}
+
+/// As above, through a `CREATE VIRTUAL TABLE` that fails. Another
+/// connection's DDL resets this connection's schema, so neither view is
+/// connected any more, while the held refresh statement of `sums` keeps its
+/// old virtual table, and so the snapshot, alive. A create that then fails
+/// in its compile reads `pragma_table_list` first, which connects `big` in a
+/// nested call; that connect reads the snapshot at the cookie the create's
+/// own, uncommitted schema change set. The failure rolls the statement back
+/// and returns the cookie, and dropping a capture trigger brings it to that
+/// same value again. The next refresh of either view must see the missing
+/// trigger.
+#[test]
+fn a_failed_create_is_not_reused_by_a_held_statement() {
+    let file = TempFile::new("snapshot-failed-create");
+    let c = open_with_extension(Some(file.path())).unwrap();
+    setup(&c);
+    create(&c, "sums", SUMS).unwrap();
+    create(&c, "big", &filtered(1)).unwrap();
+    let mut command = c
+        .prepare("INSERT INTO sums(sums) VALUES ('refresh')")
+        .unwrap();
+    command.execute([]).unwrap();
+    Connection::open(file.path())
+        .unwrap()
+        .execute_batch("CREATE TABLE other_ddl(x)")
+        .unwrap();
+    let err = create(&c, "bad", "SELECT region, nosuchcol FROM orders").expect_err("bad SQL");
+    assert!(err.to_string().contains("nosuchcol"), "{err}");
+    let before = count(&c, "PRAGMA schema_version");
+    c.execute_batch("DROP TRIGGER __ivm_trig_orders_ins")
+        .unwrap();
+    assert_eq!(count(&c, "PRAGMA schema_version"), before + 1);
+    let expected = "its capture trigger __ivm_trig_orders_ins is missing";
+    let err = command.execute([]).expect_err("the trigger is missing");
+    assert_broken(err, expected, "held statement");
+    let err = refresh(&c, "big").expect_err("the trigger is missing");
+    assert_broken(err, expected, "big");
+}
+
+/// How long `a_callback_nested_in_a_locked_snapshot_gets_its_own` waits for
+/// its connection before it calls the snapshot deadlocked.
+const NESTED_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Spec §4: a callback nested in one that holds the connection's snapshot
+/// gets a snapshot of its own rather than waiting for the lock, which would
+/// deadlock on its own thread. On a fresh connection, the first read of
+/// `a_view` connects it; compiling its SQL reads `pragma_table_list`, which
+/// connects `b_view` in a nested call, and an authorizer refuses that
+/// connect's read of `__ivm_view` (the first five reads are `a_view`'s own
+/// lookup). Once `a_view`'s snapshot scan reads `tbl_name`, the authorizer
+/// allows everything, so the `pragma_table_list` reads behind `orders`'
+/// verdict, with the snapshot held, connect `b_view` again, nested, and its
+/// checks find the snapshot locked. The connection runs on a thread, so a
+/// deadlock fails the test after `NESTED_TIMEOUT` instead of hanging it.
+#[test]
+fn a_callback_nested_in_a_locked_snapshot_gets_its_own() {
+    let file = TempFile::new("snapshot-nested");
+    {
+        let c = open_with_extension(Some(file.path())).unwrap();
+        setup(&c);
+        for view in ["a_view", "b_view"] {
+            create(&c, view, SUMS).unwrap();
+            refresh(&c, view).unwrap();
+        }
+    }
+    let path = file.path().to_path_buf();
+    let (done, outcome) = mpsc::channel();
+    std::thread::spawn(move || {
+        let c = open_with_extension(Some(&path)).unwrap();
+        let view_reads = Arc::new(AtomicUsize::new(0));
+        let denied = Arc::new(AtomicUsize::new(0));
+        let allow = Arc::new(AtomicBool::new(false));
+        let (reads, refused, open) = (view_reads.clone(), denied.clone(), allow.clone());
+        c.authorizer(Some(move |ctx: AuthContext<'_>| {
+            match ctx.action {
+                AuthAction::Read {
+                    table_name: "__ivm_view",
+                    ..
+                } => {
+                    let n = reads.fetch_add(1, Ordering::Relaxed) + 1;
+                    if n > 5 && !open.load(Ordering::Relaxed) {
+                        refused.fetch_add(1, Ordering::Relaxed);
+                        return Authorization::Deny;
+                    }
+                }
+                AuthAction::Read {
+                    table_name: "sqlite_schema" | "sqlite_master",
+                    column_name: "tbl_name",
+                } => open.store(true, Ordering::Relaxed),
+                _ => {}
+            }
+            Authorization::Allow
+        }))
+        .unwrap();
+        assert_eq!(count(&c, "SELECT count(*) FROM a_view"), 3);
+        c.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
+            .unwrap();
+        assert!(
+            denied.load(Ordering::Relaxed) > 0,
+            "b_view's first nested connect was refused"
+        );
+        c.execute_batch("INSERT INTO orders VALUES ('c', 7), ('a', 2)")
+            .unwrap();
+        for view in ["a_view", "b_view"] {
+            refresh(&c, view).unwrap();
+            assert_matches_oracle(&c, view, SUMS);
+        }
+        done.send(()).unwrap();
+    });
+    match outcome.recv_timeout(NESTED_TIMEOUT) {
+        Ok(()) => {}
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            panic!("the connection deadlocked on its own snapshot")
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            panic!("the connection's thread failed; see its panic above")
+        }
+    }
 }

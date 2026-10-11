@@ -85,8 +85,13 @@ pub fn with_rebuilt<T>(
 /// Lock `shared` for `body`. A connection's callbacks never run at the same
 /// time, so a locked snapshot means a callback running inside one that holds
 /// it, on this same thread, where waiting would deadlock: that callback gets
-/// a snapshot of its own instead, read afresh. A panic while the snapshot was
-/// held may have left it half rebuilt, so it is dropped and read again.
+/// a snapshot of its own instead, read afresh. This nesting happens: a
+/// verdict reads `pragma_table_list` while the snapshot is held, and SQLite
+/// answers it by preparing a `SELECT` on every table whose columns it does
+/// not yet know, which connects any view of the connection not yet
+/// connected (one whose earlier connect failed, say), and that connect's
+/// `verify` asks for this same snapshot. A panic while the snapshot was held
+/// may have left it half rebuilt, so it is dropped and read again.
 fn with_slot<T>(
     shared: &Shared,
     body: impl FnOnce(&mut Option<Snapshot>) -> Result<T>,
