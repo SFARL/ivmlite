@@ -14,7 +14,7 @@ use crate::catalog::{require_utf8, CaptureInfo, SqliteCatalog};
 use crate::names::{
     apply_trigger, delta_table, has_reserved_prefix, literal, main_qualified, out_index, out_table,
     pend_table, quote, stage_table, state_table, trigger, CAPTURE_EVENTS, DELTA_SEQ, DELTA_W, DEPS,
-    META, PREFIX, PROBE, PROBE_STEP, PROGRESS, TRACKED, VIEWS,
+    META, PREFIX, PROBE, PROBE_STEP, PROGRESS, PROGRESS_INDEX, TRACKED, VIEWS,
 };
 use crate::snapshot::{self, Snapshot};
 use crate::state::{BufferedArrangement, Pending};
@@ -36,7 +36,11 @@ use crate::state::{BufferedArrangement, Pending};
 /// sentinel row into `apply`, and applies every staged row set-based. A
 /// format-3 database's trigger is the per-row one, so it is refused; since
 /// this is an alpha, it is not migrated.
-pub const FORMAT: i64 = 4;
+///
+/// Format 5 (Phase 6 spec §5) adds the index on `__ivm_progress`'s `tbl`, so
+/// the apply's garbage collection stops reading every view's watermark. A
+/// format-4 database has no such index, and is refused, not migrated.
+pub const FORMAT: i64 = 5;
 
 /// The column of the view's output table that holds each row's weight.
 const WEIGHT: &str = "__w";
@@ -277,11 +281,14 @@ fn create_global_tables(conn: &Connection) -> Result<()> {
                  PRIMARY KEY(view, tbl));
              CREATE TABLE IF NOT EXISTS {}(view TEXT NOT NULL, tbl TEXT NOT NULL,
                  applied_seq INTEGER NOT NULL, PRIMARY KEY(view, tbl));
+             CREATE INDEX IF NOT EXISTS {} ON {}(tbl, applied_seq);
              INSERT OR IGNORE INTO {meta}(key, value) VALUES ('format', {FORMAT});",
             main_qualified(VIEWS),
             main_qualified(TRACKED),
             main_qualified(DEPS),
             main_qualified(PROGRESS),
+            main_qualified(PROGRESS_INDEX),
+            quote(PROGRESS),
         ),
     )?;
     // The recursive-triggers probe (spec §6.2): `PROBE_STEP` re-inserts into
@@ -1636,6 +1643,8 @@ fn verify(
     // Phase 4 spec §4: the output index too, so a view whose index the user
     // dropped is broken rather than silently falling back to a full scan.
     needed.push((out_index(name), "index"));
+    // Phase 6 spec §5: and the progress index.
+    needed.push((PROGRESS_INDEX.to_string(), "index"));
     needed.push((stage_table(name), "table"));
     needed.extend(view.tables.iter().map(|t| (delta_table(t), "table")));
     let schemas = snapshot::with_rebuilt(shared, conn, version, |snapshot| {
@@ -1668,6 +1677,18 @@ fn check_output_index(snapshot: &Snapshot, name: &str) -> Result<()> {
     let index = out_index(name);
     if !object_exists(snapshot, "index", &index) {
         return Err(format!("its shadow index {index} is missing"));
+    }
+    Ok(())
+}
+
+/// The progress index must exist too (Phase 6 spec §5), checked wherever the
+/// output index is. Without it a refresh does not fail: the apply's garbage
+/// collection silently reads every view's watermark again. The index belongs
+/// to the global tables, not to any base table, so this is a check per view,
+/// outside the per-table verdicts.
+fn check_progress_index(snapshot: &Snapshot) -> Result<()> {
+    if !object_exists(snapshot, "index", PROGRESS_INDEX) {
+        return Err(format!("its shadow index {PROGRESS_INDEX} is missing"));
     }
     Ok(())
 }
@@ -1739,6 +1760,7 @@ fn checked_schemas<'a>(
             let schemas = snapshot::with_current(shared, conn, version, |snapshot| {
                 let schemas = check_capture(conn, snapshot, name, view)?;
                 check_output_index(snapshot, name)?;
+                check_progress_index(snapshot)?;
                 Ok(schemas)
             })
             .map_err(|why| broken(name, &why))?;
