@@ -17,6 +17,7 @@ use rusqlite::vtab::{
 use rusqlite::{ffi, Connection, Error};
 
 use crate::names::{main_qualified, out_table, quote};
+use crate::snapshot;
 use crate::view::{self, Checked};
 
 /// Run a callback body, turning its error and any panic into an SQLite error.
@@ -61,16 +62,22 @@ pub struct IvmTab {
     /// What the view's last passing catalog check on this connection saw
     /// (Phase 5 spec §3); `None` for a broken view.
     checked: Option<Checked>,
+    /// The catalog snapshot every view on this connection shares (Phase 6
+    /// spec §4). Holding it keeps it alive: it is freed when the last view of
+    /// the connection disconnects.
+    snapshot: snapshot::Shared,
 }
 
 impl IvmTab {
     /// Shared by create and connect: `make` returns the declaration, the
-    /// view (or why it is broken) and what its passing checks saw.
+    /// view (or why it is broken) and what its passing checks saw. The
+    /// connection's snapshot is found here, so connect's own checks already
+    /// use it (Phase 6 spec §4).
     fn open_view(
         db: &mut VTabConnection,
         database: &[u8],
         table: &[u8],
-        make: impl FnOnce(&Rc<Connection>, &str) -> Result<Opened, String>,
+        make: impl FnOnce(&Rc<Connection>, &snapshot::Shared, &str) -> Result<Opened, String>,
     ) -> rusqlite::Result<(Cow<'static, CStr>, Self)> {
         guard(|| {
             if database != b"main" {
@@ -83,7 +90,9 @@ impl IvmTab {
             let conn = unsafe { Connection::from_handle(db.handle()) }
                 .map(Rc::new)
                 .map_err(|e| e.to_string())?;
-            let (declaration, view, checked) = make(&conn, &name)?;
+            // SAFETY: only the handle's address is used, as the registry's key.
+            let snapshot = snapshot::for_connection(unsafe { conn.handle() });
+            let (declaration, view, checked) = make(&conn, &snapshot, &name)?;
             // A broken view keeps rusqlite's default: it never refreshes.
             if let Ok(compiled) = &view {
                 conn.set_prepared_statement_cache_capacity(view::statement_capacity(compiled));
@@ -99,6 +108,7 @@ impl IvmTab {
                     name,
                     view,
                     checked,
+                    snapshot,
                 },
             ))
         })
@@ -123,8 +133,8 @@ unsafe impl<'vtab> VTab<'vtab> for IvmTab {
         table: &[u8],
         _args: &[&[u8]],
     ) -> rusqlite::Result<(Cow<'static, CStr>, Self)> {
-        IvmTab::open_view(db, database, table, |conn, name| {
-            let reopened = view::connect(conn, name)?;
+        IvmTab::open_view(db, database, table, |conn, snapshot, name| {
+            let reopened = view::connect(conn, snapshot, name)?;
             Ok((reopened.declaration, reopened.view, reopened.checked))
         })
     }
@@ -170,7 +180,7 @@ impl CreateVTab<'_> for IvmTab {
         table: &[u8],
         args: &[&[u8]],
     ) -> rusqlite::Result<(Cow<'static, CStr>, Self)> {
-        IvmTab::open_view(db, database, table, |conn, name| {
+        IvmTab::open_view(db, database, table, |conn, _snapshot, name| {
             let [arg] = args else {
                 return Err(
                     "USING ivm takes one argument, the view's SELECT as a string literal"
@@ -220,7 +230,13 @@ impl UpdateVTab<'_> for IvmTab {
                             );
                         }
                     }
-                    view::refresh(&self.conn, &self.name, view, &mut self.checked)?;
+                    view::refresh(
+                        &self.conn,
+                        &self.snapshot,
+                        &self.name,
+                        view,
+                        &mut self.checked,
+                    )?;
                     Ok(0)
                 }
                 Some(other) => Err(format!(

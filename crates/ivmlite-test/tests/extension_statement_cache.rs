@@ -326,6 +326,35 @@ fn a_failed_refresh_leaves_the_cache_usable() {
     c.execute_batch("DROP TABLE sums").unwrap();
 }
 
+/// As above, with the failure part way through staging rather than in the
+/// apply: the fault lets the first full chunk of 64 output rows in and
+/// aborts the second chunk's statement at its third row, so a cached staging
+/// statement fails while it is being stepped.
+#[test]
+fn a_refresh_failing_while_staging_leaves_the_cache_usable() {
+    let c = open_with_extension(None).unwrap();
+    setup(&c);
+    create(&c, "sums", SUMS).unwrap();
+    for rows in [3usize, 130] {
+        insert_rows(&c, rows);
+        refresh(&c, "sums").unwrap();
+    }
+    c.execute_batch(
+        "CREATE TRIGGER fault BEFORE INSERT ON __ivm_stage_sums \
+         WHEN NEW.op = 'out+' \
+         AND (SELECT count(*) FROM __ivm_stage_sums WHERE op = 'out+') >= 66 \
+         BEGIN SELECT RAISE(ABORT, 'injected staging fault'); END;",
+    )
+    .unwrap();
+    insert_rows(&c, 130);
+    let err = refresh(&c, "sums").expect_err("the fault aborts the staging");
+    assert!(err.to_string().contains("injected staging fault"), "{err}");
+    c.execute_batch("DROP TRIGGER fault").unwrap();
+    refresh(&c, "sums").unwrap();
+    assert_matches_oracle(&c, "sums", SUMS);
+    c.execute_batch("DROP TABLE sums").unwrap();
+}
+
 /// Spec §3 with Phase 5 spec §6: the chunk is derived from the live variable
 /// limit on every refresh, so lowering it after the 64-row shapes were
 /// cached (each binds 256 parameters) still stages every row within it.

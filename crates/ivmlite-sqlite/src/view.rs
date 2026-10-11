@@ -16,6 +16,7 @@ use crate::names::{
     pend_table, quote, stage_table, state_table, trigger, CAPTURE_EVENTS, DELTA_SEQ, DELTA_W, DEPS,
     META, PREFIX, PROBE, PROBE_STEP, PROGRESS, TRACKED, VIEWS,
 };
+use crate::snapshot::{self, Snapshot};
 use crate::state::{BufferedArrangement, Pending};
 
 /// The shadow-table layout's version, stored in `__ivm_meta` and with each view.
@@ -103,12 +104,13 @@ pub fn statement_capacity(view: &CompiledView) -> usize {
     fixed + MARGIN
 }
 
-/// Whether the main schema holds an object of `kind` (`table`, `index`,
-/// `trigger`) named exactly `name`.
-fn object_exists(conn: &Connection, kind: &str, name: &str) -> Result<bool> {
+/// Whether the main schema holds a table named exactly `name`, read from
+/// `sqlite_schema` itself: `destroy` and `untrack` run while their own DDL
+/// moves the schema, where no snapshot holds (Phase 6 spec §4).
+fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
     conn.query_row(
-        "SELECT 1 FROM \"main\".sqlite_schema WHERE type = ?1 AND name = ?2",
-        [kind, name],
+        "SELECT 1 FROM \"main\".sqlite_schema WHERE type = 'table' AND name = ?1",
+        [name],
         |_| Ok(()),
     )
     .optional()
@@ -116,23 +118,17 @@ fn object_exists(conn: &Connection, kind: &str, name: &str) -> Result<bool> {
     .map_err(sql_error)
 }
 
-fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
-    object_exists(conn, "table", name)
+/// Whether `snapshot` holds an object of `kind` (`table`, `index`,
+/// `trigger`) named exactly `name`.
+fn object_exists(snapshot: &Snapshot, kind: &str, name: &str) -> bool {
+    snapshot.object(kind, name).is_some()
 }
 
 /// `trigger` must exist and be on `table`. Its name alone proves nothing:
 /// `ALTER TABLE t RENAME TO u` carries `t`'s triggers to `u` under their
 /// old names.
-fn check_trigger(conn: &Connection, trigger: &str, table: &str) -> Result<()> {
-    let on: Option<String> = conn
-        .query_row(
-            "SELECT tbl_name FROM \"main\".sqlite_schema WHERE type = 'trigger' AND name = ?1",
-            [trigger],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(sql_error)?;
-    match on {
+fn check_trigger(snapshot: &Snapshot, trigger: &str, table: &str) -> Result<()> {
+    match snapshot.object("trigger", trigger) {
         None => Err(format!("{trigger} is missing")),
         Some(on) if !on.eq_ignore_ascii_case(table) => {
             Err(format!("{trigger} is on table {on}, not {table}"))
@@ -790,14 +786,61 @@ fn check_latch(conn: &Connection, table: &str) -> Result<String> {
     }
 }
 
-/// `table`'s capture as every view of it relies on: `check_latch`, the shape
-/// its triggers were generated from, and every capture trigger on `table`
-/// itself. Returns `table`'s schema as read for the shape.
-fn check_table_capture(conn: &Connection, table: &str) -> Result<Schema> {
-    let recorded = check_latch(conn, table)?;
+/// `table`'s capture as every view of it relies on: `check_latch`, then its
+/// capture verdict (Phase 6 spec §4), computed once per schema version for
+/// every view of the connection. Returns `table`'s schema as read for the
+/// shape.
+fn check_table_capture(conn: &Connection, snapshot: &mut Snapshot, table: &str) -> Result<Schema> {
+    check_latch(conn, table)?;
+    snapshot.verdict(conn, table)
+}
+
+/// The shape `table`'s capture triggers were generated from, as
+/// `__ivm_tracked` records it. Uncached, like every read behind a catalog
+/// check (Phase 6 spec §3).
+fn recorded_shape(conn: &Connection, table: &str) -> Result<String> {
+    conn.query_row(
+        &format!(
+            "SELECT shape FROM {} WHERE tbl = ?1",
+            main_qualified(TRACKED)
+        ),
+        [table],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(sql_error)?
+    .ok_or_else(|| format!("table {table} is not tracked"))
+}
+
+/// `table`'s capture verdict (Phase 6 spec §4): `check_table_capture`
+/// without the latch, which a data write sets. The shape its triggers were
+/// generated from, read with pragmas, and every capture trigger on `table`
+/// itself, the probe, and the delta and pend tables, looked up in
+/// `snapshot`. The inner result is the verdict: `table`'s schema as read for
+/// the shape, or why its capture is broken. The outer error is a failure to
+/// read the catalog, which says nothing about the capture, so the snapshot
+/// does not keep it.
+pub fn capture_verdict(
+    conn: &Connection,
+    snapshot: &Snapshot,
+    table: &str,
+) -> Result<Result<Schema>> {
+    let recorded = recorded_shape(conn, table)?;
     let capture = SqliteCatalog { conn }.capture(table)?;
     let schema = base_schema(conn, table)?;
-    let now = shape(&schema, &capture);
+    Ok(judge_capture(snapshot, table, &recorded, &schema, &capture).map(|()| schema))
+}
+
+/// The part of `capture_verdict` that reads nothing: the shape against the
+/// recorded one, then the capture's objects in `snapshot`.
+fn judge_capture(
+    snapshot: &Snapshot,
+    table: &str,
+    recorded: &str,
+    schema: &Schema,
+    capture: &CaptureInfo,
+) -> Result<()> {
+    let now = shape(schema, capture);
     if now != recorded {
         return Err(format!(
             "base table {table} changed shape since it was first tracked \
@@ -805,20 +848,20 @@ fn check_table_capture(conn: &Connection, table: &str) -> Result<Schema> {
         ));
     }
     for event in CAPTURE_EVENTS {
-        check_trigger(conn, &trigger(table, event), table)
+        check_trigger(snapshot, &trigger(table, event), table)
             .map_err(|why| format!("its capture trigger {why}"))?;
     }
-    check_trigger(conn, PROBE_STEP, PROBE)
+    check_trigger(snapshot, PROBE_STEP, PROBE)
         .map_err(|why| format!("its recursive-triggers probe {why}"))?;
     // The delta table too, not only at connect (`verify`): a refresh on a
     // connection that is already connected would otherwise fail with a bare
     // "no such table" rather than as a broken view.
     for shadow in [delta_table(table), pend_table(table)] {
-        if !table_exists(conn, &shadow)? {
+        if !object_exists(snapshot, "table", &shadow) {
             return Err(format!("its shadow table {shadow} is missing"));
         }
     }
-    Ok(schema)
+    Ok(())
 }
 
 /// Stop capturing `table`: triggers first, so it stays writable.
@@ -1396,10 +1439,16 @@ pub fn create(conn: &Rc<Connection>, name: &str, sql: &str) -> Result<(CompiledV
         .iter()
         .map(|t| base_schema(conn, t))
         .collect::<Result<_>>()?;
+    // Phase 6 spec §4: a snapshot of create's own, not the connection's: the
+    // DDL below moves the schema while create runs, and the statement may
+    // yet be rolled back. Each tracked table reads it at the version it
+    // finds, after any `track` before it.
+    let mut own = None;
     for schema in &schemas {
         let t = &schema.table;
         if is_tracked(conn, t)? {
-            check_table_capture(conn, t).map_err(|why| {
+            let snapshot = Snapshot::current(&mut own, conn, schema_version(conn)?)?;
+            check_table_capture(conn, snapshot, t).map_err(|why| {
                 format!(
                     "table {t} is tracked but its capture is broken: {why}; drop the views \
                      that read it ({}) and create this view again",
@@ -1514,7 +1563,7 @@ pub struct Reopened {
 /// every shadow table it relies on must exist; if not, the view still opens —
 /// with the stored declaration — so it can be dropped, and every read and
 /// refresh reports why it is broken.
-pub fn connect(conn: &Connection, name: &str) -> Result<Reopened> {
+pub fn connect(conn: &Connection, shared: &snapshot::Shared, name: &str) -> Result<Reopened> {
     let stored: Option<(String, String, String, i64)> = conn
         .query_row(
             &format!(
@@ -1529,7 +1578,7 @@ pub fn connect(conn: &Connection, name: &str) -> Result<Reopened> {
     let Some((sql, plan, declaration, format)) = stored else {
         return Err(format!("ivmlite has no record of the view {name}"));
     };
-    let (view, checked) = match verify(conn, name, &sql, &plan, format) {
+    let (view, checked) = match verify(conn, shared, name, &sql, &plan, format) {
         Ok((view, checked)) => (Ok(view), Some(checked)),
         Err(why) => (Err(broken(name, &why)), None),
     };
@@ -1545,8 +1594,13 @@ fn broken(name: &str, why: &str) -> String {
     format!("view {name} cannot be maintained: {why}; drop and recreate it")
 }
 
+/// The checks at connect, against the connection's snapshot read afresh
+/// (Phase 6 spec §4; see `snapshot::with_rebuilt` for why afresh). The SQL is
+/// compiled before the snapshot is locked: compiling reads `pragma_table_list`,
+/// which connects every view of the connection not yet connected.
 fn verify(
     conn: &Connection,
+    shared: &snapshot::Shared,
     name: &str,
     sql: &str,
     plan: &str,
@@ -1580,12 +1634,14 @@ fn verify(
     needed.push((out_index(name), "index"));
     needed.push((stage_table(name), "table"));
     needed.extend(view.tables.iter().map(|t| (delta_table(t), "table")));
-    for (object, kind) in needed {
-        if !object_exists(conn, kind, &object)? {
-            return Err(format!("its shadow {kind} {object} is missing"));
+    let schemas = snapshot::with_rebuilt(shared, conn, version, |snapshot| {
+        for (object, kind) in needed {
+            if !object_exists(snapshot, kind, &object) {
+                return Err(format!("its shadow {kind} {object} is missing"));
+            }
         }
-    }
-    let schemas = check_capture(conn, name, &view)?;
+        check_capture(conn, snapshot, name, &view)
+    })?;
     Ok((
         view,
         Checked {
@@ -1604,9 +1660,9 @@ fn verify(
 /// would see a refresh silently fall back to a full table scan instead of a
 /// broken view (Phase 4 spec §4: the index is what keeps a retraction a
 /// SEARCH rather than a SCAN).
-fn check_output_index(conn: &Connection, name: &str) -> Result<()> {
+fn check_output_index(snapshot: &Snapshot, name: &str) -> Result<()> {
     let index = out_index(name);
-    if !object_exists(conn, "index", &index)? {
+    if !object_exists(snapshot, "index", &index) {
         return Err(format!("its shadow index {index} is missing"));
     }
     Ok(())
@@ -1622,7 +1678,12 @@ fn check_output_index(conn: &Connection, name: &str) -> Result<()> {
 /// uncaptured; without the apply trigger, a refresh would apply nothing.
 /// Either way the view would go stale with no error. Returns the base
 /// tables' schemas, in `view.tables` order.
-fn check_capture(conn: &Connection, name: &str, view: &CompiledView) -> Result<Vec<Schema>> {
+fn check_capture(
+    conn: &Connection,
+    snapshot: &mut Snapshot,
+    name: &str,
+    view: &CompiledView,
+) -> Result<Vec<Schema>> {
     let mut schemas = Vec::with_capacity(view.tables.len());
     for table in &view.tables {
         let recorded: Option<i64> = conn
@@ -1639,9 +1700,9 @@ fn check_capture(conn: &Connection, name: &str, view: &CompiledView) -> Result<V
         if recorded.is_none() {
             return Err(format!("its dependency on table {table} is not recorded"));
         }
-        schemas.push(check_table_capture(conn, table)?);
+        schemas.push(check_table_capture(conn, snapshot, table)?);
     }
-    check_trigger(conn, &apply_trigger(name), &stage_table(name))
+    check_trigger(snapshot, &apply_trigger(name), &stage_table(name))
         .map_err(|why| format!("its apply trigger {why}"))?;
     Ok(schemas)
 }
@@ -1650,10 +1711,12 @@ fn check_capture(conn: &Connection, name: &str, view: &CompiledView) -> Result<V
 /// checks (Phase 5 spec §3). While `main`'s schema cookie still has the value
 /// `checked` passed at, no object those checks inspect can have changed, so
 /// only each table's latch is read: a data write sets it, and moves no
-/// cookie. Otherwise every check runs, and `checked` holds the new cookie
-/// and schemas only once they pass.
+/// cookie. Otherwise every check runs, against the connection's snapshot
+/// brought to the new cookie (Phase 6 spec §4), and `checked` holds the new
+/// cookie and schemas only once they pass.
 fn checked_schemas<'a>(
     conn: &Connection,
+    shared: &snapshot::Shared,
     name: &str,
     view: &CompiledView,
     checked: &'a mut Option<Checked>,
@@ -1669,8 +1732,12 @@ fn checked_schemas<'a>(
         }
         _ => {
             *checked = None;
-            let schemas = check_capture(conn, name, view).map_err(|why| broken(name, &why))?;
-            check_output_index(conn, name).map_err(|why| broken(name, &why))?;
+            let schemas = snapshot::with_current(shared, conn, version, |snapshot| {
+                let schemas = check_capture(conn, snapshot, name, view)?;
+                check_output_index(snapshot, name)?;
+                Ok(schemas)
+            })
+            .map_err(|why| broken(name, &why))?;
             *checked = Some(Checked {
                 schema_version: version,
                 schemas,
@@ -1686,14 +1753,16 @@ fn checked_schemas<'a>(
 /// `INSERT INTO v(v) VALUES('refresh')`: bring the view up to date. State,
 /// output and watermarks change together or not at all (see `apply`).
 /// `checked` is the view's per-connection cache of its last passing catalog
-/// check (Phase 5 spec §3), updated here.
+/// check (Phase 5 spec §3), updated here; `shared` is its connection's
+/// catalog snapshot (Phase 6 spec §4).
 pub fn refresh(
     conn: &Rc<Connection>,
+    shared: &snapshot::Shared,
     name: &str,
     view: &CompiledView,
     checked: &mut Option<Checked>,
 ) -> Result<()> {
-    let schemas = checked_schemas(conn, name, view, checked)?;
+    let schemas = checked_schemas(conn, shared, name, view, checked)?;
     let mut batches = Vec::new();
     let mut progress = Vec::new();
     for (table, schema) in view.tables.iter().zip(schemas) {
