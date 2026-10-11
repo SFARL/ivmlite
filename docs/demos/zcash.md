@@ -41,30 +41,34 @@ The covering index of `indexed_recompute` is `transparent_outputs(eligible,
 account_uuid, value_zat)`. The protocol and columns are in the [demos
 README](README.md#benchmark-protocol).
 
-This run used an Apple M2 Pro, macOS 26.2, Rust 1.95.0, SQLite 3.53.2, an
-in-memory database, 500,000 base rows, a 500-operation mixed batch and five
-independent repetitions. Each cell is the median, with the min–max over the
-repetitions in parentheses. Other builds and tests were running on the machine
-at the time, so these timings are noisier than an idle run and only the shape
-of each comparison should be read from them; the authoritative before/after
-comparison of M1b Phase 5 comes from its own measurement run.
+This run, on 2026-10-10, used an Apple M2 Pro, macOS 26.2, Rust 1.95.0,
+SQLite 3.53.2, the `0.1.0-alpha.3` extension, an in-memory database, 500,000
+base rows, a 500-operation mixed batch and five independent repetitions.
+Apply, maintain and read are each a repetition's median over its ten measured
+batches. Each cell is the median over the repetitions, with their min–max in
+parentheses. Desktop applications stayed open, and the one-minute load average
+was 12.40 at the start and 10.38 at the end, so the machine was not idle and
+only the shape of each comparison should be read from these timings. The
+before/after comparison of M1b Phase 5 is in the "M1b Phase 5" section of
+[`docs/bench/README.md`](../bench/README.md).
 
 | Mode | Bootstrap | First refresh | Apply | Maintain | Read | Apply + maintain | End to end | SQLite pages |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| no maintenance | 0 ms | 0 ms | 0.164 (0.161–0.178) ms | 0 ms | 0 ms | 0.164 (0.162–0.178) ms | 0.164 (0.162–0.178) ms | 12,284 KiB |
-| unindexed recompute | 0 ms | 117 (111–120) ms | 0.181 (0.169–0.184) ms | 113 (111–117) ms | 0 ms | 113 (111–118) ms | 113 (111–118) ms | 12,284 KiB |
-| indexed recompute | 215 (209–221) ms | 22.3 (22.0–23.1) ms | 1.21 (1.10–1.28) ms | 23.0 (21.9–23.9) ms | 0 ms | 24.2 (23.0–25.2) ms | 24.2 (23.0–25.2) ms | 25,700 KiB |
-| ivmlite | 566 (537–589) ms | 4.39 (4.22–4.60) ms | 4.63 (4.55–4.89) ms | 4.09 (3.99–4.27) ms | 0.053 (0.052–0.062) ms | 8.72 (8.55–9.16) ms | 8.77 (8.60–9.22) ms | 12,484 KiB |
+| no maintenance | 0 ms | 0 ms | 0.164 (0.161–0.174) ms | 0 ms | 0 ms | 0.164 (0.162–0.174) ms | 0.164 (0.162–0.174) ms | 12,328 KiB |
+| unindexed recompute | 0 ms | 119 (117–137) ms | 0.189 (0.187–0.195) ms | 118 (117–119) ms | 0 ms | 119 (117–119) ms | 119 (117–119) ms | 12,328 KiB |
+| indexed recompute | 225 (218–256) ms | 23.6 (22.9–24.2) ms | 1.13 (1.02–1.27) ms | 23.2 (22.9–23.7) ms | 0 ms | 24.3 (24.1–25.0) ms | 24.3 (24.1–25.0) ms | 25,772 KiB |
+| ivmlite | 578 (570–634) ms | 3.31 (3.09–3.49) ms | 4.75 (4.69–4.76) ms | 2.98 (2.90–3.04) ms | 0.057 (0.053–0.058) ms | 7.73 (7.59–7.81) ms | 7.79 (7.65–7.86) ms | 12,536 KiB |
 
-For this adapted query, ivmlite's write, refresh and read were about 2.8 times
-faster than indexed recomputation, the headline baseline, and about 13 times
-faster than unindexed recomputation. ivmlite's first refresh after `CREATE`,
-which also drains the stage the bootstrap left behind, took 4.39 ms: within
-run-to-run noise of the steady-state refresh of 4.09 ms. The upstream 197 ms
-and this 113 ms unindexed recomputation are different queries on different
-machines and must not be treated as a before/after comparison.
+For this adapted query, ivmlite's write, refresh and read were about 3.1 times
+faster than indexed recomputation, the headline baseline, and about 15 times
+faster than unindexed recomputation. ivmlite's first refresh after `CREATE`
+took 3.31 ms, about 1.1 times the steady-state refresh of 2.98 ms, with their
+ranges apart. Since format 4, bootstrap empties its own stage, so the first
+refresh no longer drains it. The upstream 197 ms and this 118 ms unindexed
+recomputation are different queries on different machines and must not be
+treated as a before/after comparison.
 
-See the [raw results](results/2026-10-08-zcash-macos-m2-pro.txt).
+See the [raw results](results/2026-10-10-zcash-macos-m2-pro.txt).
 
 ## Boundaries
 
