@@ -74,6 +74,16 @@ pub struct MatrixSpec {
 }
 
 impl MatrixSpec {
+    /// Reject a `[matrix]` section with a repeated entry in any of its four
+    /// lists, which would derive the same cell twice (`reject_duplicates`).
+    /// `Workload::validate` calls this whenever the section is present.
+    pub fn validate(&self) -> Result<(), WorkloadError> {
+        reject_duplicates("[matrix] base_rows", &self.base_rows)?;
+        reject_duplicates("[matrix] batch_sizes", &self.batch_sizes)?;
+        reject_duplicates("[matrix] view_counts", &self.view_counts)?;
+        reject_duplicates("[matrix] group_cardinalities", &self.group_cardinalities)
+    }
+
     /// Derive the set of `n` views. The threshold formula is what keeps the views
     /// distinct from one another; it is exactly the formula the benchmark runner
     /// hard-coded before `[matrix]` existed, so the committed CSV stays
@@ -149,8 +159,9 @@ pub struct AblationSpec {
 
 impl AblationSpec {
     /// Reject an `[ablation]` section the runner cannot measure: no
-    /// repeats, no cells, or a cell with more group keys than base rows
-    /// (which `Workload::with_cell` would refuse, part way through a run).
+    /// repeats, no cells, a cell with more group keys than base rows
+    /// (which `Workload::with_cell` would refuse, part way through a run),
+    /// or two cells whose fields are all equal (`reject_duplicates`).
     /// `Workload::load` calls this whenever the section is present.
     pub fn validate(&self) -> Result<(), WorkloadError> {
         if self.repeats == 0 {
@@ -171,7 +182,7 @@ impl AblationSpec {
                 )));
             }
         }
-        Ok(())
+        reject_duplicates("[ablation] cells", &self.cells)
     }
 }
 
@@ -205,6 +216,27 @@ impl std::fmt::Display for WorkloadError {
 }
 
 impl std::error::Error for WorkloadError {}
+
+/// Reject a list field that names one value twice. A repeated entry makes the
+/// runner measure the same cell or combination twice, and the code that later
+/// pairs rows by cell or combination (spec §7's `extra_us_per_row`, the
+/// confirmation's selection, the tables scripts) can then pair one run's
+/// engine row with another run's baseline, or silently drop a run.
+fn reject_duplicates<T: PartialEq + std::fmt::Debug>(
+    field: &str,
+    values: &[T],
+) -> Result<(), WorkloadError> {
+    match values
+        .iter()
+        .enumerate()
+        .find(|(i, value)| values[..*i].contains(value))
+    {
+        Some((_, value)) => Err(WorkloadError::Invalid(format!(
+            "{field} lists {value:?} more than once; every entry must be distinct"
+        ))),
+        None => Ok(()),
+    }
+}
 
 /// M1b Phase 4 Task 5 (spec §7): the write-amplification workload. Separate
 /// from `Workload` because it needs REPLACE, UPDATE and `recursive_triggers`,
@@ -421,7 +453,10 @@ impl WriteAmpWorkload {
                 "ablation_view_counts must not be empty".into(),
             ));
         }
-        Ok(())
+        reject_duplicates("view_counts", &self.view_counts)?;
+        reject_duplicates("ablation_view_counts", &self.ablation_view_counts)?;
+        reject_duplicates("ops", &self.ops)?;
+        reject_duplicates("recursive_triggers", &self.recursive_triggers)
     }
 
     /// A copy with `base_rows` and `rows_per_op` overridden. A test-only
@@ -581,6 +616,9 @@ impl Workload {
     /// exactly one home: `cells()` calls this method directly to decide whether
     /// a matrix cell is legal, so the rule is not maintained twice in two
     /// spellings that would sooner or later diverge.
+    ///
+    /// When a `[matrix]` section is present, its lists are checked too
+    /// (`MatrixSpec::validate`); a derived cell has none.
     pub fn validate(&self) -> Result<(), WorkloadError> {
         if self.data.group_cardinality > self.data.base_rows {
             return Err(WorkloadError::Invalid(format!(
@@ -588,7 +626,10 @@ impl Workload {
                 self.data.group_cardinality, self.data.base_rows
             )));
         }
-        Ok(())
+        match &self.matrix {
+            Some(matrix) => matrix.validate(),
+            None => Ok(()),
+        }
     }
 
     /// The base-table rows. Ids are dense and unique; the number of distinct
@@ -1567,5 +1608,146 @@ mod tests {
         let err = Workload::load(&bad).expect_err("repeats = 0 must be rejected at load time");
         fs::remove_dir_all(&dir).unwrap();
         assert!(err.to_string().contains("repeats"), "{err}");
+    }
+
+    // ---- spec §7, §8: no list field repeats an entry ----
+
+    /// Every list field of every workload section rejects a repeated entry,
+    /// naming the field and the value. A repeated entry runs the same cell or
+    /// combination twice, and the rows are later paired by cell or
+    /// combination. The concrete wrong pairing is `ivmlite-bench`'s
+    /// `main::extra_us_per_row`: it takes the first `no_maintenance` row with
+    /// the same (`views`, op, `recursive_triggers`) by `find`, so with
+    /// `view_counts = [10, 10]` the second run's `ivmlite` and
+    /// `hand_written_trigger` rows get the first run's baseline. Elsewhere
+    /// the later duplicate silently replaces the earlier one
+    /// (`confirm::select`'s maps, `by_cell` in `docs/bench/phase*_tables.py`)
+    /// or two cells' repeats merge into one (the tables' ablation runs).
+    #[test]
+    fn every_list_field_rejects_a_repeated_entry() {
+        let write_amp = tiny();
+        let write_amp_cases: Vec<(&str, &str, WriteAmpWorkload)> = vec![
+            ("view_counts", "10", {
+                let mut w = write_amp.clone();
+                w.view_counts = vec![0, 10, 10];
+                w
+            }),
+            ("ablation_view_counts", "200", {
+                let mut w = write_amp.clone();
+                w.ablation_view_counts = vec![200, 10, 200];
+                w
+            }),
+            ("ops", "Update", {
+                let mut w = write_amp.clone();
+                w.ops = vec![
+                    WriteOpKind::Update,
+                    WriteOpKind::Insert,
+                    WriteOpKind::Update,
+                ];
+                w
+            }),
+            ("recursive_triggers", "false", {
+                let mut w = write_amp.clone();
+                w.recursive_triggers = vec![false, false];
+                w
+            }),
+        ];
+        for (field, value, w) in write_amp_cases {
+            let err = w.validate().expect_err(field).to_string();
+            assert!(
+                err.contains(field) && err.contains(value) && err.contains("more than once"),
+                "{field}: {err}"
+            );
+        }
+
+        type MatrixEdit = fn(&mut MatrixSpec);
+        let matrix_cases: [(&str, &str, MatrixEdit); 4] = [
+            ("[matrix] base_rows", "100", |m| {
+                m.base_rows = vec![10, 100, 100]
+            }),
+            ("[matrix] batch_sizes", "1", |m| m.batch_sizes = vec![1, 1]),
+            ("[matrix] view_counts", "5", |m| {
+                m.view_counts = vec![5, 1, 5]
+            }),
+            ("[matrix] group_cardinalities", "50", |m| {
+                m.group_cardinalities = vec![50, 5, 50]
+            }),
+        ];
+        assert!(
+            spec_with_matrix().validate().is_ok(),
+            "the fixture itself must be valid"
+        );
+        for (field, value, edit) in matrix_cases {
+            let mut w = spec_with_matrix();
+            edit(w.matrix.as_mut().unwrap());
+            let err = w.validate().expect_err(field).to_string();
+            assert!(
+                err.contains(field) && err.contains(value) && err.contains("more than once"),
+                "{field}: {err}"
+            );
+        }
+
+        // Two ablation cells are duplicates only when every field is equal.
+        let distinct = AblationSpec {
+            cells: vec![ablation_cell(1_000, 10), ablation_cell(1_000, 100)],
+            repeats: 5,
+        };
+        assert!(distinct.validate().is_ok());
+        let repeated = AblationSpec {
+            cells: vec![
+                ablation_cell(1_000, 10),
+                ablation_cell(1_000, 100),
+                ablation_cell(1_000, 10),
+            ],
+            repeats: 5,
+        };
+        let err = repeated
+            .validate()
+            .expect_err("a repeated cell")
+            .to_string();
+        assert!(
+            err.contains("[ablation] cells")
+                && err.contains("group_cardinality: 10,")
+                && err.contains("more than once"),
+            "{err}"
+        );
+    }
+
+    /// `load` rejects a repeated entry too: the shipped write-amp file with
+    /// `view_counts` repeating one entry, and the shipped m0 file with its
+    /// first `[[ablation.cells]]` table repeated.
+    #[test]
+    fn load_rejects_a_repeated_entry_in_a_shipped_file() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../workloads");
+        let dir = std::env::temp_dir().join(format!(
+            "ivmlite-workload-duplicates-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+
+        let write_amp = fs::read_to_string(root.join("write-amp.toml")).unwrap();
+        let sweep = "view_counts = [0, 1, 10, 50, 200]";
+        assert!(write_amp.contains(sweep), "the shipped file changed shape");
+        let bad = dir.join("write-amp.toml");
+        fs::write(
+            &bad,
+            write_amp.replace(sweep, "view_counts = [0, 1, 10, 10, 200]"),
+        )
+        .unwrap();
+        let err = WriteAmpWorkload::load(&bad).expect_err("view_counts repeats 10");
+
+        let m0 = fs::read_to_string(root.join("m0-baseline.toml")).unwrap();
+        let cell = "[[ablation.cells]]\nbase_rows = 100000\ngroup_cardinality = 1000\nviews = 10\nbatch_size = 1000\n";
+        assert!(m0.contains(cell), "the shipped file changed shape");
+        let bad = dir.join("m0.toml");
+        fs::write(&bad, m0.replacen(cell, &format!("{cell}\n{cell}"), 1)).unwrap();
+        let ablation_err = Workload::load(&bad).expect_err("an ablation cell repeats");
+        fs::remove_dir_all(&dir).unwrap();
+
+        assert!(err.to_string().contains("view_counts lists 10"), "{err}");
+        assert!(
+            ablation_err.to_string().contains("[ablation] cells"),
+            "{ablation_err}"
+        );
     }
 }
