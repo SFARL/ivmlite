@@ -55,22 +55,22 @@ base rows, a 500-operation mixed batch and five independent repetitions.
 Apply, maintain and read are each a repetition's median over its ten measured
 batches. Each cell is the median over the repetitions, with their min–max in
 parentheses. Desktop applications stayed open, and the one-minute load average
-was 10.38 at the start and 2.88 at the end, so the machine was not idle and
+was 6.99 at the start and 5.57 at the end, so the machine was not idle and
 only the shape of each comparison should be read from these timings. The
 before/after comparison of M1b Phase 5 is in the "M1b Phase 5" section of
 [`docs/bench/README.md`](../bench/README.md).
 
 | Mode | Bootstrap | First refresh | Apply | Maintain | Read | Apply + maintain | End to end | SQLite pages |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| no maintenance | 0 ms | 0 ms | 0.166 (0.163–0.169) ms | 0 ms | 0 ms | 0.166 (0.163–0.169) ms | 0.166 (0.163–0.169) ms | 100,940 KiB |
-| unindexed recompute | 0 ms | 1,689 (1,651–1,726) ms | 0.192 (0.190–0.198) ms | 1,669 (1,646–1,674) ms | 0 ms | 1,670 (1,646–1,674) ms | 1,670 (1,646–1,674) ms | 100,940 KiB |
-| indexed recompute | 1,637 (1,625–2,134) ms | 347 (345–366) ms | 1.25 (1.21–1.27) ms | 347 (345–349) ms | 0 ms | 348 (346–350) ms | 348 (346–350) ms | 200,596 KiB |
-| ivmlite | 8,851 (8,509–9,057) ms | 14.4 (4.78–18.6) ms | 4.24 (4.18–4.36) ms | 2.41 (2.15–2.46) ms | 144 (143–145) ms | 6.65 (6.33–6.82) ms | 150 (150–152) ms | 255,432 KiB |
+| no maintenance | 0 ms | 0 ms | 0.167 (0.164–0.184) ms | 0 ms | 0 ms | 0.168 (0.164–0.184) ms | 0.168 (0.164–0.184) ms | 100,940 KiB |
+| unindexed recompute | 0 ms | 1,738 (1,609–1,744) ms | 0.205 (0.192–0.207) ms | 1,717 (1,602–1,770) ms | 0 ms | 1,718 (1,602–1,770) ms | 1,718 (1,602–1,770) ms | 100,940 KiB |
+| indexed recompute | 1,703 (1,588–1,848) ms | 345 (338–350) ms | 1.21 (1.17–1.28) ms | 345 (341–353) ms | 0 ms | 346 (342–354) ms | 346 (342–354) ms | 200,596 KiB |
+| ivmlite | 8,662 (8,207–9,645) ms | 18.5 (4.98–35.2) ms | 4.20 (4.10–4.44) ms | 2.38 (2.33–2.81) ms | 143 (140–166) ms | 6.90 (6.81–7.64) ms | 150 (148–177) ms | 255,432 KiB |
 
-The refresh itself was about 140 times faster than indexed recomputation, the
-headline baseline, and about 690 times faster than unindexed recomputation.
+The refresh itself was about 145 times faster than indexed recomputation, the
+headline baseline, and about 720 times faster than unindexed recomputation.
 Counting the capture cost inside the writes as well, apply + maintain was about
-52 times faster than indexed recomputation. Both figures omit reading the large
+50 times faster than indexed recomputation. Both figures omit reading the large
 materialized result. Including the read, the
 adapted ivmlite path was about 2.3 times faster than indexed recomputation and
 about 11 times faster than unindexed recomputation, and used about 2.5 times
@@ -78,11 +78,11 @@ the base table's SQLite page allocation (the covering index used about 2.0
 times). High result cardinality therefore remains a material read and space
 cost even when maintenance is cheap.
 
-ivmlite's first refresh after `CREATE` took 14.4 ms, about 6 times the
-steady-state refresh of 2.41 ms, with a wide range over the repetitions
-(4.78–18.6 ms). Since format 4, bootstrap empties its own stage, so this is not
+ivmlite's first refresh after `CREATE` took 18.5 ms, about 8 times the
+steady-state refresh of 2.38 ms, with a wide range over the repetitions
+(4.98–35.2 ms). Since format 4, bootstrap empties its own stage, so this is not
 the leftover stage; its cause has not been measured. In the M1b Phase 5
-before/after run, the same build's first refresh was 5.37 ms.
+before/after run, the same build's first refresh was 4.92 ms.
 
 See the [raw results](results/2026-10-10-kener-macos-m2-pro.txt).
 

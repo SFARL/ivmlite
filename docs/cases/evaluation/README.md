@@ -1,6 +1,7 @@
 # Current ivmlite evaluation of the collected cases
 
-Evaluated on 2026-09-28 against the current SQLite extension. This is a
+Evaluated on 2026-09-28 against the current SQLite extension; the performance
+probe below was re-run on 2026-10-10 with the `0.1.0-alpha.3` extension. This is a
 capability and crossover probe, not a claim that the original applications
 have been reproduced. The original source corpus remains unchanged.
 
@@ -59,9 +60,19 @@ For every slice it compares three fresh in-memory databases:
   SELECT directly from SQLite.
 
 Seeding, extension loading, view creation/bootstrap, statement preparation and
-correctness checks are outside the timed region. Full recomputation is not
-written to a table, which deliberately favours that baseline. Results are the
-median of independent runs. The runner refuses to use the debug extension.
+correctness checks are outside the timed region. Every statement a timer runs
+is prepared before it: the inserts, the transaction's `BEGIN IMMEDIATE` and
+`COMMIT`, each view's refresh and each recompute query. Until 2026-10-10 this
+was not true: each refresh statement was compiled inside the maintenance timer,
+and `BEGIN IMMEDIATE` and `COMMIT` inside the apply timer, so the 2026-09-28
+snapshot included that compilation. Each run applies one batch to a fresh
+database, so the timed `ivmlite` maintenance is the first refresh after
+`CREATE`. Since shadow-table format 4, bootstrap empties its own stage, so that
+refresh no longer drains a leftover stage, but no warm-up refresh precedes it.
+Full recomputation is not written to a table, which deliberately favours that
+baseline. Results are the median of independent runs; `total_ms` is the median
+`apply_ms` plus the median `maintain_ms`. The runner refuses to use the debug
+extension.
 
 Build and run the release binaries with:
 
@@ -69,24 +80,34 @@ Build and run the release binaries with:
 cargo build --release --locked --manifest-path crates/ivmlite-sqlite/Cargo.toml
 cargo run --release --locked -p ivmlite-test --example real_case_bench -- \
   25000 1000 5
+cargo run --release --locked -p ivmlite-test --example real_case_bench -- \
+  250000 100 3
 ```
 
 Arguments are initial rows, inserted rows per batch and repetitions. The raw
-measurements are in [2026-09-28-apple-m2-pro.csv](2026-09-28-apple-m2-pro.csv).
+measurements are in [2026-10-10-apple-m2-pro.csv](2026-10-10-apple-m2-pro.csv).
 
 ### Observed crossover
 
 | Slice | 25k base + 1k delta | 250k base + 100 delta |
 |---|---:|---:|
-| Datasette county facet | ivmlite 10.144 ms; recompute 1.578 ms (**6.43× slower**) | ivmlite 1.562 ms; recompute 12.110 ms (**7.75× faster**) |
-| Org-roam tag counts | ivmlite 177.638 ms; recompute 7.115 ms (**24.97× slower**) | ivmlite 193.594 ms; recompute 95.347 ms (**2.03× slower**) |
-| Taproot event counts | ivmlite 42.806 ms; recompute 9.685 ms (**4.42× slower**) | ivmlite 26.155 ms; recompute 121.853 ms (**4.66× faster**) |
+| Datasette county facet | ivmlite 9.027 ms; recompute 1.561 ms (**5.78× slower**) | ivmlite 1.234 ms; recompute 11.951 ms (**9.68× faster**) |
+| Org-roam tag counts | ivmlite 20.387 ms; recompute 7.404 ms (**2.75× slower**) | ivmlite 2.748 ms; recompute 87.624 ms (**31.89× faster**) |
+| Taproot event counts | ivmlite 25.395 ms; recompute 9.775 ms (**2.60× slower**) | ivmlite 3.700 ms; recompute 113.150 ms (**30.58× faster**) |
 
-These measurements show a real crossover for the Datasette and Taproot slices:
-small deltas over a larger base table amortize capture and refresh costs. They
-also show that the current join path is not uniformly good. The Org-roam slice
-remains slower at both measured points, so it is currently evidence of a
-performance problem, not a product win.
+These measurements show a real crossover for all three slices: small deltas
+over a larger base table amortize capture and refresh costs, and a large delta
+over a small table still loses to recomputation. **This changed since the
+2026-09-28 snapshot**, which found the Org-roam slice slower at both points
+(24.97× and 2.03×) and called it evidence of a performance problem in the join
+path. Its refresh fell from 167.872 to 12.745 ms at 25k + 1k and from 192.585
+to 1.940 ms at 250k + 100. That change comes from the extension, not from
+moving statement preparation out of the timers: the harness before that fix
+(commit `e1346ce`), re-run against the same `0.1.0-alpha.3` extension on
+2026-10-10, gave `ivmlite` totals within run-to-run noise of this harness's
+(Org-roam 21.255 and 2.799 ms). The 25k + 1k point still loses for every
+slice, including both join slices, so a large delta over a small table
+remains a region where recomputation is the better choice.
 
 The two configurations vary both base size and delta size; they locate useful
 and non-useful regions but do not isolate a formal scaling curve. The seed data
@@ -96,4 +117,7 @@ their performance still needs separate measurement. Before using any number
 in public project claims, run a matrix with more sizes, mixed update traces,
 on-disk databases and the recovered application data where available.
 
-Machine for this snapshot: Apple M2 Pro, macOS 26.2, arm64; Rust 1.95.0.
+Machine for this snapshot: Apple M2 Pro, macOS 26.2, arm64; Rust 1.95.0;
+SQLite 3.53.2. The 2026-10-10 runs took 2.48 s and 11.68 s of wall time, with a
+one-minute load average of 4.77 to 4.84 while desktop applications stayed
+open, so the machine was not idle.

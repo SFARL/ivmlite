@@ -56,7 +56,10 @@ Phase 4 benchmark protocol
   6. apply ten measured batches, one after another. For each, time its
      writes, its maintenance and its result read separately. The run's
      `apply_ms`, `maintain_ms` and `read_ms` are each that step's median
-     over the ten batches, taken step by step;
+     over the ten batches, taken step by step. Its `apply_plus_maintain_ms`
+     and `end_to_end_ms` are the medians of each batch's own apply +
+     maintain and apply + maintain + read, not sums of the per-step medians,
+     which may come from different batches;
   7. verify the final state, and record `database_kib`.
 
   Every batch has the same mix, and no two batches touch the same rows, so
@@ -74,9 +77,10 @@ Phase 4 benchmark protocol
   [`docs/bench/README.md`](../bench/README.md)).
 - **Order and statistics.** The mode order rotates left by one each repeat.
   Every column is a median over the repeats, followed by its minimum and
-  maximum. `apply_plus_maintain_ms` and `end_to_end_ms` are summed per run,
-  from that run's per-step medians, before taking the median over the
-  repeats. An even repeat count averages the two middle values.
+  maximum. `apply_plus_maintain_ms` and `end_to_end_ms` are therefore the
+  median over the repeats of each run's median batch total. Until
+  2026-10-10 they were summed from each run's per-step medians instead. An
+  even count averages the two middle values.
 - **Provenance.** The output starts with `#` lines that give the command,
   commit and dirty flag, the bundled SQLite version, the extension's path
   and version, and the number of measured batches per run.
@@ -111,8 +115,8 @@ not an on-disk size.
 The checked-in results in [`results/`](results/) were taken on 2026-10-10 with
 the `0.1.0-alpha.3` extension and the ten-batch protocol, one demo after
 another, while desktop applications stayed open; each file records its wall
-time and its load averages, and the one-minute load average was between 2.71
-and 16.06. They show the shape of each comparison. The before/after comparison
+time and its load averages, and the one-minute load average was between 4.51
+and 7.34. They show the shape of each comparison. The before/after comparison
 of M1b Phase 5 is in the "M1b Phase 5" section of
 [`docs/bench/README.md`](../bench/README.md), with its data in
 `docs/bench/m1b-phase5-demos.csv`.
