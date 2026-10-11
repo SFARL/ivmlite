@@ -565,20 +565,22 @@ RAM as Phase 4, under macOS 26.2 (25C56), with Rust 1.95.0 and the SQLite
 benchmarks were release builds. The first three runs took place in one session
 on 2026-10-08, one after another, in this order. The demo run was repeated on
 2026-10-10 with the ten-batch demo protocol (see the correction under "Demos
-before and after"); its row is that run. Each wall time includes its builds:
+before and after"), and again later that day after a run's totals became the
+median of per-batch sums; its row is that last run. Each wall time includes
+its builds:
 
 | run | wall time | load average at start (1/5/15 min) | at end |
 |---|---:|---:|---:|
 | `scripts/bench-ablation.sh`, five builds | 7,302.27 s | 4.88 / 6.05 / 5.61 | 1.68 / 1.72 / 1.76 |
 | `scripts/bench.sh matrix` | 3,008.51 s | 2.01 / 1.80 / 1.79 | 1.33 / 1.37 / 1.54 |
 | `scripts/bench.sh confirm` | 102.24 s | 1.40 / 1.39 / 1.54 | 2.35 / 1.75 / 1.67 |
-| `scripts/bench-demos.sh`, two builds (2026-10-10) | 927.66 s | 2.88 / 5.54 / 7.72 | 3.61 / 3.78 / 5.10 |
+| `scripts/bench-demos.sh`, two builds (2026-10-10) | 919.28 s | 5.50 / 5.73 / 7.84 | 2.99 / 4.14 / 5.91 |
 
 **The machine was not fully idle.** Desktop applications stayed open
 throughout, and the ablation started right after a test-suite run, which is
 why its starting load average is high. Two drift controls are reported
 below: the engines and modes that no build changes. They moved by at most a few
-percent within the ablation, and by at most 6.4% within the demo run. Between
+percent within the ablation, and by at most 8.6% within the demo run. Between
 Phase 4's session and this one, they moved more (see "Phase 4 to Phase 5").
 
 The protocol is Phase 4 spec §3, unchanged, except that each demo run times ten
@@ -610,7 +612,9 @@ final state against SQLite's own evaluation of the view. None mismatched.
   (`first_refresh_ms`) from the steady-state refresh (`maintain_ms`). Each
   run applies one warm-up batch and then ten measured batches, and reports
   each step as its median over the ten; this replaced one measured batch per
-  run on 2026-10-09 (Phase 5 spec §7, amendment 2026-10-09).
+  run on 2026-10-09 (Phase 5 spec §7, amendment 2026-10-09). Its apply +
+  maintain and end to end are the medians of each batch's own sum, since
+  2026-10-10; before, they were sums of the per-step medians.
 
 **One harness fact matters for reading the matrix and the ablation.** Each
 matrix and ablation cell runs one batch in a fresh database, so its timed
@@ -833,32 +837,44 @@ cheap, and a 1,000-row batch over 1,000 groups changes most groups anyway.
 
 Each value is the median over five repeats. Steady-state refresh is
 `maintain_ms`: in each repeat, the median refresh over the ten measured
-batches. End to end is apply + refresh + reading the view, each a per-repeat
-median over the same batches. The two right-hand columns are
-`indexed_recompute`'s end to end divided by `ivmlite`'s, before and after.
+batches. End to end is apply + refresh + reading the view: in each repeat,
+the median over the same batches of each batch's own sum. The two right-hand
+columns are `indexed_recompute`'s end to end divided by `ivmlite`'s, before
+and after.
 
 | demo | refresh before → after | end to end before → after | first refresh before → after | vs indexed recompute before | after |
 |---|---:|---:|---:|---:|---:|
-| FluxFlow | 2.729 → 2.398 ms (1.14x) | 9.526 → 9.164 ms (1.04x) | 3.690 → 2.677 ms (1.38x) | 14.19x | 14.82x |
-| noop | 1.020 → 0.703 ms (1.45x) | 2.969 → 2.773 ms (1.07x) | 1.220 → 0.843 ms (1.45x) | 6.23x | 6.89x |
-| Zcash | 4.146 → 2.932 ms (1.41x) | 8.953 → 7.714 ms (1.16x) | 4.353 → 3.140 ms (1.39x) | 2.71x | 3.21x |
-| Kener | 2.772 → 2.235 ms (1.24x) | 150.294 → 147.295 ms (1.02x) | 10.756 → 5.372 ms (2.00x) | 2.32x | 2.39x |
+| FluxFlow | 2.789 → 2.340 ms (1.19x) | 9.428 → 9.061 ms (1.04x) | 2.960 → 2.211 ms (1.34x) | 14.14x | 15.08x |
+| noop | 1.008 → 0.688 ms (1.47x) | 3.075 → 2.764 ms (1.11x) | 1.119 → 0.771 ms (1.45x) | 6.01x | 6.82x |
+| Zcash | 4.190 → 2.915 ms (1.44x) | 8.933 → 7.654 ms (1.17x) | 4.262 → 3.069 ms (1.39x) | 2.70x | 3.20x |
+| Kener | 2.872 → 2.354 ms (1.22x) | 147.761 → 149.362 ms (0.99x) | 31.845 → 4.921 ms (6.47x) | 2.31x | 2.33x |
 
-- In all four demos, steady-state refresh got 1.14–1.45x faster, and the
-  before and after ranges do not overlap. End to end, the gain is smaller
-  (1.02–1.16x), because the writes and the read did not change.
+- In all four demos, steady-state refresh got 1.19–1.47x faster, and the
+  before and after ranges do not overlap. End to end, the change is smaller
+  (0.99–1.17x), because the writes and the read did not change.
 - FluxFlow is the one demo with a hand-written trigger baseline. There,
-  `ivmlite` stays 5.09x slower end to end (before: 5.30x).
-- **Kener's steady-state refresh got faster**: from 2.772 [2.649, 2.822] to
-  2.235 [2.191, 2.281] ms. Its end to end barely moved (1.02x, within the
-  drift control): at 550,000 groups, reading the view is almost all of it. Its
-  first refresh after `CREATE` got 2.00x faster, as §5 intends, and its
-  bootstrap 1.22x faster (10,636.851 to 8,706.735 ms), in line with §4's
-  faster bootstrap at high cardinality in the ablation.
-- The drift control: the modes no build changes stayed within 0.982–1.064x
-  end to end. The largest, 1.064x, is noop's `no_maintenance`, a 0.2 ms
-  batch; noop's recomputations moved by 1.050x and 1.032x. So an end-to-end
-  change under about 1.06x, such as FluxFlow's and Kener's, is not a finding.
+  `ivmlite` stays 5.03x slower end to end (before: 5.30x).
+- **Kener's steady-state refresh got faster**: from 2.872 [2.650, 3.052] to
+  2.354 [2.216, 2.453] ms. Its end to end did not move (0.99x, with the ranges
+  overlapping, within the drift control): at 550,000 groups, reading the view
+  is almost all of it. Its first refresh after `CREATE` got 6.47x faster, as
+  §5 intends, but that ratio is not stable: the before build's first refresh
+  ranged from 18.788 to 40.792 ms in this run, and was 10.756 ms in the
+  previous one. Its bootstrap got 1.27x faster (10,436.780 to 8,216.870 ms),
+  in line with §4's faster bootstrap at high cardinality in the ablation.
+- The drift control: the modes no build changes stayed within 0.953–1.086x
+  end to end. The two extremes are both `no_maintenance`, a 0.2 ms batch
+  (FluxFlow 0.953x, noop 1.086x); the recomputations moved by 0.991–1.025x.
+  So an end-to-end change under about 1.09x, such as FluxFlow's and Kener's,
+  is not a finding.
+- **The run behind this table is the second of two that day.** The first
+  run of the same command, with the same harness commit, had a drift control
+  of 0.810–1.010x: its before build ran while the machine was busier, so
+  Kener's `indexed_recompute`, which no build changes, was 1.23x slower
+  before than after. It was replaced because its drift control was more than
+  twice as wide; the choice rests on that control, not on its `ivmlite`
+  results, which agree with this table's: steady-state refresh 1.22–1.51x
+  faster in all four demos, with the ranges apart.
 
 **Correction, 2026-10-10.** The first publication of this section, on
 2026-10-08 with `v0.1.0-alpha.3`, reported Kener's steady-state refresh as
@@ -869,7 +885,11 @@ and a single Kener refresh is too noisy to resolve a change of that size (the
 old run's own range reached 8.828 ms). The demo protocol now times ten
 (Phase 5 spec §7, amendment 2026-10-09), and the table above is the re-run
 with it. The single-refresh re-run's CSV, `m1b-phase5-demos-kener-recheck.csv`,
-was removed.
+was removed. Later on 2026-10-10 a run's apply + maintain and end to end
+became the medians of each batch's own sum instead of sums of per-step
+medians, and the table was re-run again. The version it replaced, from the
+same day, reported Kener's refresh 2.772 → 2.235 ms (1.24x) and steady-state
+refresh 1.14–1.45x faster in all four demos; the conclusions are unchanged.
 
 ### Phase 4 to Phase 5
 
@@ -943,7 +963,7 @@ Raw data:
 - [`m1b-phase5-ablation.csv`](m1b-phase5-ablation.csv): five builds × five cells × five repeats × two engines.
 - [`m1b-phase5-ablation-write-amp.csv`](m1b-phase5-ablation-write-amp.csv): ivmlite at 10/200 views for all operations and both trigger modes, across five builds, one run each.
 - [`m1b-phase5-ablation-builds.csv`](m1b-phase5-ablation-builds.csv): the commit behind each ablation label.
-- [`m1b-phase5-demos.csv`](m1b-phase5-demos.csv) and [`m1b-phase5-demos-builds.csv`](m1b-phase5-demos-builds.csv): the four demos against two builds, as median, min and max per metric over five repeats, each repeat's apply, maintain and read a median over ten measured batches; and, per label, the extension commit, the harness commit (`3a3b2da`, with no uncommitted changes under `crates/` or the Cargo files) and the SQLite version. Re-run on 2026-10-10; see the correction under "Demos before and after".
+- [`m1b-phase5-demos.csv`](m1b-phase5-demos.csv) and [`m1b-phase5-demos-builds.csv`](m1b-phase5-demos-builds.csv): the four demos against two builds, as median, min and max per metric over five repeats, each repeat's apply, maintain and read a median over ten measured batches; and, per label, the extension commit, the harness commit (`8402b48`, with no uncommitted changes under `crates/` or the Cargo files) and the SQLite version. Re-run on 2026-10-10; see the correction under "Demos before and after".
 - [`phase5_tables.py`](phase5_tables.py): derives every table and figure in this section from the CSVs above.
 
 Charts:

@@ -10,11 +10,29 @@ SQL subset and persisted shadow-table format without migration.
 ### Fixed
 
 - The M1b Phase 5 Kener result published with `0.1.0-alpha.3` was wrong
-  (corrected 2026-10-10). Its steady-state refresh is 1.24x faster than in
-  alpha.2 (2.772 → 2.235 ms median), not 0.80x to 0.90x slower. The earlier
+  (corrected 2026-10-10). Its steady-state refresh is 1.22x faster than in
+  alpha.2 (2.872 → 2.354 ms median), not 0.80x to 0.90x slower. The earlier
   figures came from timing one refresh per repeat. With ten measured batches
-  per run, steady-state refresh is 1.14–1.45x faster in all four demos
+  per run, steady-state refresh is 1.19–1.47x faster in all four demos
   ([`docs/bench/README.md`](docs/bench/README.md), "M1b Phase 5").
+- A demo run's `apply_plus_maintain_ms` and `end_to_end_ms` are now the
+  medians over its measured batches of each batch's own sum. They were sums
+  of the per-step medians, which may come from different batches. The demo
+  results and the Phase 5 demo before/after were re-run; the first
+  correction above had given Kener 2.772 → 2.235 ms and 1.14–1.45x.
+- `real_case_bench` prepares every view's refresh and its transaction's
+  `BEGIN IMMEDIATE` and `COMMIT` before the timers that run them; they were
+  compiled inside them. Its `total_ms` is the median of each repeat's own
+  `apply + maintain`, not the sum of the two medians. `docs/cases/evaluation/`
+  was re-run with the `0.1.0-alpha.3` extension, and its claim that statement
+  preparation was untimed is corrected. With that extension all three slices
+  cross over; the Org-roam join slice, slower than recomputation at both
+  points in alpha.1, is now 31.99x faster at 250k base rows with 100 inserted.
+- A workload file whose list field repeats an entry (`view_counts`,
+  `ablation_view_counts`, `ops`, `recursive_triggers`, the four `[matrix]`
+  lists, or two equal `[[ablation.cells]]`) is rejected at load. A repeated
+  entry ran a cell twice, and the write-amplification CSV could then pair one
+  run's rows with the other run's `no_maintenance` baseline.
 
 ### Changed
 

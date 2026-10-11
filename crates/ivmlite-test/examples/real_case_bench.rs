@@ -3,16 +3,24 @@
 //! Usage: `cargo run --release -p ivmlite-test --example real_case_bench -- [rows] [batch] [repeats]`
 //! (`--extension <path>` loads another build and skips the staleness check
 //! of the release library, as in `ivmlite_test::demo_bench`).
-//! Setup, seeding, extension loading, view creation and correctness checks are
-//! outside the timed regions. The full-recompute baseline drains each query but
-//! does not persist its result, deliberately favouring the baseline.
+//! Setup, seeding, extension loading, view creation, statement preparation and
+//! correctness checks are outside the timed regions: the inserts, the
+//! transaction's `BEGIN IMMEDIATE` and `COMMIT`, every view's refresh and every
+//! recompute query are prepared before the timer that runs them. Each run
+//! applies one batch to a fresh database, so the timed `ivmlite` maintenance is
+//! the first refresh after `CREATE`, with no warm-up. The full-recompute
+//! baseline drains each query but does not persist its result, deliberately
+//! favouring the baseline. `apply_ms` and `maintain_ms` are each the median
+//! over the repeats; `total_ms` is the median of each repeat's own
+//! `apply + maintain`, not the sum of those two medians.
 
 use std::error::Error;
 use std::hint::black_box;
 use std::time::Instant;
 
 use ivmlite_test::demo_bench::{
-    check_same_multiset, create_view, take_extension_flag, Extension, Summary,
+    check_same_multiset, create_view, median_of_sums, prepare_refresh, take_extension_flag,
+    Extension, Summary,
 };
 use rusqlite::{params, Connection, Statement};
 
@@ -213,12 +221,14 @@ where
     F: FnMut(&mut Statement<'_>, usize) -> rusqlite::Result<()>,
 {
     let mut insert = c.prepare(sql)?;
+    let mut begin = c.prepare("BEGIN IMMEDIATE")?;
+    let mut commit = c.prepare("COMMIT")?;
     let start = Instant::now();
-    c.execute_batch("BEGIN IMMEDIATE")?;
+    begin.execute([])?;
     for offset in 0..batch {
         bind(&mut insert, offset)?;
     }
-    c.execute_batch("COMMIT")?;
+    commit.execute([])?;
     Ok(start.elapsed().as_secs_f64() * 1_000.0)
 }
 
@@ -286,10 +296,6 @@ fn apply_taproot(c: &Connection, rows: usize, batch: usize) -> rusqlite::Result<
     )
 }
 
-fn refresh(c: &Connection, name: &str) -> rusqlite::Result<()> {
-    c.execute_batch(&format!("INSERT INTO {name}({name}) VALUES ('refresh')"))
-}
-
 fn check(c: &Connection, views: &[View]) -> Result<()> {
     for view in views {
         check_same_multiset(c, &format!("SELECT * FROM {}", view.name), view.sql)?;
@@ -323,13 +329,21 @@ fn run_once(
     } else {
         None
     };
+    let mut refreshes = if matches!(mode, Mode::Ivm) {
+        case.views
+            .iter()
+            .map(|view| prepare_refresh(&c, view.name))
+            .collect::<rusqlite::Result<Vec<_>>>()?
+    } else {
+        Vec::new()
+    };
     let apply_ms = (case.apply)(&c, rows, batch)?;
     let start = Instant::now();
     match mode {
         Mode::NoMaintenance => {}
         Mode::Ivm => {
-            for view in case.views {
-                refresh(&c, view.name)?;
+            for refresh in &mut refreshes {
+                refresh.execute([])?;
             }
         }
         Mode::FullRecompute => {
@@ -388,6 +402,11 @@ fn main() -> Result<()> {
             }
             let apply_ms = median(timings.iter().map(|t| t.apply_ms).collect());
             let maintain_ms = median(timings.iter().map(|t| t.maintain_ms).collect());
+            let totals: Vec<(f64, f64)> = timings
+                .iter()
+                .map(|t| (t.apply_ms, t.maintain_ms))
+                .collect();
+            let total_ms = median_of_sums(&totals).expect("repeats is positive");
             println!(
                 "{},{},{},{},{},{},{:.3},{:.3},{:.3}",
                 case.name,
@@ -398,7 +417,7 @@ fn main() -> Result<()> {
                 repeats,
                 apply_ms,
                 maintain_ms,
-                apply_ms + maintain_ms
+                total_ms
             );
         }
     }

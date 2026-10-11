@@ -114,7 +114,7 @@ base rows, a 500-operation mixed batch and five independent repetitions.
 Apply, maintain and read are each a repetition's median over its ten measured
 batches. Each cell is the median over the repetitions, with their min–max in
 parentheses. Desktop applications stayed open, and the one-minute load average
-was 2.71 at the start and 16.06 at the end, so the machine was not idle and
+was 5.21 at the start and 4.51 at the end, so the machine was not idle and
 only the shape of each comparison should be read from these timings. The
 before/after comparison of M1b Phase 5 is in the "M1b Phase 5" section of
 [`docs/bench/README.md`](../bench/README.md). These are
@@ -123,24 +123,24 @@ results:
 
 | Mode | Bootstrap | First refresh | Apply | Maintain | Read | Apply + maintain | End to end | SQLite pages |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| no maintenance | 0 ms | 0 ms | 0.205 (0.196–0.208) ms | 0 ms | 0 ms | 0.205 (0.196–0.208) ms | 0.205 (0.196–0.208) ms | 60,840 KiB |
-| unindexed recompute | 0 ms | 1,282 (1,203–1,404) ms | 0.237 (0.231–0.253) ms | 1,281 (1,239–1,335) ms | 0 ms | 1,281 (1,239–1,335) ms | 1,281 (1,239–1,335) ms | 60,840 KiB |
-| indexed recompute | 1,490 (1,306–1,979) ms | 139 (131–217) ms | 1.17 (1.13–1.45) ms | 136 (132–155) ms | 0 ms | 137 (133–156) ms | 137 (133–156) ms | 121,668 KiB |
-| hand-written trigger | 1,318 (1,191–1,456) ms | 0 ms | 1.36 (1.31–1.37) ms | 0 ms | 0.479 (0.460–0.495) ms | 1.36 (1.31–1.37) ms | 1.84 (1.77–1.87) ms | 61,144 KiB |
-| ivmlite | 2,942 (2,922–3,489) ms | 2.81 (2.56–3.13) ms | 4.19 (4.05–4.50) ms | 2.33 (2.23–2.79) ms | 2.64 (2.55–3.00) ms | 6.53 (6.29–7.28) ms | 9.17 (8.84–10.3) ms | 63,268 KiB |
+| no maintenance | 0 ms | 0 ms | 0.198 (0.192–0.200) ms | 0 ms | 0 ms | 0.198 (0.192–0.200) ms | 0.198 (0.192–0.200) ms | 60,840 KiB |
+| unindexed recompute | 0 ms | 1,244 (1,198–2,112) ms | 0.233 (0.226–0.239) ms | 1,229 (1,218–1,264) ms | 0 ms | 1,229 (1,218–1,264) ms | 1,229 (1,218–1,264) ms | 60,840 KiB |
+| indexed recompute | 1,312 (1,287–1,347) ms | 135 (132–136) ms | 1.12 (1.06–1.14) ms | 135 (134–135) ms | 0 ms | 136 (135–138) ms | 136 (135–138) ms | 121,668 KiB |
+| hand-written trigger | 1,238 (1,190–1,385) ms | 0 ms | 1.33 (1.31–1.37) ms | 0 ms | 0.468 (0.457–0.477) ms | 1.33 (1.31–1.37) ms | 1.80 (1.76–1.84) ms | 61,144 KiB |
+| ivmlite | 2,826 (2,673–3,607) ms | 2.68 (2.31–3.65) ms | 4.12 (4.05–4.26) ms | 2.38 (2.21–2.46) ms | 2.61 (2.58–2.68) ms | 6.59 (6.31–6.61) ms | 9.27 (8.86–9.30) ms | 63,268 KiB |
 
 Against the headline baseline, recomputing the aggregate over its covering
 index, ivmlite's batch write plus refresh was about 21 times faster than that
-recomputation. It was about 200 times faster than the secondary baseline,
+recomputation. It was about 190 times faster than the secondary baseline,
 unindexed recomputation; the covering index alone made recomputation about 9
 times faster than the unindexed scan, at about 2.0 times the page allocation.
 ivmlite was about 5 times slower than the specialized trigger, and its
-bootstrap took about 2.2 times the trigger backfill's. That is the intended
+bootstrap took about 2.3 times the trigger backfill's. That is the intended
 comparison: ivmlite wins reusable machinery and explicit batching, while a
 workload-specific trigger remains the performance bar.
 
-ivmlite's first refresh after `CREATE` took 2.81 ms, against a steady-state
-refresh of 2.33 ms; their ranges overlap. Since format 4, bootstrap empties its
+ivmlite's first refresh after `CREATE` took 2.68 ms, against a steady-state
+refresh of 2.38 ms; their ranges overlap. Since format 4, bootstrap empties its
 own stage, so the first refresh no longer drains it.
 
 The [raw results](results/2026-10-10-fluxflow-macos-m2-pro.txt) contain the
