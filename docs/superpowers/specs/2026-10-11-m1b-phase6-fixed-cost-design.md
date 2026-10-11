@@ -98,6 +98,7 @@ The larger cache filled with remainder staging statements of varying length, whi
   - So a steady refresh prepares nothing, even at batch 1, where every chunk is a remainder.
   - The rows still go in the order they are pushed.
 - **Capacity.** The cache capacity is set from the length of that list for the view, counting seven staging shapes per kind, plus a margin of 4. No fixed statement is evicted by another.
+- **The bootstrap's shapes are not kept.** `create` stages the whole base table, so it fills the cache with large staging shapes that a steady refresh never reuses. It flushes the cache as its last step. Flushing finalizes statements and runs no SQL.
 - **Catalog checks are not cached.** The checks of §4 run only after a schema change, so caching them would hold memory for nothing.
 
 **Rules that keep the cache safe:**
@@ -111,7 +112,7 @@ The larger cache filled with remainder staging statements of varying length, whi
 - Every refresh still runs the checks of §4 before it steps any cached statement, so a statement never runs against a schema those checks have not passed.
 
 **Tests:**
-- **Steady refreshes prepare nothing.** On a test connection, an authorizer is installed before the view's first refresh; the authorizer is consulted whenever a statement is prepared. Its calls are then counted while the third, fourth and fifth refreshes run, which stage 1, 37 and 130 rows, and the count is 0.
+- **Steady refreshes prepare nothing.** On a test connection, an authorizer is installed before the view's first refresh; the authorizer is consulted whenever a statement is prepared. The first refreshes after it re-prepare what it expired and stage enough rows (127, then 5) to prepare every staging shape of both kinds. Its calls are then counted around each of three later refreshes, which stage 1, 37 and 130 rows, and the count is 0. The refresh command itself is prepared before the counted window.
 - **Remainders are staged in order.** At 0, 1, 63, 64, 65 and 129 staged rows the stage holds every row, in push order, and the view matches the oracle.
 - **After DDL, refreshes are correct again.** A refresh after `CREATE INDEX` on a base table, after an unrelated `CREATE TABLE`, and after a schema change made from a second connection, each matches the oracle.
 - **Dropping works.** `DROP TABLE` of one view succeeds while other views on the same base table hold cached statements. Dropping the last view of a base table removes its delta table.
