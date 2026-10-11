@@ -151,6 +151,10 @@ The capture verdict is `check_table_capture` without the latch: shape, capture t
 
 `verify` at connect uses the same snapshot and the same checks.
 
+**A connect rebuilds it** (measured during implementation, 2026-10-11). Rolling back a schema change can bring `main.schema_version` back to a value it had before, with different objects. SQLite then reconnects every view, which is why Phase 5's per-view record was safe. A shared snapshot, though, can outlive that reconnect: a statement the application keeps prepared keeps a view, and its snapshot reference, alive. A version match alone would then pass a view whose capture trigger is missing. So every xConnect rebuilds the connection's snapshot before it checks.
+- **What it costs.** After DDL from another connection, or a rollback, a mass reconnect makes one scan per view, still about a tenth of Phase 5's cost. DDL on the same connection keeps one scan per connection.
+- **Read failures are not cached.** A failure to read the catalog behind a verdict, such as an interrupt or a lock, is returned but not cached.
+
 **Why `main` alone.**
 - The checks examine only objects in `main`, and TEMP DDL cannot create, drop or alter an object in `main`. A TEMP trigger on a base table is a user write to that table, which capture records like any other.
 - A TEMP trigger that writes to an `__ivm_` table is tampering with a shadow table, which is out of scope like any direct write to it (Phase 3b §9).
