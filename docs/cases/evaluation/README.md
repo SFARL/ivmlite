@@ -96,6 +96,10 @@ measurements are in [2026-10-10-apple-m2-pro.csv](2026-10-10-apple-m2-pro.csv).
 | Org-roam tag counts | ivmlite 21.274 ms; recompute 7.208 ms (**2.95× slower**) | ivmlite 2.804 ms; recompute 89.713 ms (**31.99× faster**) |
 | Taproot event counts | ivmlite 26.502 ms; recompute 9.586 ms (**2.76× slower**) | ivmlite 4.161 ms; recompute 119.405 ms (**28.70× faster**) |
 
+Measured under a one-minute load average of 18.75–21.06 (see below): the
+ratios agree with two earlier runs of this harness, but absolute times are
+inflated.
+
 These measurements show a real crossover for all three slices: small deltas
 over a larger base table amortize capture and refresh costs, and a large delta
 over a small table still loses to recomputation. **This changed since the

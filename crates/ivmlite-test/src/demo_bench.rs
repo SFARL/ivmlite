@@ -23,13 +23,13 @@
 //! and reports each of `apply_ms`, `maintain_ms` and `read_ms` as its median
 //! over those rounds. Its `apply_plus_maintain_ms` and `end_to_end_ms` are
 //! the medians of each round's own sum, not sums of the per-step medians,
-//! which may come from different rounds. A single refresh is too noisy to resolve a change of
-//! about 10%: in the first published M1b Phase 5 run, one build's five single
-//! Kener refreshes ranged from 2.743 to 8.828 ms, and a median over five
-//! single refreshes reported a regression that a longer measurement did not
-//! confirm (M1b Phase 5 spec §7, amendment 2026-10-09). The state is verified after the warm-up and after
-//! the last measured round, outside the timers, and not between measured
-//! rounds.
+//! which may come from different rounds. A single refresh is too noisy to
+//! resolve a change of about 10%: in the first published M1b Phase 5 run,
+//! one build's five single Kener refreshes ranged from 2.743 to 8.828 ms,
+//! and a median over five single refreshes reported a regression that a
+//! longer measurement did not confirm (M1b Phase 5 spec §7, amendment
+//! 2026-10-09). The state is verified after the warm-up and after the last
+//! measured round, outside the timers, and not between measured rounds.
 
 use std::cmp::Ordering;
 use std::error::Error;

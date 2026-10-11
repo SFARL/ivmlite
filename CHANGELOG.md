@@ -25,7 +25,9 @@ SQL subset and persisted shadow-table format without migration.
   compiled inside them. Its `total_ms` is the median of each repeat's own
   `apply + maintain`, not the sum of the two medians. `docs/cases/evaluation/`
   was re-run with the `0.1.0-alpha.3` extension, and its claim that statement
-  preparation was untimed is corrected.
+  preparation was untimed is corrected. With that extension all three slices
+  cross over; the Org-roam join slice, slower than recomputation at both
+  points in alpha.1, is now 31.99x faster at 250k base rows with 100 inserted.
 - A workload file whose list field repeats an entry (`view_counts`,
   `ablation_view_counts`, `ops`, `recursive_triggers`, the four `[matrix]`
   lists, or two equal `[[ablation.cells]]`) is rejected at load. A repeated

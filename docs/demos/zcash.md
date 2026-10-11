@@ -59,7 +59,7 @@ before/after comparison of M1b Phase 5 is in the "M1b Phase 5" section of
 | indexed recompute | 215 (213–223) ms | 22.7 (22.1–24.3) ms | 0.908 (0.857–1.10) ms | 22.7 (22.0–23.2) ms | 0 ms | 23.7 (22.9–24.6) ms | 23.7 (22.9–24.6) ms | 25,772 KiB |
 | ivmlite | 554 (537–603) ms | 2.92 (2.87–3.34) ms | 4.63 (4.51–4.92) ms | 2.73 (2.65–2.96) ms | 0.052 (0.049–0.058) ms | 7.47 (7.15–7.91) ms | 7.52 (7.20–7.96) ms | 12,536 KiB |
 
-For this adapted query, ivmlite's write, refresh and read were about 3.2 times
+For this adapted query, ivmlite's write, refresh and read were about 3.1 times
 faster than indexed recomputation, the headline baseline, and about 16 times
 faster than unindexed recomputation. ivmlite's first refresh after `CREATE`
 took 2.92 ms, about 1.1 times the steady-state refresh of 2.73 ms, with their

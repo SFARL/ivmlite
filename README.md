@@ -143,13 +143,15 @@ Median same-host results on an Apple M2 Pro:
 
 | Executable slice | 25k base + 1k inserted | 250k base + 100 inserted |
 |---|---:|---:|
-| Datasette county facet | ivmlite **6.43× slower** | ivmlite **7.75× faster** |
-| Org-roam tag counts | ivmlite **24.97× slower** | ivmlite **2.03× slower** |
-| Taproot event counts | ivmlite **4.42× slower** | ivmlite **4.66× faster** |
+| Datasette county facet | ivmlite **5.37× slower** | ivmlite **8.84× faster** |
+| Org-roam tag counts | ivmlite **2.95× slower** | ivmlite **31.99× faster** |
+| Taproot event counts | ivmlite **2.76× slower** | ivmlite **28.70× faster** |
 
 These are synthetic fixtures shaped by real reports, not reproductions of the
-original applications. They show a crossover for two slices and a current
-performance problem for the Org-roam join slice. Read the
+original applications. All three slices cross over: each loses to full
+recomputation at 25k base rows with 1k inserted and wins at 250k with 100
+inserted. The run was measured on a heavily loaded machine (one-minute load
+average 18.75–21.06), so read the ratios rather than the absolute times. Read the
 [methodology, exact timings, adaptations, and missing evidence](docs/cases/evaluation/README.md)
 before quoting the results.
 
