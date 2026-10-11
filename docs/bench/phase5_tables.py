@@ -456,18 +456,6 @@ def demos(rows, builds):
         print(f"  {case}: " + ", ".join(parts))
 
 
-def kener_recheck(rows):
-    section("Kener re-run alone, builds in reverse order (m1b-phase5-demos-kener-recheck.csv, same commits)")
-    print(f"build order in the CSV: {list(dict.fromkeys(r['label'] for r in rows))}")
-    d = {r["label"]: r for r in rows if r["mode"] == "ivmlite"}
-    for label in DEMO_BUILDS:
-        r = d[label]
-        print(f"  {label:6} maintain {r['maintain_ms']} [{r['maintain_min_ms']}, {r['maintain_max_ms']}] | "
-              f"first_refresh {r['first_refresh_ms']} | end_to_end {r['end_to_end_ms']}")
-    b, a = float(d["before"]["maintain_ms"]), float(d["after"]["maintain_ms"])
-    print(f"steady-state refresh before/after: {b / a:.2f}x")
-
-
 def main():
     ablation(load("m1b-phase5-ablation.csv"), load("m1b-phase5-ablation-builds.csv"))
     ablation_write_amp(load("m1b-phase5-ablation-write-amp.csv"))
@@ -480,7 +468,6 @@ def main():
     phase_change(p4, p5, speedups(p4), sp5)
     confirmed_change(load("m1b-phase4-confirm.csv"), load("m1b-phase5-confirm.csv"))
     demos(load("m1b-phase5-demos.csv"), load("m1b-phase5-demos-builds.csv"))
-    kener_recheck(load("m1b-phase5-demos-kener-recheck.csv"))
 
 
 if __name__ == "__main__":
