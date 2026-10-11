@@ -59,7 +59,8 @@ fn exec(conn: &Connection, sql: &str) -> Result<()> {
 }
 
 /// Run one statement of the refresh path through the view's statement cache
-/// (Phase 6 spec §3), which resets it before returning it.
+/// (Phase 6 spec §3). `execute` steps then resets it; returning it to the
+/// cache only clears its bindings.
 fn execute_cached(conn: &Connection, sql: &str, params: impl rusqlite::Params) -> Result<()> {
     conn.prepare_cached(sql)
         .and_then(|mut s| s.execute(params))

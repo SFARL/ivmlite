@@ -102,8 +102,8 @@ The larger cache filled with remainder staging statements of varying length, whi
 - **Catalog checks are not cached.** The checks of §4 run only after a schema change, so caching them would hold memory for nothing.
 
 **Rules that keep the cache safe:**
-1. **Reset before returning.** A cached statement is reset before the callback returns (rusqlite resets it when it goes back to the cache). A stepped statement that is not reset is an active reader, and it would block a `DROP TABLE`.
-2. **No virtual table.** No cached statement, including any step of the apply trigger's body, reads or writes an ivmlite virtual table. A statement that touches a virtual table holds a reference that defers its xDisconnect. None does today; a test pins this.
+1. **Reset before returning.** A cached statement is reset before the callback returns: rusqlite's `execute` steps then resets it, and its `Rows` reset it when dropped; returning it to the cache only clears its bindings, so every cached use goes through those APIs. A stepped statement that is not reset is an active reader, and it would block a `DROP TABLE`.
+2. **No virtual table.** No cached statement, including any step of the apply trigger's body, reads or writes an ivmlite virtual table. A statement that touches a virtual table holds a reference that defers its xDisconnect. None of ivmlite's own SQL does, and a test pins this. A user trigger on an `__ivm_` shadow table that reads an ivmlite view is compiled into that view's cached arming statement, and pins the connection: `sqlite3_close` then returns `SQLITE_BUSY` (measured). Writing triggers on reserved tables is out of scope, like any other tampering with them (Phase 3b §9).
 3. **No TEMP objects.** The refresh path creates and drops no TEMP object. TEMP DDL expires every statement on the connection.
 4. **Renames.** An ivmlite view cannot be renamed (`refuse_rename`, Phase 3b §7), so no cached SQL text can name an old table.
 
