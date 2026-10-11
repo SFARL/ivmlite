@@ -10,14 +10,17 @@
 //! applies one batch to a fresh database, so the timed `ivmlite` maintenance is
 //! the first refresh after `CREATE`, with no warm-up. The full-recompute
 //! baseline drains each query but does not persist its result, deliberately
-//! favouring the baseline.
+//! favouring the baseline. `apply_ms` and `maintain_ms` are each the median
+//! over the repeats; `total_ms` is the median of each repeat's own
+//! `apply + maintain`, not the sum of those two medians.
 
 use std::error::Error;
 use std::hint::black_box;
 use std::time::Instant;
 
 use ivmlite_test::demo_bench::{
-    check_same_multiset, create_view, prepare_refresh, take_extension_flag, Extension, Summary,
+    check_same_multiset, create_view, median_of_sums, prepare_refresh, take_extension_flag,
+    Extension, Summary,
 };
 use rusqlite::{params, Connection, Statement};
 
@@ -399,6 +402,11 @@ fn main() -> Result<()> {
             }
             let apply_ms = median(timings.iter().map(|t| t.apply_ms).collect());
             let maintain_ms = median(timings.iter().map(|t| t.maintain_ms).collect());
+            let totals: Vec<(f64, f64)> = timings
+                .iter()
+                .map(|t| (t.apply_ms, t.maintain_ms))
+                .collect();
+            let total_ms = median_of_sums(&totals).expect("repeats is positive");
             println!(
                 "{},{},{},{},{},{},{:.3},{:.3},{:.3}",
                 case.name,
@@ -409,7 +417,7 @@ fn main() -> Result<()> {
                 repeats,
                 apply_ms,
                 maintain_ms,
-                apply_ms + maintain_ms
+                total_ms
             );
         }
     }

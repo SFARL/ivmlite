@@ -323,6 +323,14 @@ impl Summary {
     }
 }
 
+/// The median over `parts` of each element's own sum, `first + second`: the
+/// median of what one run (or round) cost in total, not the sum of two
+/// medians that may come from different runs. `None` for no elements.
+pub fn median_of_sums(parts: &[(f64, f64)]) -> Option<f64> {
+    let sums: Vec<f64> = parts.iter().map(|(first, second)| first + second).collect();
+    Summary::of(&sums).map(|summary| summary.median)
+}
+
 // ---------------------------------------------------------------------------
 // Workloads and modes
 // ---------------------------------------------------------------------------
@@ -864,6 +872,25 @@ mod tests {
         );
         assert_eq!(Summary::of(&[7.0]).unwrap().median, 7.0);
         assert_eq!(Summary::of(&[]), None);
+    }
+
+    #[test]
+    fn median_of_sums_sums_each_element_before_the_median() {
+        // Sums 31, 22, 33, 24, 25: the median is 25. The medians of the
+        // parts (3 and 20) would sum to 23.
+        let parts = [
+            (1.0, 30.0),
+            (2.0, 20.0),
+            (3.0, 30.0),
+            (4.0, 20.0),
+            (5.0, 20.0),
+        ];
+        assert_eq!(median_of_sums(&parts), Some(25.0));
+        // An even count averages the two middle sums (24 and 25 of 22, 24,
+        // 25, 33).
+        assert_eq!(median_of_sums(&parts[1..]), Some(24.5));
+        assert_eq!(median_of_sums(&parts[..1]), Some(31.0));
+        assert_eq!(median_of_sums(&[]), None);
     }
 
     fn round(apply_ms: f64, maintain_ms: f64, read_ms: f64) -> RoundTiming {
