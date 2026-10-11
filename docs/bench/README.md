@@ -559,29 +559,31 @@ from the profile recorded in the spec's §6 amendment.
 
 ### Setup
 
-All runs took place in one session on 2026-10-08, on the same 10-core Apple M2
-Pro MacBook Pro with 16 GB RAM as Phase 4, under macOS 26.2 (25C56), with Rust
-1.95.0 and the SQLite 3.53.2 that `rusqlite` bundles. The extension, the runner
-and the demo benchmarks were release builds. The runs went one after another,
-in this order. Each wall time includes its builds:
+All runs took place on the same 10-core Apple M2 Pro MacBook Pro with 16 GB
+RAM as Phase 4, under macOS 26.2 (25C56), with Rust 1.95.0 and the SQLite
+3.53.2 that `rusqlite` bundles. The extension, the runner and the demo
+benchmarks were release builds. The first three runs took place in one session
+on 2026-10-08, one after another, in this order. The demo run was repeated on
+2026-10-10 with the ten-batch demo protocol (see the correction under "Demos
+before and after"); its row is that run. Each wall time includes its builds:
 
 | run | wall time | load average at start (1/5/15 min) | at end |
 |---|---:|---:|---:|
 | `scripts/bench-ablation.sh`, five builds | 7,302.27 s | 4.88 / 6.05 / 5.61 | 1.68 / 1.72 / 1.76 |
 | `scripts/bench.sh matrix` | 3,008.51 s | 2.01 / 1.80 / 1.79 | 1.33 / 1.37 / 1.54 |
 | `scripts/bench.sh confirm` | 102.24 s | 1.40 / 1.39 / 1.54 | 2.35 / 1.75 / 1.67 |
-| `scripts/bench-demos.sh`, two builds | 528.56 s | 2.28 / 1.76 / 1.67 | 2.22 / 2.15 / 1.90 |
+| `scripts/bench-demos.sh`, two builds (2026-10-10) | 927.66 s | 2.88 / 5.54 / 7.72 | 3.61 / 3.78 / 5.10 |
 
 **The machine was not fully idle.** Desktop applications stayed open
 throughout, and the ablation started right after a test-suite run, which is
 why its starting load average is high. Two drift controls are reported
 below: the engines and modes that no build changes. They moved by at most a few
-percent within the ablation and within the demo run. Between Phase 4's session
-and this one, they moved more (see "Phase 4 to Phase 5").
+percent within the ablation, and by at most 6.4% within the demo run. Between
+Phase 4's session and this one, they moved more (see "Phase 4 to Phase 5").
 
-The protocol is Phase 4 spec §3, unchanged. Every cell and demo mode verified
-its initial and final state against SQLite's own evaluation of the view. None
-mismatched.
+The protocol is Phase 4 spec §3, unchanged, except that each demo run times ten
+steady-state batches (below). Every cell and demo mode verified its initial and
+final state against SQLite's own evaluation of the view. None mismatched.
 
 - **Ablation.** The five cells of `[ablation]` in
   `workloads/m0-baseline.toml`, five repeats each, over `naive_recompute` and
@@ -605,7 +607,10 @@ mismatched.
 
   The demos' protocol is in [`docs/demos/README.md`](../demos/README.md).
   Unlike the matrix, it separates the first refresh after `CREATE`
-  (`first_refresh_ms`) from the steady-state refresh (`maintain_ms`).
+  (`first_refresh_ms`) from the steady-state refresh (`maintain_ms`). Each
+  run applies one warm-up batch and then ten measured batches, and reports
+  each step as its median over the ten; this replaced one measured batch per
+  run on 2026-10-09 (Phase 5 spec §7, amendment 2026-10-09).
 
 **One harness fact matters for reading the matrix and the ablation.** Each
 matrix and ablation cell runs one batch in a fresh database, so its timed
@@ -827,35 +832,44 @@ cheap, and a 1,000-row batch over 1,000 groups changes most groups anyway.
 ### Demos before and after
 
 Each value is the median over five repeats. Steady-state refresh is
-`maintain_ms` (the second batch's refresh). End to end is apply + refresh +
-reading the view. The two right-hand columns are `indexed_recompute`'s end to
-end divided by `ivmlite`'s, before and after.
+`maintain_ms`: in each repeat, the median refresh over the ten measured
+batches. End to end is apply + refresh + reading the view, each a per-repeat
+median over the same batches. The two right-hand columns are
+`indexed_recompute`'s end to end divided by `ivmlite`'s, before and after.
 
 | demo | refresh before → after | end to end before → after | first refresh before → after | vs indexed recompute before | after |
 |---|---:|---:|---:|---:|---:|
-| FluxFlow | 2.762 → 2.327 ms (1.19x) | 9.245 → 8.774 ms (1.05x) | 2.652 → 2.399 ms (1.11x) | 14.12x | 14.88x |
-| noop | 1.172 → 0.831 ms (1.41x) | 3.151 → 2.826 ms (1.12x) | 1.058 → 0.747 ms (1.42x) | 5.48x | 6.18x |
-| Zcash | 4.002 → 2.782 ms (1.44x) | 8.601 → 7.370 ms (1.17x) | 4.232 → 2.964 ms (1.43x) | 2.68x | 3.12x |
-| Kener | 2.547 → **3.179** ms (**0.80x**) | 143.435 → 143.750 ms (1.00x) | 8.837 → 4.607 ms (1.92x) | 2.36x | 2.36x |
+| FluxFlow | 2.729 → 2.398 ms (1.14x) | 9.526 → 9.164 ms (1.04x) | 3.690 → 2.677 ms (1.38x) | 14.19x | 14.82x |
+| noop | 1.020 → 0.703 ms (1.45x) | 2.969 → 2.773 ms (1.07x) | 1.220 → 0.843 ms (1.45x) | 6.23x | 6.89x |
+| Zcash | 4.146 → 2.932 ms (1.41x) | 8.953 → 7.714 ms (1.16x) | 4.353 → 3.140 ms (1.39x) | 2.71x | 3.21x |
+| Kener | 2.772 → 2.235 ms (1.24x) | 150.294 → 147.295 ms (1.02x) | 10.756 → 5.372 ms (2.00x) | 2.32x | 2.39x |
 
-- In FluxFlow, noop and Zcash, steady-state refresh got 1.19–1.44x faster, and
-  the before and after ranges do not overlap. End to end, the gain is smaller
-  (1.05–1.17x), because the writes and the read did not change.
+- In all four demos, steady-state refresh got 1.14–1.45x faster, and the
+  before and after ranges do not overlap. End to end, the gain is smaller
+  (1.02–1.16x), because the writes and the read did not change.
 - FluxFlow is the one demo with a hand-written trigger baseline. There,
-  `ivmlite` stays 4.95x slower end to end (before: 5.04x).
-- **Kener's steady-state refresh got slower.** Its range moved from
-  [2.504, 2.606] to [2.743, 8.828] ms; the 8.828 ms maximum is one outlier
-  that the median does not feel. A re-run of Kener alone, with the builds in
-  reverse order (`m1b-phase5-demos-kener-recheck.csv`), gave 2.512 → 2.794 ms
-  (0.90x), again with the ranges apart. The regression is real; its size, 0.80x
-  to 0.90x, is uncertain. Its end to end did not change: at
-  550,000 groups, reading the view is almost all of it. Its first refresh
-  after `CREATE` got 1.92x faster, as §5 intends, and its bootstrap 1.20x
-  faster (9,019.544 to 7,530.303 ms), in line with §4's faster bootstrap at
-  high cardinality in the ablation. The cause of the steady-state regression is
-  not established; see "What got worse".
-- The drift control: the modes no build changes stayed within 0.966–1.013x
-  end to end.
+  `ivmlite` stays 5.09x slower end to end (before: 5.30x).
+- **Kener's steady-state refresh got faster**: from 2.772 [2.649, 2.822] to
+  2.235 [2.191, 2.281] ms. Its end to end barely moved (1.02x, within the
+  drift control): at 550,000 groups, reading the view is almost all of it. Its
+  first refresh after `CREATE` got 2.00x faster, as §5 intends, and its
+  bootstrap 1.22x faster (10,636.851 to 8,706.735 ms), in line with §4's
+  faster bootstrap at high cardinality in the ablation.
+- The drift control: the modes no build changes stayed within 0.982–1.064x
+  end to end. The largest, 1.064x, is noop's `no_maintenance`, a 0.2 ms
+  batch; noop's recomputations moved by 1.050x and 1.032x. So an end-to-end
+  change under about 1.06x, such as FluxFlow's and Kener's, is not a finding.
+
+**Correction, 2026-10-10.** The first publication of this section, on
+2026-10-08 with `v0.1.0-alpha.3`, reported Kener's steady-state refresh as
+**slower** after Phase 5: 0.80x (2.547 → 3.179 ms), and 0.90x in a re-run with
+the builds in reverse order. That finding was wrong. Each demo run then timed
+one steady-state refresh, so every median rested on five single refreshes,
+and a single Kener refresh is too noisy to resolve a change of that size (the
+old run's own range reached 8.828 ms). The demo protocol now times ten
+(Phase 5 spec §7, amendment 2026-10-09), and the table above is the re-run
+with it. The single-refresh re-run's CSV, `m1b-phase5-demos-kener-recheck.csv`,
+was removed.
 
 ### Phase 4 to Phase 5
 
@@ -889,17 +903,6 @@ phase, and are less exposed to that drift.
   was 0.975x of `schemaver` (206.199 to 211.552 ms), with the ranges apart but
   within the ablation's noise floor of about 1.04x. The whole phase is still
   1.53x faster there, because §3 came first.
-- **Kener's steady-state refresh**: 2.547 to 3.179 ms (0.80x), and 0.90x in
-  the reversed re-run, with the ranges apart both times. The other three demos
-  got faster. What is known:
-  - Kener has a five-column output, and by far the most groups (550,000);
-  - every statement of the set-based body scans the whole stage, since the
-    stage has no index on `op`. `EXPLAIN QUERY PLAN` of the body shows a
-    `SCAN` of the stage in every statement, and index searches on the state
-    and output tables.
-
-  Whether those scans, or something else in format 4, explain the extra cost
-  has not been measured.
 - **Space after refresh, at 1,000 groups with large batches.** The maintained
   database's used pages grew from `schemaver` to `setapply`: 1,019 to 1,084
   pages in the 10-view cell, and 11,752 to 12,849 in the 200-view cell. They
@@ -940,8 +943,7 @@ Raw data:
 - [`m1b-phase5-ablation.csv`](m1b-phase5-ablation.csv): five builds × five cells × five repeats × two engines.
 - [`m1b-phase5-ablation-write-amp.csv`](m1b-phase5-ablation-write-amp.csv): ivmlite at 10/200 views for all operations and both trigger modes, across five builds, one run each.
 - [`m1b-phase5-ablation-builds.csv`](m1b-phase5-ablation-builds.csv): the commit behind each ablation label.
-- [`m1b-phase5-demos.csv`](m1b-phase5-demos.csv) and [`m1b-phase5-demos-builds.csv`](m1b-phase5-demos-builds.csv): the four demos against two builds, as median, min and max per metric over five repeats; and, per label, the extension commit, the harness commit and the SQLite version. The harness and SQLite columns were added after the run and re-derived: the harness was `bea7f3b`, the branch head while the demos ran, with no uncommitted changes under `crates/` or the Cargo files, and the bundled SQLite is fixed by `Cargo.lock`, unchanged since.
-- [`m1b-phase5-demos-kener-recheck.csv`](m1b-phase5-demos-kener-recheck.csv): Kener alone, the same two builds in reverse order, run right after the demo run to check its regression.
+- [`m1b-phase5-demos.csv`](m1b-phase5-demos.csv) and [`m1b-phase5-demos-builds.csv`](m1b-phase5-demos-builds.csv): the four demos against two builds, as median, min and max per metric over five repeats, each repeat's apply, maintain and read a median over ten measured batches; and, per label, the extension commit, the harness commit (`3a3b2da`, with no uncommitted changes under `crates/` or the Cargo files) and the SQLite version. Re-run on 2026-10-10; see the correction under "Demos before and after".
 - [`phase5_tables.py`](phase5_tables.py): derives every table and figure in this section from the CSVs above.
 
 Charts:

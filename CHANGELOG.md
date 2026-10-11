@@ -5,7 +5,31 @@ All notable changes to ivmlite will be documented in this file.
 The project uses semantic versioning after `0.1.0`; prereleases may change the
 SQL subset and persisted shadow-table format without migration.
 
+## [Unreleased]
+
+### Fixed
+
+- The M1b Phase 5 Kener result published with `0.1.0-alpha.3` was wrong
+  (corrected 2026-10-10). Its steady-state refresh is 1.24x faster than in
+  alpha.2 (2.772 → 2.235 ms median), not 0.80x to 0.90x slower. The earlier
+  figures came from timing one refresh per repeat. With ten measured batches
+  per run, steady-state refresh is 1.14–1.45x faster in all four demos
+  ([`docs/bench/README.md`](docs/bench/README.md), "M1b Phase 5").
+
+### Changed
+
+- The demo benchmarks (`crates/ivmlite-test/src/demo_bench.rs`) time ten
+  steady-state batches per run after the warm-up, instead of one, and report
+  each of `apply_ms`, `maintain_ms` and `read_ms` as its median over them;
+  a single refresh is too noisy to resolve a change of about 10%. The demo
+  results in `docs/demos/` and the Phase 5 demo before/after were re-run with
+  it, and the single-refresh Kener recheck CSV was removed.
+
 ## [0.1.0-alpha.3] - 2026-10-09
+
+> **Correction (2026-10-10):** the Kener entry under "Known limitations" below
+> was wrong, and the demo figures under "Added" came from the single-refresh
+> protocol; see "Fixed" under [Unreleased]. The text below is as released.
 
 ### Changed
 
@@ -137,6 +161,7 @@ First public technical preview.
 - The Org-roam join/count case is slower than full recomputation at both
   measured configurations.
 
+[Unreleased]: https://github.com/SFARL/ivmlite/compare/v0.1.0-alpha.3...HEAD
 [0.1.0-alpha.3]: https://github.com/SFARL/ivmlite/releases/tag/v0.1.0-alpha.3
 [0.1.0-alpha.2]: https://github.com/SFARL/ivmlite/releases/tag/v0.1.0-alpha.2
 [0.1.0-alpha.1]: https://github.com/SFARL/ivmlite/releases/tag/v0.1.0-alpha.1
