@@ -53,21 +53,33 @@ Phase 4 benchmark protocol
      refresh, recomputation and the result read;
   5. apply an untimed warm-up batch, then time its maintenance as
      `first_refresh_ms`, read the result and verify again;
-  6. time the measured batch's writes (`apply_ms`), maintenance
-     (`maintain_ms`) and result read (`read_ms`);
+  6. apply ten measured batches, one after another. For each, time its
+     writes, its maintenance and its result read separately. The run's
+     `apply_ms`, `maintain_ms` and `read_ms` are each that step's median
+     over the ten batches, taken step by step;
   7. verify the final state, and record `database_kib`.
 
-  The warm-up and measured batches have the same mix but touch different
-  rows. Verification compares multisets of rows: duplicates count, and the
+  Every batch has the same mix, and no two batches touch the same rows, so
+  one run applies eleven. The state is verified after the warm-up and after
+  the last measured batch, outside the timers, but not between measured
+  batches. Verification compares multisets of rows: duplicates count, and the
   integer 5 differs from the real 5.0. A mismatch aborts the run.
+
+  **Why ten batches.** A single refresh is too noisy to resolve a change of
+  about 10%. In the first published M1b Phase 5 run, one build's five single
+  Kener refreshes ranged from 2.743 to 8.828 ms. Until 2026-10-09 each run timed one batch, so a median
+  over five repeats rested on five single refreshes. That is how the first
+  M1b Phase 5 publication came to report a Kener refresh regression that a
+  longer measurement did not confirm (see the "M1b Phase 5" section of
+  [`docs/bench/README.md`](../bench/README.md)).
 - **Order and statistics.** The mode order rotates left by one each repeat.
   Every column is a median over the repeats, followed by its minimum and
-  maximum. `apply_plus_maintain_ms` and `end_to_end_ms` are summed per run
-  before taking the median. An even repeat count averages the two middle
-  values.
+  maximum. `apply_plus_maintain_ms` and `end_to_end_ms` are summed per run,
+  from that run's per-step medians, before taking the median over the
+  repeats. An even repeat count averages the two middle values.
 - **Provenance.** The output starts with `#` lines that give the command,
-  commit and dirty flag, the bundled SQLite version, and the extension's path
-  and version.
+  commit and dirty flag, the bundled SQLite version, the extension's path
+  and version, and the number of measured batches per run.
 
 The modes are:
 
@@ -91,15 +103,17 @@ refresh also drains the stage the bootstrap left behind; since M1b Phase 5
 reported there, and is not part of the steady-state `maintain_ms`. For the
 recomputation modes it is simply their first recomputation. Recomputation
 drains its result without storing it, which favours those baselines. The
-recomputation modes are not compared with the oracle after the measured batch:
+recomputation modes are not compared with the oracle after the last batch:
 they run the oracle's own query, so the check would be tautological.
-`database_kib` is SQLite's in-memory page allocation after the measured batch,
+`database_kib` is SQLite's in-memory page allocation after the last batch,
 not an on-disk size.
 
-The checked-in results in [`results/`](results/) were taken while other builds
-and tests ran on the same machine. They show the shape of each comparison; the
-authoritative before/after comparison of M1b Phase 5 comes from its own
-measurement run. That comparison is in the "M1b Phase 5" section of
+The checked-in results in [`results/`](results/) were taken on 2026-10-10 with
+the `0.1.0-alpha.3` extension and the ten-batch protocol, one demo after
+another, while desktop applications stayed open; each file records its wall
+time and its load averages, and the one-minute load average was between 2.71
+and 16.06. They show the shape of each comparison. The before/after comparison
+of M1b Phase 5 is in the "M1b Phase 5" section of
 [`docs/bench/README.md`](../bench/README.md), with its data in
 `docs/bench/m1b-phase5-demos.csv`.
 

@@ -513,6 +513,7 @@ fn apply_kener(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::demo_bench::ROUNDS;
 
     fn query_rows(connection: &Connection, sql: &str) -> Vec<Vec<String>> {
         let mut statement = connection.prepare(sql).unwrap();
@@ -555,15 +556,16 @@ mod tests {
     }
 
     #[test]
-    fn both_rounds_of_each_mixed_batch_apply_and_change_the_result() {
+    fn every_round_of_each_mixed_batch_applies_and_changes_the_result() {
         for case in ALL {
-            case.validate(600, 40, 2).unwrap();
+            case.validate(1_200, 40, ROUNDS).unwrap();
             let connection = Connection::open_in_memory().unwrap();
             connection.execute_batch(case.ddl).unwrap();
-            case.seed(&connection, 600).unwrap();
+            case.seed(&connection, 1_200).unwrap();
             let mut before = query_rows(&connection, case.view_sql);
-            for round in 0..2 {
-                case.apply_mixed_batch(&connection, 600, 40, round).unwrap();
+            for round in 0..ROUNDS {
+                case.apply_mixed_batch(&connection, 1_200, 40, round)
+                    .unwrap();
                 let after = query_rows(&connection, case.view_sql);
                 assert_ne!(before, after, "{} round {round}", case.name);
                 before = after;
@@ -574,26 +576,26 @@ mod tests {
     #[test]
     fn source_scale_defaults_validate() {
         for case in ALL {
-            case.validate(case.default_rows, case.default_batch, 2)
+            case.validate(case.default_rows, case.default_batch, ROUNDS)
                 .unwrap();
         }
         // The documented runs (`docs/demos/*.md`).
-        NOOP.validate(518_400, 200, 2).unwrap();
-        ZCASH.validate(500_000, 500, 2).unwrap();
-        KENER.validate(4_100_000, 500, 2).unwrap();
+        NOOP.validate(518_400, 200, ROUNDS).unwrap();
+        ZCASH.validate(500_000, 500, ROUNDS).unwrap();
+        KENER.validate(4_100_000, 500, ROUNDS).unwrap();
     }
 
     #[test]
     fn noop_refuses_more_rows_than_one_device_has_samples() {
         assert_eq!(NOOP_MAX_ROWS, 518_400);
-        let error = NOOP.validate(NOOP_MAX_ROWS + 1, 200, 2).unwrap_err();
+        let error = NOOP.validate(NOOP_MAX_ROWS + 1, 200, ROUNDS).unwrap_err();
         assert!(error.contains("518400"), "{error}");
     }
 
     #[test]
     fn validation_refuses_batches_that_overrun_the_table() {
         for case in ALL {
-            assert!(case.validate(20, 40, 2).is_err(), "{}", case.name);
+            assert!(case.validate(20, 40, ROUNDS).is_err(), "{}", case.name);
         }
     }
 }

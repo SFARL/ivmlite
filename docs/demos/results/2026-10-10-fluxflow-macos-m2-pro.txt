@@ -1,0 +1,18 @@
+# machine: Apple M2 Pro, arm64
+# os: macOS 26.2 (25C56)
+# rustc: rustc 1.95.0 (59807616e 2026-04-14)
+# database: in-memory
+# run: 2026-10-10, 167.37 s wall; load average (1/5/15 min) 2.71 / 3.69 / 7.94 at start, 16.06 / 9.33 / 9.49 at end
+# note: desktop applications stayed open and the load average stayed above 2, so the machine was not idle; the authoritative before/after comparison of M1b Phase 5 is docs/bench/m1b-phase5-demos.csv
+# command: target/release/examples/fluxflow_demo 1500000 500 5
+# commit: 3a3b2daff9a353476148eee9f729de3a64ac7296; uncommitted changes under crates/, Cargo.toml or Cargo.lock: no
+# sqlite: 3.53.2 (bundled by rusqlite in this harness, which hosts the extension)
+# ivmlite extension: crates/ivmlite-sqlite/target/release/libivmlite_sqlite.dylib; built from ivmlite-sqlite 0.1.0-alpha.3; staleness check passed
+# workload: fluxflow_grouped_flow_rollup, 1500000 base rows, 500-operation mixed batches, 5 repeats; rows report the median and min-max over the repeats
+# rounds: one warm-up batch, then 10 measured batches per run; apply_ms, maintain_ms and read_ms are each a run's median over its measured batches
+case,mode,base_rows,batch_size,repeats,bootstrap_ms,bootstrap_min_ms,bootstrap_max_ms,first_refresh_ms,first_refresh_min_ms,first_refresh_max_ms,apply_ms,apply_min_ms,apply_max_ms,maintain_ms,maintain_min_ms,maintain_max_ms,read_ms,read_min_ms,read_max_ms,apply_plus_maintain_ms,apply_plus_maintain_min_ms,apply_plus_maintain_max_ms,end_to_end_ms,end_to_end_min_ms,end_to_end_max_ms,database_kib,database_kib_min,database_kib_max
+fluxflow_grouped_flow_rollup,no_maintenance,1500000,500,5,0.000,0.000,0.000,0.000,0.000,0.000,0.205,0.196,0.208,0.000,0.000,0.000,0.000,0.000,0.000,0.205,0.196,0.208,0.205,0.196,0.208,60840.0,60840.0,60840.0
+fluxflow_grouped_flow_rollup,unindexed_recompute,1500000,500,5,0.000,0.000,0.000,1281.733,1203.264,1403.721,0.237,0.231,0.253,1280.788,1239.124,1335.153,0.000,0.000,0.000,1281.022,1239.354,1335.406,1281.022,1239.354,1335.406,60840.0,60840.0,60840.0
+fluxflow_grouped_flow_rollup,indexed_recompute,1500000,500,5,1489.820,1305.679,1979.096,138.557,131.225,216.893,1.170,1.127,1.453,135.985,132.024,154.702,0.000,0.000,0.000,137.155,133.164,156.156,137.155,133.164,156.156,121668.0,121668.0,121668.0
+fluxflow_grouped_flow_rollup,handwritten_trigger,1500000,500,5,1317.729,1190.945,1455.965,0.000,0.000,0.000,1.365,1.311,1.372,0.000,0.000,0.000,0.479,0.460,0.495,1.365,1.311,1.372,1.843,1.771,1.868,61144.0,61144.0,61144.0
+fluxflow_grouped_flow_rollup,ivmlite,1500000,500,5,2941.884,2921.985,3488.733,2.814,2.562,3.127,4.193,4.053,4.497,2.331,2.235,2.785,2.642,2.548,2.997,6.533,6.289,7.282,9.174,8.837,10.279,63268.0,63268.0,63268.0

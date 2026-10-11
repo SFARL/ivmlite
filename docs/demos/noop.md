@@ -52,31 +52,35 @@ The covering index of `indexed_recompute` is `gravity_witness(device_id,
 day_bucket)`. The protocol and columns are in the [demos
 README](README.md#benchmark-protocol).
 
-This run used an Apple M2 Pro, macOS 26.2, Rust 1.95.0, SQLite 3.53.2, an
-in-memory database, 518,400 base rows, a 200-operation mixed batch and five
-independent repetitions. Each cell is the median, with the min–max over the
-repetitions in parentheses. Other builds and tests were running on the machine
-at the time, so these timings are noisier than an idle run and only the shape
-of each comparison should be read from them; the authoritative before/after
-comparison of M1b Phase 5 comes from its own measurement run.
+This run, on 2026-10-10, used an Apple M2 Pro, macOS 26.2, Rust 1.95.0,
+SQLite 3.53.2, the `0.1.0-alpha.3` extension, an in-memory database, 518,400
+base rows, a 200-operation mixed batch and five independent repetitions.
+Apply, maintain and read are each a repetition's median over its ten measured
+batches. Each cell is the median over the repetitions, with their min–max in
+parentheses. Desktop applications stayed open, and the one-minute load average
+was 16.06 at the start and 12.40 at the end, so the machine was not idle and
+only the shape of each comparison should be read from these timings. The
+before/after comparison of M1b Phase 5 is in the "M1b Phase 5" section of
+[`docs/bench/README.md`](../bench/README.md).
 
 | Mode | Bootstrap | First refresh | Apply | Maintain | Read | Apply + maintain | End to end | SQLite pages |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| no maintenance | 0 ms | 0 ms | 0.209 (0.204–0.273) ms | 0 ms | 0 ms | 0.209 (0.204–0.274) ms | 0.209 (0.204–0.274) ms | 15,012 KiB |
-| unindexed recompute | 0 ms | 181 (168–187) ms | 0.261 (0.243–0.279) ms | 181 (180–187) ms | 0 ms | 181 (181–187) ms | 181 (181–187) ms | 15,012 KiB |
-| indexed recompute | 157 (155–161) ms | 17.7 (17.4–18.3) ms | 0.458 (0.379–0.461) ms | 17.6 (17.5–18.3) ms | 0 ms | 18.1 (17.8–18.8) ms | 18.1 (17.8–18.8) ms | 20,808 KiB |
-| ivmlite | 219 (213–230) ms | 1.15 (1.14–1.23) ms | 2.10 (2.09–2.13) ms | 1.25 (1.22–1.27) ms | 0.021 (0.020–0.021) ms | 3.35 (3.34–3.40) ms | 3.37 (3.37–3.42) ms | 15,120 KiB |
+| no maintenance | 0 ms | 0 ms | 0.193 (0.186–0.196) ms | 0 ms | 0 ms | 0.193 (0.186–0.196) ms | 0.193 (0.186–0.196) ms | 15,048 KiB |
+| unindexed recompute | 0 ms | 192 (190–208) ms | 0.295 (0.280–0.328) ms | 190 (188–208) ms | 0 ms | 190 (188–208) ms | 190 (188–208) ms | 15,048 KiB |
+| indexed recompute | 162 (158–165) ms | 18.1 (17.8–19.3) ms | 0.435 (0.405–0.490) ms | 18.4 (17.8–18.6) ms | 0 ms | 18.8 (18.3–19.0) ms | 18.8 (18.3–19.0) ms | 20,852 KiB |
+| ivmlite | 224 (196–269) ms | 0.833 (0.767–0.985) ms | 1.96 (1.90–2.06) ms | 0.702 (0.665–0.775) ms | 0.018 (0.017–0.022) ms | 2.67 (2.60–2.84) ms | 2.69 (2.62–2.86) ms | 15,160 KiB |
 
 For this adapted grouped-count query, ivmlite's write, refresh and read were
-about 5 times faster than indexed recomputation, the headline baseline, and
-about 54 times faster than unindexed recomputation. ivmlite's first refresh
-after `CREATE`, which also drains the stage the bootstrap left behind, took
-1.15 ms: within run-to-run noise of the steady-state refresh of 1.25 ms. This
-does not reproduce the issue's 2,251 ms device result: the benchmark does not
-run Room, sixty separate range queries, fifteen repeated passes, timezone
-conversion or the indexed max lookup.
+about 7 times faster than indexed recomputation, the headline baseline, and
+about 71 times faster than unindexed recomputation. ivmlite's first refresh
+after `CREATE` took 0.833 ms, against a steady-state refresh of 0.702 ms;
+their ranges overlap. Since format 4, bootstrap empties its own stage, so the
+first refresh no longer drains it. This does not reproduce the issue's
+2,251 ms device result: the benchmark does not run Room, sixty separate range
+queries, fifteen repeated passes, timezone conversion or the indexed max
+lookup.
 
-See the [raw results](results/2026-10-08-noop-macos-m2-pro.txt).
+See the [raw results](results/2026-10-10-noop-macos-m2-pro.txt).
 
 ## Boundaries
 

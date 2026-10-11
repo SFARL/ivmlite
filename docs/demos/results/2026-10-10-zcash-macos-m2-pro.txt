@@ -1,0 +1,17 @@
+# machine: Apple M2 Pro, arm64
+# os: macOS 26.2 (25C56)
+# rustc: rustc 1.95.0 (59807616e 2026-04-14)
+# database: in-memory
+# run: 2026-10-10, 18.15 s wall; load average (1/5/15 min) 12.40 / 9.02 / 9.37 at start, 10.38 / 8.74 / 9.26 at end
+# note: desktop applications stayed open and the load average stayed above 2, so the machine was not idle; the authoritative before/after comparison of M1b Phase 5 is docs/bench/m1b-phase5-demos.csv
+# command: target/release/examples/demand_case_bench zcash_transparent_balance 500000 500 5
+# commit: 3a3b2daff9a353476148eee9f729de3a64ac7296; uncommitted changes under crates/, Cargo.toml or Cargo.lock: no
+# sqlite: 3.53.2 (bundled by rusqlite in this harness, which hosts the extension)
+# ivmlite extension: crates/ivmlite-sqlite/target/release/libivmlite_sqlite.dylib; built from ivmlite-sqlite 0.1.0-alpha.3; staleness check passed
+# workload: zcash_transparent_balance, 500000 base rows, 500-operation mixed batches, 5 repeats; rows report the median and min-max over the repeats
+# rounds: one warm-up batch, then 10 measured batches per run; apply_ms, maintain_ms and read_ms are each a run's median over its measured batches
+case,mode,base_rows,batch_size,repeats,bootstrap_ms,bootstrap_min_ms,bootstrap_max_ms,first_refresh_ms,first_refresh_min_ms,first_refresh_max_ms,apply_ms,apply_min_ms,apply_max_ms,maintain_ms,maintain_min_ms,maintain_max_ms,read_ms,read_min_ms,read_max_ms,apply_plus_maintain_ms,apply_plus_maintain_min_ms,apply_plus_maintain_max_ms,end_to_end_ms,end_to_end_min_ms,end_to_end_max_ms,database_kib,database_kib_min,database_kib_max
+zcash_transparent_balance,no_maintenance,500000,500,5,0.000,0.000,0.000,0.000,0.000,0.000,0.164,0.161,0.174,0.000,0.000,0.000,0.000,0.000,0.000,0.164,0.162,0.174,0.164,0.162,0.174,12328.0,12328.0,12328.0
+zcash_transparent_balance,unindexed_recompute,500000,500,5,0.000,0.000,0.000,119.107,117.199,136.830,0.189,0.187,0.195,118.342,117.277,118.565,0.000,0.000,0.000,118.531,117.464,118.756,118.531,117.464,118.756,12328.0,12328.0,12328.0
+zcash_transparent_balance,indexed_recompute,500000,500,5,224.855,218.044,255.876,23.562,22.902,24.166,1.134,1.025,1.267,23.234,22.948,23.728,0.000,0.000,0.000,24.332,24.061,24.996,24.332,24.061,24.996,25772.0,25772.0,25772.0
+zcash_transparent_balance,ivmlite,500000,500,5,577.639,569.897,634.265,3.310,3.092,3.493,4.751,4.690,4.765,2.983,2.895,3.045,0.057,0.053,0.058,7.734,7.595,7.808,7.791,7.648,7.864,12536.0,12536.0,12536.0

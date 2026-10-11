@@ -1,0 +1,17 @@
+# machine: Apple M2 Pro, arm64
+# os: macOS 26.2 (25C56)
+# rustc: rustc 1.95.0 (59807616e 2026-04-14)
+# database: in-memory
+# run: 2026-10-10, 231.19 s wall; load average (1/5/15 min) 10.38 / 8.74 / 9.26 at start, 2.88 / 5.54 / 7.72 at end
+# note: desktop applications stayed open and the load average stayed above 2, so the machine was not idle; the authoritative before/after comparison of M1b Phase 5 is docs/bench/m1b-phase5-demos.csv
+# command: target/release/examples/demand_case_bench kener_quarter_hour_rollup 4100000 500 5
+# commit: 3a3b2daff9a353476148eee9f729de3a64ac7296; uncommitted changes under crates/, Cargo.toml or Cargo.lock: no
+# sqlite: 3.53.2 (bundled by rusqlite in this harness, which hosts the extension)
+# ivmlite extension: crates/ivmlite-sqlite/target/release/libivmlite_sqlite.dylib; built from ivmlite-sqlite 0.1.0-alpha.3; staleness check passed
+# workload: kener_quarter_hour_rollup, 4100000 base rows, 500-operation mixed batches, 5 repeats; rows report the median and min-max over the repeats
+# rounds: one warm-up batch, then 10 measured batches per run; apply_ms, maintain_ms and read_ms are each a run's median over its measured batches
+case,mode,base_rows,batch_size,repeats,bootstrap_ms,bootstrap_min_ms,bootstrap_max_ms,first_refresh_ms,first_refresh_min_ms,first_refresh_max_ms,apply_ms,apply_min_ms,apply_max_ms,maintain_ms,maintain_min_ms,maintain_max_ms,read_ms,read_min_ms,read_max_ms,apply_plus_maintain_ms,apply_plus_maintain_min_ms,apply_plus_maintain_max_ms,end_to_end_ms,end_to_end_min_ms,end_to_end_max_ms,database_kib,database_kib_min,database_kib_max
+kener_quarter_hour_rollup,no_maintenance,4100000,500,5,0.000,0.000,0.000,0.000,0.000,0.000,0.166,0.163,0.169,0.000,0.000,0.000,0.000,0.000,0.000,0.166,0.163,0.169,0.166,0.163,0.169,100940.0,100940.0,100940.0
+kener_quarter_hour_rollup,unindexed_recompute,4100000,500,5,0.000,0.000,0.000,1688.709,1650.942,1726.329,0.192,0.190,0.198,1669.399,1646.040,1673.740,0.000,0.000,0.000,1669.592,1646.230,1673.932,1669.592,1646.230,1673.932,100940.0,100940.0,100940.0
+kener_quarter_hour_rollup,indexed_recompute,4100000,500,5,1637.059,1625.183,2134.162,346.896,345.154,365.946,1.246,1.205,1.268,346.769,345.135,348.784,0.000,0.000,0.000,348.033,346.340,350.052,348.033,346.340,350.052,200596.0,200596.0,200596.0
+kener_quarter_hour_rollup,ivmlite,4100000,500,5,8850.912,8508.525,9056.831,14.448,4.780,18.624,4.242,4.184,4.358,2.412,2.145,2.462,143.559,143.279,144.925,6.654,6.330,6.820,149.983,149.608,151.689,255432.0,255432.0,255432.0

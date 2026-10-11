@@ -1,0 +1,17 @@
+# machine: Apple M2 Pro, arm64
+# os: macOS 26.2 (25C56)
+# rustc: rustc 1.95.0 (59807616e 2026-04-14)
+# database: in-memory
+# run: 2026-10-10, 25.60 s wall; load average (1/5/15 min) 16.06 / 9.33 / 9.49 at start, 12.40 / 9.02 / 9.37 at end
+# note: desktop applications stayed open and the load average stayed above 2, so the machine was not idle; the authoritative before/after comparison of M1b Phase 5 is docs/bench/m1b-phase5-demos.csv
+# command: target/release/examples/demand_case_bench noop_gravity_witness 518400 200 5
+# commit: 3a3b2daff9a353476148eee9f729de3a64ac7296; uncommitted changes under crates/, Cargo.toml or Cargo.lock: no
+# sqlite: 3.53.2 (bundled by rusqlite in this harness, which hosts the extension)
+# ivmlite extension: crates/ivmlite-sqlite/target/release/libivmlite_sqlite.dylib; built from ivmlite-sqlite 0.1.0-alpha.3; staleness check passed
+# workload: noop_gravity_witness, 518400 base rows, 200-operation mixed batches, 5 repeats; rows report the median and min-max over the repeats
+# rounds: one warm-up batch, then 10 measured batches per run; apply_ms, maintain_ms and read_ms are each a run's median over its measured batches
+case,mode,base_rows,batch_size,repeats,bootstrap_ms,bootstrap_min_ms,bootstrap_max_ms,first_refresh_ms,first_refresh_min_ms,first_refresh_max_ms,apply_ms,apply_min_ms,apply_max_ms,maintain_ms,maintain_min_ms,maintain_max_ms,read_ms,read_min_ms,read_max_ms,apply_plus_maintain_ms,apply_plus_maintain_min_ms,apply_plus_maintain_max_ms,end_to_end_ms,end_to_end_min_ms,end_to_end_max_ms,database_kib,database_kib_min,database_kib_max
+noop_gravity_witness,no_maintenance,518400,200,5,0.000,0.000,0.000,0.000,0.000,0.000,0.193,0.186,0.196,0.000,0.000,0.000,0.000,0.000,0.000,0.193,0.186,0.196,0.193,0.186,0.196,15048.0,15048.0,15048.0
+noop_gravity_witness,unindexed_recompute,518400,200,5,0.000,0.000,0.000,192.113,189.744,207.741,0.295,0.280,0.328,189.567,187.808,207.943,0.000,0.000,0.000,189.874,188.089,208.271,189.874,188.089,208.271,15048.0,15048.0,15048.0
+noop_gravity_witness,indexed_recompute,518400,200,5,161.854,157.973,164.845,18.109,17.840,19.336,0.435,0.405,0.490,18.355,17.824,18.566,0.000,0.000,0.000,18.790,18.255,19.033,18.790,18.256,19.033,20852.0,20852.0,20852.0
+noop_gravity_witness,ivmlite,518400,200,5,224.380,196.046,268.863,0.833,0.767,0.985,1.962,1.897,2.061,0.702,0.665,0.775,0.018,0.017,0.022,2.671,2.598,2.836,2.689,2.615,2.857,15160.0,15160.0,15160.0
