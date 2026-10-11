@@ -149,10 +149,11 @@ The capture verdict is `check_table_capture` without the latch: shape, capture t
 4. When the version is unchanged and the view passed at it, skip step 3, as in Phase 5.
 5. In every case, read each base table's latch, as in Phase 5 §3.
 
-`verify` at connect uses the same snapshot and the same checks.
+`verify` at connect uses the same snapshot, read afresh (below), and the same checks.
 
 **A connect rebuilds it** (measured during implementation, 2026-10-11). Rolling back a schema change can bring `main.schema_version` back to a value it had before, with different objects. SQLite then reconnects every view, which is why Phase 5's per-view record was safe. A shared snapshot, though, can outlive that reconnect: a statement the application keeps prepared keeps a view, and its snapshot reference, alive. A version match alone would then pass a view whose capture trigger is missing. So every xConnect rebuilds the connection's snapshot before it checks.
-- **What it costs.** After DDL from another connection, or a rollback, a mass reconnect makes one scan per view, still about a tenth of Phase 5's cost. DDL on the same connection keeps one scan per connection.
+- **What it costs.** After DDL from another connection, or a rollback, a mass reconnect makes one scan per view, about a fifth of Phase 5's `sqlite_schema` reads. DDL on the same connection keeps one scan per connection.
+- **Reconnect time is unchanged.** A mass reconnect still takes about as long as before: 2.5 s at 200 views and 20,000 rows, measured. That time is dominated by work every connect does, which grows about quadratically with the view count and predates this phase. It is recorded for a later phase.
 - **Read failures are not cached.** A failure to read the catalog behind a verdict, such as an interrupt or a lock, is returned but not cached.
 
 **Why `main` alone.**
