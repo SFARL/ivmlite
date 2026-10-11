@@ -110,11 +110,14 @@ pub struct Measurement {
     pub engine: Engine,
     pub bootstrap_ms: f64,
     /// The maintenance of the warm-up batch: for ivmlite, the first refresh
-    /// after `CREATE`.
+    /// after `CREATE`. Exactly 0 for `no_maintenance` and
+    /// `hand_written_trigger`, which maintain nothing on refresh; a trigger's
+    /// maintenance runs inside the writes, in `apply_ms`.
     pub first_refresh_ms: f64,
     /// The median apply over the measured rounds.
     pub apply_ms: f64,
-    /// The median maintenance over the measured rounds.
+    /// The median maintenance over the measured rounds; exactly 0 for the
+    /// engines `first_refresh_ms` names.
     pub maintain_ms: f64,
     /// The median over the measured rounds of each round's own
     /// `apply + maintain`, not the sum of the two medians above.
@@ -336,7 +339,8 @@ fn measure(engine: Engine, cell: &Workload, conn: &Connection) -> Result<Measure
     let bootstrap_ms = bootstrap_start.elapsed().as_secs_f64() * 1000.0;
     let bootstrapped = space(conn).map_err(|e| e.to_string())?;
     // Spec §3.2 step 3 checks the materialized views; naive recompute's
-    // self-comparison (`verify`) runs after the batches only, as before.
+    // self-comparison (`verify`) is not run at bootstrap, only after the
+    // warm-up and after the last batch.
     if matches!(engine, Engine::HandWrittenTrigger | Engine::Ivmlite) {
         verify(engine, conn, cell)?;
     }

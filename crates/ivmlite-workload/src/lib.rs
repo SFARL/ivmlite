@@ -1062,9 +1062,9 @@ mod tests {
     }
 
     /// Spec §6: every shipped matrix and ablation cell (the confirmation
-    /// re-runs matrix cells) fits the warm-up plus the measured rounds, and
-    /// a cell whose base rows cannot
-    /// supply the deletes is refused with its numbers in the message.
+    /// re-runs matrix cells) fits the warm-up plus the measured rounds, and a
+    /// cell whose base rows cannot supply the deletes is refused with its
+    /// numbers in the message.
     #[test]
     fn check_rounds_accepts_every_shipped_cell_and_refuses_a_cell_too_small() {
         let base = Workload::load(&repo_path("workloads/m0-baseline.toml")).unwrap();
