@@ -1043,12 +1043,14 @@ mismatched.
   `workloads/m0-baseline.toml`, unchanged from Phase 5, five repeats each, over
   `naive_recompute` and `ivmlite`. Spec §7 holds §3 to its bar at 10 views and
   batch 1 too, which none of those cells is. So the same script ran once more
-  over the same four builds with a scratch copy of the workload whose only
-  ablation cell is `views=10, base_rows=100,000, batch=1, groups=1,000`; its
-  rows are in
+  over the same four builds with
+  [`workloads/m1b-phase6-ablation-views10-batch1.toml`](../../workloads/m1b-phase6-ablation-views10-batch1.toml),
+  a copy of the workload whose only ablation cell is
+  `views=10, base_rows=100,000, batch=1, groups=1,000`; its rows are in
   [`m1b-phase6-ablation-views10-batch1.csv`](m1b-phase6-ablation-views10-batch1.csv).
-  The ablation's write-amplification output was discarded, since the write
-  path did not change (spec §6).
+  The ablation's write-amplification output was discarded: no change touched
+  the write path's code (spec §6). The timed writes inside the ablation cells
+  did move in one cell; see the acceptance paragraph below.
 - **Matrix and confirmation.** The 68-cell exploration, one run per cell, then
   every cell the Phase 4 rule selects, five repeats each. The rule now reads
   the steady-state `apply_plus_maintain_ms`. It selected 6 cells
@@ -1075,10 +1077,11 @@ From the repository root, on the commit that holds this README:
 ```bash
 OUT=docs/bench/m1b-phase6-ablation.csv WRITE_AMP_OUT=/tmp/m1b-phase6-ablation-write-amp.csv \
   scripts/bench-ablation.sh before=ebd716b stmtcache=5bd851f snapshot=a0cf490 progidx=a92a570
-# The supplementary cell: a copy of workloads/m0-baseline.toml whose [ablation]
-# lists only views=10, base_rows=100000, batch_size=1, group_cardinality=1000.
-WORKLOAD=/tmp/ablation-views10-batch1.toml OUT=docs/bench/m1b-phase6-ablation-views10-batch1.csv \
-  WRITE_AMP_OUT=/tmp/discard.csv \
+# The supplementary cell (10 views, batch 1), with a minimal write-amp workload
+# whose output is discarded.
+WORKLOAD=workloads/m1b-phase6-ablation-views10-batch1.toml \
+  WRITE_WORKLOAD=workloads/m1b-phase6-write-amp-minimal.toml \
+  OUT=docs/bench/m1b-phase6-ablation-views10-batch1.csv WRITE_AMP_OUT=/tmp/discard.csv \
   scripts/bench-ablation.sh before=ebd716b stmtcache=5bd851f snapshot=a0cf490 progidx=a92a570
 scripts/bench.sh matrix > docs/bench/m1b-phase6.csv
 scripts/bench.sh confirm --from docs/bench/m1b-phase6.csv > docs/bench/m1b-phase6-confirm.csv
@@ -1183,9 +1186,25 @@ column.
 | §4 shared snapshot | 200 views, batch 1 | first refresh | 214.322 ms | 21.694 ms | 89.9% |
 | §5 progress index | 200 views, batch 1 | steady refresh | 7.154 ms | 6.730 ms | 5.9% |
 
-§5's 5.9% is close to its 5% bar and inside the session's noise floor of about
-8%, though its ranges are apart and the drift control moved against it there
-(the unchanged engine ran 8.2% slower under `progidx` than under `snapshot`).
+§5's margin is thin. Read together, the facts are:
+- **On the metric the bar names, it passes.** Steady refresh saved 5.9%, with
+  the ranges apart.
+- **The drift ran against it, so 5.9% is the conservative reading.** In that
+  cell the unchanged engine ran 1.082x slower under `progidx` than under
+  `snapshot`. If `ivmlite` slowed as much, §5 saved 13.1%. That correction
+  assumes the drift hit both engines alike, and other cells do not show it:
+  at 10 views, batch 1,000 and 100,000 groups the control moved 1.004x while
+  §5 read 0.964x.
+- **On steady apply + maintain it saves only 4.3%** (7.160 → 6.850 ms), below
+  5%. The difference is the timed write of the one-row batch: `apply_ms` went
+  from 0.069 [0.066, 0.074] to 0.164 [0.126, 0.180] ms. That one-row write
+  varied as much across all four builds (0.167, 0.085, 0.069 and 0.164 ms),
+  although the capture triggers' SQL, the only extension code a base write
+  runs, is identical in all four, and a base write does not touch
+  `__ivm_progress`. The movement is unexplained.
+
+So the bar is met as worded and probably by more than 5.9%, but a margin
+within the session's noise would need a quieter re-run to settle.
 
 **Space.** The bootstrapped and maintained page counts are identical across
 the builds, except one page more under `progidx` for the new index. The
@@ -1244,11 +1263,13 @@ All comparisons below are in the steady state.
     100,000 and 1,000,000 rows. None is within 1.5x.
   - **Where it still loses:** everywhere else. The medians are 5.21x at batch
     1,000, 6.61x at 100, 7.65x at 10, and 22.53x at batch 1 (7.64–55.79x).
-  - **The view count no longer drives the ratio.** At batch 1 the steady
-    refresh costs 33.6–38.0 µs per view (median by view count), whether there
-    are 1 or 200 views; in Phase 5's first-refresh numbers, the ratio at 200
-    views and batch 1 was in the thousands. At batch 1,000 the ratio is
-    4.43–7.10x at every view count.
+  - **The cost per view no longer grows with the view count.** At batch 1
+    the steady refresh costs 33.6–38.0 µs per view (median by view count),
+    whether there are 1 or 200 views. The batch=1 ratio still rises with the
+    view count, from a median 11.00x at one view to 32.25x at 200, but by tens:
+    in Phase 5's first-refresh numbers it was in the thousands at 200 views.
+    At batch 1,000 the medians by view count are 4.46–6.35x; the 10-view group
+    includes the three 10-group cells at 1.53–1.56x.
   - The six cells confirmed in both phases all fell or held: 8.93x to 8.01x;
     6.64x to 6.65x; 9.57x to 7.15x; 1.81x to 1.56x; 11.79x to 6.86x; 17.55x to
     6.82x. Part of each fall is the protocol change, not the code.
@@ -1316,9 +1337,10 @@ two right-hand columns are `indexed_recompute`'s end to end divided by
 - End to end moved 0.98–1.06x. In FluxFlow, `ivmlite`'s writes now cost more
   than its refresh (3.944 ms of apply against 1.842 ms of refresh), and it
   stays 4.74x slower than the hand-written trigger end to end (before: 4.85x).
-- The first refresh did not improve in three demos and read slower in Kener,
-  3.338 → 5.003 ms, with a range of 3.733 to 17.204 ms after: that cell is
-  noisy, and one view gains nothing from a shared snapshot.
+- The first refresh read 1.04x in FluxFlow, 0.93x in noop and 0.96x in Zcash,
+  and 0.67x in Kener, 3.338 → 5.003 ms, with a range of 3.733 to 17.204 ms
+  after: that cell is noisy, and one view gains nothing from a shared
+  snapshot.
 - The drift control, the modes no build changes, stayed within 0.995–1.023x end
   to end, so the end-to-end changes are at most just above it.
 
@@ -1354,10 +1376,18 @@ same work.
   phase is 0.96x and 0.92x of `before` in steady refresh. §3 and §5 each read
   a few percent slower there. Both cells are near the 1.08x noise floor, and
   the cause has not been isolated.
+- **§5 at 10 views and batch 1.** `snapshot` to `progidx` reads 0.921x in
+  steady refresh (0.337 → 0.366 ms), with the ranges overlapping. §5 is not
+  held to a bar there.
+- **The one-row write in §5's own cell**, 0.069 → 0.164 ms, unexplained (see
+  the acceptance paragraph).
 - **Bootstrap.** `before` over `progidx` bootstrap was 0.923–1.002x across the
   ablation cells: up to 8% slower, at the noise floor.
 - **The first refresh in some demos**, as above.
-- **Writes** were not re-measured. The write path did not change (spec §6).
+- **Writes** were not re-measured with the write-amplification workload: no
+  change touched the write path's code (spec §6). The ablation's timed writes
+  stayed within 0.936–1.018x of `before` over the whole phase, but moved
+  between builds in one cell, as above.
 
 ### Limits
 

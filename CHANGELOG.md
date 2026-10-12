@@ -98,6 +98,11 @@ SQL subset and persisted shadow-table format without migration.
   batches the exploration's median is 22.53x.
 - SQLite memory use grows by about 40 KB per open view for its cached
   statements: 38.3 → 46.3 MB at 200 views in one probe.
+- Some measurements got slower than in alpha.3, near the run's noise floor:
+  steady refresh at 10 views with 1,000-row batches (0.96x and 0.92x),
+  bootstrap (0.923–1.002x), and Kener's first refresh after `CREATE`
+  (3.338 → 5.003 ms, a noisy figure). Writes were not re-measured with the
+  write-amplification workload; no change touched the write path's code.
 - Reconnecting many views at once, after a schema change from another
   connection or a rolled-back one, still takes about 2.5 s at 200 views over
   20,000 rows; the work grows about quadratically with the view count.

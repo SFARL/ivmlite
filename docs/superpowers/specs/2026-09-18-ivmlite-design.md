@@ -769,7 +769,7 @@ The right bar has three tiers:
 
 > **Amended 2026-10-11, M1b Phase 6:** the benchmark now measures the steady state, one warm-up batch and then five measured batches per cell; Phase 4 and Phase 5 measured the first refresh after `CREATE`, so their figures are not comparable column for column. Measured after Phase 6 removed a refresh's fixed costs, in [`docs/bench/README.md`](../../bench/README.md), "M1b Phase 6":
 > - **Must:** met at 100,000 base rows and above, all 48 such cells above 2x. 62 of 68 cells are above 2x, and the small-table corner (10,000 rows, batches of 1,000 over 1,000 groups) still loses.
-> - **Expected:** still not met. In the confirmed cells, ivmlite's steady apply + refresh is 1.56x the hand-written trigger's at best (10 groups, batch 1,000), and 6.65–8.01x in the others. The view count no longer drives the gap: a steady refresh costs about 34 µs per view at every view count, and at batch 1 the exploration's median is 22.53x, not thousands.
+> - **Expected:** still not met. In the confirmed cells, ivmlite's steady apply + refresh is 1.56x the hand-written trigger's at best (10 groups, batch 1,000), and 6.65–8.01x in the others. A refresh's cost per view no longer grows with the view count (about 34 µs per view at batch 1, at every view count), and at batch 1 the exploration's median is 22.53x, not thousands.
 > - **Bonus:** not observed in any cell or repeat.
 >
 > What remains is the maintenance itself, the apply trigger's body and the operator tree; the fixed per-refresh overhead this phase targeted is gone from the steady state.
