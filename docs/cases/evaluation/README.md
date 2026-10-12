@@ -98,7 +98,8 @@ measurements are in [2026-10-11-apple-m2-pro.csv](2026-10-11-apple-m2-pro.csv).
 | Taproot event counts | ivmlite 25.658 ms; recompute 9.441 ms (**2.72× slower**) | ivmlite 4.024 ms; recompute 123.227 ms (**30.62× faster**) |
 
 **Phase 6 barely moves these numbers.** The 2026-10-10 run with the
-`0.1.0-alpha.3` extension gave `ivmlite` totals of 9.043, 21.274 and
+`0.1.0-alpha.3` extension (its CSV, `2026-10-10-apple-m2-pro.csv`, is in
+commit `ebd716b`) gave `ivmlite` totals of 9.043, 21.274 and
 26.502 ms at 25k + 1k, and 1.320, 2.804 and 4.161 ms at 250k + 100. Phase 6
 removed fixed costs that recur on every refresh of many views (the
 "M1b Phase 6" section of [`docs/bench/README.md`](../../bench/README.md)),

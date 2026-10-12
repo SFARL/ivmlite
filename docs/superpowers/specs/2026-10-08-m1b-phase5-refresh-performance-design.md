@@ -218,7 +218,7 @@ How it works:
   A row wider than the bound still goes one per statement, and fails as it did before. With SQLite's default limits, the expression-depth limit caps a view at about 329 output columns, so a width over 999 is not reachable. Task 4's review found that the first version bounded by 999 alone, which made a refresh fail under a lowered live limit where fb5e39f succeeded; fix round 1 added the live limit.
 - Row order and every row's values are unchanged.
 - The sentinel stays a one-row insert of its own, with its rowid kept.
-- The arming `UPDATE` is still the single last statement, and is now `prepare_cached` too. That cache lives for one callback only, because `vtab.rs` wraps the handle in a new `Connection` for each, so the arming statement and each staging shape are still prepared once per refresh.
+- The arming `UPDATE` is still the single last statement, and is now `prepare_cached` too. That cache lives for one callback only, because `vtab.rs` wraps the handle in a new `Connection` for each, so the arming statement and each staging shape are still prepared once per refresh. (Superseded 2026-10-11 by the [Phase 6 spec](2026-10-11-m1b-phase6-fixed-cost-design.md) §3: each view now keeps one `Connection`, and its statements, for its lifetime.)
 
 **Measured** with `scripts/profile-refresh.py drive` on §2's workload: 5 interleaved rounds of 20 s each, on line-table release builds of fb5e39f and of the change (81ea180), on an Apple M2 Pro running macOS 26.2 with SQLite 3.53. The figure is the median refresh time per batch over all ten views:
 

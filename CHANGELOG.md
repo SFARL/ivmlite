@@ -52,7 +52,8 @@ SQL subset and persisted shadow-table format without migration.
   a few cached shapes and a steady refresh prepares nothing. `CREATE` flushes
   the cache as its last step, so bootstrap's large staging shapes are not
   kept. A statement made stale by a schema change re-prepares itself, and
-  every refresh still runs its catalog checks first.
+  every refresh runs its catalog checks before any statement that reads the
+  view's shadow tables.
 - After a schema change, the catalog checks read one snapshot of
   `main.sqlite_schema` per connection, keyed by `schema_version` and shared by
   that connection's views, instead of each view looking objects up in
@@ -100,8 +101,8 @@ SQL subset and persisted shadow-table format without migration.
   statements: 38.3 → 46.3 MB at 200 views in one probe.
 - Some measurements got slower than in alpha.3, near the run's noise floor:
   steady refresh at 10 views with 1,000-row batches (0.96x and 0.92x),
-  bootstrap (0.923–1.002x), and Kener's first refresh after `CREATE`
-  (3.338 → 5.003 ms, a noisy figure). Writes were not re-measured with the
+  bootstrap (0.923–1.002x), and the first refresh after `CREATE` in three
+  demos (noop 0.93x, Zcash 0.96x, Kener 0.67x, a noisy figure). Writes were not re-measured with the
   write-amplification workload; no change touched the write path's code.
 - Reconnecting many views at once, after a schema change from another
   connection or a rolled-back one, still takes about 2.5 s at 200 views over

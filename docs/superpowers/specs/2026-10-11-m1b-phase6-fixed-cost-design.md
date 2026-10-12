@@ -79,7 +79,7 @@ The larger cache filled with remainder staging statements of varying length, whi
 - Each `IvmTab` owns one non-owning `rusqlite::Connection` over its handle, made in xCreate or xConnect.
 - It lives as long as the `IvmTab`, so it is dropped, and its cached statements finalized, in xDisconnect and xDestroy. SQLite calls xDisconnect before it checks for unfinalized statements at close, so a statement cached here never makes `sqlite3_close` fail with `SQLITE_BUSY`.
 - Every callback of the view uses this connection.
-- The free function `connection` in `vtab.rs` remains only where no `IvmTab` exists yet.
+- The free function `connection` in `vtab.rs` is removed: the handle is wrapped once, in `open_view`.
 
 **What is cached.**
 - Every statement on the refresh path whose SQL text is fixed for the view is prepared at most once per view per connection, through `prepare_cached`. The list:
@@ -109,7 +109,7 @@ The larger cache filled with remainder staging statements of varying length, whi
 
 **Correctness is unchanged.**
 - A cached statement that SQLite finds stale re-prepares from its own text against the current schema.
-- Every refresh still runs the checks of §4 before it steps any cached statement, so a statement never runs against a schema those checks have not passed.
+- Every refresh still runs the checks of §4 before it steps any cached statement other than the schema-version and latch reads those checks themselves use, so a statement that reads the view's shadow tables never runs against a schema those checks have not passed.
 
 **Tests:**
 - **Steady refreshes prepare nothing.** On a test connection, an authorizer is installed before the view's first refresh; the authorizer is consulted whenever a statement is prepared. The first refreshes after it re-prepare what it expired and stage enough rows (127, then 5) to prepare every staging shape of both kinds. Its calls are then counted around each of three later refreshes, which stage 1, 37 and 130 rows, and the count is 0. The refresh command itself is prepared before the counted window.
