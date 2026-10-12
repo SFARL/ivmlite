@@ -1,7 +1,8 @@
 # Current ivmlite evaluation of the collected cases
 
 Evaluated on 2026-09-28 against the current SQLite extension; the performance
-probe below was re-run on 2026-10-10 with the `0.1.0-alpha.3` extension. This is a
+probe below was re-run on 2026-10-11 with the M1b Phase 6 extension (commit
+`a92a570`, shadow-table format 5). This is a
 capability and crossover probe, not a claim that the original applications
 have been reproduced. The original source corpus remains unchanged.
 
@@ -86,19 +87,27 @@ cargo run --release --locked -p ivmlite-test --example real_case_bench -- \
 ```
 
 Arguments are initial rows, inserted rows per batch and repetitions. The raw
-measurements are in [2026-10-10-apple-m2-pro.csv](2026-10-10-apple-m2-pro.csv).
+measurements are in [2026-10-11-apple-m2-pro.csv](2026-10-11-apple-m2-pro.csv).
 
 ### Observed crossover
 
 | Slice | 25k base + 1k delta | 250k base + 100 delta |
 |---|---:|---:|
-| Datasette county facet | ivmlite 9.043 ms; recompute 1.684 ms (**5.37× slower**) | ivmlite 1.320 ms; recompute 11.675 ms (**8.84× faster**) |
-| Org-roam tag counts | ivmlite 21.274 ms; recompute 7.208 ms (**2.95× slower**) | ivmlite 2.804 ms; recompute 89.713 ms (**31.99× faster**) |
-| Taproot event counts | ivmlite 26.502 ms; recompute 9.586 ms (**2.76× slower**) | ivmlite 4.161 ms; recompute 119.405 ms (**28.70× faster**) |
+| Datasette county facet | ivmlite 8.866 ms; recompute 1.627 ms (**5.45× slower**) | ivmlite 1.223 ms; recompute 11.929 ms (**9.75× faster**) |
+| Org-roam tag counts | ivmlite 20.404 ms; recompute 6.946 ms (**2.94× slower**) | ivmlite 2.954 ms; recompute 108.411 ms (**36.70× faster**) |
+| Taproot event counts | ivmlite 25.658 ms; recompute 9.441 ms (**2.72× slower**) | ivmlite 4.024 ms; recompute 123.227 ms (**30.62× faster**) |
 
-Measured under a one-minute load average of 18.75–21.06 (see below): the
-ratios agree with two earlier runs of this harness, but absolute times are
-inflated.
+**Phase 6 barely moves these numbers.** The 2026-10-10 run with the
+`0.1.0-alpha.3` extension gave `ivmlite` totals of 9.043, 21.274 and
+26.502 ms at 25k + 1k, and 1.320, 2.804 and 4.161 ms at 250k + 100. Phase 6
+removed fixed costs that recur on every refresh of many views (the
+"M1b Phase 6" section of [`docs/bench/README.md`](../../bench/README.md)),
+but this probe refreshes one or two views once, right after `CREATE`, and at
+25k + 1k most of `ivmlite`'s time is the capture triggers' writes (7.7–8.2 ms
+of `apply_ms`) and the join slices' refresh itself. The ratios at 250k + 100
+moved mostly with the recompute baseline: an earlier run of the same command
+in the same session, at a one-minute load average of 9–10, gave 8.89×,
+32.92× and 30.83× there, and 5.46×, 2.83× and 2.83× slower at 25k + 1k.
 
 These measurements show a real crossover for all three slices: small deltas
 over a larger base table amortize capture and refresh costs, and a large delta
@@ -123,6 +132,7 @@ in public project claims, run a matrix with more sizes, mixed update traces,
 on-disk databases and the recovered application data where available.
 
 Machine for this snapshot: Apple M2 Pro, macOS 26.2, arm64; Rust 1.95.0;
-SQLite 3.53.2. The 2026-10-10 runs took 2.65 s and 12.09 s of wall time, with a
-one-minute load average of 18.75 to 21.06 while desktop applications and
-system services stayed busy, so the machine was far from idle.
+SQLite 3.53.2. The 2026-10-11 runs took 2.14 s and 12.24 s of wall time, with a
+one-minute load average of 4.32 to 4.51 while desktop applications stayed
+open, so the machine was not idle. The 2026-10-10 runs had a load average of
+18.75 to 21.06.

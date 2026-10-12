@@ -163,6 +163,12 @@ The exceptions are the setup facts below — dates, hardware, versions and the
 four wall times, which come from the run session and are in no CSV — and the
 protocol constants, which come from the runner's code.
 
+> **Note (2026-10-11, M1b Phase 6):** every cell in this section ran one batch
+> in a fresh database, so its `maintain` is the **first refresh after
+> `CREATE`**, which pays one-time costs a later refresh does not. Phase 6
+> measures the steady state instead, and its numbers are not comparable column
+> for column with these (see "M1b Phase 6" below).
+
 ### Setup and protocol
 
 The measurements ran in one otherwise idle session on 2026-09-29–30 on a
@@ -549,6 +555,11 @@ re-ran the full matrix and confirmation:
 3. `stage`: empty the stage table at the end of bootstrap (§5);
 4. `profiled`: stage rows with multi-row `INSERT … VALUES`, bounded by the
    connection's live variable limit (§6 and its second amendment).
+
+> **Note (2026-10-11, M1b Phase 6):** like Phase 4's, this section's matrix,
+> confirmation and ablation time the **first refresh after `CREATE`**; only the
+> demos separate the steady state. Phase 6's tables time the steady state, so
+> the two are not comparable column for column (see "M1b Phase 6" below).
 
 Every measured number in this section comes from
 [`phase5_tables.py`](phase5_tables.py) (`python3 docs/bench/phase5_tables.py`),
@@ -970,3 +981,420 @@ Charts:
 
 - Total `apply + maintain` at 10 views and batch 100: [`groups=10`](m1b-phase5-card10.svg), [`groups=1,000`](m1b-phase5-card1000.svg), [`groups=100,000`](m1b-phase5-card100000.svg).
 - Speedup surface with 1x/2x reference lines: [`groups=10`](m1b-phase5-speedup-card10.svg), [`groups=1,000`](m1b-phase5-speedup-card1000.svg), [`groups=100,000`](m1b-phase5-speedup-card100000.svg).
+
+---
+
+## M1b Phase 6: the fixed cost of a refresh
+
+After Phase 5, most of a refresh's time at small batches was two fixed costs:
+compiling its statements again on every refresh, and re-reading the catalog
+in every view after any schema change. Phase 6
+([spec](../superpowers/specs/2026-10-11-m1b-phase6-fixed-cost-design.md))
+removed both, fixed one O(views) scan, and changed the benchmark to measure
+the steady state:
+
+1. `stmtcache`: each view keeps its own connection wrapper and prepares every
+   fixed statement of its refresh at most once, staging rows in a few fixed
+   shapes (spec §3);
+2. `snapshot`: a connection reads `sqlite_schema` once per schema change and
+   shares that snapshot, and each base table's capture verdict, among its
+   views (§4);
+3. `progidx`: an index on `__ivm_progress(tbl, applied_seq)`, so the garbage
+   collection inside a view's apply no longer scans every view's watermark;
+   this is shadow-table format 5 (§5);
+4. the steady-state benchmark: every matrix, confirmation and ablation cell
+   applies one warm-up batch, reported as `first_refresh_ms`, and then five
+   measured batches, reported as medians (§6).
+
+Every measured number in this section comes from
+[`phase6_tables.py`](phase6_tables.py) (`python3 docs/bench/phase6_tables.py`),
+which reads the committed CSVs and uses only the standard library. The
+exceptions are the setup facts below (dates, hardware, versions, wall times and
+load averages, from the run session) and the memory figures under "What got
+worse", which come from a throwaway probe that is not committed.
+
+### Setup
+
+All runs took place on the same 10-core Apple M2 Pro MacBook Pro with 16 GB
+RAM as Phases 4 and 5, under macOS 26.2 (25C56), with Rust 1.95.0 and the
+SQLite 3.53.2 that `rusqlite` bundles. The extension, the runner and the demo
+benchmarks were release builds. Every run took place on 2026-10-11, one after
+another, in this order, each under `caffeinate -i`. Each wall time includes its
+builds:
+
+| run | wall time | load average at start (1/5/15 min) | at end |
+|---|---:|---:|---:|
+| `scripts/bench-ablation.sh`, four builds | 8,340.14 s | 5.72 / 7.25 / 6.80 | 3.43 / 4.05 / 4.37 |
+| the same, the supplementary 10-view cell (below) | 210.16 s | 3.44 / 3.52 / 3.42 | 6.71 / 5.54 / 4.34 |
+| `scripts/bench.sh matrix` | 5,559.39 s | 4.19 / 3.92 / 3.92 | 1.63 / 1.76 / 2.48 |
+| `scripts/bench.sh confirm` | 70.71 s | 1.63 / 1.76 / 2.48 | 1.98 / 1.87 / 2.46 |
+| `scripts/bench-demos.sh`, two builds | 874.93 s | 1.98 / 1.87 / 2.46 | 10.20 / 5.00 / 3.52 |
+
+**The machine was not idle.** Desktop applications stayed open throughout.
+The drift controls below are the engines and modes no build changes: within
+the ablation they moved by up to 1.082x, within the demo run by at most 2.3%.
+
+Every cell verified its views against SQLite's own evaluation after the
+warm-up batch and after the last measured batch, and the trigger and `ivmlite`
+also after bootstrap, as before; every demo mode verified as in Phase 5. None
+mismatched.
+
+- **Ablation.** The five cells of `[ablation]` in
+  `workloads/m0-baseline.toml`, unchanged from Phase 5, five repeats each, over
+  `naive_recompute` and `ivmlite`. Spec §7 holds §3 to its bar at 10 views and
+  batch 1 too, which none of those cells is. So the same script ran once more
+  over the same four builds with a scratch copy of the workload whose only
+  ablation cell is `views=10, base_rows=100,000, batch=1, groups=1,000`; its
+  rows are in
+  [`m1b-phase6-ablation-views10-batch1.csv`](m1b-phase6-ablation-views10-batch1.csv).
+  The ablation's write-amplification output was discarded, since the write
+  path did not change (spec §6).
+- **Matrix and confirmation.** The 68-cell exploration, one run per cell, then
+  every cell the Phase 4 rule selects, five repeats each. The rule now reads
+  the steady-state `apply_plus_maintain_ms`. It selected 6 cells
+  (Phase 5: 8), all by speedup.
+- **Demos.** `scripts/bench-demos.sh before=ebd716b after=a92a570`, each demo
+  at its documented scale with five repeats, as in Phase 5. The demos already
+  measured a warm-up and then ten steady-state batches; their protocol did not
+  change.
+
+**The protocol change.** Phase 4 and Phase 5 ran one batch per cell in a fresh
+database, so their `maintain` was the **first refresh after `CREATE`**.
+Creating a view is a schema change, so that refresh paid for re-reading the
+catalog and compiling every statement, costs a later refresh does not pay.
+Phase 6's `apply_ms`, `maintain_ms` and `apply_plus_maintain_ms` are medians
+over five later batches, and `first_refresh_ms` is the warm-up's refresh. The
+Phase 4 and Phase 5 tables are therefore **not comparable column for column**
+with these. "Phase 5 to Phase 6" below compares them anyway, with this caveat
+attached.
+
+### Reproducing
+
+From the repository root, on the commit that holds this README:
+
+```bash
+OUT=docs/bench/m1b-phase6-ablation.csv WRITE_AMP_OUT=/tmp/m1b-phase6-ablation-write-amp.csv \
+  scripts/bench-ablation.sh before=ebd716b stmtcache=5bd851f snapshot=a0cf490 progidx=a92a570
+# The supplementary cell: a copy of workloads/m0-baseline.toml whose [ablation]
+# lists only views=10, base_rows=100000, batch_size=1, group_cardinality=1000.
+WORKLOAD=/tmp/ablation-views10-batch1.toml OUT=docs/bench/m1b-phase6-ablation-views10-batch1.csv \
+  WRITE_AMP_OUT=/tmp/discard.csv \
+  scripts/bench-ablation.sh before=ebd716b stmtcache=5bd851f snapshot=a0cf490 progidx=a92a570
+scripts/bench.sh matrix > docs/bench/m1b-phase6.csv
+scripts/bench.sh confirm --from docs/bench/m1b-phase6.csv > docs/bench/m1b-phase6-confirm.csv
+OUT=docs/bench/m1b-phase6-demos.csv scripts/bench-demos.sh before=ebd716b after=a92a570
+cargo run --release -p ivmlite-bench --locked -- plot --from docs/bench/m1b-phase6.csv
+python3 docs/bench/phase6_tables.py
+```
+
+The labels map to commits in
+[`m1b-phase6-ablation-builds.csv`](m1b-phase6-ablation-builds.csv), written by
+hand as in Phases 4 and 5, and in
+[`m1b-phase6-demos-builds.csv`](m1b-phase6-demos-builds.csv), which
+`scripts/bench-demos.sh` writes. `before` is master at Phase 6 start. The
+extension at the branch head is the `progidx` build's.
+
+### Ablation: which changes matter
+
+Each value is `ivmlite`'s steady-state `maintain_ms` (a refresh of every view)
+and its `first_refresh_ms` (the warm-up's refresh, the first after `CREATE`),
+in milliseconds, as the median [min, max] over five runs. All cells have
+100,000 base rows.
+
+| build | views | batch | groups | steady refresh ms | first refresh ms |
+|---|---:|---:|---:|---:|---:|
+| before | 10 | 1 | 1,000 | 1.117 [1.102, 1.142] | 2.551 [2.285, 2.584] |
+| stmtcache | 10 | 1 | 1,000 | 0.342 [0.334, 0.393] | 2.546 [2.270, 2.781] |
+| snapshot | 10 | 1 | 1,000 | 0.337 [0.327, 0.361] | 1.289 [1.239, 1.546] |
+| progidx | 10 | 1 | 1,000 | 0.366 [0.343, 0.396] | 1.350 [1.288, 1.647] |
+| before | 10 | 1,000 | 1,000 | 56.165 [55.716, 57.896] | 57.399 [57.057, 58.704] |
+| stmtcache | 10 | 1,000 | 1,000 | 57.559 [56.672, 58.350] | 61.247 [60.380, 79.762] |
+| snapshot | 10 | 1,000 | 1,000 | 53.613 [53.294, 55.420] | 56.184 [55.638, 56.774] |
+| progidx | 10 | 1,000 | 1,000 | 58.453 [57.380, 58.941] | 60.529 [59.518, 61.110] |
+| before | 10 | 1,000 | 100,000 | 90.426 [89.400, 94.716] | 93.804 [91.214, 96.416] |
+| stmtcache | 10 | 1,000 | 100,000 | 95.731 [95.287, 98.571] | 101.398 [98.702, 128.962] |
+| snapshot | 10 | 1,000 | 100,000 | 94.581 [93.717, 95.641] | 94.921 [93.396, 96.662] |
+| progidx | 10 | 1,000 | 100,000 | 98.144 [97.608, 98.410] | 101.331 [98.686, 103.598] |
+| before | 200 | 1 | 1,000 | 23.547 [23.127, 23.765] | 220.637 [217.814, 225.394] |
+| stmtcache | 200 | 1 | 1,000 | 7.490 [7.359, 7.675] | 214.322 [210.076, 218.571] |
+| snapshot | 200 | 1 | 1,000 | 7.154 [7.087, 7.391] | 21.694 [21.541, 22.286] |
+| progidx | 200 | 1 | 1,000 | 6.730 [6.334, 7.030] | 22.919 [22.434, 24.056] |
+| before | 200 | 100 | 100,000 | 258.253 [238.737, 284.323] | 503.700 [489.108, 539.677] |
+| stmtcache | 200 | 100 | 100,000 | 249.445 [219.323, 267.851] | 528.519 [417.508, 580.753] |
+| snapshot | 200 | 100 | 100,000 | 227.959 [208.976, 246.449] | 292.987 [283.682, 296.744] |
+| progidx | 200 | 100 | 100,000 | 241.211 [218.087, 307.353] | 347.973 [284.325, 385.171] |
+| before | 200 | 1,000 | 1,000 | 985.437 [970.153, 992.974] | 1,240.271 [1,185.356, 1,257.037] |
+| stmtcache | 200 | 1,000 | 1,000 | 1,008.500 [970.419, 1,055.862] | 1,235.284 [1,202.097, 1,267.599] |
+| snapshot | 200 | 1,000 | 1,000 | 890.099 [887.486, 947.147] | 922.615 [912.556, 993.486] |
+| progidx | 200 | 1,000 | 1,000 | 979.805 [962.824, 987.609] | 994.646 [987.727, 1,044.280] |
+
+Each change against the build before it, as the ratio of medians (above 1
+means faster). A change is **indistinguishable** where the two builds' min–max
+ranges overlap.
+
+| views | batch | groups | §3 stmtcache, steady | §4 snapshot, first refresh | §4, steady | §5 progidx, steady | whole phase, steady | whole phase, first refresh |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 10 | 1 | 1,000 | **3.266x** | **1.975x** | indistinguishable (1.015x) | indistinguishable (0.921x) | 3.05x | 1.89x |
+| 10 | 1,000 | 1,000 | indistinguishable (0.976x) | 1.090x | 1.074x | 0.917x (slower) | 0.96x, ranges overlap | 0.95x |
+| 10 | 1,000 | 100,000 | 0.945x (slower) | 1.068x | indistinguishable (1.012x) | 0.964x (slower) | 0.92x | 0.93x |
+| 200 | 1 | 1,000 | **3.144x** | **9.879x** | indistinguishable (1.047x) | **1.063x** | 3.50x | 9.63x |
+| 200 | 100 | 100,000 | indistinguishable (1.035x) | 1.804x | indistinguishable (1.094x) | indistinguishable (0.945x) | 1.07x, ranges overlap | 1.45x |
+| 200 | 1,000 | 1,000 | indistinguishable (0.977x) | 1.339x | 1.133x | 0.908x (slower) | 1.01x, ranges overlap | 1.25x |
+
+**The noise floor.** `naive_recompute`, which no build changes, kept its
+steady-state medians within 1.012–1.082x (max/min across builds) in each
+cell, and its first refresh within 1.015–1.077x. Its steady medians were
+lowest under `snapshot` in four of six cells and highest under `progidx` in
+three, among them 200 views and batch 1 (3,423.333 against 3,704.452 ms). So a ratio within about
+1.08x is not a finding, even where the ranges are apart. The session's drift
+probably flatters the `snapshot` column above and penalizes the `progidx`
+column.
+
+- **§3 removed most of a steady refresh at batch 1.** At 200 views a refresh
+  of every view went from 23.547 to 7.490 ms, from 117.7 to 37.5 µs per view;
+  at 10 views from 1.117 to 0.342 ms. It did nothing for the first refresh, as
+  expected: every statement is still compiled once. With batches of 100 or
+  1,000 it is within the noise floor (0.945–1.035x).
+- **§4 removed most of the first refresh after `CREATE` with many views.** At
+  200 views and batch 1, the first refresh went from 214.322 to 21.694 ms, from
+  1.07 ms to 0.11 ms per view; at 10 views, 1.975x. It is 1.068–1.804x in the
+  other cells. Its steady-state effect is 1.012–1.133x; only 1.133x, at
+  200 views and batch 1,000, clears both the noise floor and the ranges, and the drift control
+  favoured this build.
+- **§5 met its bar narrowly, and its other cells read slower.** In its target
+  cell, 200 views and batch 1, steady refresh went from 7.154 to 6.730 ms, 5.9%
+  saved, with the ranges apart. Elsewhere it reads 0.908–0.964x, inside the
+  drift control's 1.08x except perhaps at 10 views and batch 1,000 with 1,000
+  groups (0.917x, where the control moved 1.048x). The index adds one entry to
+  maintain per watermark update; whether that or the session's drift explains
+  the rest was not investigated.
+- **The whole phase, `before` to `progidx`,** made steady refresh 3.05x and
+  3.50x faster at batch 1 and the first refresh 1.25–9.63x faster at 200 views.
+  With batches of 1,000 at 10 views it is 0.96x and 0.92x, the second with the
+  ranges apart; the drift control moved 1.030x and 1.037x in those cells. Timed
+  writes (`apply`) stayed within 0.936–1.018x.
+
+**Acceptance (spec §7).** Every change met its bar:
+
+| change | cell (100,000 rows, 1,000 groups) | metric | before it | after it | saved |
+|---|---|---|---:|---:|---:|
+| §3 statement cache | 10 views, batch 1 | steady refresh | 1.117 ms | 0.342 ms | 69.4% |
+| §3 statement cache | 200 views, batch 1 | steady refresh | 23.547 ms | 7.490 ms | 68.2% |
+| §4 shared snapshot | 200 views, batch 1 | first refresh | 214.322 ms | 21.694 ms | 89.9% |
+| §5 progress index | 200 views, batch 1 | steady refresh | 7.154 ms | 6.730 ms | 5.9% |
+
+§5's 5.9% is close to its 5% bar and inside the session's noise floor of about
+8%, though its ranges are apart and the drift control moved against it there
+(the unchanged engine ran 8.2% slower under `progidx` than under `snapshot`).
+
+**Space.** The bootstrapped and maintained page counts are identical across
+the builds, except one page more under `progidx` for the new index. The
+`maintained_*` and `written_*` columns are now taken after the sixth batch, not
+the first, so they **cannot be compared column for column** with Phase 4's and
+Phase 5's.
+
+### The §10.2 bars against hand-written triggers
+
+All comparisons below are in the steady state.
+
+- **Must: much faster than full recomputation.** Met, over a broader region
+  than in Phase 5, but the first refresh no longer weighs on `ivmlite`'s side,
+  which accounts for part of the change.
+  - 62 of 68 exploration cells were above 2x (Phase 5: 57), and 4 were below
+    1x (Phase 5: 5).
+  - All 24 cells at 100,000 rows were above 2x, from 2.276x to 1,032.757x.
+  - All 24 at one million rows were above 2x, from 23.453x to 7,507.890x.
+  - The one 100,000-row cell near 2x was confirmed above it in every repeat:
+    `views=1, batch=1000, groups=1000` had 2.369x [2.266, 2.443].
+  - The losing region is still the small-table corner, 10,000 rows with
+    batches of 1,000 over 1,000 groups: 0.224x (one view), 0.365x (10), 0.390x
+    (50) and 0.392x (200), single runs. Phase 5's one confirmed loss,
+    `views=200, base_rows=10,000, batch=100, groups=1000`, is now 2.710x
+    [2.685, 2.712].
+  - The other confirmed cells, all at 10,000 rows, were 1.304x (10 groups,
+    batch 1,000), 1.589x, 2.540x and 2.731x (medians), each with every repeat
+    on the same side of 1x and of 2x.
+- **Expected: close to hand-written triggers.** **Still not met, but the gap
+  is now the maintenance, not the overhead.** Below, `ivmlite`'s
+  `apply + maintain` is given as a multiple of the trigger's, as the median
+  [min, max] over five repeats, in every confirmed cell:
+
+  | views | base rows | batch | groups | ivmlite / trigger |
+  |---:|---:|---:|---:|---:|
+  | 10 | 10,000 | 1,000 | 10 | 1.56x [1.54, 1.56] |
+  | 1 | 100,000 | 1,000 | 1,000 | 6.65x [5.93, 7.15] |
+  | 200 | 10,000 | 100 | 1,000 | 6.82x [6.79, 6.93] |
+  | 50 | 10,000 | 100 | 1,000 | 6.86x [6.81, 6.88] |
+  | 10 | 10,000 | 100 | 1,000 | 7.15x [7.02, 7.26] |
+  | 1 | 10,000 | 100 | 1,000 | 8.01x [6.08, 8.54] |
+
+  The median over the confirmed cells is 6.84x. The exploration matrix, one
+  run per cell, by batch size:
+
+  | batch | cells | median | min | max |
+  |---:|---:|---:|---:|---:|
+  | 1 | 17 | 22.53x | 7.64x | 55.79x |
+  | 10 | 17 | 7.65x | 5.36x | 10.41x |
+  | 100 | 17 | 6.61x | 2.23x | 8.67x |
+  | 1,000 | 17 | 5.21x | 1.53x | 7.10x |
+
+  - **Where ivmlite comes close:** few groups with large batches, where
+    consolidation leaves few output changes. Three cells are within 2x, all at
+    10 views, 10 groups and batch 1,000: 1.56x, 1.53x and 1.56x at 10,000,
+    100,000 and 1,000,000 rows. None is within 1.5x.
+  - **Where it still loses:** everywhere else. The medians are 5.21x at batch
+    1,000, 6.61x at 100, 7.65x at 10, and 22.53x at batch 1 (7.64–55.79x).
+  - **The view count no longer drives the ratio.** At batch 1 the steady
+    refresh costs 33.6–38.0 µs per view (median by view count), whether there
+    are 1 or 200 views; in Phase 5's first-refresh numbers, the ratio at 200
+    views and batch 1 was in the thousands. At batch 1,000 the ratio is
+    4.43–7.10x at every view count.
+  - The six cells confirmed in both phases all fell or held: 8.93x to 8.01x;
+    6.64x to 6.65x; 9.57x to 7.15x; 1.81x to 1.56x; 11.79x to 6.86x; 17.55x to
+    6.82x. Part of each fall is the protocol change, not the code.
+  - The first refresh after `CREATE` still costs more than a steady one:
+    3.83x at batch 1, 2.23x at 10, 1.40x at 100 and 1.05x at 1,000 (medians
+    over the exploration). Taken with the apply, it puts `ivmlite` at a median
+    82.76x the trigger's steady-state time at batch 1 and 5.37x at batch 1,000.
+- **Bonus: beat hand-written triggers.** Not observed. No exploration cell and
+  no confirmation repeat had a lower `apply + maintain` than the trigger.
+  `ivmlite`'s writes alone (`apply_ms`) were cheaper than the trigger's in 50
+  of 68 cells (Phase 5: 40). Refresh is still most of `ivmlite`'s time: its
+  median share was 96.1% at batch 1, 92.1% at 10, 91.3% at 100 and 87.8% at
+  1,000.
+
+At batch 1 the trigger's time is a single row's: 3 to 681 µs in this matrix,
+written to the CSV at 1 µs resolution, and it depends on how many views' `WHEN`
+clauses that row passes. The batch=1 ratios are therefore coarse.
+
+### What still loses, and why
+
+The fixed costs this phase targeted are gone from the steady state. The data
+shows it in two ways: a steady refresh at batch 1 costs about 34 µs per view at
+every view count, and at batch 1,000 the first refresh is within 1.05x of a
+steady one, so almost no per-refresh overhead is left to amortize. What
+remains grows with the batch, and it is the maintenance itself:
+
+- **the apply trigger's body**, which upserts the state table, deletes and
+  inserts output rows (each also maintaining the output index), advances the
+  watermarks and garbage-collects the deltas. It was 48% of a refresh in the
+  spec §2 prototype profile, after the statement cache, and about 40% in Phase
+  5's profile;
+- **`compute`**, the operator tree, with arrangement lookups and serialized
+  values: about 27% in Phase 5's profile.
+
+The hand-written trigger does one in-place `UPDATE` of one summary row per
+written row per view, with no deltas, no stage and no second table. Closing the
+remaining 6.65–8.01x of the confirmed cells with 1,000 groups would need fewer
+B-tree writes per changed group, cheaper operator evaluation, or both. Batching several views' refreshes into one
+statement or savepoint, the next lever on the fixed side, is out of this
+phase's scope (spec §1).
+
+The small-table corner still loses to recomputation for the same reason as
+before: a 10,000-row recompute is cheap, and a 1,000-row batch over 1,000
+groups changes most groups anyway.
+
+### Demos before and after
+
+Each value is the median over five repeats. Steady-state refresh is
+`maintain_ms`, in each repeat the median over ten measured batches; end to end
+is apply + refresh + reading the view, the median of each batch's own sum. The
+two right-hand columns are `indexed_recompute`'s end to end divided by
+`ivmlite`'s.
+
+| demo | refresh before → after | end to end before → after | first refresh before → after | vs indexed recompute before | after |
+|---|---:|---:|---:|---:|---:|
+| FluxFlow | 2.110 → 1.842 ms (1.15x) | 8.529 → 8.311 ms (1.03x) | 2.348 → 2.251 ms (1.04x) | 15.32x | 15.78x |
+| noop | 0.641 → 0.468 ms (1.37x) | 2.527 → 2.393 ms (1.06x) | 0.726 → 0.782 ms (0.93x) | 6.82x | 7.33x |
+| Zcash | 2.633 → 2.493 ms (1.06x) | 7.200 → 7.127 ms (1.01x) | 2.897 → 3.013 ms (0.96x) | 3.16x | 3.24x |
+| Kener | 2.090 → 1.938 ms (1.08x) | 144.990 → 148.019 ms (0.98x) | 3.338 → 5.003 ms (0.67x) | 2.34x | 2.29x |
+
+- Steady-state refresh got 1.06–1.37x faster in all four demos, with the
+  before and after ranges apart in each. The gain is far smaller than the
+  ablation's batch=1 cells, because each demo refreshes one view after a
+  200- or 500-row batch, so a refresh's fixed cost was a small share of it.
+- End to end moved 0.98–1.06x. In FluxFlow, `ivmlite`'s writes now cost more
+  than its refresh (3.944 ms of apply against 1.842 ms of refresh), and it
+  stays 4.74x slower than the hand-written trigger end to end (before: 4.85x).
+- The first refresh did not improve in three demos and read slower in Kener,
+  3.338 → 5.003 ms, with a range of 3.733 to 17.204 ms after: that cell is
+  noisy, and one view gains nothing from a shared snapshot.
+- The drift control, the modes no build changes, stayed within 0.995–1.023x end
+  to end, so the end-to-end changes are at most just above it.
+
+### Phase 5 to Phase 6
+
+The two matrices differ in protocol as well as in code, so this is the weakest
+comparison in this section. Against Phase 5's single batch (the first refresh
+after `CREATE`), Phase 6's steady `ivmlite` `apply + maintain` was a median
+2.22x faster over the 68 cells (0.91x to 31.64x). The largest falls are at
+batch 1 with many views: 30.66x and 31.64x at 200 views, where the old number
+was almost all first-refresh cost. The nearest like-for-like figure, Phase 6's
+apply plus its own first refresh, was a median 1.17x faster (0.67x to 8.91x),
+and slower in 25 cells: all 12 one-view cells, and 13 with batches of 100 or
+1,000.
+
+Nine cells are slower in Phase 6's steady state than in Phase 5's single
+batch, all at batch 1,000, by 0.912x to 0.998x: within the drift between the
+sessions. The drift control is the one recompute both phases time identically,
+Phase 5's single `naive_recompute` against Phase 6's warm-up recompute:
+0.951x [0.826, 1.040]. This session ran about 5% slower than Phase 5's for the
+same work.
+
+### What got worse
+
+- **Memory.** SQLite's own memory use (`sqlite3_memory_used`) after refreshing
+  200 views over 100,000 rows rose from 38.3 MB (`before`) to 46.3 MB
+  (`progidx`), about 40 KB per view, held by each view's cached statements.
+  This is a throwaway probe, not part of the committed harness: a Python 3.14
+  script with SQLite 3.53.0 that creates 200 views of the matrix's shape,
+  refreshes each 31 times after one-row inserts, and reads the counter through
+  `ctypes`. It gave the same two figures in two runs each.
+- **Large batches with few views.** At 10 views and batch 1,000, the whole
+  phase is 0.96x and 0.92x of `before` in steady refresh. §3 and §5 each read
+  a few percent slower there. Both cells are near the 1.08x noise floor, and
+  the cause has not been isolated.
+- **Bootstrap.** `before` over `progidx` bootstrap was 0.923–1.002x across the
+  ablation cells: up to 8% slower, at the noise floor.
+- **The first refresh in some demos**, as above.
+- **Writes** were not re-measured. The write path did not change (spec §6).
+
+### Limits
+
+- **A mass reconnect is still slow.** Reconnecting 200 views over 20,000 rows
+  takes about 2.5 s, measured during implementation (spec §4). After DDL from
+  another connection, or after a rolled-back schema change, every view
+  reconnects, and that work grows about quadratically with the view count. It
+  predates this phase and is recorded for a later one; this benchmark does not
+  measure it.
+- **A user trigger can pin a connection.** A user's trigger on an `__ivm_`
+  table that reads an ivmlite view is compiled into that view's cached arming
+  statement, so `sqlite3_close` then returns `SQLITE_BUSY` (spec §3, rule 2).
+  Writing triggers on reserved tables is out of scope, like other tampering.
+- **Space snapshots now cover six batches.** The `written_*` and
+  `maintained_*` pages are taken after the last of six batches, not after one,
+  so they cannot be compared column for column with Phase 4's and Phase 5's.
+- The exploration has one run per cell; only the 6 selected cells have five
+  repeats, and all but one of them are at 10,000 rows.
+- The machine was not idle, and the ablation's own drift was up to 8%. §5's
+  acceptance margin is inside it.
+- Data is uniform, databases are in-memory, and every view refreshes once per
+  batch. Zipf distributions, locality, durability, concurrent connections,
+  Turso and Nexmark are still not covered.
+- The demos are synthetic fixtures shaped after public reports
+  ([`docs/demos/`](../demos/README.md)), not production workloads.
+
+Raw data:
+
+- [`m1b-phase6.csv`](m1b-phase6.csv): 68 cells × 4 engines, steady state.
+- [`m1b-phase6-confirm.csv`](m1b-phase6-confirm.csv): 6 selected cells × 5 repeats × 4 engines.
+- [`m1b-phase6-ablation.csv`](m1b-phase6-ablation.csv): four builds × five cells × five repeats × two engines.
+- [`m1b-phase6-ablation-views10-batch1.csv`](m1b-phase6-ablation-views10-batch1.csv): the same four builds on the supplementary cell (10 views, batch 1), five repeats × two engines.
+- [`m1b-phase6-ablation-builds.csv`](m1b-phase6-ablation-builds.csv): the commit behind each ablation label.
+- [`m1b-phase6-demos.csv`](m1b-phase6-demos.csv) and [`m1b-phase6-demos-builds.csv`](m1b-phase6-demos-builds.csv): the four demos against two builds, and per label the extension commit, the harness commit (`a92a570`, with no uncommitted changes under `crates/` or the Cargo files) and the SQLite version.
+- [`phase6_tables.py`](phase6_tables.py): derives every table and figure in this section from the CSVs above.
+
+Charts:
+
+- Total steady-state `apply + maintain` at 10 views and batch 100: [`groups=10`](m1b-phase6-card10.svg), [`groups=1,000`](m1b-phase6-card1000.svg), [`groups=100,000`](m1b-phase6-card100000.svg).
+- Speedup surface with 1x/2x reference lines: [`groups=10`](m1b-phase6-speedup-card10.svg), [`groups=1,000`](m1b-phase6-speedup-card1000.svg), [`groups=100,000`](m1b-phase6-speedup-card100000.svg).

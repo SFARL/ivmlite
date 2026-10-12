@@ -77,6 +77,13 @@ At refresh:
 
 Every new check gets a verified gate row.
 
+**Amendment 2026-10-11, M1b Phase 6: the checks read a shared snapshot.** [Phase 6 spec §4](2026-10-11-m1b-phase6-fixed-cost-design.md) replaces how the checks above read the catalog; the gate itself is unchanged. A view still records the `schema_version` at which it last passed, skips the checks while that value is unchanged, and reads each base table's latch on every refresh. What changes:
+- after a schema change, the checks run against one snapshot of `main.sqlite_schema` per connection, read once per version and shared by every view of that connection, instead of each view making its own lookups in `sqlite_schema`;
+- each base table's capture verdict is computed once per connection and version, and reused by every view that reads the table;
+- every xConnect rebuilds the snapshot before it checks. Rolling back a schema change can bring `schema_version` back to an earlier value with different objects, and a snapshot can outlive the reconnect that follows (Phase 6 spec §4, "A connect rebuilds it").
+
+The broken-view messages are unchanged. The measured effect is in the "M1b Phase 6" section of [`docs/bench/README.md`](../../bench/README.md).
+
 ## 4. Set-based apply (format 4)
 
 **Mechanism.** The stage table keeps its columns and loses `armed`. Its apply trigger becomes

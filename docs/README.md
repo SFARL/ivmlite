@@ -8,6 +8,7 @@
   - [`2026-09-27-m1b-phase3b-shared-capture-design.md`](superpowers/specs/2026-09-27-m1b-phase3b-shared-capture-design.md) — M1b Phase 3b: shared capture, delta GC, REPLACE capture, rename refusal
   - [`2026-09-28-m1b-phase4-benchmark-design.md`](superpowers/specs/2026-09-28-m1b-phase4-benchmark-design.md) — M1b Phase 4: benchmark protocol, hot-spot fixes, and write amplification
   - [`2026-10-08-m1b-phase5-refresh-performance-design.md`](superpowers/specs/2026-10-08-m1b-phase5-refresh-performance-design.md) — M1b Phase 5: refresh performance (schema-version-gated checks, set-based apply, format 4, an empty stage after bootstrap, multi-row staging)
+  - [`2026-10-11-m1b-phase6-fixed-cost-design.md`](superpowers/specs/2026-10-11-m1b-phase6-fixed-cost-design.md) — M1b Phase 6: the fixed cost of a refresh (a per-view statement cache, a shared catalog snapshot, the progress index and format 5, a steady-state benchmark)
 - **`superpowers/plans/`** — implementation plans.
   - [`2026-09-18-m0-test-and-bench-harness.md`](superpowers/plans/2026-09-18-m0-test-and-bench-harness.md) — M0: the test and benchmark harness
   - [`2026-09-20-m1a-phase1-multi-table-harness.md`](superpowers/plans/2026-09-20-m1a-phase1-multi-table-harness.md) — M1a Phase 1: the multi-table harness refactor
@@ -20,9 +21,11 @@
   - [`2026-09-27-m1b-phase3b-shared-capture.md`](superpowers/plans/2026-09-27-m1b-phase3b-shared-capture.md) — M1b Phase 3b: shared capture, delta GC, REPLACE capture, rename refusal
   - [`2026-09-28-m1b-phase4-benchmark.md`](superpowers/plans/2026-09-28-m1b-phase4-benchmark.md) — M1b Phase 4: run the extension against the M0 baselines and publish the result
   - [`2026-10-08-m1b-phase5-refresh-performance.md`](superpowers/plans/2026-10-08-m1b-phase5-refresh-performance.md) — M1b Phase 5: make refresh cheaper, then measure it with Phase 4's protocol
+  - [`2026-10-11-m1b-phase6-fixed-cost.md`](superpowers/plans/2026-10-11-m1b-phase6-fixed-cost.md) — M1b Phase 6: remove a refresh's fixed costs, make the benchmark measure the steady state, then measure the phase
 - [`mutation-gates.md`](mutation-gates.md) — **the mutation-gate table**: spec requirement → mutation → the test that goes red. Every invariant M1 adds must be registered here.
 - **`bench/`** — benchmark results, charts and conclusions ([README](bench/README.md)), including the Phase 4 matrix, confirmation, ablation, write-amplification data, six charts, and [`phase4_tables.py`](bench/phase4_tables.py), which recomputes every Phase 4 table from the CSVs.
   Phase 5 adds its own matrix, confirmation, five-build ablation, demo before/after and six charts, and [`phase5_tables.py`](bench/phase5_tables.py), which recomputes every Phase 5 table from the CSVs.
+  Phase 6 adds a steady-state matrix, confirmation, four-build ablation, demo before/after and six charts, and [`phase6_tables.py`](bench/phase6_tables.py), which recomputes every Phase 6 table from the CSVs.
 - **`scripts/`** — build, test and benchmark scripts. For Phase 5: [`bench-demos.sh`](../scripts/bench-demos.sh) runs the demo benchmarks against several builds of the extension, and [`profile-refresh.sh`](../scripts/profile-refresh.sh) with [`profile-refresh.py`](../scripts/profile-refresh.py) profiles refresh (Phase 5 spec §6).
 - **`cases/`** — original real-world reports, queries and implementation snapshots, collected before phase evaluation ([README](cases/README.md)).
 - **`demos/`** — four demand-backed demo benchmarks (FluxFlow, noop, Zcash, Kener) run against the real extension and a SQLite recomputation oracle, sharing one protocol runner (`crates/ivmlite-test/src/demo_bench.rs`), with the protocol, each demo's write-up and its results ([README](demos/README.md)).

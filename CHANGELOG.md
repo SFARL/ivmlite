@@ -36,12 +36,74 @@ SQL subset and persisted shadow-table format without migration.
 
 ### Changed
 
+- **Breaking: shadow-table format 5.** The global tables gain an index,
+  `__ivm_progress_tbl` on `__ivm_progress(tbl, applied_seq)`, so the garbage
+  collection inside a view's refresh searches it instead of scanning one
+  watermark row per view of the database. Databases created by
+  `0.1.0-alpha.3` (format 4) are refused. Their views still open as broken
+  views, so `DROP TABLE <view>` works with this release loaded: drop every
+  alpha.3 view, then create it again. A missing index breaks every view's
+  next refresh with a message naming it; creating any view recreates it. The
+  supported SQL is unchanged.
+- Each view keeps the statements of its refresh prepared for as long as it is
+  open, through one connection wrapper per view, instead of compiling them on
+  every refresh. Rows are staged in full chunks plus a remainder split into
+  chunks of 32, 16, 8, 4, 2 and 1 rows, so every staging statement has one of
+  a few cached shapes and a steady refresh prepares nothing. `CREATE` flushes
+  the cache as its last step, so bootstrap's large staging shapes are not
+  kept. A statement made stale by a schema change re-prepares itself, and
+  every refresh still runs its catalog checks first.
+- After a schema change, the catalog checks read one snapshot of
+  `main.sqlite_schema` per connection, keyed by `schema_version` and shared by
+  that connection's views, instead of each view looking objects up in
+  `sqlite_schema`. Each base table's capture verdict is computed once per
+  connection and version. Every connect rebuilds the snapshot, because a
+  rolled-back schema change can bring back an earlier version with different
+  objects. Broken-view messages are unchanged.
+- The benchmark's matrix, confirmation and ablation cells measure the steady
+  state: one warm-up batch, reported as `first_refresh_ms`, then five measured
+  batches, each touching rows no other batch touches. `apply_ms` and
+  `maintain_ms` are medians over the five, and the new
+  `apply_plus_maintain_ms` is the median of each batch's own sum. Earlier
+  results timed the first refresh after `CREATE`, so they are not comparable
+  column for column. A workload cell that cannot fit six disjoint batches is
+  refused. `confirm`, `plot` and the tables scripts still read the older CSVs.
 - The demo benchmarks (`crates/ivmlite-test/src/demo_bench.rs`) time ten
   steady-state batches per run after the warm-up, instead of one, and report
   each of `apply_ms`, `maintain_ms` and `read_ms` as its median over them;
   a single refresh is too noisy to resolve a change of about 10%. The demo
   results in `docs/demos/` and the Phase 5 demo before/after were re-run with
   it, and the single-refresh Kener recheck CSV was removed.
+
+### Added
+
+- Published M1b Phase 6 results in [`docs/bench/README.md`](docs/bench/README.md),
+  with [`phase6_tables.py`](docs/bench/phase6_tables.py) deriving every figure:
+  - with one-row batches, a steady refresh of every view is 3.50x faster than
+    in alpha.3 at 200 views (23.547 → 6.730 ms, about 34 µs per view) and
+    3.05x at 10 views; the first refresh after creating 200 views is 9.63x
+    faster (220.637 → 22.919 ms). With batches of 100 or more, refresh moved
+    by 0.92–1.07x, about the run's noise floor;
+  - each of the three changes met its 5% acceptance bar; the progress index
+    met it narrowly (5.9%);
+  - the speedup over full recomputation is above 2x in 62 of 68 cells,
+    including all 48 at 100,000 rows and more;
+  - steady-state refresh in the four demos is 1.06–1.37x faster.
+
+### Known limitations
+
+- ivmlite still does not come close to hand-written triggers on apply +
+  refresh time: 1.56x slower at best (10 groups, batch 1,000) and 6.65–8.01x
+  slower in the other confirmed cells, in the steady state. With one-row
+  batches the exploration's median is 22.53x.
+- SQLite memory use grows by about 40 KB per open view for its cached
+  statements: 38.3 → 46.3 MB at 200 views in one probe.
+- Reconnecting many views at once, after a schema change from another
+  connection or a rolled-back one, still takes about 2.5 s at 200 views over
+  20,000 rows; the work grows about quadratically with the view count.
+- A user trigger on an `__ivm_` table that reads an ivmlite view keeps that
+  view's cached statements alive, so `sqlite3_close` returns `SQLITE_BUSY`.
+  Triggers on reserved tables are out of scope.
 
 ## [0.1.0-alpha.3] - 2026-10-09
 
