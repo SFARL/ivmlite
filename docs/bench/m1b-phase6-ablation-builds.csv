@@ -1,0 +1,5 @@
+label,commit,build
+before,ebd716b61b38b7ec7d387d50ccb45afd05a81491,master at Phase 6 start: v0.1.0-alpha.3 plus the post-release fixes (format 4)
+stmtcache,5bd851fb5b0223b30832ddc6b434912ac1545033,after the per-view statement cache (spec §3)
+snapshot,a0cf490853f3e2bc6940472290e18cf9464fde79,after the shared catalog snapshot (spec §4)
+progidx,a92a5702e0edc059e911d93f6247acd17108d35b,after the progress index (spec §5; format 5)
