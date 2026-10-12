@@ -18,6 +18,7 @@ Usage: python3 docs/bench/phase6_tables.py
 import collections
 import csv
 import statistics
+import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -89,6 +90,13 @@ def used_pages(r, point):
     return int(r[f"{point}_pages"]) - int(r[f"{point}_free"])
 
 
+def require(ok, what):
+    """Stop the script when a self-check of the committed data fails."""
+    if not ok:
+        sys.exit(f"phase6_tables.py: self-check failed: {what}")
+    print(f"self-check passed: {what}")
+
+
 def section(title):
     print()
     print(f"== {title} ==")
@@ -146,13 +154,14 @@ def ablation(abl, builds, sources):
         print(f"  {b['label']}: {b['commit']} ({b['build']})")
     print(f"ablation CSVs: {', '.join(sources)}")
     labels = {r["label"] for r in abl}
-    print(f"labels in the ablation CSVs match the build list: {labels == {b['label'] for b in builds}}")
-    print(f"build order in this script matches the build list: {BUILDS == [b['label'] for b in builds]}")
+    require(labels == {b["label"] for b in builds}, "the labels in the ablation CSVs match the build list")
+    require(BUILDS == [b["label"] for b in builds], "the build order in this script matches the build list")
     print(f"cells: {len({cell_key(r) for r in abl})}; builds: {len(builds)}; "
           f"repeats per (build, cell, engine): "
           f"{sorted(set(collections.Counter((r['label'], cell_key(r), r['engine']) for r in abl).values()))}")
 
     runs, cells, stats = ablation_stats(abl, "ivmlite")
+    _, ncells, nstats = ablation_stats(abl, "naive_recompute")
 
     section("Ablation, ivmlite per build: median [min, max] over the repeats, ms")
     print("build | n | steady apply + maintain | steady maintain | maintain per view us | first refresh | first refresh per view us | apply | bootstrap")
@@ -207,6 +216,17 @@ def ablation(abl, builds, sources):
                 f"  {change} ({CHANGES[change]}), {metric}, {fmt_cell(k)}: {fmt_mr(p)} -> {fmt_mr(n)} ms; "
                 f"{100 * saved:.1f}% saved; ranges overlap {overlap(p, n)} -> {'MET' if ok else 'MISSED'}"
             )
+            pt, nt = stats[(prev, k)]["total"], stats[(change, k)]["total"]
+            pa, na = stats[(prev, k)]["apply"], stats[(change, k)]["apply"]
+            print(
+                f"    steady apply + maintain {fmt_mr(pt)} -> {fmt_mr(nt)} ms, {100 * (1 - nt[0] / pt[0]):.1f}% saved; "
+                f"apply {fmt_mr(pa)} -> {fmt_mr(na)} ms"
+            )
+            drift = nstats[(change, k)][metric][0] / nstats[(prev, k)][metric][0]
+            print(
+                f"    drift control: naive_recompute {metric} {prev} -> {change} {drift:.3f}x; "
+                f"saved if ivmlite drifted alike: {100 * (1 - n[0] / drift / p[0]):.1f}%"
+            )
 
     section("Ablation, apply share of steady apply + maintain (median over repeats)")
     for k in cells:
@@ -225,7 +245,6 @@ def ablation(abl, builds, sources):
         print(f"  {fmt_cell(k)} (bootstrapped, maintained): " + "; ".join(parts))
 
     section("Ablation drift control: naive_recompute, which no build changes (medians per build, max/min)")
-    _, ncells, nstats = ablation_stats(abl, "naive_recompute")
     spreads = []
     for k in ncells:
         parts = []
@@ -275,7 +294,8 @@ def confirmation(confirm, cells, speedup):
     beats = {k for k, e in cells.items() if total(e["ivmlite"]) < total(e["hand_written_trigger"])}
     print(f"confirmed cells: {len(reps)}; repeats per cell: {sorted({len(v) for v in reps.values()})}")
     print(f"rule-selected cells: {len(selected | beats)} ({len(selected)} by speedup, "
-          f"{len(beats - selected)} more by beating the trigger); matches the CSV: {(selected | beats) == set(reps)}")
+          f"{len(beats - selected)} more by beating the trigger)")
+    require((selected | beats) == set(reps), "the confirmation CSV holds exactly the rule-selected cells")
     print("cell | exploration speedup | confirmed speedup median [min, max] | ivmlite/trigger median [min, max]")
     for k in sorted(reps):
         rs = reps[k]
@@ -434,7 +454,7 @@ def demos(rows, builds):
     for b in builds:
         print(f"  {b['label']}: {b['commit']} (harness {b['harness_commit']}, uncommitted harness changes: "
               f"{b['harness_dirty']}, SQLite {b['sqlite']})")
-    print(f"labels match: {({r['label'] for r in rows}) == {b['label'] for b in builds}}")
+    require({r["label"] for r in rows} == {b["label"] for b in builds}, "the demo labels match the demo build list")
     d = {(r["label"], r["case"], r["mode"]): r for r in rows}
     cases = list(dict.fromkeys(r["case"] for r in rows))
 
