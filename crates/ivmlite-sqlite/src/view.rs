@@ -1805,6 +1805,14 @@ pub fn refresh(
             progress.push((table.clone(), last));
         }
     }
+    // Phase 7 spec §4: nothing past any watermark, so nothing to compute,
+    // stage or apply. The checks above (`checked_schemas`) already ran, so a
+    // view whose capture was lost is reported broken there, never skipped. A
+    // delta that consolidates to empty still moves its watermark, so it has a
+    // progress entry and the apply below must run.
+    if progress.is_empty() && batches.iter().all(|(_, delta)| delta.is_empty()) {
+        return Ok(());
+    }
     let ids = arrangement_ids(&view.plan);
     let (state, output) = compute(conn, name, &view.plan, &ids, &batches)?;
     apply(
