@@ -767,6 +767,13 @@ The right bar has three tiers:
 >
 > The remaining cost is the maintenance itself: the trigger body's B-tree work in the state and output tables is about 40% of refresh, and the operator tree about 27% (Phase 5 spec §6).
 
+> **Amended 2026-10-11, M1b Phase 6:** the benchmark now measures the steady state, one warm-up batch and then five measured batches per cell; Phase 4 and Phase 5 measured the first refresh after `CREATE`, so their figures are not comparable column for column. Measured after Phase 6 removed a refresh's fixed costs, in [`docs/bench/README.md`](../../bench/README.md), "M1b Phase 6":
+> - **Must:** met at 100,000 base rows and above, all 48 such cells above 2x. 62 of 68 cells are above 2x, and the small-table corner (10,000 rows, batches of 1,000 over 1,000 groups) still loses.
+> - **Expected:** still not met. In the confirmed cells, ivmlite's steady apply + refresh is 1.56x the hand-written trigger's at best (10 groups, batch 1,000), and 6.65–8.01x in the others. A refresh's cost per view no longer grows with the view count (about 34 µs per view at batch 1, at every view count), and at batch 1 the exploration's median is 22.53x, not thousands.
+> - **Bonus:** not observed in any cell or repeat.
+>
+> What remains is the maintenance itself, the apply trigger's body and the operator tree; the fixed per-refresh overhead this phase targeted is gone from the steady state.
+
 The third tier is reachable, and the opportunity comes precisely from the batching semantics argued in §8.2: if 10,000 inserts touch only 20 regions, a hand-written row-level trigger runs 10,000 aggregate UPDATEs, while an engine handed the whole batch needs only 20 after consolidating.
 
 **So the benchmark must include the "large Δ + low group cardinality" cell** — the only place the third tier can show up, and, once hand-written triggers are correctly positioned as a "special-purpose upper bound" rather than a "threshold that must be crossed", the thing genuinely worth measuring.

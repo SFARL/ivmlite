@@ -32,6 +32,12 @@ pub const VIEWS: &str = "__ivm_view";
 pub const DEPS: &str = "__ivm_dep";
 pub const PROGRESS: &str = "__ivm_progress";
 
+/// The index on `__ivm_progress(tbl, applied_seq)` (Phase 6 spec §5): the
+/// table's key is `(view, tbl)`, so without it the apply's garbage
+/// collection, which asks for one table's minimum watermark, reads one row
+/// per view of the database.
+pub const PROGRESS_INDEX: &str = "__ivm_progress_tbl";
+
 /// One row per tracked base table: its shape, as generated once when the
 /// table was first tracked (Phase 3b spec §3). Every view that reads the
 /// table relies on that same shape and the triggers built from it.

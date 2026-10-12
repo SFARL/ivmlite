@@ -1080,6 +1080,60 @@ fn a_dropped_output_index_breaks_a_refresh_on_the_same_connection_and_still_drop
     );
 }
 
+/// Phase 6 spec §5: creating any view recreates the progress index, and views
+/// that broke because it was missing work again after the next connect.
+#[test]
+fn creating_a_view_recreates_the_progress_index_and_heals_the_broken_views() {
+    let file = TempFile::new("progidx-heal");
+    {
+        let c = open_with_extension(Some(file.path())).unwrap();
+        setup(&c);
+        create(&c, "sums", SUMS).unwrap();
+        create(
+            &c,
+            "counts",
+            "SELECT region, COUNT(*) FROM orders GROUP BY region",
+        )
+        .unwrap();
+        c.execute_batch("DROP INDEX __ivm_progress_tbl").unwrap();
+    }
+    let message = "its shadow index __ivm_progress_tbl is missing";
+    {
+        let c = open_with_extension(Some(file.path())).unwrap();
+        for view in ["sums", "counts"] {
+            let err = c
+                .execute_batch(&format!("SELECT * FROM {view}"))
+                .expect_err("the progress index is missing");
+            assert!(err.to_string().contains(message), "{view}: {err}");
+        }
+        create(
+            &c,
+            "regions_seen",
+            "SELECT name, COUNT(*) FROM regions GROUP BY name",
+        )
+        .unwrap();
+    }
+    let c = open_with_extension(Some(file.path())).unwrap();
+    c.execute_batch(
+        "INSERT INTO orders VALUES ('a', 7), ('c', 9); INSERT INTO regions VALUES ('d', 'dan')",
+    )
+    .unwrap();
+    for (view, sql) in [
+        ("sums", SUMS),
+        (
+            "counts",
+            "SELECT region, COUNT(*) FROM orders GROUP BY region",
+        ),
+        (
+            "regions_seen",
+            "SELECT name, COUNT(*) FROM regions GROUP BY name",
+        ),
+    ] {
+        refresh(&c, view).unwrap();
+        assert_matches_oracle(&c, view, sql);
+    }
+}
+
 /// The text inside the first balanced `(...)` that immediately follows
 /// `marker` in `text` (`marker` must end in `(`, whose own open paren counts
 /// as depth 1) — so a `(` nested inside the match does not end it early.
@@ -1195,6 +1249,109 @@ fn the_retraction_lookup_searches_the_output_index() {
             d.contains("SEARCH") && d.contains("__ivm_outidx_sums") && d.contains(&expected)
         }),
         "expected a SEARCH on __ivm_outidx_sums covering {expected}: {plan:?}"
+    );
+}
+
+/// The statement of `trigger_sql` that starts with `prefix`, up to its `;`.
+fn statement_starting_with(trigger_sql: &str, prefix: &str) -> String {
+    let start = trigger_sql
+        .find(prefix)
+        .unwrap_or_else(|| panic!("no statement starting {prefix} in {trigger_sql}"));
+    let end = trigger_sql[start..]
+        .find(';')
+        .unwrap_or_else(|| panic!("the statement starting {prefix} has no end"));
+    trigger_sql[start..start + end].to_string()
+}
+
+/// `EXPLAIN QUERY PLAN`'s detail column for `sql`.
+fn query_plan(c: &Connection, sql: &str) -> Vec<String> {
+    c.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(3))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect()
+}
+
+/// Phase 6 spec §5: the apply trigger's own stored garbage collection and
+/// watermark update, read out of `sqlite_schema`, never scan `__ivm_progress`.
+/// The garbage collection's `MIN(applied_seq) … WHERE tbl = …` is what the new
+/// index serves: it becomes a SEARCH on `__ivm_progress_tbl`. The watermark
+/// update already was a SEARCH, on the table's `(view, tbl)` key, so it is
+/// only guarded against a regression. Both reference only regular tables, so
+/// they are explained as the trigger stores them.
+#[test]
+fn the_gc_and_watermark_update_search_the_progress_index() {
+    let c = open_with_extension(None).unwrap();
+    setup(&c);
+    create(&c, "sums", SUMS).unwrap();
+    let trigger_sql: String = c
+        .query_row(
+            "SELECT sql FROM sqlite_schema WHERE type = 'trigger' AND name = '__ivm_apply_sums'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+
+    let gc = statement_starting_with(&trigger_sql, "DELETE FROM \"__ivm_delta_orders\"");
+    let gc_plan = query_plan(&c, &gc);
+    assert!(
+        gc_plan.iter().any(|d| d.contains("SEARCH __ivm_progress")
+            && d.contains("INDEX __ivm_progress_tbl")
+            && d.contains("tbl=?")),
+        "the minimum watermark must be a SEARCH on __ivm_progress_tbl: {gc_plan:?}"
+    );
+
+    let watermark = statement_starting_with(&trigger_sql, "UPDATE \"__ivm_progress\"");
+    let watermark_plan = query_plan(&c, &watermark);
+    assert!(
+        watermark_plan
+            .iter()
+            .any(|d| d.contains("SEARCH __ivm_progress")),
+        "the watermark update must be a SEARCH on __ivm_progress: {watermark_plan:?}"
+    );
+    for (what, plan) in [
+        ("garbage collection", &gc_plan),
+        ("watermark", &watermark_plan),
+    ] {
+        assert!(
+            !plan.iter().any(|d| d.contains("SCAN __ivm_progress")),
+            "the {what} statement scans __ivm_progress: {plan:?}"
+        );
+    }
+}
+
+/// Phase 6 spec §5: without the progress index a refresh would silently read
+/// every view's watermark again, so a view whose index is gone is broken, on
+/// the connection that holds it and on a fresh one, and can still be
+/// dropped.
+#[test]
+fn dropping_the_progress_index_breaks_the_next_refresh() {
+    let file = TempFile::new("progidx");
+    let c = open_with_extension(Some(file.path())).unwrap();
+    setup(&c);
+    create(&c, "sums", SUMS).unwrap();
+    refresh(&c, "sums").unwrap(); // the checks have passed once
+    c.execute_batch("DROP INDEX __ivm_progress_tbl").unwrap();
+    c.execute_batch("INSERT INTO orders VALUES ('a', 5)")
+        .unwrap();
+    let message = "its shadow index __ivm_progress_tbl is missing";
+    let err = refresh(&c, "sums").expect_err("dropped progress index");
+    assert!(err.to_string().contains(message), "{err}");
+
+    let fresh = open_with_extension(Some(file.path())).unwrap();
+    let err = fresh
+        .execute_batch("SELECT * FROM sums")
+        .expect_err("dropped progress index");
+    assert!(err.to_string().contains(message), "{err}");
+
+    c.execute_batch("DROP TABLE sums").unwrap();
+    assert_eq!(
+        count(
+            &c,
+            "SELECT count(*) FROM sqlite_schema WHERE name LIKE '__ivm\\_%' ESCAPE '\\'"
+        ),
+        0
     );
 }
 

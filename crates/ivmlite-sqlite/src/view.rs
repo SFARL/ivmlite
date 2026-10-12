@@ -14,8 +14,9 @@ use crate::catalog::{require_utf8, CaptureInfo, SqliteCatalog};
 use crate::names::{
     apply_trigger, delta_table, has_reserved_prefix, literal, main_qualified, out_index, out_table,
     pend_table, quote, stage_table, state_table, trigger, CAPTURE_EVENTS, DELTA_SEQ, DELTA_W, DEPS,
-    META, PREFIX, PROBE, PROBE_STEP, PROGRESS, TRACKED, VIEWS,
+    META, PREFIX, PROBE, PROBE_STEP, PROGRESS, PROGRESS_INDEX, TRACKED, VIEWS,
 };
+use crate::snapshot::{self, Snapshot};
 use crate::state::{BufferedArrangement, Pending};
 
 /// The shadow-table layout's version, stored in `__ivm_meta` and with each view.
@@ -35,7 +36,11 @@ use crate::state::{BufferedArrangement, Pending};
 /// sentinel row into `apply`, and applies every staged row set-based. A
 /// format-3 database's trigger is the per-row one, so it is refused; since
 /// this is an alpha, it is not migrated.
-pub const FORMAT: i64 = 4;
+///
+/// Format 5 (Phase 6 spec §5) adds the index on `__ivm_progress`'s `tbl`, so
+/// the apply's garbage collection stops reading every view's watermark. A
+/// format-4 database has no such index, and is refused, not migrated.
+pub const FORMAT: i64 = 5;
 
 /// The column of the view's output table that holds each row's weight.
 const WEIGHT: &str = "__w";
@@ -58,6 +63,16 @@ fn exec(conn: &Connection, sql: &str) -> Result<()> {
     conn.execute_batch(sql).map_err(sql_error)
 }
 
+/// Run one statement of the refresh path through the view's statement cache
+/// (Phase 6 spec §3). `execute` steps then resets it; returning it to the
+/// cache only clears its bindings.
+fn execute_cached(conn: &Connection, sql: &str, params: impl rusqlite::Params) -> Result<()> {
+    conn.prepare_cached(sql)
+        .and_then(|mut s| s.execute(params))
+        .map(|_| ())
+        .map_err(sql_error)
+}
+
 /// Compile `sql` against the database's catalog, refusing a non-UTF-8 database.
 fn compile_view(conn: &Connection, sql: &str) -> Result<CompiledView> {
     require_utf8(conn)?;
@@ -75,12 +90,31 @@ fn arrangement_ids(plan: &Plan) -> Vec<ArrangementId> {
     ids
 }
 
-/// Whether the main schema holds an object of `kind` (`table`, `index`,
-/// `trigger`) named exactly `name`.
-fn object_exists(conn: &Connection, kind: &str, name: &str) -> Result<bool> {
+/// Phase 6 spec §3: the fixed statements one view's refresh prepares, so the
+/// cache never evicts one of them for another.
+pub fn statement_capacity(view: &CompiledView) -> usize {
+    const STAGING_SHAPES_PER_KIND: usize = 7; // the full chunk, then 32, 16, 8, 4, 2, 1
+    const MARGIN: usize = 4;
+    let tables = view.tables.len();
+    let arrangements = arrangement_ids(&view.plan).len();
+    let fixed = 1 // schema_version
+        + 1 // latch (one text, bound per table)
+        + 1 // watermark read
+        + tables // delta reads
+        + 2 * arrangements // BufferedArrangement get and scan
+        + 3 // stage delete, sentinel insert, progress insert
+        + 2 * STAGING_SHAPES_PER_KIND
+        + 1; // arming UPDATE
+    fixed + MARGIN
+}
+
+/// Whether the main schema holds a table named exactly `name`, read from
+/// `sqlite_schema` itself: `destroy` and `untrack` run while their own DDL
+/// moves the schema, where no snapshot holds (Phase 6 spec §4).
+fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
     conn.query_row(
-        "SELECT 1 FROM \"main\".sqlite_schema WHERE type = ?1 AND name = ?2",
-        [kind, name],
+        "SELECT 1 FROM \"main\".sqlite_schema WHERE type = 'table' AND name = ?1",
+        [name],
         |_| Ok(()),
     )
     .optional()
@@ -88,23 +122,17 @@ fn object_exists(conn: &Connection, kind: &str, name: &str) -> Result<bool> {
     .map_err(sql_error)
 }
 
-fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
-    object_exists(conn, "table", name)
+/// Whether `snapshot` holds an object of `kind` (`table`, `index`,
+/// `trigger`) named exactly `name`.
+fn object_exists(snapshot: &Snapshot, kind: &str, name: &str) -> bool {
+    snapshot.object(kind, name).is_some()
 }
 
 /// `trigger` must exist and be on `table`. Its name alone proves nothing:
 /// `ALTER TABLE t RENAME TO u` carries `t`'s triggers to `u` under their
 /// old names.
-fn check_trigger(conn: &Connection, trigger: &str, table: &str) -> Result<()> {
-    let on: Option<String> = conn
-        .query_row(
-            "SELECT tbl_name FROM \"main\".sqlite_schema WHERE type = 'trigger' AND name = ?1",
-            [trigger],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(sql_error)?;
-    match on {
+fn check_trigger(snapshot: &Snapshot, trigger: &str, table: &str) -> Result<()> {
+    match snapshot.object("trigger", trigger) {
         None => Err(format!("{trigger} is missing")),
         Some(on) if !on.eq_ignore_ascii_case(table) => {
             Err(format!("{trigger} is on table {on}, not {table}"))
@@ -122,9 +150,11 @@ pub struct Checked {
 
 /// `main`'s schema cookie (Phase 5 spec §3), which SQLite increments on every
 /// schema change any connection makes to the database. Reading it, unlike
-/// setting it, expires no prepared statement.
+/// setting it, expires no prepared statement. Cached (Phase 6 spec §3):
+/// every refresh reads it.
 pub fn schema_version(conn: &Connection) -> Result<i64> {
-    conn.query_row("PRAGMA \"main\".schema_version", [], |r| r.get(0))
+    conn.prepare_cached("PRAGMA \"main\".schema_version")
+        .and_then(|mut s| s.query_row([], |r| r.get(0)))
         .map_err(sql_error)
 }
 
@@ -251,11 +281,14 @@ fn create_global_tables(conn: &Connection) -> Result<()> {
                  PRIMARY KEY(view, tbl));
              CREATE TABLE IF NOT EXISTS {}(view TEXT NOT NULL, tbl TEXT NOT NULL,
                  applied_seq INTEGER NOT NULL, PRIMARY KEY(view, tbl));
+             CREATE INDEX IF NOT EXISTS {} ON {}(tbl, applied_seq);
              INSERT OR IGNORE INTO {meta}(key, value) VALUES ('format', {FORMAT});",
             main_qualified(VIEWS),
             main_qualified(TRACKED),
             main_qualified(DEPS),
             main_qualified(PROGRESS),
+            main_qualified(PROGRESS_INDEX),
+            quote(PROGRESS),
         ),
     )?;
     // The recursive-triggers probe (spec §6.2): `PROBE_STEP` re-inserts into
@@ -742,17 +775,15 @@ fn collect_garbage(conn: &Connection, table: &str) -> Result<()> {
 /// definition, unique indexes or capture triggers; returns the shape its
 /// triggers were generated from. The latch is set by a data write, never by
 /// a schema change, so a refresh reads it even when it skips every other
-/// check (Phase 5 spec §3).
+/// check (Phase 5 spec §3). Cached, one text bound per table (Phase 6 spec
+/// §3).
 fn check_latch(conn: &Connection, table: &str) -> Result<String> {
     let recorded: Option<(String, Option<String>)> = conn
-        .query_row(
-            &format!(
-                "SELECT shape, broken FROM {} WHERE tbl = ?1",
-                main_qualified(TRACKED)
-            ),
-            [table],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
+        .prepare_cached(&format!(
+            "SELECT shape, broken FROM {} WHERE tbl = ?1",
+            main_qualified(TRACKED)
+        ))
+        .and_then(|mut s| s.query_row([table], |r| Ok((r.get(0)?, r.get(1)?))))
         .optional()
         .map_err(sql_error)?;
     let (recorded, latched) = recorded.ok_or_else(|| format!("table {table} is not tracked"))?;
@@ -762,14 +793,61 @@ fn check_latch(conn: &Connection, table: &str) -> Result<String> {
     }
 }
 
-/// `table`'s capture as every view of it relies on: `check_latch`, the shape
-/// its triggers were generated from, and every capture trigger on `table`
-/// itself. Returns `table`'s schema as read for the shape.
-fn check_table_capture(conn: &Connection, table: &str) -> Result<Schema> {
-    let recorded = check_latch(conn, table)?;
+/// `table`'s capture as every view of it relies on: `check_latch`, then its
+/// capture verdict (Phase 6 spec §4), computed once per schema version for
+/// every view of the connection. Returns `table`'s schema as read for the
+/// shape.
+fn check_table_capture(conn: &Connection, snapshot: &mut Snapshot, table: &str) -> Result<Schema> {
+    check_latch(conn, table)?;
+    snapshot.verdict(conn, table)
+}
+
+/// The shape `table`'s capture triggers were generated from, as
+/// `__ivm_tracked` records it. Uncached, like every read behind a catalog
+/// check (Phase 6 spec §3).
+fn recorded_shape(conn: &Connection, table: &str) -> Result<String> {
+    conn.query_row(
+        &format!(
+            "SELECT shape FROM {} WHERE tbl = ?1",
+            main_qualified(TRACKED)
+        ),
+        [table],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(sql_error)?
+    .ok_or_else(|| format!("table {table} is not tracked"))
+}
+
+/// `table`'s capture verdict (Phase 6 spec §4): `check_table_capture`
+/// without the latch, which a data write sets. The shape its triggers were
+/// generated from, read with pragmas, and every capture trigger on `table`
+/// itself, the probe, and the delta and pend tables, looked up in
+/// `snapshot`. The inner result is the verdict: `table`'s schema as read for
+/// the shape, or why its capture is broken. The outer error is a failure to
+/// read the catalog, which says nothing about the capture, so the snapshot
+/// does not keep it.
+pub fn capture_verdict(
+    conn: &Connection,
+    snapshot: &Snapshot,
+    table: &str,
+) -> Result<Result<Schema>> {
+    let recorded = recorded_shape(conn, table)?;
     let capture = SqliteCatalog { conn }.capture(table)?;
     let schema = base_schema(conn, table)?;
-    let now = shape(&schema, &capture);
+    Ok(judge_capture(snapshot, table, &recorded, &schema, &capture).map(|()| schema))
+}
+
+/// The part of `capture_verdict` that reads nothing: the shape against the
+/// recorded one, then the capture's objects in `snapshot`.
+fn judge_capture(
+    snapshot: &Snapshot,
+    table: &str,
+    recorded: &str,
+    schema: &Schema,
+    capture: &CaptureInfo,
+) -> Result<()> {
+    let now = shape(schema, capture);
     if now != recorded {
         return Err(format!(
             "base table {table} changed shape since it was first tracked \
@@ -777,20 +855,20 @@ fn check_table_capture(conn: &Connection, table: &str) -> Result<Schema> {
         ));
     }
     for event in CAPTURE_EVENTS {
-        check_trigger(conn, &trigger(table, event), table)
+        check_trigger(snapshot, &trigger(table, event), table)
             .map_err(|why| format!("its capture trigger {why}"))?;
     }
-    check_trigger(conn, PROBE_STEP, PROBE)
+    check_trigger(snapshot, PROBE_STEP, PROBE)
         .map_err(|why| format!("its recursive-triggers probe {why}"))?;
     // The delta table too, not only at connect (`verify`): a refresh on a
     // connection that is already connected would otherwise fail with a bare
     // "no such table" rather than as a broken view.
     for shadow in [delta_table(table), pend_table(table)] {
-        if !table_exists(conn, &shadow)? {
+        if !object_exists(snapshot, "table", &shadow) {
             return Err(format!("its shadow table {shadow} is missing"));
         }
     }
-    Ok(schema)
+    Ok(())
 }
 
 /// Stop capturing `table`: triggers first, so it stays writable.
@@ -910,7 +988,7 @@ fn read_base(conn: &Connection, schema: &Schema) -> Result<ZSet> {
 /// The deltas of `table` after `after`, consolidated, and the highest `seq` read.
 fn read_deltas(conn: &Connection, schema: &Schema, after: i64) -> Result<(ZSet, i64)> {
     let mut stmt = conn
-        .prepare(&format!(
+        .prepare_cached(&format!(
             "SELECT {DELTA_SEQ}, {DELTA_W}, {} FROM {} WHERE {DELTA_SEQ} > ?1 ORDER BY {DELTA_SEQ}",
             column_list(schema, ""),
             main_qualified(&delta_table(&schema.table))
@@ -1171,9 +1249,10 @@ fn rows_per_statement(width: usize, max_params: usize) -> usize {
 }
 
 /// Stages rows of one shape with multi-row `INSERT … VALUES (…), (…), …`
-/// statements, `chunk` rows at a time, then one remainder statement for the
-/// rows left over (Phase 5 spec §6, amendments 2026-10-08). Each shape is a
-/// `prepare_cached` statement. Rows are inserted in the order they are pushed,
+/// statements, `chunk` rows at a time (Phase 5 spec §6, amendments
+/// 2026-10-08), then the rows left over in chunks of the binary digits of
+/// their count (Phase 6 spec §3). Each shape is a `prepare_cached` statement,
+/// at most seven per kind. Rows are inserted in the order they are pushed,
 /// each with exactly the values it would have had as a one-row insert.
 struct Stager<'c> {
     conn: &'c Connection,
@@ -1228,30 +1307,36 @@ impl<'c> Stager<'c> {
                 self.full = Some(self.sql(self.chunk));
             }
             let sql = self.full.as_deref().expect("filled just above");
-            execute_staging(self.conn, sql, &mut self.values)?;
+            let count = self.values.len();
+            execute_staging(self.conn, sql, &mut self.values, count)?;
         }
         Ok(())
     }
 
-    /// Stage the rows left over, fewer than one chunk, in one statement.
+    /// Stage the rows left over, fewer than one chunk, in chunks of the binary
+    /// digits of their count (32, 16, 8, 4, 2, 1 rows), front first, so every
+    /// staging statement has one of a few cached shapes (Phase 6 spec §3) and
+    /// the rows keep their push order.
     fn finish(mut self) -> Result<()> {
-        if self.values.is_empty() {
-            return Ok(());
+        let mut rows = self.values.len() / self.width;
+        while rows > 0 {
+            let take = 1usize << (usize::BITS - 1 - rows.leading_zeros());
+            let sql = self.sql(take);
+            execute_staging(self.conn, &sql, &mut self.values, take * self.width)?;
+            rows -= take;
         }
-        let sql = self.sql(self.values.len() / self.width);
-        execute_staging(self.conn, &sql, &mut self.values)
+        Ok(())
     }
 }
 
+/// Stage the first `count` of `values`, removing them from the buffer.
 fn execute_staging(
     conn: &Connection,
     sql: &str,
     values: &mut Vec<rusqlite::types::Value>,
+    count: usize,
 ) -> Result<()> {
-    conn.prepare_cached(sql)
-        .and_then(|mut s| s.execute(rusqlite::params_from_iter(values.drain(..))))
-        .map(|_| ())
-        .map_err(sql_error)
+    execute_cached(conn, sql, rusqlite::params_from_iter(values.drain(..count)))
 }
 
 /// Apply `changes` to the state tables, the output table and the watermarks
@@ -1272,11 +1357,11 @@ fn execute_staging(
 fn apply(conn: &Connection, name: &str, view: &CompiledView, changes: &Changes) -> Result<()> {
     use rusqlite::types::Value as SqlValue;
     let stage = main_qualified(&stage_table(name));
-    exec(conn, &format!("DELETE FROM {stage}"))?;
+    execute_cached(conn, &format!("DELETE FROM {stage}"), [])?;
     // The sentinel the arming statement turns into `apply` (Phase 5 spec §4,
     // amendment 2026-10-08), found again by its rowid, not by a scan. It
     // stays a one-row insert of its own, so `last_insert_rowid` is its rowid.
-    exec(conn, &format!("INSERT INTO {stage}(op) VALUES ('arm')"))?;
+    execute_cached(conn, &format!("INSERT INTO {stage}(op) VALUES ('arm')"), [])?;
     let sentinel = conn.last_insert_rowid();
     let max_params = max_params(conn);
     let mut state = Stager::new(
@@ -1323,24 +1408,23 @@ fn apply(conn: &Connection, name: &str, view: &CompiledView, changes: &Changes) 
         )?;
     }
     output.finish()?;
+    let progress = format!("INSERT INTO {stage}(op, tbl, seq) VALUES ('progress', ?1, ?2)");
     for (table, seq) in &changes.progress {
-        conn.execute(
-            &format!("INSERT INTO {stage}(op, tbl, seq) VALUES ('progress', ?1, ?2)"),
-            params![table, seq],
-        )
-        .map_err(sql_error)?;
+        execute_cached(conn, &progress, params![table, seq])?;
     }
     // The one statement that changes durable state, and the last one: a
     // failure after it would report an error for changes that stay applied
     // (Phase 3a §5). The stage is left full here; a refresh's apply is
     // emptied by the next apply, while the bootstrap's is emptied right
-    // after by `create`'s own cleanup DELETE (spec §5). Cached like the
-    // staging inserts, though the cache lasts one callback: `vtab.rs` wraps
-    // the handle in a new `Connection` for each.
-    conn.prepare_cached(&format!("UPDATE {stage} SET op = 'apply' WHERE rowid = ?1"))
-        .and_then(|mut s| s.execute(params![sentinel]))
-        .map(|_| ())
-        .map_err(sql_error)
+    // after by `create`'s own cleanup DELETE (spec §5). Cached like every
+    // statement here, for the view's lifetime (Phase 6 spec §3): preparing it
+    // compiles the apply trigger's whole body, and a statement that is kept
+    // and reset never recompiles it. Returning it to the cache runs no SQL.
+    execute_cached(
+        conn,
+        &format!("UPDATE {stage} SET op = 'apply' WHERE rowid = ?1"),
+        params![sentinel],
+    )
 }
 
 /// `CREATE VIRTUAL TABLE <name> USING ivm('<sql>')`, inside the statement's
@@ -1362,10 +1446,16 @@ pub fn create(conn: &Rc<Connection>, name: &str, sql: &str) -> Result<(CompiledV
         .iter()
         .map(|t| base_schema(conn, t))
         .collect::<Result<_>>()?;
+    // Phase 6 spec §4: a snapshot of create's own, not the connection's: the
+    // DDL below moves the schema while create runs, and the statement may
+    // yet be rolled back. Each tracked table reads it at the version it
+    // finds, after any `track` before it.
+    let mut own = None;
     for schema in &schemas {
         let t = &schema.table;
         if is_tracked(conn, t)? {
-            check_table_capture(conn, t).map_err(|why| {
+            let snapshot = Snapshot::current(&mut own, conn, schema_version(conn)?)?;
+            check_table_capture(conn, snapshot, t).map_err(|why| {
                 format!(
                     "table {t} is tracked but its capture is broken: {why}; drop the views \
                      that read it ({}) and create this view again",
@@ -1459,6 +1549,11 @@ pub fn create(conn: &Rc<Connection>, name: &str, sql: &str) -> Result<(CompiledV
         schema_version: schema_version(conn)?,
         schemas,
     };
+    // Phase 6 spec §3: the bootstrap staged the whole base table, so the
+    // cache now holds its large staging shapes, which a steady refresh never
+    // reuses; finalizing them runs no SQL, so nothing above can be undone by
+    // it. The first refresh prepares what it needs.
+    conn.flush_prepared_statement_cache();
     Ok((view, checked))
 }
 
@@ -1475,7 +1570,7 @@ pub struct Reopened {
 /// every shadow table it relies on must exist; if not, the view still opens —
 /// with the stored declaration — so it can be dropped, and every read and
 /// refresh reports why it is broken.
-pub fn connect(conn: &Connection, name: &str) -> Result<Reopened> {
+pub fn connect(conn: &Connection, shared: &snapshot::Shared, name: &str) -> Result<Reopened> {
     let stored: Option<(String, String, String, i64)> = conn
         .query_row(
             &format!(
@@ -1490,7 +1585,7 @@ pub fn connect(conn: &Connection, name: &str) -> Result<Reopened> {
     let Some((sql, plan, declaration, format)) = stored else {
         return Err(format!("ivmlite has no record of the view {name}"));
     };
-    let (view, checked) = match verify(conn, name, &sql, &plan, format) {
+    let (view, checked) = match verify(conn, shared, name, &sql, &plan, format) {
         Ok((view, checked)) => (Ok(view), Some(checked)),
         Err(why) => (Err(broken(name, &why)), None),
     };
@@ -1506,8 +1601,17 @@ fn broken(name: &str, why: &str) -> String {
     format!("view {name} cannot be maintained: {why}; drop and recreate it")
 }
 
+/// The checks at connect, against the connection's snapshot read afresh
+/// (Phase 6 spec §4; see `snapshot::with_rebuilt` for why afresh). The SQL is
+/// compiled before the snapshot is locked: compiling reads `pragma_table_list`,
+/// which connects every view of the connection not yet connected, so most
+/// nested connects happen here, outside the lock. Not all: a view whose
+/// nested connect failed is connected again by the `pragma_table_list` reads
+/// behind a verdict, inside the lock, which is why `snapshot::with_slot`
+/// never waits for it.
 fn verify(
     conn: &Connection,
+    shared: &snapshot::Shared,
     name: &str,
     sql: &str,
     plan: &str,
@@ -1539,14 +1643,18 @@ fn verify(
     // Phase 4 spec §4: the output index too, so a view whose index the user
     // dropped is broken rather than silently falling back to a full scan.
     needed.push((out_index(name), "index"));
+    // Phase 6 spec §5: and the progress index.
+    needed.push((PROGRESS_INDEX.to_string(), "index"));
     needed.push((stage_table(name), "table"));
     needed.extend(view.tables.iter().map(|t| (delta_table(t), "table")));
-    for (object, kind) in needed {
-        if !object_exists(conn, kind, &object)? {
-            return Err(format!("its shadow {kind} {object} is missing"));
+    let schemas = snapshot::with_rebuilt(shared, conn, version, |snapshot| {
+        for (object, kind) in needed {
+            if !object_exists(snapshot, kind, &object) {
+                return Err(format!("its shadow {kind} {object} is missing"));
+            }
         }
-    }
-    let schemas = check_capture(conn, name, &view)?;
+        check_capture(conn, snapshot, name, &view)
+    })?;
     Ok((
         view,
         Checked {
@@ -1565,10 +1673,22 @@ fn verify(
 /// would see a refresh silently fall back to a full table scan instead of a
 /// broken view (Phase 4 spec §4: the index is what keeps a retraction a
 /// SEARCH rather than a SCAN).
-fn check_output_index(conn: &Connection, name: &str) -> Result<()> {
+fn check_output_index(snapshot: &Snapshot, name: &str) -> Result<()> {
     let index = out_index(name);
-    if !object_exists(conn, "index", &index)? {
+    if !object_exists(snapshot, "index", &index) {
         return Err(format!("its shadow index {index} is missing"));
+    }
+    Ok(())
+}
+
+/// The progress index must exist too (Phase 6 spec §5), checked wherever the
+/// output index is. Without it a refresh does not fail: the apply's garbage
+/// collection silently reads every view's watermark again. The index belongs
+/// to the global tables, not to any base table, so this is a check per view,
+/// outside the per-table verdicts.
+fn check_progress_index(snapshot: &Snapshot) -> Result<()> {
+    if !object_exists(snapshot, "index", PROGRESS_INDEX) {
+        return Err(format!("its shadow index {PROGRESS_INDEX} is missing"));
     }
     Ok(())
 }
@@ -1583,7 +1703,12 @@ fn check_output_index(conn: &Connection, name: &str) -> Result<()> {
 /// uncaptured; without the apply trigger, a refresh would apply nothing.
 /// Either way the view would go stale with no error. Returns the base
 /// tables' schemas, in `view.tables` order.
-fn check_capture(conn: &Connection, name: &str, view: &CompiledView) -> Result<Vec<Schema>> {
+fn check_capture(
+    conn: &Connection,
+    snapshot: &mut Snapshot,
+    name: &str,
+    view: &CompiledView,
+) -> Result<Vec<Schema>> {
     let mut schemas = Vec::with_capacity(view.tables.len());
     for table in &view.tables {
         let recorded: Option<i64> = conn
@@ -1600,9 +1725,9 @@ fn check_capture(conn: &Connection, name: &str, view: &CompiledView) -> Result<V
         if recorded.is_none() {
             return Err(format!("its dependency on table {table} is not recorded"));
         }
-        schemas.push(check_table_capture(conn, table)?);
+        schemas.push(check_table_capture(conn, snapshot, table)?);
     }
-    check_trigger(conn, &apply_trigger(name), &stage_table(name))
+    check_trigger(snapshot, &apply_trigger(name), &stage_table(name))
         .map_err(|why| format!("its apply trigger {why}"))?;
     Ok(schemas)
 }
@@ -1611,10 +1736,12 @@ fn check_capture(conn: &Connection, name: &str, view: &CompiledView) -> Result<V
 /// checks (Phase 5 spec §3). While `main`'s schema cookie still has the value
 /// `checked` passed at, no object those checks inspect can have changed, so
 /// only each table's latch is read: a data write sets it, and moves no
-/// cookie. Otherwise every check runs, and `checked` holds the new cookie
-/// and schemas only once they pass.
+/// cookie. Otherwise every check runs, against the connection's snapshot
+/// brought to the new cookie (Phase 6 spec §4), and `checked` holds the new
+/// cookie and schemas only once they pass.
 fn checked_schemas<'a>(
     conn: &Connection,
+    shared: &snapshot::Shared,
     name: &str,
     view: &CompiledView,
     checked: &'a mut Option<Checked>,
@@ -1630,8 +1757,13 @@ fn checked_schemas<'a>(
         }
         _ => {
             *checked = None;
-            let schemas = check_capture(conn, name, view).map_err(|why| broken(name, &why))?;
-            check_output_index(conn, name).map_err(|why| broken(name, &why))?;
+            let schemas = snapshot::with_current(shared, conn, version, |snapshot| {
+                let schemas = check_capture(conn, snapshot, name, view)?;
+                check_output_index(snapshot, name)?;
+                check_progress_index(snapshot)?;
+                Ok(schemas)
+            })
+            .map_err(|why| broken(name, &why))?;
             *checked = Some(Checked {
                 schema_version: version,
                 schemas,
@@ -1647,26 +1779,25 @@ fn checked_schemas<'a>(
 /// `INSERT INTO v(v) VALUES('refresh')`: bring the view up to date. State,
 /// output and watermarks change together or not at all (see `apply`).
 /// `checked` is the view's per-connection cache of its last passing catalog
-/// check (Phase 5 spec §3), updated here.
+/// check (Phase 5 spec §3), updated here; `shared` is its connection's
+/// catalog snapshot (Phase 6 spec §4).
 pub fn refresh(
     conn: &Rc<Connection>,
+    shared: &snapshot::Shared,
     name: &str,
     view: &CompiledView,
     checked: &mut Option<Checked>,
 ) -> Result<()> {
-    let schemas = checked_schemas(conn, name, view, checked)?;
+    let schemas = checked_schemas(conn, shared, name, view, checked)?;
     let mut batches = Vec::new();
     let mut progress = Vec::new();
     for (table, schema) in view.tables.iter().zip(schemas) {
         let applied: i64 = conn
-            .query_row(
-                &format!(
-                    "SELECT applied_seq FROM {} WHERE view = ?1 AND tbl = ?2",
-                    main_qualified(PROGRESS)
-                ),
-                params![name, table],
-                |r| r.get(0),
-            )
+            .prepare_cached(&format!(
+                "SELECT applied_seq FROM {} WHERE view = ?1 AND tbl = ?2",
+                main_qualified(PROGRESS)
+            ))
+            .and_then(|mut s| s.query_row(params![name, table], |r| r.get(0)))
             .map_err(sql_error)?;
         let (delta, last) = read_deltas(conn, schema, applied)?;
         batches.push((table.clone(), delta));

@@ -14,7 +14,15 @@ use ivmlite_workload::{Workload, WriteAmpWorkload};
 /// The Task 1 CSV header (spec §3.4). `pub(crate)` so `confirm.rs`'s
 /// `parse_csv` reads exploration CSVs against this exact string too, rather
 /// than keeping its own copy that could quietly drift from this one.
-pub(crate) const CSV_HEADER: &str = "engine,views,base_rows,batch_size,group_cardinality,bootstrap_ms,apply_ms,maintain_ms,page_size,base_pages,base_free,bootstrapped_pages,bootstrapped_free,written_pages,written_free,maintained_pages,maintained_free";
+/// M1b Phase 6 spec §6 appends the steady state's two columns at the end, so
+/// every earlier column keeps its position; `confirm::parse_csv` still reads
+/// the Phase 4 and Phase 5 files, which end at `maintained_free`
+/// (`LEGACY_CSV_HEADER`).
+pub(crate) const CSV_HEADER: &str = "engine,views,base_rows,batch_size,group_cardinality,bootstrap_ms,apply_ms,maintain_ms,page_size,base_pages,base_free,bootstrapped_pages,bootstrapped_free,written_pages,written_free,maintained_pages,maintained_free,first_refresh_ms,apply_plus_maintain_ms";
+
+/// The header of the Phase 4 and Phase 5 CSVs, which measured one batch: the
+/// first refresh after `CREATE`, with no steady-state columns.
+pub(crate) const LEGACY_CSV_HEADER: &str = "engine,views,base_rows,batch_size,group_cardinality,bootstrap_ms,apply_ms,maintain_ms,page_size,base_pages,base_free,bootstrapped_pages,bootstrapped_free,written_pages,written_free,maintained_pages,maintained_free";
 
 /// One matrix row: the cell's four dimensions (spec §3.4's "The cell (as M0)"
 /// group) plus the `Measurement` `run_cell` produced for it.
@@ -41,7 +49,7 @@ impl Row {
 
 /// One data row's fields after `engine`, formatted exactly as `CSV_HEADER`
 /// orders them. Shared by every mode's printer (`matrix`, `confirm`,
-/// `ablation`) so the 17 Task 1 columns are written in one place, with each
+/// `ablation`) so the 19 `CSV_HEADER` columns are written in one place, with each
 /// mode only adding its own leading columns (`repeat`, or `label,repeat`).
 fn measurement_csv(
     engine: &str,
@@ -52,7 +60,7 @@ fn measurement_csv(
     m: &Measurement,
 ) -> String {
     format!(
-        "{},{},{},{},{},{:.3},{:.3},{:.3},{},{},{},{},{},{},{},{},{}",
+        "{},{},{},{},{},{:.3},{:.3},{:.3},{},{},{},{},{},{},{},{},{},{:.3},{:.3}",
         engine,
         views,
         base_rows,
@@ -70,6 +78,8 @@ fn measurement_csv(
         m.written.freelist_count,
         m.maintained.page_count,
         m.maintained.freelist_count,
+        m.first_refresh_ms,
+        m.apply_plus_maintain_ms,
     )
 }
 

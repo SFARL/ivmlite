@@ -14,6 +14,7 @@
 mod catalog;
 mod encode;
 mod names;
+mod snapshot;
 mod state;
 mod view;
 mod vtab;

@@ -5,6 +5,15 @@ use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 use serde::{Deserialize, Serialize};
 
+/// How many batches a benchmark cell times after its one warm-up batch (M1b
+/// Phase 6 spec §6). Each step is reported as its median over these rounds,
+/// because a single refresh is too noisy to resolve a change of a few
+/// percent; a cell must fit `1 + MEASURED_ROUNDS` disjoint batches
+/// (`Workload::check_rounds`).
+pub const MEASURED_ROUNDS: usize = 5;
+
+const _: () = assert!(MEASURED_ROUNDS > 0, "a cell must time at least one round");
+
 /// M0 has only Uniform. The enum exists already so that adding Zipf in M2 does
 /// not change the workload file format (spec §10.6).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -658,11 +667,22 @@ impl Workload {
         })
     }
 
-    /// One batch of updates. Every DELETE hits an id that exists and has not
-    /// been deleted yet, and every INSERT uses a fresh id, so the trace is
-    /// always legal: any runner can replay it directly, without keeping its own
-    /// model of "which rows are still alive".
+    /// One batch of updates: the first round of `update_rounds`, so a
+    /// single-batch trace is exactly what it was before rounds existed.
     pub fn update_trace(&self) -> Vec<TraceOp> {
+        self.update_rounds(1).remove(0)
+    }
+
+    /// `rounds` batches of `batch_size` ops each, from one generator that
+    /// continues across the rounds (spec §6): the RNG, the next fresh id and
+    /// the set of deleted base rows carry over, so no row is touched by two
+    /// batches. Every DELETE hits a base row that exists and has not been
+    /// deleted yet, and every INSERT uses a fresh id, so the rounds are
+    /// always legal when replayed in order: any runner can replay them
+    /// directly, without keeping its own model of "which rows are still
+    /// alive". `check_rounds` says whether the base rows can supply the
+    /// deletes the rounds ask for.
+    pub fn update_rounds(&self, rounds: usize) -> Vec<Vec<TraceOp>> {
         let mut rng = StdRng::seed_from_u64(self.seed ^ 0x5EED);
         let card = self.data.group_cardinality.max(1);
         let amount_max = self.data.amount_max.max(1);
@@ -670,27 +690,49 @@ impl Workload {
         let mut next_id = base;
         let mut deleted: std::collections::BTreeSet<i64> = Default::default();
 
-        (0..self.updates.batch_size)
+        (0..rounds)
             .map(|_| {
-                let want_delete = rng.random_bool(self.updates.delete_ratio.clamp(0.0, 1.0));
-                if want_delete && (deleted.len() as i64) < base {
-                    let mut id = rng.random_range(0..base);
-                    while deleted.contains(&id) {
-                        id = rng.random_range(0..base);
-                    }
-                    deleted.insert(id);
-                    TraceOp::Delete { id }
-                } else {
-                    let id = next_id;
-                    next_id += 1;
-                    TraceOp::Insert {
-                        id,
-                        region: format!("r{}", rng.random_range(0..card)),
-                        amount: rng.random_range(0..amount_max),
-                    }
-                }
+                (0..self.updates.batch_size)
+                    .map(|_| {
+                        let want_delete =
+                            rng.random_bool(self.updates.delete_ratio.clamp(0.0, 1.0));
+                        if want_delete && (deleted.len() as i64) < base {
+                            let mut id = rng.random_range(0..base);
+                            while deleted.contains(&id) {
+                                id = rng.random_range(0..base);
+                            }
+                            deleted.insert(id);
+                            TraceOp::Delete { id }
+                        } else {
+                            let id = next_id;
+                            next_id += 1;
+                            TraceOp::Insert {
+                                id,
+                                region: format!("r{}", rng.random_range(0..card)),
+                                amount: rng.random_range(0..amount_max),
+                            }
+                        }
+                    })
+                    .collect()
             })
             .collect()
+    }
+
+    /// Refuse a cell whose base rows cannot supply the deletes of `rounds`
+    /// disjoint batches (spec §6): `rounds × batch_size × delete_ratio` must
+    /// not exceed `base_rows`. Deletes only ever hit base rows, so a cell
+    /// that fails this would run out of rows to delete part way through and
+    /// silently turn its later deletes into inserts.
+    pub fn check_rounds(&self, rounds: usize) -> Result<(), WorkloadError> {
+        let deletes = rounds as f64 * self.updates.batch_size as f64 * self.updates.delete_ratio;
+        if deletes > self.data.base_rows as f64 {
+            return Err(WorkloadError::Invalid(format!(
+                "a cell with base_rows = {} cannot fit {rounds} disjoint batches of \
+                 batch_size = {} at delete_ratio = {}: they would delete about {deletes} rows",
+                self.data.base_rows, self.updates.batch_size, self.updates.delete_ratio
+            )));
+        }
+        Ok(())
     }
 
     /// Export in a form any engine can load: schema.sql / views.sql / data.csv /
@@ -966,6 +1008,90 @@ mod tests {
     #[test]
     fn same_seed_yields_same_trace() {
         assert_eq!(spec().update_trace(), spec().update_trace());
+    }
+
+    /// Join `rel` onto the repository root, so tests can load committed
+    /// files without depending on the process's current directory.
+    fn repo_path(rel: &str) -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(rel)
+    }
+
+    /// Spec §6: the rounds continue one generator, so round 0 is the old
+    /// single-batch trace and no id is touched by two ops of the cell.
+    #[test]
+    fn rounds_continue_one_trace_and_touch_disjoint_rows() {
+        let w = Workload::load(&repo_path("workloads/m0-baseline.toml")).unwrap();
+        let rounds = w.update_rounds(6);
+        assert_eq!(rounds.len(), 6);
+        assert!(rounds.iter().all(|r| r.len() == w.updates.batch_size));
+        assert_eq!(rounds[0], w.update_trace());
+        let mut seen = std::collections::BTreeSet::new();
+        for op in rounds.iter().flatten() {
+            let id = match op {
+                TraceOp::Insert { id, .. } | TraceOp::Delete { id } => *id,
+            };
+            assert!(seen.insert(id), "id {id} touched twice");
+        }
+    }
+
+    /// Spec §6: replayed in order, every round is legal — each delete hits a
+    /// row that is live at that point (a base row, or one an earlier round
+    /// inserted), and each insert uses an id no row holds.
+    #[test]
+    fn every_round_replays_legally_after_the_rounds_before_it() {
+        let w = spec();
+        let rounds = 1 + MEASURED_ROUNDS;
+        w.check_rounds(rounds).unwrap();
+        let mut live: BTreeSet<i64> = w.rows().map(|(id, _, _)| id).collect();
+        for (round, ops) in w.update_rounds(rounds).iter().enumerate() {
+            for op in ops {
+                match op {
+                    TraceOp::Insert { id, .. } => assert!(
+                        live.insert(*id),
+                        "round {round} inserts id {id}, which is already live"
+                    ),
+                    TraceOp::Delete { id } => assert!(
+                        live.remove(id),
+                        "round {round} deletes id {id}, which is not live"
+                    ),
+                }
+            }
+        }
+    }
+
+    /// Spec §6: every shipped matrix and ablation cell (the confirmation
+    /// re-runs matrix cells) fits the warm-up plus the measured rounds, and a
+    /// cell whose base rows cannot supply the deletes is refused with its
+    /// numbers in the message.
+    #[test]
+    fn check_rounds_accepts_every_shipped_cell_and_refuses_a_cell_too_small() {
+        let base = Workload::load(&repo_path("workloads/m0-baseline.toml")).unwrap();
+        let rounds = 1 + MEASURED_ROUNDS;
+        for cell in base.cells() {
+            cell.check_rounds(rounds).unwrap_or_else(|e| {
+                panic!(
+                    "matrix cell base_rows={} batch_size={}: {e}",
+                    cell.data.base_rows, cell.updates.batch_size
+                )
+            });
+        }
+        for c in &base.ablation.as_ref().unwrap().cells {
+            base.with_cell(c.base_rows, c.group_cardinality, c.views, c.batch_size)
+                .check_rounds(rounds)
+                .unwrap_or_else(|e| panic!("ablation cell {c:?}: {e}"));
+        }
+
+        let mut small = spec();
+        small.data.base_rows = 10;
+        small.data.group_cardinality = 5;
+        small.updates.batch_size = 100;
+        small.updates.delete_ratio = 0.33;
+        let err = small.check_rounds(rounds).unwrap_err().to_string();
+        for part in ["base_rows = 10", "batch_size = 100", "6 disjoint batches"] {
+            assert!(err.contains(part), "{part:?} missing from: {err}");
+        }
     }
 
     #[test]

@@ -10,7 +10,7 @@ filter and one two-table inner equi-join, captures ordinary SQL writes with
 triggers, and updates a materialized result when the application explicitly
 refreshes it.
 
-**Current status: `v0.1.0-alpha.3` technical preview.** Use it to test real
+**Current status: `v0.1.0-alpha.4` technical preview.** Use it to test real
 workloads and help shape the SQL subset. The on-disk format and supported SQL
 may change before a stable release.
 
@@ -30,7 +30,7 @@ usually a better fit.
 ## Quick start
 
 Download the archive for your platform from the
-[v0.1.0-alpha.3 release](https://github.com/SFARL/ivmlite/releases/tag/v0.1.0-alpha.3),
+[v0.1.0-alpha.4 release](https://github.com/SFARL/ivmlite/releases/tag/v0.1.0-alpha.4),
 extract it, and start a SQLite CLI that supports loadable extensions.
 
 On macOS, the system SQLite omits extension loading. Install SQLite with
@@ -143,15 +143,15 @@ Median same-host results on an Apple M2 Pro:
 
 | Executable slice | 25k base + 1k inserted | 250k base + 100 inserted |
 |---|---:|---:|
-| Datasette county facet | ivmlite **5.37× slower** | ivmlite **8.84× faster** |
-| Org-roam tag counts | ivmlite **2.95× slower** | ivmlite **31.99× faster** |
-| Taproot event counts | ivmlite **2.76× slower** | ivmlite **28.70× faster** |
+| Datasette county facet | ivmlite **5.45× slower** | ivmlite **9.75× faster** |
+| Org-roam tag counts | ivmlite **2.94× slower** | ivmlite **36.70× faster** |
+| Taproot event counts | ivmlite **2.72× slower** | ivmlite **30.62× faster** |
 
 These are synthetic fixtures shaped by real reports, not reproductions of the
 original applications. All three slices cross over: each loses to full
 recomputation at 25k base rows with 1k inserted and wins at 250k with 100
-inserted. The run was measured on a heavily loaded machine (one-minute load
-average 18.75–21.06), so read the ratios rather than the absolute times. Read the
+inserted. The run was measured on a machine that was not idle (one-minute
+load average 4.32–4.51), so read the ratios rather than the absolute times. Read the
 [methodology, exact timings, adaptations, and missing evidence](docs/cases/evaluation/README.md)
 before quoting the results.
 
@@ -182,8 +182,8 @@ cargo run --release --locked -p ivmlite-test \
 Run the M1b Phase 4 benchmark (the extension against hand-written triggers and
 full recomputation, with confirmation repeats and a write-amplification
 workload); [`docs/bench/README.md`](docs/bench/README.md) has the full
-reproduce block and the results for Phase 4 and for M1b Phase 5's
-refresh-performance follow-up:
+reproduce block and the results for Phase 4, for M1b Phase 5's
+refresh-performance follow-up, and for M1b Phase 6's steady-state refresh:
 
 ```sh
 scripts/bench.sh matrix > m1b-phase4.csv

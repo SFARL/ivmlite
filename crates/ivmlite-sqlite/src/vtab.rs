@@ -17,6 +17,7 @@ use rusqlite::vtab::{
 use rusqlite::{ffi, Connection, Error};
 
 use crate::names::{main_qualified, out_table, quote};
+use crate::snapshot;
 use crate::view::{self, Checked};
 
 /// Run a callback body, turning its error and any panic into an SQLite error.
@@ -37,15 +38,6 @@ fn guard<T>(body: impl FnOnce() -> Result<T, String>) -> rusqlite::Result<T> {
     }
 }
 
-/// A non-owning `Connection` over the handle SQLite called us on.
-fn connection(db: *mut ffi::sqlite3) -> Result<Rc<Connection>, String> {
-    // SAFETY: `db` is the live handle SQLite passed to this callback; a
-    // `Connection` made by `from_handle` never closes it.
-    unsafe { Connection::from_handle(db) }
-        .map(Rc::new)
-        .map_err(|e| e.to_string())
-}
-
 fn utf8<'a>(bytes: &'a [u8], what: &str) -> Result<&'a str, String> {
     std::str::from_utf8(bytes).map_err(|_| format!("the {what} is not UTF-8"))
 }
@@ -58,33 +50,53 @@ type Opened = (String, Result<CompiledView, String>, Option<Checked>);
 pub struct IvmTab {
     /// Must come first: SQLite sees this struct as a `sqlite3_vtab`.
     base: ffi::sqlite3_vtab,
-    db: *mut ffi::sqlite3,
+    /// The view's one non-owning `Connection` over the handle it was opened
+    /// on (Phase 6 spec §3), used by every later callback of the view. Its
+    /// statement cache lives as long as the view: dropping it in xDisconnect
+    /// or xDestroy finalizes every cached statement, and SQLite calls
+    /// xDisconnect before `sqlite3_close` checks for unfinalized statements.
+    conn: Rc<Connection>,
     name: String,
     /// The compiled view, or why a reopened view can no longer be maintained.
     view: Result<CompiledView, String>,
     /// What the view's last passing catalog check on this connection saw
     /// (Phase 5 spec §3); `None` for a broken view.
     checked: Option<Checked>,
+    /// The catalog snapshot every view on this connection shares (Phase 6
+    /// spec §4). Holding it keeps it alive: it is freed when the last view of
+    /// the connection disconnects.
+    snapshot: snapshot::Shared,
 }
 
 impl IvmTab {
     /// Shared by create and connect: `make` returns the declaration, the
-    /// view (or why it is broken) and what its passing checks saw.
+    /// view (or why it is broken) and what its passing checks saw. The
+    /// connection's snapshot is found here, so connect's own checks already
+    /// use it (Phase 6 spec §4).
     fn open_view(
         db: &mut VTabConnection,
         database: &[u8],
         table: &[u8],
-        make: impl FnOnce(&Rc<Connection>, &str) -> Result<Opened, String>,
+        make: impl FnOnce(&Rc<Connection>, &snapshot::Shared, &str) -> Result<Opened, String>,
     ) -> rusqlite::Result<(Cow<'static, CStr>, Self)> {
         guard(|| {
             if database != b"main" {
                 return Err("ivmlite v0 views live in the main database only".to_string());
             }
             let name = utf8(table, "view name")?.to_string();
-            // SAFETY: the handle of the connection running this statement.
-            let handle = unsafe { db.handle() };
-            let conn = connection(handle)?;
-            let (declaration, view, checked) = make(&conn, &name)?;
+            // SAFETY: the handle of the connection running this statement,
+            // live as long as this view's virtual table; a `Connection` made
+            // by `from_handle` never closes it.
+            let conn = unsafe { Connection::from_handle(db.handle()) }
+                .map(Rc::new)
+                .map_err(|e| e.to_string())?;
+            // SAFETY: only the handle's address is used, as the registry's key.
+            let snapshot = snapshot::for_connection(unsafe { conn.handle() });
+            let (declaration, view, checked) = make(&conn, &snapshot, &name)?;
+            // A broken view keeps rusqlite's default: it never refreshes.
+            if let Ok(compiled) = &view {
+                conn.set_prepared_statement_cache_capacity(view::statement_capacity(compiled));
+            }
             let declared = CString::new(declaration)
                 .map(Cow::Owned)
                 .map_err(|_| "a column name contains a NUL byte".to_string())?;
@@ -92,10 +104,11 @@ impl IvmTab {
                 declared,
                 IvmTab {
                     base: ffi::sqlite3_vtab::default(),
-                    db: handle,
+                    conn,
                     name,
                     view,
                     checked,
+                    snapshot,
                 },
             ))
         })
@@ -120,8 +133,8 @@ unsafe impl<'vtab> VTab<'vtab> for IvmTab {
         table: &[u8],
         _args: &[&[u8]],
     ) -> rusqlite::Result<(Cow<'static, CStr>, Self)> {
-        IvmTab::open_view(db, database, table, |conn, name| {
-            let reopened = view::connect(conn, name)?;
+        IvmTab::open_view(db, database, table, |conn, snapshot, name| {
+            let reopened = view::connect(conn, snapshot, name)?;
             Ok((reopened.declaration, reopened.view, reopened.checked))
         })
     }
@@ -147,7 +160,7 @@ unsafe impl<'vtab> VTab<'vtab> for IvmTab {
             .map(|view| view.columns.iter().map(|c| quote(&c.name)).collect());
         Ok(IvmCursor {
             base: ffi::sqlite3_vtab_cursor::default(),
-            db: self.db,
+            conn: Rc::clone(&self.conn),
             out_table: out_table(&self.name),
             cols,
             rows: Vec::new(),
@@ -167,7 +180,7 @@ impl CreateVTab<'_> for IvmTab {
         table: &[u8],
         args: &[&[u8]],
     ) -> rusqlite::Result<(Cow<'static, CStr>, Self)> {
-        IvmTab::open_view(db, database, table, |conn, name| {
+        IvmTab::open_view(db, database, table, |conn, _snapshot, name| {
             let [arg] = args else {
                 return Err(
                     "USING ivm takes one argument, the view's SELECT as a string literal"
@@ -185,7 +198,7 @@ impl CreateVTab<'_> for IvmTab {
     }
 
     fn destroy(&self) -> rusqlite::Result<()> {
-        guard(|| view::destroy(&*connection(self.db)?, &self.name))
+        guard(|| view::destroy(&self.conn, &self.name))
     }
 }
 
@@ -217,7 +230,13 @@ impl UpdateVTab<'_> for IvmTab {
                             );
                         }
                     }
-                    view::refresh(&connection(self.db)?, &self.name, view, &mut self.checked)?;
+                    view::refresh(
+                        &self.conn,
+                        &self.snapshot,
+                        &self.name,
+                        view,
+                        &mut self.checked,
+                    )?;
                     Ok(0)
                 }
                 Some(other) => Err(format!(
@@ -274,7 +293,10 @@ pub unsafe extern "C" fn refuse_rename(
 pub struct IvmCursor {
     /// Must come first: SQLite sees this struct as a `sqlite3_vtab_cursor`.
     base: ffi::sqlite3_vtab_cursor,
-    db: *mut ffi::sqlite3,
+    /// The view's `Connection`, shared rather than borrowed from `IvmTab`
+    /// (see `open`). A read prepares its `SELECT` uncached each time: the
+    /// statement cache covers the refresh path only (Phase 6 spec §3).
+    conn: Rc<Connection>,
     out_table: String,
     /// The quoted output columns, or why the view is broken. Copied out of
     /// `IvmTab` at `open` (see its comment for why): the cursor owns
@@ -296,9 +318,9 @@ unsafe impl VTabCursor for IvmCursor {
     ) -> rusqlite::Result<()> {
         guard(|| {
             let cols = self.cols.as_ref().map_err(|e| e.clone())?;
-            let conn = connection(self.db)?;
             let n = cols.len();
-            let mut stmt = conn
+            let mut stmt = self
+                .conn
                 .prepare(&format!(
                     "SELECT rowid, {} FROM {}",
                     cols.join(", "),

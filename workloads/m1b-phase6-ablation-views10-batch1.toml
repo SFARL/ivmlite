@@ -1,0 +1,88 @@
+# M1b Phase 6 (spec §7): the supplementary ablation cell. This is
+# workloads/m0-baseline.toml with its [ablation] cells replaced by the one
+# cell §3's bar names that no shipped ablation cell covers: 10 views at
+# batch 1. It produced docs/bench/m1b-phase6-ablation-views10-batch1.csv:
+#
+#   WORKLOAD=workloads/m1b-phase6-ablation-views10-batch1.toml \
+#   WRITE_WORKLOAD=workloads/m1b-phase6-write-amp-minimal.toml \
+#   OUT=docs/bench/m1b-phase6-ablation-views10-batch1.csv WRITE_AMP_OUT=<discarded> \
+#   scripts/bench-ablation.sh before=ebd716b stmtcache=5bd851f snapshot=a0cf490 progidx=a92a570
+#
+# Everything above [ablation] is unchanged from m0-baseline.toml, so the cell
+# derives its views, data and trace exactly as the shipped workload does.
+name = "m0-baseline"
+seed = 47034
+
+[schema]
+table = "orders"
+ddl = """
+CREATE TABLE orders(
+    id     INTEGER PRIMARY KEY,
+    region TEXT    NOT NULL,
+    amount INTEGER NOT NULL
+) STRICT"""
+
+[data]
+base_rows = 100000
+# Group cardinality: the first-order parameter for whether IVM wins (spec §10.1).
+group_cardinality = 1000
+amount_max = 200
+# M0 fixes a uniform distribution; Zipf is scheduled for M2 (spec §10.6).
+distribution = "uniform"
+
+[updates]
+batch_size = 100
+delete_ratio = 0.33
+# M0 fixes no locality; hot-spot updates are scheduled for M2 (spec §10.6).
+locality = "uniform"
+
+# View shapes are limited by the least expressive baseline — hand-written
+# triggers (spec §10.3 item 3). The threshold is what makes the views differ from
+# one another; the trigger side expresses the same predicate as a WHEN clause.
+# These two are the default view set `Workload::load` requires to be valid before
+# [matrix] is evaluated; `Workload::cells()` replaces `views` wholesale using the
+# [matrix] rules.
+[[views]]
+id = 0
+threshold = 0
+
+[[views]]
+id = 1
+threshold = 7
+
+# The complete derivation rules for the M0 benchmark matrix (spec §10.3 item 7):
+# the single source of truth for the 204 rows of docs/bench/m0-baseline.csv.
+# `Workload::cells()` reads this section and produces a concrete Workload for
+# every measured cell. Any engine's runner that loads this file and calls
+# `cells()` re-derives exactly the cells this repository measured, without
+# re-implementing the two-sweep structure, the view-threshold formula, or the
+# `group_cardinality > base_rows` skip rule itself.
+[matrix]
+# Base-table sizes and batch sizes shared by both sweeps.
+base_rows = [10000, 100000, 1000000]
+batch_sizes = [1, 10, 100, 1000]
+# View counts for sweep two (views x base_rows x batch size).
+view_counts = [1, 10, 50, 200]
+# Group cardinalities for sweep one (group cardinality x base_rows x batch size).
+group_cardinalities = [10, 1000, 100000]
+# Sweep one's fixed view count and sweep two's fixed group cardinality. Both
+# sweeps pass through the same point (views=10, group_cardinality=1000), so the
+# two sets of charts can be read side by side.
+fixed_views = 10
+fixed_cardinality = 1000
+# The threshold of view i = (i * view_threshold_stride) % view_threshold_modulus.
+view_threshold_stride = 7
+view_threshold_modulus = 150
+
+# M1b Phase 4 Task 2 (spec §6): the fixed set of cells `ivmlite-bench ablation`
+# measures, held fixed rather than derived from [matrix]. They cover low and
+# high group cardinality, and few and many views.
+[ablation]
+repeats = 5
+
+# M1b Phase 6 (spec §7): a supplementary cell for §3's bar at 10 views.
+[[ablation.cells]]
+base_rows = 100000
+group_cardinality = 1000
+views = 10
+batch_size = 1
