@@ -1461,6 +1461,8 @@ seeded generator, so they are not the matrix's rows:
 
 **Protocol.** Each case runs in a fresh in-memory database. It applies one
 warm-up batch and refreshes every view, then applies five measured batches.
+In `write=none` no batch writes anything, so the warm-up is only the first
+refresh after `CREATE`.
 Only the refresh of every view is timed. Each batch's writes run untimed, in
 one transaction, just before it. After the last batch, every view is checked
 against SQLite's own evaluation of its query, and none mismatched. The whole
@@ -1553,12 +1555,13 @@ median against the other shape's in the same round.
 | 10 views, batch 1,000 | 58.261 | 56.924 | 0.977x | −133.7 | 0.974–0.980x | 0.979x |
 | 200 views, batch 1,000 | 986.169 | 944.844 | 0.958x | −206.6 | 0.958–0.976x | 0.965x |
 
-- **The fixed cost is 4.0–5.4 µs per view per call.** It is the same with
+- **The fixed cost is 4.0–5.4 µs per view per call.** It is similar with
   10 or 200 views, and with one-row or empty batches. Every round agrees: the
   function was slower in every round of these four cases. The batch ranges
   overlap in all but `write=none`, where every view is idle and the function
   takes 1.99x the loop's time.
-- **Why: its nested statements are prepared on every call.** For each view,
+- **Likely why: its per-view statements are prepared on every call.** The
+  driver cannot split the cost between them (next bullet). For each view,
   the function prepares and finalizes the nested `INSERT INTO v(v)`, plus
   the statements that count skips: the view's watermark and each base table's
   latest delta (§4). A statement that names an ivmlite virtual table holds a

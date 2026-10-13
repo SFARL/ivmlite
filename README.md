@@ -159,7 +159,9 @@ SELECT ivm_refresh_all('continue');
   `INSERT INTO t SELECT ivm_refresh_all()`, it fails with
   `ivm_refresh_all must be called from a SELECT, not from a statement that writes`.
   SQLite refuses it inside triggers, views and `CHECK` constraints. Inside
-  `BEGIN … COMMIT` it works, and a later `ROLLBACK` undoes it.
+  `BEGIN … COMMIT` it works, and a later `ROLLBACK` undoes it. In autocommit,
+  if its own commit is refused (for example `SQLITE_BUSY` while another
+  connection reads), it rolls the whole call back and fails.
 - It is for atomicity and convenience, not speed. It prepares its
   statements again on every call, so with small batches a loop that keeps
   each view's refresh statement prepared is faster, by about 4–5 µs per view

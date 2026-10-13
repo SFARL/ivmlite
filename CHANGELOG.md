@@ -46,8 +46,8 @@ SQL subset and persisted shadow-table format without migration.
   still run, so a base table recreated without its capture triggers still
   breaks the view instead of leaving it silently stale. An idle view's
   refresh fell from 18.7 to 4.3 µs: refreshing 200 idle views takes 0.866 ms
-  instead of 3.748 ms (4.33x), and 1.33x less time when half of them are
-  idle. The shadow-table format is unchanged (5).
+  instead of 3.748 ms (4.33x), and is 1.33x faster when half of them are
+  idle (in every round, with overlapping ranges). The shadow-table format is unchanged (5).
 
 ## [0.1.0-alpha.4] - 2026-10-12
 
