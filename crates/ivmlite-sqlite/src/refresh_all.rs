@@ -11,6 +11,8 @@
 //! top-level `SELECT` can open one, so this function is what makes many
 //! views' refreshes atomic together (spec §1).
 
+use std::collections::HashMap;
+
 use rusqlite::functions::{Context, FunctionFlags};
 use rusqlite::types::{Value, ValueRef};
 use rusqlite::Connection;
@@ -316,16 +318,23 @@ fn views(conn: &Connection) -> Result<Vec<View>> {
     if !exists {
         return Ok(Vec::new());
     }
-    // The stored DDL of the virtual table each row names, if any; a name
-    // that is not TEXT (a tampered row) is reported by its `quote()`.
-    let rows: Vec<(String, Option<String>)> = conn
+    // Each row's name, or, for a name that is not TEXT (a tampered row), its
+    // `quote()`, which names no table.
+    let rows: Vec<(String, bool)> = conn
         .prepare(&format!(
-            "SELECT CASE WHEN typeof(v.name) = 'text' THEN v.name ELSE quote(v.name) END, \
-             (SELECT s.sql FROM \"main\".sqlite_schema AS s \
-              WHERE s.type = 'table' AND s.name = v.name AND typeof(v.name) = 'text') \
-             FROM {} AS v ORDER BY v.name",
+            "SELECT CASE WHEN typeof(name) = 'text' THEN name ELSE quote(name) END, \
+             typeof(name) = 'text' FROM {} ORDER BY name",
             main_qualified(VIEWS)
         ))
+        .and_then(|mut s| s.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect())
+        .map_err(sql_error)?;
+    // Every virtual table's stored DDL, in one scan: `sqlite_schema` has no
+    // index on `name`, so a lookup per view would scan it once per view.
+    let virtual_tables: HashMap<String, String> = conn
+        .prepare(
+            "SELECT name, sql FROM \"main\".sqlite_schema \
+             WHERE type = 'table' AND sql LIKE 'CREATE VIRTUAL TABLE %'",
+        )
         .and_then(|mut s| s.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect())
         .map_err(sql_error)?;
     let mut deps = conn
@@ -335,8 +344,8 @@ fn views(conn: &Connection) -> Result<Vec<View>> {
         ))
         .map_err(sql_error)?;
     rows.into_iter()
-        .map(|(name, sql)| {
-            let is_ivm = sql.as_deref().is_some_and(uses_ivm);
+        .map(|(name, is_text)| {
+            let is_ivm = is_text && virtual_tables.get(&name).is_some_and(|sql| uses_ivm(sql));
             let tables = if is_ivm {
                 deps.query_map([&name], |r| r.get(0))
                     .and_then(|rows| rows.collect())
