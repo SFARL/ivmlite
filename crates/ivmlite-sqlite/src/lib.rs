@@ -1,9 +1,11 @@
 //! ivmlite as a SQLite loadable extension (spec §4.3; Phase 3a spec): the
-//! `ivm` virtual-table module.
+//! `ivm` virtual-table module, and the `ivm_refresh_all` function (M1b
+//! Phase 7 spec §2).
 //!
 //! ```sql
 //! CREATE VIRTUAL TABLE revenue USING ivm('SELECT region, SUM(amount) FROM orders GROUP BY region');
 //! INSERT INTO revenue(revenue) VALUES ('refresh');
+//! SELECT ivm_refresh_all();
 //! SELECT * FROM revenue;
 //! DROP TABLE revenue;
 //! ```
@@ -14,6 +16,7 @@
 mod catalog;
 mod encode;
 mod names;
+mod refresh_all;
 mod snapshot;
 mod state;
 mod view;
@@ -53,8 +56,8 @@ pub unsafe extern "C" fn sqlite3_ivmlite_init(
     // SAFETY: `db`, `err` and `api` are exactly what SQLite passed to this
     // `sqlite3_ivmlite_init` call (the entry point's own contract, see its
     // doc comment above); `extension_init2`'s contract is that `init` must do
-    // nothing but register features, and the closure below only calls
-    // `create_module`.
+    // nothing but register features, and the closure below only registers
+    // the module and the `ivm_refresh_all` function.
     unsafe {
         Connection::extension_init2(db, err, api, |conn| {
             let registration = std::panic::catch_unwind(AssertUnwindSafe(|| {
@@ -75,7 +78,7 @@ pub unsafe extern "C" fn sqlite3_ivmlite_init(
                         Some("registering the ivm module".to_string()),
                     ));
                 }
-                Ok(())
+                refresh_all::register(&conn)
             }))
             .unwrap_or_else(|_| {
                 Err(rusqlite::Error::ModuleError(

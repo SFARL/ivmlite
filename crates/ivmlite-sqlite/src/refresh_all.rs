@@ -1,0 +1,336 @@
+//! `ivm_refresh_all([mode])` (M1b Phase 7 spec §2–§4): refresh every view of
+//! the database in one call, atomically or view by view.
+//!
+//! ```sql
+//! SELECT ivm_refresh_all();            -- 'atomic': every view, or none
+//! SELECT ivm_refresh_all('continue');  -- each view on its own
+//! ```
+//!
+//! A view's own refresh, `INSERT INTO v(v)`, runs inside a writing
+//! statement, where SQLite refuses `SAVEPOINT`. A function called from a
+//! top-level `SELECT` can open one, so this function is what makes many
+//! views' refreshes atomic together (spec §1).
+
+use rusqlite::functions::{Context, FunctionFlags};
+use rusqlite::types::{Value, ValueRef};
+use rusqlite::Connection;
+
+use crate::names::{delta_table, main_qualified, quote, DELTA_SEQ, DEPS, PROGRESS, VIEWS};
+use crate::vtab::guard;
+
+/// The function's savepoint (spec §2); reserved, and always quoted.
+pub const SAVEPOINT: &str = "__ivm_refresh_all";
+pub const BAD_ARGUMENT: &str = "ivm_refresh_all takes 'atomic' or 'continue'";
+pub const NOT_FROM_A_WRITE: &str =
+    "ivm_refresh_all must be called from a SELECT, not from a statement that writes";
+
+type Result<T> = std::result::Result<T, String>;
+
+fn sql_error(e: rusqlite::Error) -> String {
+    e.to_string()
+}
+
+/// Run `sql` with statements prepared and finalized here, never cached
+/// (spec §3).
+fn exec(conn: &Connection, sql: &str) -> Result<()> {
+    conn.execute_batch(sql).map_err(sql_error)
+}
+
+/// Phase 7 spec §2: register `ivm_refresh_all([mode])` on `conn`.
+///
+/// `SQLITE_DIRECTONLY` keeps it out of triggers, views and CHECK
+/// constraints, as SQLite recommends for a function with side effects. It
+/// is not deterministic. Its errors carry a message, so SQLite reports
+/// them as `SQLITE_ERROR` (`sqlite3_result_error` sets that code), never
+/// a code such as `SQLITE_FULL` that would roll back the caller's whole
+/// transaction after the function has already undone its own work.
+pub fn register(conn: &Connection) -> rusqlite::Result<()> {
+    conn.create_scalar_function(
+        "ivm_refresh_all",
+        -1,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DIRECTONLY,
+        |ctx| {
+            guard(|| {
+                let mode = mode(ctx)?;
+                // SAFETY: the handle of the statement calling this function,
+                // live for the whole call. The `ConnectionRef` never closes
+                // it, stays on this thread and dies before the call returns,
+                // and every statement prepared on it is finalized before then
+                // (spec §3); nothing here resets or finalizes the calling
+                // statement.
+                let conn = unsafe { ctx.get_connection() }.map_err(sql_error)?;
+                run(&conn, mode)
+            })
+        },
+    )
+}
+
+#[derive(Clone, Copy)]
+enum Mode {
+    Atomic,
+    Continue,
+}
+
+/// Spec §2: no argument means `'atomic'`; anything else but `'atomic'` or
+/// `'continue'`, or more than one argument, is refused.
+fn mode(ctx: &Context<'_>) -> Result<Mode> {
+    match ctx.len() {
+        0 => Ok(Mode::Atomic),
+        1 => match ctx.get_raw(0) {
+            ValueRef::Text(b"atomic") => Ok(Mode::Atomic),
+            ValueRef::Text(b"continue") => Ok(Mode::Continue),
+            _ => Err(BAD_ARGUMENT.to_string()),
+        },
+        _ => Err(BAD_ARGUMENT.to_string()),
+    }
+}
+
+/// An open `SAVEPOINT "__ivm_refresh_all"` (spec §2). `release` and
+/// `roll_back` close it and report their errors. `Drop` is the backstop for
+/// a path that leaves it open, an early `?` or a panic's unwinding: it rolls
+/// back and releases, and cannot report.
+struct Savepoint<'c> {
+    conn: &'c Connection,
+    open: bool,
+}
+
+impl<'c> Savepoint<'c> {
+    fn open(conn: &'c Connection) -> rusqlite::Result<Self> {
+        conn.execute_batch(&format!("SAVEPOINT {}", quote(SAVEPOINT)))?;
+        Ok(Savepoint { conn, open: true })
+    }
+
+    fn release(mut self) -> Result<()> {
+        self.open = false;
+        exec(self.conn, &format!("RELEASE {}", quote(SAVEPOINT)))
+    }
+
+    fn roll_back(mut self) -> Result<()> {
+        self.open = false;
+        roll_back_and_release(self.conn).map_err(sql_error)
+    }
+}
+
+impl Drop for Savepoint<'_> {
+    fn drop(&mut self) {
+        if self.open {
+            let _ = roll_back_and_release(self.conn);
+        }
+    }
+}
+
+/// Undo everything since the savepoint, then close it. A failed
+/// `ROLLBACK TO` stops the batch before the `RELEASE`, which would otherwise
+/// keep the writes it failed to undo.
+fn roll_back_and_release(conn: &Connection) -> rusqlite::Result<()> {
+    let name = quote(SAVEPOINT);
+    conn.execute_batch(&format!("ROLLBACK TO {name}; RELEASE {name}"))
+}
+
+/// Spec §2: open the call's savepoint, refresh, then release it, or roll
+/// it back if the call fails. Only the `SAVEPOINT` statement's own error is
+/// read as a call from a writing statement.
+fn run(conn: &Connection, mode: Mode) -> Result<Value> {
+    let call = Savepoint::open(conn).map_err(|_| NOT_FROM_A_WRITE.to_string())?;
+    let outcome = match mode {
+        Mode::Atomic => atomic(conn),
+        Mode::Continue => continuing(conn),
+    };
+    match outcome {
+        Ok(value) => {
+            call.release()?;
+            Ok(value)
+        }
+        Err(message) => {
+            call.roll_back()?;
+            Err(message)
+        }
+    }
+}
+
+/// Spec §2, `'atomic'`: the first failure fails the call, and `run` rolls
+/// every view back. Returns the number of views refreshed, skips excluded.
+fn atomic(conn: &Connection) -> Result<Value> {
+    let mut refreshed = 0;
+    for view in views(conn)? {
+        match refresh_counted(conn, &view) {
+            Ok(Outcome::Refreshed) => refreshed += 1,
+            Ok(Outcome::Skipped) => {}
+            Err(message) => {
+                return Err(format!(
+                    "ivm_refresh_all: view {}: {message}; no view was refreshed",
+                    view.name
+                ))
+            }
+        }
+    }
+    Ok(Value::Integer(refreshed))
+}
+
+/// Spec §2, `'continue'`: each view inside a savepoint of its own, rolled
+/// back when that view fails; the report names every failed view.
+fn continuing(conn: &Connection) -> Result<Value> {
+    let (mut refreshed, mut skipped) = (0, 0);
+    let mut failed = Vec::new();
+    for view in views(conn)? {
+        let one = Savepoint::open(conn).map_err(sql_error)?;
+        match refresh_counted(conn, &view) {
+            Ok(outcome) => {
+                one.release()?;
+                match outcome {
+                    Outcome::Refreshed => refreshed += 1,
+                    Outcome::Skipped => skipped += 1,
+                }
+            }
+            Err(message) => {
+                one.roll_back()?;
+                failed.push((view.name, message));
+            }
+        }
+    }
+    Ok(Value::Text(report(refreshed, skipped, &failed)))
+}
+
+/// Spec §2: `refreshed <r>, skipped <s>, failed <f>`, then, when `f > 0`,
+/// `: <name>: <message>; <name>: <message>` in view order.
+fn report(refreshed: usize, skipped: usize, failed: &[(String, String)]) -> String {
+    let mut text = format!(
+        "refreshed {refreshed}, skipped {skipped}, failed {}",
+        failed.len()
+    );
+    if !failed.is_empty() {
+        let each: Vec<String> = failed
+            .iter()
+            .map(|(name, message)| format!("{name}: {message}"))
+            .collect();
+        text.push_str(": ");
+        text.push_str(&each.join("; "));
+    }
+    text
+}
+
+struct View {
+    name: String,
+    tables: Vec<String>,
+}
+
+enum Outcome {
+    Refreshed,
+    Skipped,
+}
+
+/// The views of `main`, by name (spec §3), each with its base tables; none
+/// when `__ivm_view` is absent, so a database with no views gets no global
+/// tables.
+fn views(conn: &Connection) -> Result<Vec<View>> {
+    let exists: bool = conn
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM \"main\".sqlite_schema \
+             WHERE type = 'table' AND name = ?1)",
+            [VIEWS],
+            |r| r.get(0),
+        )
+        .map_err(sql_error)?;
+    if !exists {
+        return Ok(Vec::new());
+    }
+    let names: Vec<String> = conn
+        .prepare(&format!(
+            "SELECT name FROM {} ORDER BY name",
+            main_qualified(VIEWS)
+        ))
+        .and_then(|mut s| s.query_map([], |r| r.get(0))?.collect())
+        .map_err(sql_error)?;
+    let mut deps = conn
+        .prepare(&format!(
+            "SELECT tbl FROM {} WHERE view = ?1 ORDER BY tbl",
+            main_qualified(DEPS)
+        ))
+        .map_err(sql_error)?;
+    names
+        .into_iter()
+        .map(|name| {
+            let tables = deps
+                .query_map([&name], |r| r.get(0))
+                .and_then(|rows| rows.collect())
+                .map_err(sql_error)?;
+            Ok(View { name, tables })
+        })
+        .collect()
+}
+
+/// Spec §4: whether any of `view`'s base tables has a delta past the
+/// view's watermark. Reads `__ivm_progress` and the delta tables only.
+fn behind(conn: &Connection, view: &View) -> Result<bool> {
+    for table in &view.tables {
+        let applied: i64 = conn
+            .query_row(
+                &format!(
+                    "SELECT applied_seq FROM {} WHERE view = ?1 AND tbl = ?2",
+                    main_qualified(PROGRESS)
+                ),
+                [&view.name, table],
+                |r| r.get(0),
+            )
+            .map_err(sql_error)?;
+        let latest: Option<i64> = conn
+            .query_row(
+                &format!(
+                    "SELECT MAX({}) FROM {}",
+                    quote(DELTA_SEQ),
+                    main_qualified(&delta_table(table))
+                ),
+                [],
+                |r| r.get(0),
+            )
+            .map_err(sql_error)?;
+        if latest.is_some_and(|seq| seq > applied) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Refresh `view`, counting it as skipped when nothing was past its
+/// watermark (spec §4). The refresh runs either way: its checks have the
+/// final word, so a broken view fails with its usual message (spec §3),
+/// even one whose skip check could not read its tables.
+fn refresh_counted(conn: &Connection, view: &View) -> Result<Outcome> {
+    let behind = behind(conn, view);
+    refresh_one(conn, &view.name)?;
+    Ok(if behind? {
+        Outcome::Refreshed
+    } else {
+        Outcome::Skipped
+    })
+}
+
+/// One view's nested refresh, prepared and finalized here (spec §3). Its
+/// error is the text SQLite reports for the nested `INSERT`, as a direct
+/// refresh would report it.
+fn refresh_one(conn: &Connection, name: &str) -> Result<()> {
+    let sql = format!(
+        "INSERT INTO {}({}) VALUES ('refresh')",
+        main_qualified(name),
+        quote(name)
+    );
+    conn.execute(&sql, []).map(|_| ()).map_err(sql_error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_report_lists_failures_in_order() {
+        assert_eq!(report(3, 1, &[]), "refreshed 3, skipped 1, failed 0");
+        let failed = [
+            ("a".to_string(), "x".to_string()),
+            ("b c".to_string(), "y".to_string()),
+        ];
+        assert_eq!(
+            report(1, 0, &failed),
+            "refreshed 1, skipped 0, failed 2: a: x; b c: y"
+        );
+    }
+}

@@ -21,7 +21,7 @@ use crate::snapshot;
 use crate::view::{self, Checked};
 
 /// Run a callback body, turning its error and any panic into an SQLite error.
-fn guard<T>(body: impl FnOnce() -> Result<T, String>) -> rusqlite::Result<T> {
+pub(crate) fn guard<T>(body: impl FnOnce() -> Result<T, String>) -> rusqlite::Result<T> {
     match catch_unwind(AssertUnwindSafe(body)) {
         Ok(Ok(value)) => Ok(value),
         Ok(Err(message)) => Err(Error::ModuleError(message)),

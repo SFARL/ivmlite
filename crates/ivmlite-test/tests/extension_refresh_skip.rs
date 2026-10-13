@@ -115,3 +115,32 @@ fn a_consolidated_empty_delta_still_moves_the_watermark() {
     assert_eq!(count(&c, "SELECT count(*) FROM __ivm_delta_orders"), 0);
     assert_matches_oracle(&c, "sums", SUMS);
 }
+
+/// A join view whose last refresh read both tables: a write to one side only
+/// leaves the other side with nothing new, and the refresh must still apply,
+/// not skip.
+#[test]
+fn a_write_to_one_side_of_a_join_is_not_skipped() {
+    let c = open_with_extension(None).unwrap();
+    setup(&c);
+    create(&c, "managers", JOIN).unwrap();
+    c.execute_batch("INSERT INTO orders VALUES ('c', 3); INSERT INTO regions VALUES ('d', 'dee');")
+        .unwrap();
+    refresh(&c, "managers").unwrap();
+    assert_matches_oracle(&c, "managers", JOIN);
+    let watermark = |table: &str| {
+        count(
+            &c,
+            &format!(
+                "SELECT applied_seq FROM __ivm_progress WHERE view = 'managers' AND tbl = '{table}'"
+            ),
+        )
+    };
+    let (orders, regions) = (watermark("orders"), watermark("regions"));
+    c.execute_batch("UPDATE regions SET manager = 'zed' WHERE name = 'a'")
+        .unwrap();
+    refresh(&c, "managers").unwrap();
+    assert_matches_oracle(&c, "managers", JOIN);
+    assert_eq!(watermark("orders"), orders);
+    assert!(watermark("regions") > regions, "the refresh was skipped");
+}
