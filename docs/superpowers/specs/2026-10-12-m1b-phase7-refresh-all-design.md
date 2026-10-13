@@ -51,6 +51,12 @@ The Phase 3a, 3b, 5 and 6 conventions all still hold.
 
 **The savepoint name** is reserved: `__ivm_refresh_all`. It is quoted, and released or rolled back on every path, including every error path. The function never returns with its savepoint open. A function that fails without rolling back its own nested writes would leave them in place (measured), so no code path may return early around the rollback.
 
+**When closing the savepoint fails** (amendment 2026-10-12, from the Task 2 review):
+- **A failed commit.** In autocommit the outer `RELEASE` is the commit. In rollback-journal mode it fails with `SQLITE_BUSY` while another connection reads, and SQLite then keeps both the savepoint and a write transaction the application never began (measured).
+- **So the function rolls the call back whole.** It notes before its `SAVEPOINT` whether it is outermost, that is, whether the connection was in autocommit. If closing its savepoint fails while it is outermost and a transaction is left open, it runs `ROLLBACK` and fails with `ivm_refresh_all: <the close's error>; no view was refreshed`. If the call had already failed, the message keeps that failure's message too. The connection is back in autocommit, and nothing the call did is kept.
+- **Inside the application's own transaction,** a failed `RELEASE` cannot happen: releasing a nested savepoint does not commit.
+- **A failed `ROLLBACK TO`** is not followed by `RELEASE`, which would keep the writes it failed to undo. The savepoint is left open. In practice SQLite has already rolled back the whole transaction on the I/O or memory error that made it fail, and so closed every savepoint, including the application's own transaction.
+
 ## 3. Which views, in what order
 
 - **The views:** every row of `"main"."__ivm_view"`, read once at the start of the call, ordered by `name` so that a run is reproducible.
