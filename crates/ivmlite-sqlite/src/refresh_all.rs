@@ -121,7 +121,10 @@ impl Drop for Savepoint<'_> {
 
 /// Undo everything since the savepoint, then close it. A failed
 /// `ROLLBACK TO` stops the batch before the `RELEASE`, which would otherwise
-/// keep the writes it failed to undo.
+/// keep the writes it failed to undo, so it leaves the savepoint open (spec
+/// §2, "When closing the savepoint fails"). In practice the I/O or memory
+/// error that makes `ROLLBACK TO` fail has already made SQLite roll back the
+/// whole transaction, closing every savepoint with it.
 fn roll_back_and_release(conn: &Connection) -> rusqlite::Result<()> {
     let name = quote(SAVEPOINT);
     conn.execute_batch(&format!("ROLLBACK TO {name}; RELEASE {name}"))
@@ -130,38 +133,71 @@ fn roll_back_and_release(conn: &Connection) -> rusqlite::Result<()> {
 /// Spec §2: open the call's savepoint, refresh, then release it, or roll
 /// it back if the call fails. Only the `SAVEPOINT` statement's own error is
 /// read as a call from a writing statement.
+///
+/// The mode returns the cause of a failed call, and every failure reads
+/// `ivm_refresh_all: <cause>; no view was refreshed` (`failure`). In
+/// autocommit the outermost `RELEASE` is the commit, and it can fail, for
+/// example with `SQLITE_BUSY` while another connection reads in a
+/// rollback-journal database; SQLite then keeps the savepoint and a write
+/// transaction open. So when closing the savepoint fails and the call began
+/// that transaction, it runs `ROLLBACK` (spec §2, "When closing the
+/// savepoint fails"); see `close_failure` for the message.
 fn run(conn: &Connection, mode: Mode) -> Result<Value> {
+    let outermost = conn.is_autocommit();
     let call = Savepoint::open(conn).map_err(|_| NOT_FROM_A_WRITE.to_string())?;
     let outcome = match mode {
         Mode::Atomic => atomic(conn),
         Mode::Continue => continuing(conn),
     };
-    match outcome {
-        Ok(value) => {
-            call.release()?;
-            Ok(value)
-        }
-        Err(message) => {
-            call.roll_back()?;
-            Err(message)
+    let closed = match outcome {
+        Ok(_) => call.release(),
+        Err(_) => call.roll_back(),
+    };
+    match (outcome, closed) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(cause), Ok(())) => Err(failure(&cause)),
+        (outcome, Err(close)) => {
+            if outermost && !conn.is_autocommit() {
+                exec(conn, "ROLLBACK").map_err(|rollback| {
+                    format!("ivm_refresh_all: {close}; its ROLLBACK failed too: {rollback}")
+                })?;
+            }
+            Err(close_failure(outcome.err().as_deref(), &close))
         }
     }
 }
 
+/// Spec §2: the message of a failed call, `ivm_refresh_all: <cause>; no view
+/// was refreshed`.
+fn failure(cause: &str) -> String {
+    format!("ivm_refresh_all: {cause}; no view was refreshed")
+}
+
+/// Spec §2, "When closing the savepoint fails": the call is rolled back
+/// whole and fails with `ivm_refresh_all: <close>; no view was refreshed`.
+/// When the call had already failed, its cause comes first and the close's
+/// error follows: `ivm_refresh_all: <cause>; no view was refreshed (and
+/// closing its savepoint failed: <close>)`.
+fn close_failure(cause: Option<&str>, close: &str) -> String {
+    match cause {
+        None => failure(close),
+        Some(cause) => format!(
+            "{} (and closing its savepoint failed: {close})",
+            failure(cause)
+        ),
+    }
+}
+
 /// Spec §2, `'atomic'`: the first failure fails the call, and `run` rolls
-/// every view back. Returns the number of views refreshed, skips excluded.
+/// every view back. Returns the number of views refreshed, skips excluded;
+/// a failed view's cause is `view <name>: <its refresh's message>`.
 fn atomic(conn: &Connection) -> Result<Value> {
     let mut refreshed = 0;
     for view in views(conn)? {
         match refresh_counted(conn, &view) {
             Ok(Outcome::Refreshed) => refreshed += 1,
             Ok(Outcome::Skipped) => {}
-            Err(message) => {
-                return Err(format!(
-                    "ivm_refresh_all: view {}: {message}; no view was refreshed",
-                    view.name
-                ))
-            }
+            Err(message) => return Err(format!("view {}: {message}", view.name)),
         }
     }
     Ok(Value::Integer(refreshed))
@@ -320,6 +356,19 @@ fn refresh_one(conn: &Connection, name: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_close_keeps_the_call_s_own_failure() {
+        assert_eq!(
+            close_failure(None, "database is locked"),
+            "ivm_refresh_all: database is locked; no view was refreshed"
+        );
+        assert_eq!(
+            close_failure(Some("view v: boom"), "database is locked"),
+            "ivm_refresh_all: view v: boom; no view was refreshed \
+             (and closing its savepoint failed: database is locked)"
+        );
+    }
 
     #[test]
     fn the_report_lists_failures_in_order() {

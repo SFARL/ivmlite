@@ -385,25 +385,44 @@ fn no_views_returns_zero_and_creates_nothing() {
 /// watermark is counted as skipped, in both modes.
 #[test]
 fn views_with_nothing_new_are_skipped() {
+    // A join view, last in name order, is behind as soon as either of its
+    // tables is: a write to `orders` alone or to `regions` alone refreshes it.
+    let joined = ("d_joined", JOIN);
     let c = open_with_extension(None).unwrap();
     three_views(&c);
+    create(&c, joined.0, joined.1).unwrap();
     write_orders(&c);
+    assert_eq!(call(&c, "").unwrap(), Value::Integer(3));
+    all_match_the_oracle(&c);
+    assert_matches_oracle(&c, joined.0, joined.1);
+    assert_eq!(call(&c, "").unwrap(), Value::Integer(0));
+    c.execute_batch("UPDATE regions SET manager = 'zed' WHERE name = 'a'")
+        .unwrap();
     assert_eq!(call(&c, "").unwrap(), Value::Integer(2));
     all_match_the_oracle(&c);
-    assert_eq!(call(&c, "").unwrap(), Value::Integer(0));
+    assert_matches_oracle(&c, joined.0, joined.1);
 
     let c = open_with_extension(None).unwrap();
     three_views(&c);
+    create(&c, joined.0, joined.1).unwrap();
     write_orders(&c);
     assert_eq!(
         text(call(&c, "'continue'").unwrap()),
-        "refreshed 2, skipped 1, failed 0"
+        "refreshed 3, skipped 1, failed 0"
     );
     all_match_the_oracle(&c);
+    assert_matches_oracle(&c, joined.0, joined.1);
     assert_eq!(
         text(call(&c, "'continue'").unwrap()),
-        "refreshed 0, skipped 3, failed 0"
+        "refreshed 0, skipped 4, failed 0"
     );
+    c.execute_batch("UPDATE regions SET manager = 'zed' WHERE name = 'a'")
+        .unwrap();
+    assert_eq!(
+        text(call(&c, "'continue'").unwrap()),
+        "refreshed 2, skipped 2, failed 0"
+    );
+    assert_matches_oracle(&c, joined.0, joined.1);
 }
 
 /// Spec §4: a recreated base table has lost its capture triggers and has
@@ -537,7 +556,7 @@ fn close_v1_succeeds_after_every_kind_of_call() {
 /// 2. Once A's statement ends, the next call sees B's drop: the dropped view
 ///    is not listed and the rest refresh.
 #[test]
-fn a_view_dropped_by_another_connection_is_a_failure() {
+fn a_view_dropped_after_the_list_was_read_fails_every_view_as_locked() {
     let file = TempFile::new("refresh-all-dropped");
     let a = open_with_extension(Some(file.path())).unwrap();
     let mode: String = a
@@ -588,6 +607,63 @@ fn a_view_dropped_by_another_connection_is_a_failure() {
         ),
         0
     );
+}
+
+/// Spec §2, "When closing the savepoint fails": in a rollback-journal
+/// database, the outermost `RELEASE`, which is the commit, fails with
+/// `SQLITE_BUSY` while another connection reads. The call then rolls back
+/// whole and returns the connection to autocommit, after a successful
+/// atomic call, a continue call, and an atomic call that had already failed,
+/// whose own message is kept.
+#[test]
+fn a_commit_refused_by_a_reader_rolls_the_call_back_whole() {
+    let file = TempFile::new("refresh-all-busy");
+    let cases = [
+        ("", false, None),
+        ("'continue'", false, None),
+        ("", true, Some(MIDDLE.0)),
+    ];
+    for (args, with_fault, failing) in cases {
+        let _ = std::fs::remove_file(file.path());
+        let db = open_raw(file.path());
+        with_raw(db, |a| {
+            let mode: String = a
+                .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(mode, "delete");
+            three_views(a);
+            if with_fault {
+                inject_fault(a, MIDDLE.0);
+            }
+            write_both(a);
+            a.busy_timeout(Duration::ZERO).unwrap();
+            let b = Connection::open(file.path()).unwrap();
+            let before = every_view_state(&b);
+            let mut held = b.prepare("SELECT * FROM orders").unwrap();
+            let mut reading = held.query([]).unwrap();
+            assert!(reading.next().unwrap().is_some());
+
+            let err = call(a, args).expect_err("the commit must be refused");
+            assert!(a.is_autocommit(), "{args}: a transaction was left open");
+            drop(reading);
+            drop(held);
+            assert_eq!(every_view_state(&b), before, "{args}: a view changed");
+            let stray = a
+                .execute_batch("RELEASE \"__ivm_refresh_all\"")
+                .expect_err("no savepoint may be left");
+            assert_eq!(stray.to_string(), "no such savepoint: __ivm_refresh_all");
+            let expected = match failing {
+                None => "ivm_refresh_all: database is locked; no view was refreshed".to_string(),
+                Some(view) => format!(
+                    "ivm_refresh_all: view {view}: {}; no view was refreshed \
+                     (and closing its savepoint failed: database is locked)",
+                    direct_failure(a, view)
+                ),
+            };
+            assert_eq!(err.to_string(), expected, "{args}");
+        });
+        assert_eq!(close_v1(db), ffi::SQLITE_OK, "{args}");
+    }
 }
 
 /// Review Focus 3: names that need quoting refresh through the function,
