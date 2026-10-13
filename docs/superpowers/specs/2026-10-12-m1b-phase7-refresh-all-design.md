@@ -49,7 +49,7 @@ The Phase 3a, 3b, 5 and 6 conventions all still hold.
 - If the function's first `SAVEPOINT` is refused, it fails with `ivm_refresh_all must be called from a SELECT, not from a statement that writes`. Example: `INSERT INTO t SELECT ivm_refresh_all()`.
 - Inside an explicit transaction it works: the savepoint nests in the transaction. A later `ROLLBACK` undoes everything it did.
 
-**The savepoint name** is reserved: `__ivm_refresh_all`. It is quoted, and released or rolled back on every path, including every error path. The function never returns with its savepoint open. A function that fails without rolling back its own nested writes would leave them in place (measured), so no code path may return early around the rollback.
+**The savepoint name** is reserved: `__ivm_refresh_all`. It is quoted, and released or rolled back on every path, including every error path. The function never returns with its savepoint open, except after a failed `ROLLBACK TO` (below). A function that fails without rolling back its own nested writes would leave them in place (measured), so no code path may return early around the rollback.
 
 **When closing the savepoint fails** (amendment 2026-10-12, from the Task 2 review):
 - **A failed commit.** In autocommit the outer `RELEASE` is the commit. In rollback-journal mode it fails with `SQLITE_BUSY` while another connection reads, and SQLite then keeps both the savepoint and a write transaction the application never began (measured).
