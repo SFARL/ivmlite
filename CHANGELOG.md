@@ -13,7 +13,8 @@ SQL subset and persisted shadow-table format without migration.
   in `name` order. It must be called from a `SELECT`.
   - `ivm_refresh_all()`, the same as `ivm_refresh_all('atomic')`, refreshes
     every view under one savepoint, or none. It returns the number of views
-    refreshed. On a failure it rolls every view back and fails with
+    refreshed, not counting the views it skipped because they had nothing
+    new since their last refresh (their checks still run). On a failure it rolls every view back and fails with
     `ivm_refresh_all: view <name>: <message>; no view was refreshed`.
   - `ivm_refresh_all('continue')` refreshes each view under its own
     savepoint, rolls back only the views that fail, and returns
@@ -21,10 +22,19 @@ SQL subset and persisted shadow-table format without migration.
     each failed view.
   - From a statement that writes, it fails with
     `ivm_refresh_all must be called from a SELECT, not from a statement that writes`.
-    It is registered `SQLITE_DIRECTONLY`, so SQLite refuses it in triggers,
-    views and `CHECK` constraints. Inside `BEGIN … COMMIT` it nests in the
-    transaction. If its own commit is refused in autocommit, for example with
+    It is registered `SQLITE_DIRECTONLY`, so SQLite refuses it in the
+    database schema's triggers, views and `CHECK` constraints. Inside
+    `BEGIN … COMMIT` it nests in the transaction.
+  - In autocommit it runs inside `BEGIN IMMEDIATE` … `COMMIT`, so it waits
+    for another writer under `busy_timeout`; from `SELECT … FROM t`, whose
+    read is already under way, it cannot wait and fails with
+    `database is locked`. If its commit is refused, for example with
     `SQLITE_BUSY`, it rolls the call back whole.
+  - A nested failure that rolls back the whole transaction, such as
+    `RAISE(ROLLBACK)`, fails the call in either mode with the view's name
+    and message, and ends the application's own transaction.
+  - A `__ivm_view` row that does not name an `ivm` virtual table fails as
+    `not an ivmlite view`, and nothing is written to the table it names.
   - Any other argument fails with `ivm_refresh_all takes 'atomic' or 'continue'`.
 - Published M1b Phase 7 results in [`docs/bench/README.md`](docs/bench/README.md),
   from a new driver, [`scripts/bench-refresh-all.py`](scripts/bench-refresh-all.py),

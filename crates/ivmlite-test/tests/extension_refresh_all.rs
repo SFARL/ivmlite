@@ -547,16 +547,16 @@ fn close_v1_succeeds_after_every_kind_of_call() {
 
 /// Review Focus 2: a view dropped by another connection after this one read
 /// `__ivm_view`. Another connection cannot drop a view while this one's
-/// call is under way, because the call holds the write lock from its first
-/// nested refresh on, so two cases are tested, both on a WAL database:
+/// call is under way, because the call holds the write lock from its
+/// `BEGIN IMMEDIATE` on, so two cases are tested, both on a WAL database:
 /// 1. A holds a read statement, so its snapshot still lists the view when
-///    B drops it. A's call reads the view list from that snapshot, and its
-///    first nested write fails, since the snapshot is no longer the latest:
-///    every view fails, promptly, and nothing is changed.
+///    B drops it. A's call cannot take the write lock from a snapshot that
+///    is no longer the latest, so its `BEGIN IMMEDIATE` fails at once, in
+///    both modes, and nothing is changed.
 /// 2. Once A's statement ends, the next call sees B's drop: the dropped view
 ///    is not listed and the rest refresh.
 #[test]
-fn a_view_dropped_after_the_list_was_read_fails_every_view_as_locked() {
+fn a_stale_snapshot_of_a_dropped_view_fails_the_call_as_locked() {
     let file = TempFile::new("refresh-all-dropped");
     let a = open_with_extension(Some(file.path())).unwrap();
     let mode: String = a
@@ -575,23 +575,19 @@ fn a_view_dropped_after_the_list_was_read_fails_every_view_as_locked() {
 
     let before = every_view_state(&a);
     let started = Instant::now();
-    let err = call(&a, "").expect_err("A's snapshot is stale, so it cannot write");
-    let report = text(call(&a, "'continue'").unwrap());
+    for args in ["", "'continue'"] {
+        let err = call(&a, args).expect_err("A's snapshot is stale, so it cannot write");
+        assert_eq!(
+            err.to_string(),
+            "ivm_refresh_all: database is locked; no view was refreshed",
+            "{args}"
+        );
+    }
     assert!(
         started.elapsed() < Duration::from_secs(2),
         "the calls waited {:?}",
         started.elapsed()
     );
-    assert!(
-        err.to_string()
-            .starts_with("ivm_refresh_all: view a_sums: database is locked"),
-        "{err}"
-    );
-    assert!(
-        report.starts_with("refreshed 0, skipped 0, failed 3: a_sums: database is locked"),
-        "{report}"
-    );
-    assert!(report.contains("; b_counts: "), "{report}");
     assert_eq!(every_view_state(&a), before);
     drop(listed);
     drop(held);
@@ -610,11 +606,11 @@ fn a_view_dropped_after_the_list_was_read_fails_every_view_as_locked() {
 }
 
 /// Spec §2, "When closing the savepoint fails": in a rollback-journal
-/// database, the outermost `RELEASE`, which is the commit, fails with
-/// `SQLITE_BUSY` while another connection reads. The call then rolls back
-/// whole and returns the connection to autocommit, after a successful
-/// atomic call, a continue call, and an atomic call that had already failed,
-/// whose own message is kept.
+/// database, the call's `COMMIT` fails with `SQLITE_BUSY` while another
+/// connection reads. The call then rolls back whole and returns the
+/// connection to autocommit, after a successful atomic call and a continue
+/// call. An atomic call that had already failed ends with `ROLLBACK`, which
+/// a reader cannot refuse, and fails with its own message only.
 #[test]
 fn a_commit_refused_by_a_reader_rolls_the_call_back_whole() {
     let file = TempFile::new("refresh-all-busy");
@@ -655,8 +651,7 @@ fn a_commit_refused_by_a_reader_rolls_the_call_back_whole() {
             let expected = match failing {
                 None => "ivm_refresh_all: database is locked; no view was refreshed".to_string(),
                 Some(view) => format!(
-                    "ivm_refresh_all: view {view}: {}; no view was refreshed \
-                     (and closing its savepoint failed: database is locked)",
+                    "ivm_refresh_all: view {view}: {}; no view was refreshed",
                     direct_failure(a, view)
                 ),
             };
@@ -664,6 +659,195 @@ fn a_commit_refused_by_a_reader_rolls_the_call_back_whole() {
         });
         assert_eq!(close_v1(db), ffi::SQLITE_OK, "{args}");
     }
+}
+
+/// Spec §3: failed views are reported in name order, not creation order.
+#[test]
+fn failures_are_reported_in_name_order() {
+    let c = open_with_extension(None).unwrap();
+    three_views(&c);
+    for view in [LAST.0, FIRST.0] {
+        c.execute_batch(&format!(
+            "CREATE TRIGGER {} BEFORE INSERT ON {} BEGIN SELECT RAISE(ABORT, 'injected'); END;",
+            ident(&format!("fault_{view}")),
+            ident(&format!("__ivm_out_{view}"))
+        ))
+        .unwrap();
+    }
+    write_both(&c);
+    let report = text(call(&c, "'continue'").unwrap());
+    let err = call(&c, "").expect_err("the faults fail the call");
+    assert_eq!(
+        report,
+        format!(
+            "refreshed 1, skipped 0, failed 2: a_sums: {}; c_managers: {}",
+            direct_failure(&c, FIRST.0),
+            direct_failure(&c, LAST.0)
+        )
+    );
+    assert!(
+        err.to_string()
+            .starts_with("ivm_refresh_all: view a_sums: "),
+        "{err}"
+    );
+}
+
+/// Spec §2, "Waiting for other writers": in autocommit the call takes the
+/// write lock with `BEGIN IMMEDIATE`, so it waits under `busy_timeout` while
+/// another connection briefly holds it, as a direct refresh does. From
+/// `SELECT ivm_refresh_all() FROM t`, whose own read transaction is open,
+/// SQLite cannot wait, and the call fails at once.
+#[test]
+fn the_call_waits_for_another_writer() {
+    const HELD: Duration = Duration::from_millis(300);
+    for journal in ["delete", "wal"] {
+        for args in ["", "'continue'"] {
+            let file = TempFile::new(&format!("refresh-all-wait-{journal}"));
+            let a = open_with_extension(Some(file.path())).unwrap();
+            let mode: String = a
+                .query_row(&format!("PRAGMA journal_mode = {journal}"), [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            assert_eq!(mode, journal);
+            three_views(&a);
+            write_both(&a);
+            a.busy_timeout(Duration::from_secs(5)).unwrap();
+            let (locked, holding) = std::sync::mpsc::channel();
+            let path = file.path().to_path_buf();
+            let writer = std::thread::spawn(move || {
+                let b = Connection::open(path).unwrap();
+                b.execute_batch("BEGIN IMMEDIATE; INSERT INTO regions VALUES ('w', 'wes');")
+                    .unwrap();
+                locked.send(()).unwrap();
+                std::thread::sleep(HELD);
+                b.execute_batch("COMMIT").unwrap();
+            });
+            holding.recv().unwrap();
+            let started = Instant::now();
+            let outcome = call(&a, args);
+            let waited = started.elapsed();
+            writer.join().unwrap();
+            let outcome = outcome.unwrap_or_else(|e| panic!("{journal} {args}: {e}"));
+            assert!(
+                waited >= HELD / 2 && waited < Duration::from_secs(4),
+                "{journal} {args}: returned after {waited:?}"
+            );
+            match args {
+                "" => assert_eq!(outcome, Value::Integer(3)),
+                _ => assert_eq!(text(outcome), "refreshed 3, skipped 0, failed 0"),
+            }
+            all_match_the_oracle(&a);
+
+            // The calling statement's own read transaction: no wait.
+            let (locked, holding) = std::sync::mpsc::channel();
+            let path = file.path().to_path_buf();
+            let writer = std::thread::spawn(move || {
+                let b = Connection::open(path).unwrap();
+                b.execute_batch("BEGIN IMMEDIATE; INSERT INTO regions VALUES ('x', 'xan');")
+                    .unwrap();
+                locked.send(()).unwrap();
+                std::thread::sleep(HELD);
+                b.execute_batch("COMMIT").unwrap();
+            });
+            holding.recv().unwrap();
+            let started = Instant::now();
+            let err = a
+                .query_row(
+                    &format!("SELECT ivm_refresh_all({args}) FROM orders LIMIT 1"),
+                    [],
+                    |r| r.get::<_, Value>(0),
+                )
+                .expect_err("a read transaction cannot wait for the write lock");
+            let waited = started.elapsed();
+            writer.join().unwrap();
+            assert_eq!(
+                err.to_string(),
+                "ivm_refresh_all: database is locked; no view was refreshed"
+            );
+            assert!(waited < HELD, "{journal} {args}: waited {waited:?}");
+            assert!(a.is_autocommit());
+        }
+    }
+}
+
+/// Spec §2: a nested failure that rolls back the whole transaction, here
+/// `RAISE(ROLLBACK)`, takes the call's savepoints with it. Both modes fail
+/// the call with the view's own message and the savepoint's error, nothing
+/// is kept, and inside the application's transaction that transaction ends.
+#[test]
+fn a_failure_that_rolls_back_the_transaction_fails_the_call() {
+    for explicit_transaction in [false, true] {
+        for args in ["", "'continue'"] {
+            let c = open_with_extension(None).unwrap();
+            three_views(&c);
+            c.execute_batch(
+                "CREATE TRIGGER fault BEFORE INSERT ON __ivm_out_b_counts \
+                 BEGIN SELECT RAISE(ROLLBACK, 'rolled back'); END;",
+            )
+            .unwrap();
+            write_both(&c);
+            let before = every_view_state(&c);
+            if explicit_transaction {
+                c.execute_batch("BEGIN").unwrap();
+            }
+            let err = call(&c, args).expect_err("the fault fails the call");
+            assert!(c.is_autocommit(), "the transaction was rolled back");
+            assert_eq!(every_view_state(&c), before);
+            assert_eq!(
+                err.to_string(),
+                format!(
+                    "ivm_refresh_all: view b_counts: {}; no view was refreshed \
+                     (and closing its savepoint failed: no such savepoint: __ivm_refresh_all)",
+                    direct_failure(&c, MIDDLE.0)
+                ),
+                "{args} (transaction: {explicit_transaction})"
+            );
+        }
+    }
+}
+
+/// Spec §2, "Only ivm views are refreshed": a `__ivm_view` row naming an
+/// ordinary table, or a name that is not TEXT, fails as `not an ivmlite
+/// view`, and nothing is written to the table it names.
+#[test]
+fn a_forged_view_row_is_never_refreshed() {
+    let c = open_with_extension(None).unwrap();
+    three_views(&c);
+    c.execute_batch(
+        "CREATE TABLE victim(victim TEXT);
+         INSERT INTO __ivm_view(name, sql, plan, declaration, format)
+             SELECT 'victim', sql, plan, declaration, format FROM __ivm_view WHERE name = 'a_sums';",
+    )
+    .unwrap();
+    write_both(&c);
+    let before = every_view_state(&c);
+    let err = call(&c, "").expect_err("the forged row fails the atomic call");
+    assert_eq!(
+        err.to_string(),
+        "ivm_refresh_all: view victim: not an ivmlite view; no view was refreshed"
+    );
+    assert_eq!(every_view_state(&c), before);
+    assert_eq!(
+        text(call(&c, "'continue'").unwrap()),
+        "refreshed 3, skipped 0, failed 1: victim: not an ivmlite view"
+    );
+    all_match_the_oracle(&c);
+    assert_eq!(count(&c, "SELECT count(*) FROM victim"), 0);
+
+    c.execute_batch(
+        "INSERT INTO __ivm_view(name, sql, plan, declaration, format)
+             SELECT NULL, sql, plan, declaration, format FROM __ivm_view WHERE name = 'a_sums';
+         INSERT INTO __ivm_view(name, sql, plan, declaration, format)
+             SELECT X'00', sql, plan, declaration, format FROM __ivm_view WHERE name = 'a_sums';",
+    )
+    .unwrap();
+    assert_eq!(
+        text(call(&c, "'continue'").unwrap()),
+        "refreshed 0, skipped 3, failed 3: NULL: not an ivmlite view; \
+         victim: not an ivmlite view; X'00': not an ivmlite view"
+    );
+    assert_eq!(count(&c, "SELECT count(*) FROM victim"), 0);
 }
 
 /// Review Focus 3: names that need quoting refresh through the function,

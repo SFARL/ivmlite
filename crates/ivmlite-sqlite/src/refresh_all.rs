@@ -23,6 +23,9 @@ pub const SAVEPOINT: &str = "__ivm_refresh_all";
 pub const BAD_ARGUMENT: &str = "ivm_refresh_all takes 'atomic' or 'continue'";
 pub const NOT_FROM_A_WRITE: &str =
     "ivm_refresh_all must be called from a SELECT, not from a statement that writes";
+/// Spec §2, "Only ivm views are refreshed": the failure of a `__ivm_view`
+/// row that names no ivm virtual table.
+pub const NOT_AN_IVM_VIEW: &str = "not an ivmlite view";
 
 type Result<T> = std::result::Result<T, String>;
 
@@ -38,8 +41,8 @@ fn exec(conn: &Connection, sql: &str) -> Result<()> {
 
 /// Phase 7 spec §2: register `ivm_refresh_all([mode])` on `conn`.
 ///
-/// `SQLITE_DIRECTONLY` keeps it out of triggers, views and CHECK
-/// constraints, as SQLite recommends for a function with side effects. It
+/// `SQLITE_DIRECTONLY` keeps it out of the database schema's triggers, views
+/// and CHECK constraints (not TEMP ones), as SQLite recommends for a function with side effects. It
 /// is not deterministic. Its errors carry a message, so SQLite reports
 /// them as `SQLITE_ERROR` (`sqlite3_result_error` sets that code), never
 /// a code such as `SQLITE_FULL` that would roll back the caller's whole
@@ -142,9 +145,34 @@ fn roll_back_and_release(conn: &Connection) -> rusqlite::Result<()> {
 /// transaction open. So when closing the savepoint fails and the call began
 /// that transaction, it runs `ROLLBACK` (spec §2, "When closing the
 /// savepoint fails"); see `close_failure` for the message.
+///
+/// When outermost, the call first runs `BEGIN IMMEDIATE` (spec §2, "Waiting
+/// for other writers"). A transaction that reads before it writes cannot
+/// wait for the write lock: SQLite refuses it with `SQLITE_BUSY` without
+/// calling the busy handler. `BEGIN IMMEDIATE` takes the lock first, waiting
+/// under `busy_timeout`, and the call ends with `COMMIT`, or `ROLLBACK` on
+/// any failure. The calling statement's own reads count too: from
+/// `SELECT ivm_refresh_all() FROM t`, which holds a read transaction on `t`,
+/// `BEGIN IMMEDIATE` cannot wait either, and a held write lock fails the
+/// call at once (measured).
 fn run(conn: &Connection, mode: Mode) -> Result<Value> {
     let outermost = conn.is_autocommit();
-    let call = Savepoint::open(conn).map_err(|_| NOT_FROM_A_WRITE.to_string())?;
+    if outermost {
+        exec(conn, "BEGIN IMMEDIATE").map_err(|e| failure(&e))?;
+    }
+    let call = match Savepoint::open(conn) {
+        Ok(call) => call,
+        Err(_) => {
+            // From a writing statement in autocommit, `BEGIN` succeeds and
+            // the savepoint is refused; the transaction is ours to end.
+            if outermost {
+                exec(conn, "ROLLBACK").map_err(|rollback| {
+                    format!("{NOT_FROM_A_WRITE} (and its ROLLBACK failed: {rollback})")
+                })?;
+            }
+            return Err(NOT_FROM_A_WRITE.to_string());
+        }
+    };
     let outcome = match mode {
         Mode::Atomic => atomic(conn),
         Mode::Continue => continuing(conn),
@@ -152,7 +180,12 @@ fn run(conn: &Connection, mode: Mode) -> Result<Value> {
     let closed = match outcome {
         Ok(_) => call.release(),
         Err(_) => call.roll_back(),
-    };
+    }
+    .and_then(|()| match (outermost, &outcome) {
+        (false, _) => Ok(()),
+        (true, Ok(_)) => exec(conn, "COMMIT"),
+        (true, Err(_)) => exec(conn, "ROLLBACK"),
+    });
     match (outcome, closed) {
         (Ok(value), Ok(())) => Ok(value),
         (Err(cause), Ok(())) => Err(failure(&cause)),
@@ -219,7 +252,14 @@ fn continuing(conn: &Connection) -> Result<Value> {
                 }
             }
             Err(message) => {
-                one.roll_back()?;
+                // A failure that rolled back the whole transaction, such as
+                // `RAISE(ROLLBACK)`, took this savepoint with it, so its
+                // roll-back fails. The call then fails with this view's own
+                // message; the call's close fails for the same reason and
+                // `run` adds that error.
+                if one.roll_back().is_err() {
+                    return Err(format!("view {}: {message}", view.name));
+                }
                 failed.push((view.name, message));
             }
         }
@@ -246,8 +286,14 @@ fn report(refreshed: usize, skipped: usize, failed: &[(String, String)]) -> Stri
 }
 
 struct View {
+    /// The name as stored, or, for a row whose name is not TEXT, its
+    /// `quote()`.
     name: String,
     tables: Vec<String>,
+    /// Spec §2, "Only ivm views are refreshed": `false` when `"main"`'s
+    /// schema does not list `name` as a virtual table using `ivm`. Such a
+    /// row fails with `NOT_AN_IVM_VIEW` and is never written to.
+    is_ivm: bool,
 }
 
 enum Outcome {
@@ -270,12 +316,17 @@ fn views(conn: &Connection) -> Result<Vec<View>> {
     if !exists {
         return Ok(Vec::new());
     }
-    let names: Vec<String> = conn
+    // The stored DDL of the virtual table each row names, if any; a name
+    // that is not TEXT (a tampered row) is reported by its `quote()`.
+    let rows: Vec<(String, Option<String>)> = conn
         .prepare(&format!(
-            "SELECT name FROM {} ORDER BY name",
+            "SELECT CASE WHEN typeof(v.name) = 'text' THEN v.name ELSE quote(v.name) END, \
+             (SELECT s.sql FROM \"main\".sqlite_schema AS s \
+              WHERE s.type = 'table' AND s.name = v.name AND typeof(v.name) = 'text') \
+             FROM {} AS v ORDER BY v.name",
             main_qualified(VIEWS)
         ))
-        .and_then(|mut s| s.query_map([], |r| r.get(0))?.collect())
+        .and_then(|mut s| s.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect())
         .map_err(sql_error)?;
     let mut deps = conn
         .prepare(&format!(
@@ -283,16 +334,99 @@ fn views(conn: &Connection) -> Result<Vec<View>> {
             main_qualified(DEPS)
         ))
         .map_err(sql_error)?;
-    names
-        .into_iter()
-        .map(|name| {
-            let tables = deps
-                .query_map([&name], |r| r.get(0))
-                .and_then(|rows| rows.collect())
-                .map_err(sql_error)?;
-            Ok(View { name, tables })
+    rows.into_iter()
+        .map(|(name, sql)| {
+            let is_ivm = sql.as_deref().is_some_and(uses_ivm);
+            let tables = if is_ivm {
+                deps.query_map([&name], |r| r.get(0))
+                    .and_then(|rows| rows.collect())
+                    .map_err(sql_error)?
+            } else {
+                Vec::new()
+            };
+            Ok(View {
+                name,
+                tables,
+                is_ivm,
+            })
         })
         .collect()
+}
+
+/// Whether `sql`, a table's DDL as `sqlite_schema` stores it, creates a
+/// virtual table using module `ivm`. SQLite stores a virtual table's DDL as
+/// `CREATE VIRTUAL TABLE `, then the name as written, then the rest of the
+/// statement as written: `USING <module>`, with any whitespace, comments
+/// and quoting the statement had.
+fn uses_ivm(sql: &str) -> bool {
+    let Some(rest) = sql.strip_prefix("CREATE VIRTUAL TABLE ") else {
+        return false;
+    };
+    let Some((_name, rest)) = identifier(rest) else {
+        return false;
+    };
+    let rest = skip_space(rest);
+    let Some(rest) = rest
+        .get(..5)
+        .filter(|word| word.eq_ignore_ascii_case("USING"))
+        .map(|_| &rest[5..])
+        .filter(|after| !after.starts_with(is_word_char))
+    else {
+        return false;
+    };
+    identifier(skip_space(rest)).is_some_and(|(module, _)| module.eq_ignore_ascii_case("ivm"))
+}
+
+/// SQLite's identifier characters: ASCII letters, digits, `_`, `$`, and
+/// every non-ASCII character.
+fn is_word_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_' || c == '$' || !c.is_ascii()
+}
+
+/// `text` without its leading whitespace and comments.
+fn skip_space(mut text: &str) -> &str {
+    loop {
+        let trimmed = text.trim_start_matches(|c: char| c.is_ascii_whitespace());
+        if let Some(comment) = trimmed.strip_prefix("--") {
+            text = comment.find('\n').map_or("", |end| &comment[end..]);
+        } else if let Some(comment) = trimmed.strip_prefix("/*") {
+            text = comment.find("*/").map_or("", |end| &comment[end + 2..]);
+        } else {
+            return trimmed;
+        }
+    }
+}
+
+/// The identifier at the start of `text`, dequoted, and the text after it:
+/// a bare word, or one quoted with `"…"`, `` `…` ``, `'…'` (each doubling
+/// its quote to escape it) or `[…]`.
+fn identifier(text: &str) -> Option<(String, &str)> {
+    let first = text.chars().next()?;
+    let close = match first {
+        '"' | '`' | '\'' => first,
+        '[' => ']',
+        c if is_word_char(c) => {
+            let end = text.find(|c: char| !is_word_char(c)).unwrap_or(text.len());
+            return Some((text[..end].to_string(), &text[end..]));
+        }
+        _ => return None,
+    };
+    let mut name = String::new();
+    let mut chars = text[1..].char_indices();
+    while let Some((i, c)) = chars.next() {
+        if c != close {
+            name.push(c);
+            continue;
+        }
+        let after = &text[1 + i + c.len_utf8()..];
+        if close != ']' && after.starts_with(close) {
+            name.push(close);
+            chars.next();
+        } else {
+            return Some((name, after));
+        }
+    }
+    None
 }
 
 /// Spec §4: whether any of `view`'s base tables has a delta past the
@@ -332,6 +466,9 @@ fn behind(conn: &Connection, view: &View) -> Result<bool> {
 /// final word, so a broken view fails with its usual message (spec §3),
 /// even one whose skip check could not read its tables.
 fn refresh_counted(conn: &Connection, view: &View) -> Result<Outcome> {
+    if !view.is_ivm {
+        return Err(NOT_AN_IVM_VIEW.to_string());
+    }
     let behind = behind(conn, view);
     refresh_one(conn, &view.name)?;
     Ok(if behind? {
@@ -368,6 +505,29 @@ mod tests {
             "ivm_refresh_all: view v: boom; no view was refreshed \
              (and closing its savepoint failed: database is locked)"
         );
+    }
+
+    #[test]
+    fn only_ivm_virtual_tables_are_ivm_views() {
+        for ivm in [
+            "CREATE VIRTUAL TABLE v USING ivm('SELECT 1')",
+            "CREATE VIRTUAL TABLE \"my view\" using IVM ('SELECT 1')",
+            "CREATE VIRTUAL TABLE v USING \"ivm\"('SELECT 1')",
+            "CREATE VIRTUAL TABLE [v w] using ivm /* c */ ('SELECT 1')",
+            "CREATE VIRTUAL TABLE \"q\"\"x\" -- c\n USING ivm('SELECT 1')",
+        ] {
+            assert!(uses_ivm(ivm), "{ivm}");
+        }
+        for other in [
+            "CREATE TABLE victim(victim)",
+            "CREATE VIRTUAL TABLE v USING fts5(x)",
+            "CREATE VIRTUAL TABLE v USING ivmx('SELECT 1')",
+            "CREATE VIRTUAL TABLE v USINGivm('SELECT 1')",
+            "CREATE VIRTUAL TABLE \"USING ivm\" USING fts5(x)",
+            "CREATE VIRTUAL TABLE \"unterminated USING ivm(",
+        ] {
+            assert!(!uses_ivm(other), "{other}");
+        }
     }
 
     #[test]
