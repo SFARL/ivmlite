@@ -5,6 +5,50 @@ All notable changes to ivmlite will be documented in this file.
 The project uses semantic versioning after `0.1.0`; prereleases may change the
 SQL subset and persisted shadow-table format without migration.
 
+## [Unreleased]
+
+### Added
+
+- `ivm_refresh_all([mode])` refreshes every view of the database in one call,
+  in `name` order. It must be called from a `SELECT`.
+  - `ivm_refresh_all()`, the same as `ivm_refresh_all('atomic')`, refreshes
+    every view under one savepoint, or none. It returns the number of views
+    refreshed. On a failure it rolls every view back and fails with
+    `ivm_refresh_all: view <name>: <message>; no view was refreshed`.
+  - `ivm_refresh_all('continue')` refreshes each view under its own
+    savepoint, rolls back only the views that fail, and returns
+    `refreshed <r>, skipped <s>, failed <f>`, then `: <name>: <message>` for
+    each failed view.
+  - From a statement that writes, it fails with
+    `ivm_refresh_all must be called from a SELECT, not from a statement that writes`.
+    It is registered `SQLITE_DIRECTONLY`, so SQLite refuses it in triggers,
+    views and `CHECK` constraints. Inside `BEGIN … COMMIT` it nests in the
+    transaction. If its own commit is refused in autocommit, for example with
+    `SQLITE_BUSY`, it rolls the call back whole.
+  - Any other argument fails with `ivm_refresh_all takes 'atomic' or 'continue'`.
+- Published M1b Phase 7 results in [`docs/bench/README.md`](docs/bench/README.md),
+  from a new driver, [`scripts/bench-refresh-all.py`](scripts/bench-refresh-all.py),
+  with [`phase7_tables.py`](docs/bench/phase7_tables.py) deriving every figure:
+  - the function costs 4.0–5.4 µs per view per call more than an
+    application's loop of refresh statements it keeps prepared, with one-row
+    or empty batches: 8.965 against 8.157 ms for 200 views at batch 1
+    (1.10x), and 1.99x when every view is idle. Its nested statements are
+    prepared on every call, because a cached statement that names an
+    ivmlite view would keep the connection from closing (Phase 6 §3). With
+    1,000-row batches it was 2.3–4.2% faster than the loop, ranges
+    overlapping;
+  - its value is atomicity and one call, not speed.
+
+### Changed
+
+- A refresh with nothing new since its last refresh returns after its
+  catalog checks, before it computes, stages or applies anything. The checks
+  still run, so a base table recreated without its capture triggers still
+  breaks the view instead of leaving it silently stale. An idle view's
+  refresh fell from 18.7 to 4.3 µs: refreshing 200 idle views takes 0.866 ms
+  instead of 3.748 ms (4.33x), and 1.33x less time when half of them are
+  idle. The shadow-table format is unchanged (5).
+
 ## [0.1.0-alpha.4] - 2026-10-12
 
 ### Fixed

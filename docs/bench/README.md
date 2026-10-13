@@ -1428,3 +1428,228 @@ Charts:
 
 - Total steady-state `apply + maintain` at 10 views and batch 100: [`groups=10`](m1b-phase6-card10.svg), [`groups=1,000`](m1b-phase6-card1000.svg), [`groups=100,000`](m1b-phase6-card100000.svg).
 - Speedup surface with 1x/2x reference lines: [`groups=10`](m1b-phase6-speedup-card10.svg), [`groups=1,000`](m1b-phase6-speedup-card1000.svg), [`groups=100,000`](m1b-phase6-speedup-card100000.svg).
+
+## M1b Phase 7: `ivm_refresh_all()`
+
+Phase 7 ([spec](../superpowers/specs/2026-10-12-m1b-phase7-refresh-all-design.md))
+added `ivm_refresh_all()`, which refreshes every view in one call, either
+atomically or view by view (spec §2). It also made a refresh with nothing new
+return early, after its checks (§4). This section measures what the function
+costs against an application's own loop of per-view refreshes, and what the
+early return saves.
+
+Every measured number in this section comes from
+[`phase7_tables.py`](phase7_tables.py) (`python3 docs/bench/phase7_tables.py`),
+which reads the two committed CSVs and uses only the standard library. The
+exceptions are the setup facts below, from the run session, and the one
+throwaway probe named under "Limits".
+
+### Setup
+
+**A different driver from the matrix.** The numbers come from
+[`scripts/bench-refresh-all.py`](../../scripts/bench-refresh-all.py), a
+Python driver using the standard library's `sqlite3`, not from
+`ivmlite-bench`. The matrix compares engines, while this driver compares
+ways of calling a refresh (spec §6). It loads the extension into Python
+3.13.13's SQLite 3.53.0, not into the SQLite 3.53.2 that `rusqlite` bundles.
+Its rows and batches have the m0 workload's shape but come from Python's own
+seeded generator, so they are not the matrix's rows:
+- 100,000 base rows in 1,000 groups, with amounts in [0, 200);
+- the matrix's views, `SELECT region, SUM(amount), COUNT(*) ... WHERE amount > k GROUP BY region`,
+  with `k = (i * 7) % 150`;
+- batches that delete with probability 0.33 and otherwise insert.
+
+**Protocol.** Each case runs in a fresh in-memory database. It applies one
+warm-up batch and refreshes every view, then applies five measured batches.
+Only the refresh of every view is timed. Each batch's writes run untimed, in
+one transaction, just before it. After the last batch, every view is checked
+against SQLite's own evaluation of its query, and none mismatched. The whole
+set ran three times (`--rounds 3`), so each value below is the median
+[min, max] over 15 measured batches, in milliseconds. `before` and `after`
+alternate per case and per round.
+
+**The shapes.** Each shape refreshes every view, in `name` order:
+- `app_cached`: one `INSERT INTO v(v) VALUES ('refresh')` per view, with the
+  same SQL text every time. The connection's Python statement cache holds
+  1,024 statements, so each view's statement is prepared once and reused;
+- `reprepared`: the same loop on a connection opened with
+  `cached_statements=0`, so each statement is prepared and finalized on every
+  call;
+- `refresh_all`: `SELECT ivm_refresh_all()`, on the same connection setup as
+  `app_cached`;
+- `refresh_all_continue`: `SELECT ivm_refresh_all('continue')`, on the same
+  setup;
+- `reprepared_with_checks`: `reprepared`, plus the statements the function
+  runs per view to count skips (§4), each prepared afresh from Python.
+
+**The cases:**
+- 10 and 200 views over one table, at batch 1 and batch 1,000;
+- the skip cases: 200 views over two tables of 100,000 rows each, 100 views
+  per table. `write=one` writes a one-row batch to the first table only, so
+  half the views have nothing new. `write=none` writes nothing.
+
+**Builds.** `before` is `8b57dc5`, master at Phase 7 start, which has no
+`ivm_refresh_all` and no early return. `after` is `768f757`, the end of Phase
+7's Task 2. The extension code at the branch head is the same.
+[`m1b-phase7-refresh-all-builds.csv`](m1b-phase7-refresh-all-builds.csv)
+gives each label's full commit and the SHA-256 of its library. Both are
+release builds, with Rust 1.95.0.
+
+**The machine** is the same 10-core Apple M2 Pro with 16 GB RAM as Phases 4
+to 6, under macOS 26.2 (25C56). The run took place on 2026-10-12 under
+`caffeinate -i`. It took 1,979.53 s. The load average was
+1.72 / 3.31 / 4.50 at the start and 2.21 / 2.09 / 2.38 at the end. The
+1-minute load at the start of each case ranged from 1.37 to 3.77 (median
+2.10). Desktop applications stayed open.
+
+**The noise floor.** In the four view cases every view has new deltas, so the
+early return never fires and both builds do the same refresh work there. The
+loop shapes' `after / before` stayed within 0.969–1.016x, with every range
+overlapping.
+
+### Reproducing
+
+From the repository root, with each build's release library copied out of
+its own scratch `CARGO_TARGET_DIR`:
+
+```bash
+python3 scripts/bench-refresh-all.py before.dylib after.dylib \
+  --before-commit 8b57dc5935e5af5fe714b57bb48c7963aa3a620f \
+  --after-commit 768f75703e90afa79da6b20bf749816541ea3359 --rounds 3
+python3 docs/bench/phase7_tables.py
+```
+
+The driver needs a Python whose `sqlite3` can load extensions. macOS's system
+Python cannot; Homebrew's can.
+
+### The shapes side by side
+
+`after` build. `before` has only the two loop shapes; its numbers are in the
+next two subsections.
+
+| case | app_cached | reprepared | refresh_all | refresh_all_continue | reprepared_with_checks |
+|---|---:|---:|---:|---:|---:|
+| 10 views, batch 1 | 0.380 [0.324, 0.508] | 0.354 [0.301, 0.469] | 0.434 [0.384, 0.555] | 0.448 [0.396, 0.570] | 0.455 [0.400, 0.566] |
+| 10 views, batch 1,000 | 58.261 [55.300, 61.346] | 55.859 [52.921, 58.058] | 56.924 [53.857, 59.832] | 57.019 [54.603, 63.081] | 56.059 [52.908, 60.973] |
+| 200 views, batch 1 | 8.157 [5.776, 12.191] | 7.432 [5.339, 9.972] | 8.965 [6.744, 11.705] | 9.154 [7.024, 11.634] | 9.354 [7.292, 11.825] |
+| 200 views, batch 1,000 | 986.169 [949.280, 1,008.915] | 950.692 [906.848, 986.449] | 944.844 [910.722, 1,012.434] | 951.873 [918.308, 973.678] | 942.897 [907.816, 975.577] |
+| skip, write=one | 4.471 [3.367, 5.752] | 4.275 [3.141, 5.761] | 5.394 [4.337, 6.561] | 5.806 [4.581, 7.113] | 6.053 [4.950, 7.455] |
+| skip, write=none | 0.866 [0.834, 0.986] | 0.929 [0.915, 0.954] | 1.719 [1.696, 1.754] | 1.967 [1.942, 2.001] | 2.672 [2.629, 2.747] |
+
+### What the function costs
+
+**`ivm_refresh_all` is slower than the application's own loop of cached
+statements whenever the refresh work is small.** The table compares it with
+`app_cached`, on the same connection setup. The ratio is of the medians, and
+above 1 means the function is slower. The per-round ratios are each round's
+median against the other shape's in the same round.
+
+| case | app_cached | refresh_all | ratio | extra µs per view | per-round ratios | continue ratio |
+|---|---:|---:|---:|---:|---:|---:|
+| 10 views, batch 1 | 0.380 | 0.434 | 1.142x | +5.4 | 1.139–1.197x | 1.179x |
+| 200 views, batch 1 | 8.157 | 8.965 | 1.099x | +4.0 | 1.079–1.153x | 1.122x |
+| skip, write=one | 4.471 | 5.394 | 1.206x | +4.6 | 1.198–1.218x | 1.299x |
+| skip, write=none | 0.866 | 1.719 | 1.985x | +4.3 | 1.886–2.056x | 2.271x |
+| 10 views, batch 1,000 | 58.261 | 56.924 | 0.977x | −133.7 | 0.974–0.980x | 0.979x |
+| 200 views, batch 1,000 | 986.169 | 944.844 | 0.958x | −206.6 | 0.958–0.976x | 0.965x |
+
+- **The fixed cost is 4.0–5.4 µs per view per call.** It is the same with
+  10 or 200 views, and with one-row or empty batches. Every round agrees: the
+  function was slower in every round of these four cases. The batch ranges
+  overlap in all but `write=none`, where every view is idle and the function
+  takes 1.99x the loop's time.
+- **Why: its nested statements are prepared on every call.** For each view,
+  the function prepares and finalizes the nested `INSERT INTO v(v)`, plus
+  the statements that count skips: the view's watermark and each base table's
+  latest delta (§4). A statement that names an ivmlite virtual table holds a
+  reference on it, which defers its xDisconnect and makes `sqlite3_close`
+  fail with `SQLITE_BUSY`. So Phase 6 §3 rule 2 forbids caching the nested
+  `INSERT`, and the function finalizes it before it returns (spec §3). The
+  application's loop keeps its statements prepared for as long as it likes,
+  and closing them is its own job.
+- **Where the cost goes.** `reprepared_with_checks` issues the function's
+  per-view statements from Python. It adds 8.7–10.1 µs per view over
+  `reprepared` at batch 1 and in the skip cases, more than the function's
+  whole extra cost. That is because each of its statements also pays
+  Python's own per-call overhead. So the driver cannot split the function's
+  4–5 µs between the nested `INSERT` and the skip checks. The skip checks do
+  not name a virtual table, so rule 2 would not forbid caching them; that is
+  a lever for a later phase.
+- **The `'continue'` mode costs a little more**: one savepoint per view, at
+  1.12–1.30x the loop at batch 1 and 2.27x when every view is idle.
+- **At batch 1,000 the function was 2.3–4.2% faster** than the loop, in every
+  round (0.958–0.980x), with the batch ranges overlapping. The work per view
+  is the same. The likely difference is that the function runs every view in
+  one transaction, while the loop commits once per view in autocommit. This
+  was not investigated.
+
+**Its value is atomicity and the API, not speed.** With one call, every view
+refreshes or none does, failures are reported by name, and idle views are
+counted. An application that only wants speed and does not need the views
+to move together should keep a prepared refresh statement per view.
+
+**The `reprepared` loop is not a measure of the prepare cost.** It was
+*faster* than `app_cached` in 11 of the 12 build-and-case pairs (0.902–0.971x),
+including at batch 1,000 (0.942–0.964x), where a prepare is a negligible
+share of the work. The exception is the `after` build with every view idle
+(1.073x), where a refresh is cheapest. Its first refresh was faster too. The two
+loops differ in the connection's Python statement cache as well as in
+statement reuse, and the cache-off connection ran every refresh faster. A
+throwaway probe (10 views, batch 1,000, three fresh databases each) found
+the same gap with the refresh statements prepared afresh on a cache-on
+connection, so it is the connection's setup, not the reuse. The cause was not
+isolated. So the only like-for-like comparisons here are on the same setup:
+`refresh_all` against `app_cached`, and `reprepared_with_checks` against
+`reprepared`.
+
+### What the early return saves
+
+Phase 7 §4 made a refresh with nothing new return after its checks, before it
+computes, stages or applies anything. The skip cases measure it with the same
+loop in both builds:
+
+| case | shape | before | after | before / after | saved per idle view |
+|---|---|---:|---:|---:|---:|
+| write=none | app_cached | 3.748 [3.696, 3.949] | 0.866 [0.834, 0.986] | 4.33x | 14.4 µs |
+| write=none | reprepared | 3.641 [3.502, 4.369] | 0.929 [0.915, 0.954] | 3.92x | 13.6 µs |
+| write=one | app_cached | 5.940 [4.795, 7.351] | 4.471 [3.367, 5.752] | 1.33x, ranges overlap | 14.7 µs |
+| write=one | reprepared | 5.425 [4.412, 6.760] | 4.275 [3.141, 5.761] | 1.27x, ranges overlap | 11.5 µs |
+
+- **An idle view's refresh fell from 18.7 to 4.3 µs** (`app_cached`, every
+  view idle). What remains is the statement itself and the checks, which
+  always run (§4).
+- **With half the views idle**, refreshing all 200 views is 1.33x faster.
+  The ranges overlap, because the 100 written views' refreshes vary more
+  than the 100 idle ones save.
+- **`ivm_refresh_all` against the `before` build's loop:** when every view is
+  idle, the function takes 1.719 ms, against 3.748 ms for `before`'s cached
+  loop (2.18x faster). With half the views idle, it takes 5.394 ms against
+  5.940 (1.10x, ranges overlap). Both gains are the early return's, which a
+  plain loop gets too in the `after` build.
+- The function counts a view as skipped by reading the watermarks and the
+  delta tables, and every call returned the expected counts:
+  `refreshed 100, skipped 100, failed 0` with one table written,
+  `refreshed 0, skipped 200, failed 0` with none.
+
+### Limits
+
+- **A different driver from the matrix.** These numbers come from Python's
+  `sqlite3` and SQLite 3.53.0, with Python's own per-statement overhead
+  inside every loop timing, and they are not comparable column for column
+  with the Rust runner's. The loop shapes' per-view costs include that
+  overhead; the function's nested statements do not pay it.
+- **The re-prepared loop ran on a different connection setup**, and that
+  setup was faster for reasons not isolated (above). The cost of re-preparing
+  one nested `INSERT` was therefore not measured on its own.
+- **The machine was not idle**, with a 1-minute load of 1.37–3.77 at case
+  starts. The noise floor between builds was 0.969–1.016x. Within one case,
+  batch-to-batch ranges are wide at batch 1: 5.8–12.2 ms at 200 views.
+- **One refresh policy.** In-memory databases, uniform data, and every view
+  refreshed after every batch. The function was measured with no failing
+  view; its failure paths are covered by tests (spec §5), not timed.
+
+Raw data:
+
+- [`m1b-phase7-refresh-all.csv`](m1b-phase7-refresh-all.csv): one row per timed refresh of every view: two builds × six cases × their shapes × three rounds × six batches (batch 0 is the warm-up), with the function's return value and the 1-minute load average at the case's start.
+- [`m1b-phase7-refresh-all-builds.csv`](m1b-phase7-refresh-all-builds.csv): the commit, the library's SHA-256 and the SQLite version behind each label.
+- [`phase7_tables.py`](phase7_tables.py): derives every table and figure in this section from the CSVs above.

@@ -129,6 +129,42 @@ Refresh is intentionally explicit:
 INSERT INTO view_name(view_name) VALUES ('refresh');
 ```
 
+To refresh every view of the database in one call, use `ivm_refresh_all`.
+Continuing the quick start:
+
+```sql
+CREATE VIRTUAL TABLE big_orders USING ivm(
+  'SELECT region, COUNT(*) FROM orders WHERE amount > 10 GROUP BY region'
+);
+INSERT INTO orders VALUES (5, 'north', 40);
+
+SELECT ivm_refresh_all();
+-- 2
+
+SELECT ivm_refresh_all('continue');
+-- refreshed 0, skipped 2, failed 0
+```
+
+- `ivm_refresh_all()`, the same as `ivm_refresh_all('atomic')`, refreshes
+  every view or none. It returns the number of views it refreshed. A view
+  with nothing new since its last refresh still has its checks run, but is
+  skipped and not counted. If any view fails, every view is rolled back and
+  the call fails with
+  `ivm_refresh_all: view <name>: <message>; no view was refreshed`.
+- `ivm_refresh_all('continue')` refreshes each view on its own. A view that
+  fails is rolled back alone and the call goes on. It returns
+  `refreshed <r>, skipped <s>, failed <f>`, followed by
+  `: <name>: <message>; ...` for each failed view.
+- Call it from a `SELECT`. From a statement that writes, such as
+  `INSERT INTO t SELECT ivm_refresh_all()`, it fails with
+  `ivm_refresh_all must be called from a SELECT, not from a statement that writes`.
+  SQLite refuses it inside triggers, views and `CHECK` constraints. Inside
+  `BEGIN … COMMIT` it works, and a later `ROLLBACK` undoes it.
+- It is for atomicity and convenience, not speed. It prepares its
+  statements again on every call, so with small batches a loop that keeps
+  each view's refresh statement prepared is faster, by about 4–5 µs per view
+  per call ([benchmark](docs/bench/README.md#m1b-phase-7-ivm_refresh_all)).
+
 The full operational and semantic boundary is documented in
 [Known limitations](docs/superpowers/specs/2026-09-18-ivmlite-design.md#13-known-limitations-v0).
 
