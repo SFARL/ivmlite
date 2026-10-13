@@ -51,6 +51,13 @@ The Phase 3a, 3b, 5 and 6 conventions all still hold.
 
 **The savepoint name** is reserved: `__ivm_refresh_all`. It is quoted, and released or rolled back on every path, including every error path. The function never returns with its savepoint open, except after a failed `ROLLBACK TO` (below). A function that fails without rolling back its own nested writes would leave them in place (measured), so no code path may return early around the rollback.
 
+**Waiting for other writers** (amendment 2026-10-12, from the final review). A call that reads before it writes cannot wait. In autocommit, the call's own reads (`__ivm_view`, the skip counts) start a read transaction before its first nested write. SQLite then refuses the write lock with `SQLITE_BUSY` without calling the busy handler: in WAL because the snapshot is stale, and in rollback-journal mode to avoid deadlock. The measured result was an immediate `database is locked` where `busy_timeout` would have waited. So:
+- **When it is outermost,** in autocommit, the call first runs `BEGIN IMMEDIATE`, which waits for the write lock under `busy_timeout`. It then opens its savepoint inside that transaction, and ends it with `COMMIT` or `ROLLBACK`.
+- **A refused `COMMIT`** takes the close-failure path below: `ROLLBACK`, and both messages kept.
+- **Inside the application's own transaction,** the application owns the locking; `BEGIN IMMEDIATE` is its tool there, and the README says so.
+
+**Only ivm views are refreshed** (same amendment). A row of `__ivm_view` whose name `"main".sqlite_schema` does not list as a virtual table using module `ivm` is reported as failed (`not an ivmlite view`) and never written to. `__ivm_view` is a shadow table and writing to it is tampering, but the function must not turn tampering into a write on an ordinary table.
+
 **When closing the savepoint fails** (amendment 2026-10-12, from the Task 2 review):
 - **A failed commit.** In autocommit the outer `RELEASE` is the commit. In rollback-journal mode it fails with `SQLITE_BUSY` while another connection reads, and SQLite then keeps both the savepoint and a write transaction the application never began (measured).
 - **So the function rolls the call back whole.** It notes before its `SAVEPOINT` whether it is outermost, that is, whether the connection was in autocommit. If closing its savepoint fails while it is outermost and a transaction is left open, it runs `ROLLBACK` and fails with `ivm_refresh_all: <the close's error>; no view was refreshed`. If the call had already failed, the message keeps that failure's message too. The connection is back in autocommit, and nothing the call did is kept.
