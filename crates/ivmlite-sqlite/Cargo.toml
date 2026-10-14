@@ -17,6 +17,6 @@ crate-type = ["cdylib"]
 [dependencies]
 ivmlite-core = { path = "../ivmlite-core" }
 ivmlite-sql = { path = "../ivmlite-sql" }
-rusqlite = { version = "0.40", features = ["loadable_extension", "vtab"] }
+rusqlite = { version = "0.40", features = ["functions", "loadable_extension", "vtab"] }
 
 [workspace]

@@ -5,6 +5,71 @@ All notable changes to ivmlite will be documented in this file.
 The project uses semantic versioning after `0.1.0`; prereleases may change the
 SQL subset and persisted shadow-table format without migration.
 
+## [Unreleased]
+
+### Fixed
+
+- A refused savepoint close in `ivm_refresh_all` now rolls back the call
+  inside the application's transaction too. Cleanup guards remain armed
+  until closing succeeds, and continue mode uses a distinct per-view
+  savepoint name. If the host persistently refuses rollback, the error
+  reports that refreshes may remain rather than claiming none occurred.
+- Benchmark workload preflight checks the actual deterministic trace,
+  rejecting deletes after the base rows are exhausted even when the
+  expected delete count fits. Valid traces are unchanged.
+
+### Added
+
+- `ivm_refresh_all([mode])` refreshes every view of the database in one call,
+  in `name` order. It must be called from a `SELECT`.
+  - `ivm_refresh_all()`, the same as `ivm_refresh_all('atomic')`, refreshes
+    every view under one savepoint, or none. It returns the number of views
+    refreshed, not counting the views it skipped because they had nothing
+    new since their last refresh (their checks still run). On a failure it rolls every view back and fails with
+    `ivm_refresh_all: view <name>: <message>; no view was refreshed`.
+  - `ivm_refresh_all('continue')` refreshes each view under its own
+    savepoint, rolls back only the views that fail, and returns
+    `refreshed <r>, skipped <s>, failed <f>`, then `: <name>: <message>` for
+    each failed view.
+  - From a statement that writes, it fails with
+    `ivm_refresh_all must be called from a SELECT, not from a statement that writes`.
+    It is registered `SQLITE_DIRECTONLY`, so SQLite refuses it in the
+    database schema's triggers, views and `CHECK` constraints. Inside
+    `BEGIN … COMMIT` it nests in the transaction.
+  - In autocommit it runs inside `BEGIN IMMEDIATE` … `COMMIT`, so it waits
+    for another writer under `busy_timeout`; from `SELECT … FROM t`, whose
+    read is already under way, it cannot wait and fails with
+    `database is locked`. If its commit is refused, for example with
+    `SQLITE_BUSY`, it rolls the call back whole.
+  - A nested failure that rolls back the whole transaction, such as
+    `RAISE(ROLLBACK)`, fails the call in either mode with the view's name
+    and message, and ends the application's own transaction.
+  - A `__ivm_view` row that does not name an `ivm` virtual table fails as
+    `not an ivmlite view`, and nothing is written to the table it names.
+  - Any other argument fails with `ivm_refresh_all takes 'atomic' or 'continue'`.
+- Published M1b Phase 7 results in [`docs/bench/README.md`](docs/bench/README.md),
+  from a new driver, [`scripts/bench-refresh-all.py`](scripts/bench-refresh-all.py),
+  with [`phase7_tables.py`](docs/bench/phase7_tables.py) deriving every figure:
+  - the function costs 4.0–5.4 µs per view per call more than an
+    application's loop of refresh statements it keeps prepared, with one-row
+    or empty batches: 8.965 against 8.157 ms for 200 views at batch 1
+    (1.10x), and 1.99x when every view is idle. Its nested statements are
+    prepared on every call, because a cached statement that names an
+    ivmlite view would keep the connection from closing (Phase 6 §3). With
+    1,000-row batches it was 2.3–4.2% faster than the loop, ranges
+    overlapping;
+  - its value is atomicity and one call, not speed.
+
+### Changed
+
+- A refresh with nothing new since its last refresh returns after its
+  catalog checks, before it computes, stages or applies anything. The checks
+  still run, so a base table recreated without its capture triggers still
+  breaks the view instead of leaving it silently stale. An idle view's
+  refresh fell from 18.7 to 4.3 µs: refreshing 200 idle views takes 0.866 ms
+  instead of 3.748 ms (4.33x), and is 1.33x faster when half of them are
+  idle (in every round, with overlapping ranges). The shadow-table format is unchanged (5).
+
 ## [0.1.0-alpha.4] - 2026-10-12
 
 ### Fixed

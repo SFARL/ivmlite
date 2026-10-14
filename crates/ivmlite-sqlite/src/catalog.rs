@@ -42,6 +42,11 @@ pub struct CaptureInfo {
 
 /// Reads a table's shape from `pragma_table_list`, `pragma_table_info` and its
 /// `CREATE` statement, and refuses what v0 cannot represent.
+///
+/// Every `pragma_*` table-valued function is named `"main".pragma_…`, as
+/// every table the extension reads is `"main"`-qualified (Phase 3a spec §4):
+/// SQLite resolves an unqualified name against `temp` first, so a TEMP table
+/// or view named `pragma_table_list` would otherwise be read instead.
 pub struct SqliteCatalog<'a> {
     pub conn: &'a Connection,
 }
@@ -57,7 +62,7 @@ impl Catalog for SqliteCatalog<'_> {
         let found: Option<(String, String, bool)> = self
             .conn
             .query_row(
-                "SELECT name, type, strict FROM pragma_table_list \
+                "SELECT name, type, strict FROM \"main\".pragma_table_list \
                  WHERE schema = 'main' AND name = ?1 COLLATE NOCASE",
                 [name],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
@@ -102,7 +107,7 @@ impl Catalog for SqliteCatalog<'_> {
         let every_column: Vec<String> = self
             .conn
             .prepare(&format!(
-                "SELECT name FROM pragma_table_xinfo({}, 'main')",
+                "SELECT name FROM \"main\".pragma_table_xinfo({}, 'main')",
                 literal(&declared)
             ))
             .and_then(|mut s| s.query_map([], |r| r.get(0))?.collect())
@@ -124,7 +129,7 @@ impl Catalog for SqliteCatalog<'_> {
             .prepare(&format!(
                 // The schema argument: without it, pragma_table_info reads a
                 // same-named TEMP table instead (measured).
-                "SELECT name, type, \"notnull\", pk FROM pragma_table_info({}, 'main')",
+                "SELECT name, type, \"notnull\", pk FROM \"main\".pragma_table_info({}, 'main')",
                 literal(&declared)
             ))
             .map_err(err)?;
@@ -209,7 +214,7 @@ impl SqliteCatalog<'_> {
             .query_row(
                 // COLLATE NOCASE, as in `table`: SQLite matches table names
                 // case-insensitively.
-                "SELECT wr FROM pragma_table_list \
+                "SELECT wr FROM \"main\".pragma_table_list \
                  WHERE schema = 'main' AND name = ?1 COLLATE NOCASE",
                 [table],
                 |r| r.get(0),
@@ -218,7 +223,7 @@ impl SqliteCatalog<'_> {
         let mut index_stmt = self
             .conn
             .prepare(
-                "SELECT name, origin, partial FROM pragma_index_list(?1, 'main') \
+                "SELECT name, origin, partial FROM \"main\".pragma_index_list(?1, 'main') \
                  WHERE \"unique\" = 1 ORDER BY name",
             )
             .map_err(err)?;
@@ -232,7 +237,7 @@ impl SqliteCatalog<'_> {
             let mut xinfo_stmt = self
                 .conn
                 .prepare(
-                    "SELECT cid, name, coll FROM pragma_index_xinfo(?1, 'main') \
+                    "SELECT cid, name, coll FROM \"main\".pragma_index_xinfo(?1, 'main') \
                      WHERE key = 1 ORDER BY seqno",
                 )
                 .map_err(err)?;
@@ -257,7 +262,7 @@ impl SqliteCatalog<'_> {
                 let (not_null, default, hidden): (bool, Option<String>, i64) = self
                     .conn
                     .query_row(
-                        "SELECT \"notnull\", dflt_value, hidden FROM pragma_table_xinfo(?1, 'main') \
+                        "SELECT \"notnull\", dflt_value, hidden FROM \"main\".pragma_table_xinfo(?1, 'main') \
                          WHERE name = ?2",
                         params![table, name],
                         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),

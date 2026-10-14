@@ -913,6 +913,8 @@ This milestone instead covers:
 - concurrency safety of delta-table GC (see §7.2)
 - **ergonomic improvements** to how maintenance is triggered, rather than an illusion of automation: for example an `ivm_refresh_all()`, and a recommended way to hook refresh into the application's own commit flow
 
+> **Amendment (2026-10-12, M1b Phase 7):** `ivm_refresh_all()` shipped ([Phase 7 spec](2026-10-12-m1b-phase7-refresh-all-design.md)). Called from a `SELECT`, it refreshes every view of the database, either atomically under one savepoint (`'atomic'`, the default) or view by view, reporting failures by name (`'continue'`). A view with nothing new is skipped after its checks. It is still explicit refresh (§8.2), and it buys atomicity and one call, not speed: it prepares its nested statements on every call, so with small batches a loop of refresh statements the application keeps prepared is faster, by 4.0–5.4 µs per view per call ([`docs/bench/README.md`](../../bench/README.md), "M1b Phase 7"). The other half of this bullet, a recommended way to hook refresh into the application's commit flow, is still open.
+
 **Explicit refresh is a permanent API, not a temporary v0 compromise** (see §8.2).
 
 ### M4+ — in order of value

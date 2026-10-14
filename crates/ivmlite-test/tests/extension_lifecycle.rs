@@ -649,6 +649,37 @@ fn a_temp_table_named_like_a_base_table_is_never_read_or_captured() {
     );
 }
 
+/// On the connection that owns the view, TEMP views named like the
+/// `pragma_*` table-valued functions the catalog reads are never read in
+/// their place: the catalog names each one `"main".pragma_…`. Without that,
+/// a TEMP view named `pragma_table_list` broke every create and every check.
+#[test]
+fn temp_views_named_like_the_catalog_pragmas_are_never_read() {
+    let c = open_with_extension(None).unwrap();
+    setup(&c);
+    create(&c, "sums", SUMS).unwrap();
+    for pragma in [
+        "pragma_table_list",
+        "pragma_table_info",
+        "pragma_table_xinfo",
+        "pragma_index_list",
+        "pragma_index_xinfo",
+    ] {
+        c.execute_batch(&format!(
+            "CREATE TEMP VIEW {pragma} AS SELECT 'decoy' AS name, 'table' AS type, \
+             0 AS strict, 0 AS wr"
+        ))
+        .unwrap();
+    }
+    // The TEMP DDL changed the schema, so the next refresh runs its checks.
+    c.execute_batch("INSERT INTO orders VALUES ('c', 3)")
+        .unwrap();
+    refresh(&c, "sums").unwrap();
+    assert_matches_oracle(&c, "sums", SUMS);
+    create(&c, "managers", JOIN).unwrap();
+    assert_matches_oracle(&c, "managers", JOIN);
+}
+
 /// On the connection that owns the view, TEMP tables named like every table
 /// ivmlite creates — the global tables, the delta, pend, output, stage and state
 /// tables — are never read, written or dropped by a create, a refresh, a

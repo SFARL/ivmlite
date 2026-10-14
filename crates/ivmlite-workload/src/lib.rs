@@ -683,6 +683,22 @@ impl Workload {
     /// alive". `check_rounds` says whether the base rows can supply the
     /// deletes the rounds ask for.
     pub fn update_rounds(&self, rounds: usize) -> Vec<Vec<TraceOp>> {
+        let mut ops = self.update_ops();
+        (0..rounds)
+            .map(|_| {
+                ops.by_ref()
+                    .take(self.updates.batch_size)
+                    .map(|(op, _)| op)
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// The shared stream for trace generation and preflight. The boolean
+    /// marks a requested delete replaced with an insert after exhausting the
+    /// base rows. Generation retains that historical fallback; benchmarks
+    /// reject it through `check_rounds` before measuring the trace.
+    fn update_ops(&self) -> impl Iterator<Item = (TraceOp, bool)> + '_ {
         let mut rng = StdRng::seed_from_u64(self.seed ^ 0x5EED);
         let card = self.data.group_cardinality.max(1);
         let amount_max = self.data.amount_max.max(1);
@@ -690,47 +706,53 @@ impl Workload {
         let mut next_id = base;
         let mut deleted: std::collections::BTreeSet<i64> = Default::default();
 
-        (0..rounds)
-            .map(|_| {
-                (0..self.updates.batch_size)
-                    .map(|_| {
-                        let want_delete =
-                            rng.random_bool(self.updates.delete_ratio.clamp(0.0, 1.0));
-                        if want_delete && (deleted.len() as i64) < base {
-                            let mut id = rng.random_range(0..base);
-                            while deleted.contains(&id) {
-                                id = rng.random_range(0..base);
-                            }
-                            deleted.insert(id);
-                            TraceOp::Delete { id }
-                        } else {
-                            let id = next_id;
-                            next_id += 1;
-                            TraceOp::Insert {
-                                id,
-                                region: format!("r{}", rng.random_range(0..card)),
-                                amount: rng.random_range(0..amount_max),
-                            }
-                        }
-                    })
-                    .collect()
-            })
-            .collect()
+        std::iter::from_fn(move || {
+            let want_delete = rng.random_bool(self.updates.delete_ratio.clamp(0.0, 1.0));
+            if want_delete && (deleted.len() as i64) < base {
+                let mut id = rng.random_range(0..base);
+                while deleted.contains(&id) {
+                    id = rng.random_range(0..base);
+                }
+                deleted.insert(id);
+                Some((TraceOp::Delete { id }, false))
+            } else {
+                let id = next_id;
+                next_id += 1;
+                Some((
+                    TraceOp::Insert {
+                        id,
+                        region: format!("r{}", rng.random_range(0..card)),
+                        amount: rng.random_range(0..amount_max),
+                    },
+                    want_delete,
+                ))
+            }
+        })
     }
 
     /// Refuse a cell whose base rows cannot supply the deletes of `rounds`
-    /// disjoint batches (spec §6): `rounds × batch_size × delete_ratio` must
-    /// not exceed `base_rows`. Deletes only ever hit base rows, so a cell
-    /// that fails this would run out of rows to delete part way through and
-    /// silently turn its later deletes into inserts.
+    /// disjoint batches (spec §6). Replay the deterministic generator rather
+    /// than bounding its expected delete count: independent random choices
+    /// can exhaust the base rows even when that expectation fits.
     pub fn check_rounds(&self, rounds: usize) -> Result<(), WorkloadError> {
-        let deletes = rounds as f64 * self.updates.batch_size as f64 * self.updates.delete_ratio;
-        if deletes > self.data.base_rows as f64 {
-            return Err(WorkloadError::Invalid(format!(
-                "a cell with base_rows = {} cannot fit {rounds} disjoint batches of \
-                 batch_size = {} at delete_ratio = {}: they would delete about {deletes} rows",
-                self.data.base_rows, self.updates.batch_size, self.updates.delete_ratio
-            )));
+        let mut ops = self.update_ops();
+        for round in 0..rounds {
+            for (index, (_, substituted_delete)) in
+                ops.by_ref().take(self.updates.batch_size).enumerate()
+            {
+                if substituted_delete {
+                    return Err(WorkloadError::Invalid(format!(
+                        "a cell with base_rows = {} cannot fit {rounds} disjoint batches of \
+                         batch_size = {} at delete_ratio = {}: round {}, operation {} \
+                         requests a delete after all base rows have been deleted",
+                        self.data.base_rows,
+                        self.updates.batch_size,
+                        self.updates.delete_ratio,
+                        round + 1,
+                        index + 1,
+                    )));
+                }
+            }
         }
         Ok(())
     }
@@ -1092,6 +1114,61 @@ mod tests {
         for part in ["base_rows = 10", "batch_size = 100", "6 disjoint batches"] {
             assert!(err.contains(part), "{part:?} missing from: {err}");
         }
+    }
+
+    /// The expected delete count fits exactly, but this seed requests four
+    /// deletes in six operations. The sixth operation must be refused before
+    /// benchmarking instead of silently changing it to an insert. Its first
+    /// five rounds consume exactly the available rows and remain legal.
+    #[test]
+    fn check_rounds_rejects_actual_exhaustion_even_when_expected_deletes_fit() {
+        let mut w = spec();
+        w.seed = 1;
+        w.data.base_rows = 3;
+        w.data.group_cardinality = 1;
+        w.data.amount_max = 200;
+        w.updates.batch_size = 1;
+        w.updates.delete_ratio = 0.5;
+
+        w.check_rounds(5)
+            .expect("the last available delete is legal");
+        let expected = vec![
+            vec![TraceOp::Insert {
+                id: 3,
+                region: "r0".into(),
+                amount: 103,
+            }],
+            vec![TraceOp::Delete { id: 0 }],
+            vec![TraceOp::Delete { id: 2 }],
+            vec![TraceOp::Insert {
+                id: 4,
+                region: "r0".into(),
+                amount: 10,
+            }],
+            vec![TraceOp::Delete { id: 1 }],
+        ];
+        assert_eq!(w.update_rounds(5), expected);
+        assert_eq!(w.update_trace(), expected[0]);
+
+        let err = w
+            .check_rounds(6)
+            .expect_err("the next delete cannot be supplied");
+        assert!(err.to_string().contains("round 6, operation 1"), "{err}");
+        assert!(
+            err.to_string().contains("all base rows have been deleted"),
+            "{err}"
+        );
+
+        // The public generation API preserves its historical fallback for
+        // callers that do not require a fixed operation mix.
+        assert_eq!(
+            w.update_rounds(6)[5],
+            vec![TraceOp::Insert {
+                id: 5,
+                region: "r0".into(),
+                amount: 64,
+            }]
+        );
     }
 
     #[test]
