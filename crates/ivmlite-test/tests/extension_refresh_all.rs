@@ -9,6 +9,7 @@ use std::ffi::{c_int, CStr, CString};
 use std::time::{Duration, Instant};
 
 use ivmlite_test::{extension_library, open_with_extension};
+use rusqlite::hooks::{AuthAction, AuthContext, Authorization, TransactionOperation};
 use rusqlite::types::Value;
 use rusqlite::{ffi, Connection};
 
@@ -658,6 +659,170 @@ fn a_commit_refused_by_a_reader_rolls_the_call_back_whole() {
             assert_eq!(err.to_string(), expected, "{args}");
         });
         assert_eq!(close_v1(db), ffi::SQLITE_OK, "{args}");
+    }
+}
+
+/// Refuse one RELEASE, allowing the cleanup that follows. Even inside the
+/// application's transaction, a failed call must undo every refresh, close
+/// its own savepoints, and preserve the caller's writes and savepoint.
+fn assert_refused_release_rolls_back_call(args: &str, refused_release: usize, keep_refusing: bool) {
+    use std::cell::Cell;
+
+    for explicit_transaction in [true, false] {
+        let c = open_with_extension(None).unwrap();
+        three_views(&c);
+        if explicit_transaction {
+            c.execute_batch("BEGIN; SAVEPOINT application").unwrap();
+        }
+        write_both(&c);
+        let before = every_view_state(&c);
+        let tables = [
+            "orders",
+            "regions",
+            "__ivm_delta_orders",
+            "__ivm_delta_regions",
+            "sqlite_sequence",
+        ];
+        let base_and_capture = || {
+            tables
+                .iter()
+                .map(|table| rows(&c, &format!("SELECT * FROM {}", ident(table))))
+                .collect::<Vec<_>>()
+        };
+        let before_base_and_capture = base_and_capture();
+        let releases = Cell::new(0);
+        c.authorizer(Some(move |ctx: AuthContext<'_>| {
+            if let AuthAction::Savepoint {
+                operation: TransactionOperation::Release,
+                savepoint_name: "__ivm_refresh_all" | "__ivm_refresh_all_view",
+            } = ctx.action
+            {
+                releases.set(releases.get() + 1);
+                if releases.get() == refused_release
+                    || (keep_refusing && releases.get() > refused_release)
+                {
+                    return Authorization::Deny;
+                }
+            }
+            Authorization::Allow
+        }))
+        .unwrap();
+        let err = call(&c, args).expect_err("the authorizer must refuse RELEASE");
+        c.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
+            .unwrap();
+        let expected = if keep_refusing {
+            "ivm_refresh_all: not authorized; no view was refreshed \
+             (and closing its savepoint failed: not authorized)"
+        } else {
+            "ivm_refresh_all: not authorized; no view was refreshed"
+        };
+        assert_eq!(err.to_string(), expected);
+        assert_eq!(every_view_state(&c), before, "{args}: a view changed");
+        assert_eq!(base_and_capture(), before_base_and_capture);
+        if keep_refusing && explicit_transaction {
+            // The host forbade closing any savepoint. Once that policy is
+            // lifted, the caller can close the rolled-back outer savepoint.
+            c.execute_batch("RELEASE __ivm_refresh_all").unwrap();
+        } else {
+            let stray = c
+                .execute_batch("RELEASE __ivm_refresh_all")
+                .expect_err("the call must leave no savepoint");
+            assert_eq!(stray.to_string(), "no such savepoint: __ivm_refresh_all");
+        }
+        let stray = c
+            .execute_batch("RELEASE __ivm_refresh_all_view")
+            .expect_err("the call must leave no per-view savepoint");
+        assert_eq!(
+            stray.to_string(),
+            "no such savepoint: __ivm_refresh_all_view"
+        );
+        assert_eq!(c.is_autocommit(), !explicit_transaction);
+        if explicit_transaction {
+            c.execute_batch("RELEASE application; COMMIT").unwrap();
+            assert_eq!(every_view_state(&c), before);
+            assert_eq!(base_and_capture(), before_base_and_capture);
+        }
+        assert_eq!(call(&c, "").unwrap(), Value::Integer(3));
+        all_match_the_oracle(&c);
+        c.close().unwrap();
+    }
+}
+
+#[test]
+fn atomic_refused_release_rolls_the_call_back_whole() {
+    assert_refused_release_rolls_back_call("", 1, false);
+}
+
+#[test]
+fn continue_refused_release_rolls_the_call_back_whole() {
+    // A per-view close can fail before or after a successful view; the last
+    // RELEASE closes the outer call after all three views succeeded.
+    for refused_release in [1, 2, 4] {
+        assert_refused_release_rolls_back_call("'continue'", refused_release, false);
+    }
+}
+
+#[test]
+fn continue_refused_release_cleanup_still_rolls_back_the_outer_call() {
+    // The second view's RELEASE and all cleanup RELEASEs are refused. The
+    // outer rollback must still undo the first view, not just the second.
+    assert_refused_release_rolls_back_call("'continue'", 2, true);
+}
+
+#[test]
+fn a_refused_rollback_is_retried_and_never_claims_an_unconfirmed_rollback() {
+    use std::cell::Cell;
+
+    for keep_refusing in [false, true] {
+        let c = open_with_extension(None).unwrap();
+        three_views(&c);
+        inject_fault(&c, MIDDLE.0);
+        c.execute_batch("BEGIN; SAVEPOINT application").unwrap();
+        write_both(&c);
+        let before = every_view_state(&c);
+        let rollbacks = Cell::new(0);
+        c.authorizer(Some(move |ctx: AuthContext<'_>| {
+            if let AuthAction::Savepoint {
+                operation: TransactionOperation::Rollback,
+                savepoint_name: "__ivm_refresh_all",
+            } = ctx.action
+            {
+                rollbacks.set(rollbacks.get() + 1);
+                if rollbacks.get() == 1 || keep_refusing {
+                    return Authorization::Deny;
+                }
+            }
+            Authorization::Allow
+        }))
+        .unwrap();
+        let err = call(&c, "").expect_err("the fault must fail the call");
+        c.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
+            .unwrap();
+        let message = err.to_string();
+        assert!(message.contains("view b_counts:"), "{message}");
+        assert!(message.contains("closing its savepoint failed: not authorized"));
+        if keep_refusing {
+            assert!(message.contains("refreshed views may remain"), "{message}");
+            assert!(!message.contains("no view was refreshed"), "{message}");
+            assert_ne!(view_state(&c, FIRST.0), before[0]);
+            // Once the host permits cleanup, it can undo just this call.
+            c.execute_batch("ROLLBACK TO __ivm_refresh_all; RELEASE __ivm_refresh_all")
+                .unwrap();
+        } else {
+            assert!(message.contains("no view was refreshed"), "{message}");
+            let stray = c
+                .execute_batch("RELEASE __ivm_refresh_all")
+                .expect_err("the retry must close the call's savepoint");
+            assert_eq!(stray.to_string(), "no such savepoint: __ivm_refresh_all");
+        }
+        assert_eq!(every_view_state(&c), before);
+        assert!(!c.is_autocommit());
+        c.execute_batch("RELEASE application; COMMIT").unwrap();
+        assert_eq!(every_view_state(&c), before);
+        c.execute_batch("DROP TRIGGER fault").unwrap();
+        assert_eq!(call(&c, "").unwrap(), Value::Integer(3));
+        all_match_the_oracle(&c);
+        c.close().unwrap();
     }
 }
 

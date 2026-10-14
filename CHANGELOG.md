@@ -7,6 +7,17 @@ SQL subset and persisted shadow-table format without migration.
 
 ## [Unreleased]
 
+### Fixed
+
+- A refused savepoint close in `ivm_refresh_all` now rolls back the call
+  inside the application's transaction too. Cleanup guards remain armed
+  until closing succeeds, and continue mode uses a distinct per-view
+  savepoint name. If the host persistently refuses rollback, the error
+  reports that refreshes may remain rather than claiming none occurred.
+- Benchmark workload preflight checks the actual deterministic trace,
+  rejecting deletes after the base rows are exhausted even when the
+  expected delete count fits. Valid traces are unchanged.
+
 ### Added
 
 - `ivm_refresh_all([mode])` refreshes every view of the database in one call,

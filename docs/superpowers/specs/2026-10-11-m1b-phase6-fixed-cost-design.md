@@ -213,7 +213,7 @@ The global tables gain `CREATE INDEX "main"."__ivm_progress_tbl" ON "__ivm_progr
 **Comparisons.** The §10.2 comparisons against hand-written triggers, and the confirmation rule, use the steady-state columns from now on. Phase 4 and Phase 5 measured the first refresh after `CREATE`. Their numbers are not comparable column for column, and the report says so.
 
 **The workload.**
-- `Workload` gains the rounds it must fit. Its validation checks that base rows and group keys support six disjoint batches at each cell's batch size.
+- `Workload` gains the rounds it must fit. Its validation checks that base rows and group keys support six disjoint batches at each cell's batch size. Preflight replays the same deterministic operation generator and rejects any requested delete after the base rows are exhausted; bounding the expected delete count is insufficient because each operation is sampled independently.
 - `workloads/m0-baseline.toml` is unchanged, unless a cell cannot fit six batches. Such a cell is reported and adjusted minimally.
 
 **Write-amp is not re-run.** The write path does not change.

@@ -11,6 +11,7 @@
 //! top-level `SELECT` can open one, so this function is what makes many
 //! views' refreshes atomic together (spec §1).
 
+use std::cell::Cell;
 use std::collections::HashMap;
 
 use rusqlite::functions::{Context, FunctionFlags};
@@ -22,6 +23,9 @@ use crate::vtab::guard;
 
 /// The function's savepoint (spec §2); reserved, and always quoted.
 pub const SAVEPOINT: &str = "__ivm_refresh_all";
+/// A per-view savepoint has a distinct name so the call's rollback always
+/// reaches the outer savepoint, even if closing the per-view one is refused.
+const VIEW_SAVEPOINT: &str = "__ivm_refresh_all_view";
 pub const BAD_ARGUMENT: &str = "ivm_refresh_all takes 'atomic' or 'continue'";
 pub const NOT_FROM_A_WRITE: &str =
     "ivm_refresh_all must be called from a SELECT, not from a statement that writes";
@@ -90,61 +94,84 @@ fn mode(ctx: &Context<'_>) -> Result<Mode> {
     }
 }
 
-/// An open `SAVEPOINT "__ivm_refresh_all"` (spec §2). `release` and
+/// An open named savepoint (spec §2). `release` and
 /// `roll_back` close it and report their errors. `Drop` is the backstop for
 /// a path that leaves it open, an early `?` or a panic's unwinding: it rolls
 /// back and releases, and cannot report.
 struct Savepoint<'c> {
     conn: &'c Connection,
+    name: &'static str,
+    rolled_back: &'c Cell<bool>,
     open: bool,
 }
 
 impl<'c> Savepoint<'c> {
-    fn open(conn: &'c Connection) -> rusqlite::Result<Self> {
-        conn.execute_batch(&format!("SAVEPOINT {}", quote(SAVEPOINT)))?;
-        Ok(Savepoint { conn, open: true })
+    fn open(
+        conn: &'c Connection,
+        name: &'static str,
+        rolled_back: &'c Cell<bool>,
+    ) -> rusqlite::Result<Self> {
+        conn.execute_batch(&format!("SAVEPOINT {}", quote(name)))?;
+        Ok(Savepoint {
+            conn,
+            name,
+            rolled_back,
+            open: true,
+        })
     }
 
     fn release(mut self) -> Result<()> {
+        // A nested RELEASE can be refused by the authorizer too. Keep the
+        // guard armed until it succeeds: on failure Drop must undo and close
+        // this savepoint before a caller rolls back its own, outer one.
+        exec(self.conn, &format!("RELEASE {}", quote(self.name)))?;
         self.open = false;
-        exec(self.conn, &format!("RELEASE {}", quote(SAVEPOINT)))
+        Ok(())
     }
 
     fn roll_back(mut self) -> Result<()> {
+        roll_back_and_release(self.conn, self.name, self.rolled_back).map_err(sql_error)?;
         self.open = false;
-        roll_back_and_release(self.conn).map_err(sql_error)
+        Ok(())
     }
 }
 
 impl Drop for Savepoint<'_> {
     fn drop(&mut self) {
         if self.open {
-            let _ = roll_back_and_release(self.conn);
+            let _ = roll_back_and_release(self.conn, self.name, self.rolled_back);
         }
     }
 }
 
 /// Undo everything since the savepoint, then close it. A failed
-/// `ROLLBACK TO` stops the batch before the `RELEASE`, which would otherwise
-/// keep the writes it failed to undo, so it leaves the savepoint open (spec
-/// §2, "When closing the savepoint fails"). In practice the I/O or memory
-/// error that makes `ROLLBACK TO` fail has already made SQLite roll back the
-/// whole transaction, closing every savepoint with it.
-fn roll_back_and_release(conn: &Connection) -> rusqlite::Result<()> {
-    let name = quote(SAVEPOINT);
-    conn.execute_batch(&format!("ROLLBACK TO {name}; RELEASE {name}"))
+/// `ROLLBACK TO` stops before `RELEASE`, which would otherwise keep writes
+/// it failed to undo. The guard retries on failure. If a host keeps refusing
+/// cleanup, its savepoint remains open; `rolled_back` records whether undo
+/// succeeded, even when the following RELEASE failed. I/O or memory errors
+/// may instead have rolled the whole transaction back already.
+fn roll_back_and_release(
+    conn: &Connection,
+    name: &str,
+    rolled_back: &Cell<bool>,
+) -> rusqlite::Result<()> {
+    let name = quote(name);
+    conn.execute_batch(&format!("ROLLBACK TO {name}"))?;
+    rolled_back.set(true);
+    conn.execute_batch(&format!("RELEASE {name}"))
 }
 
 /// Spec §2: open the call's savepoint, refresh, then release it, or roll
 /// it back if the call fails. Only the `SAVEPOINT` statement's own error is
 /// read as a call from a writing statement.
 ///
-/// The mode returns the cause of a failed call, and every failure reads
-/// `ivm_refresh_all: <cause>; no view was refreshed` (`failure`). In
-/// autocommit the outermost `RELEASE` is the commit, and it can fail, for
+/// A failed call reports its cause and, when rollback is confirmed,
+/// `no view was refreshed` (`failure`). A host that forbids rollback instead
+/// gets a message that refreshes may remain in its transaction. In
+/// autocommit the final `COMMIT` can fail, for
 /// example with `SQLITE_BUSY` while another connection reads in a
 /// rollback-journal database; SQLite then keeps the savepoint and a write
-/// transaction open. So when closing the savepoint fails and the call began
+/// transaction open. So when closing fails and the call began
 /// that transaction, it runs `ROLLBACK` (spec §2, "When closing the
 /// savepoint fails"); see `close_failure` for the message.
 ///
@@ -162,7 +189,8 @@ fn run(conn: &Connection, mode: Mode) -> Result<Value> {
     if outermost {
         exec(conn, "BEGIN IMMEDIATE").map_err(|e| failure(&e))?;
     }
-    let call = match Savepoint::open(conn) {
+    let rolled_back = Cell::new(false);
+    let call = match Savepoint::open(conn, SAVEPOINT, &rolled_back) {
         Ok(call) => call,
         Err(_) => {
             // From a writing statement in autocommit, `BEGIN` succeeds and
@@ -197,7 +225,16 @@ fn run(conn: &Connection, mode: Mode) -> Result<Value> {
                     format!("ivm_refresh_all: {close}; its ROLLBACK failed too: {rollback}")
                 })?;
             }
-            Err(close_failure(outcome.err().as_deref(), &close))
+            if rolled_back.get() || conn.is_autocommit() {
+                Err(close_failure(outcome.err().as_deref(), &close))
+            } else {
+                let cause = outcome.err().unwrap_or_else(|| close.clone());
+                Err(format!(
+                    "ivm_refresh_all: {cause}; rollback could not be completed \
+                     (closing its savepoint failed: {close}); refreshed views \
+                     may remain in the caller's transaction"
+                ))
+            }
         }
     }
 }
@@ -244,7 +281,8 @@ fn continuing(conn: &Connection) -> Result<Value> {
     let (mut refreshed, mut skipped) = (0, 0);
     let mut failed = Vec::new();
     for view in views(conn)? {
-        let one = Savepoint::open(conn).map_err(sql_error)?;
+        let rolled_back = Cell::new(false);
+        let one = Savepoint::open(conn, VIEW_SAVEPOINT, &rolled_back).map_err(sql_error)?;
         match refresh_counted(conn, &view) {
             Ok(outcome) => {
                 one.release()?;
