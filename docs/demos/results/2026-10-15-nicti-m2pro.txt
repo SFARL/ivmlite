@@ -1,0 +1,18 @@
+# machine: Apple M2 Pro, 16 GiB; Darwin-25.2.0-arm64-arm-64bit-Mach-O
+# started: 2026-10-15 18:12:25 -0400
+# load_average_before: (5.80126953125, 9.23291015625, 6.71630859375)
+# command: target/release/examples/demand_case_bench nicti_facet_counts 2000000 200 3
+# commit: 1c61d6ed1f29281c7273660a793f56425f18ecc6; uncommitted changes under crates/, Cargo.toml or Cargo.lock: no
+# sqlite: 3.53.2 (bundled by rusqlite in this harness, which hosts the extension)
+# ivmlite extension: crates/ivmlite-sqlite/target/release/libivmlite_sqlite.dylib; built from ivmlite-sqlite 0.1.0-alpha.4; staleness check passed
+# workload: nicti_facet_counts, 2000000 base rows, 200-operation mixed batches, 3 repeats; rows report the median and min-max over the repeats
+# rounds: one warm-up batch, then 10 measured batches per run; apply_ms, maintain_ms and read_ms are each a run's median over its measured batches, and apply_plus_maintain_ms and end_to_end_ms the median of each batch's own sum
+case,mode,base_rows,batch_size,repeats,bootstrap_ms,bootstrap_min_ms,bootstrap_max_ms,first_refresh_ms,first_refresh_min_ms,first_refresh_max_ms,apply_ms,apply_min_ms,apply_max_ms,maintain_ms,maintain_min_ms,maintain_max_ms,read_ms,read_min_ms,read_max_ms,apply_plus_maintain_ms,apply_plus_maintain_min_ms,apply_plus_maintain_max_ms,end_to_end_ms,end_to_end_min_ms,end_to_end_max_ms,database_kib,database_kib_min,database_kib_max
+nicti_facet_counts,no_maintenance,2000000,200,3,0.000,0.000,0.000,0.000,0.000,0.000,0.138,0.137,0.145,0.000,0.000,0.000,0.000,0.000,0.000,0.138,0.137,0.145,0.138,0.137,0.145,180052.0,180052.0,180052.0
+nicti_facet_counts,unindexed_recompute,2000000,200,3,0.000,0.000,0.000,2838.284,2827.364,2839.934,0.182,0.178,0.193,2847.200,2833.796,3034.265,0.000,0.000,0.000,2847.376,2833.964,3034.455,2847.376,2833.964,3034.455,180052.0,180052.0,180052.0
+nicti_facet_counts,indexed_recompute,2000000,200,3,2059.449,1984.036,2077.033,3060.982,2879.931,3337.327,0.421,0.353,0.465,3059.211,2889.639,3207.235,0.000,0.000,0.000,3059.668,2889.982,3207.913,3059.668,2889.982,3207.913,312352.0,312352.0,312352.0
+nicti_facet_counts,handwritten_trigger,2000000,200,3,2883.293,2798.289,2917.426,0.000,0.000,0.000,2.468,2.424,2.550,0.000,0.000,0.000,0.040,0.039,0.040,2.468,2.424,2.550,2.508,2.464,2.585,180136.0,180136.0,180136.0
+nicti_facet_counts,ivmlite,2000000,200,3,25351.129,23156.376,26383.959,10.291,7.609,11.422,2.501,2.380,2.557,5.337,5.093,5.498,0.229,0.215,0.234,7.860,7.482,7.995,8.101,7.712,8.230,885736.0,885736.0,885736.0
+# wall_seconds: 404.305
+# load_average_after: (4.83203125, 5.46826171875, 5.662109375)
+# exit_status: 0

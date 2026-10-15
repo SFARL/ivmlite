@@ -8,7 +8,9 @@
 mod common;
 use common::*;
 
-use ivmlite_test::demand_cases::{DemandCase, KENER, NOOP, ZCASH};
+use ivmlite_test::demand_cases::{
+    DemandCase, KENER, NICTI, NOOP, PHOENIX, POCKETBASE, POSTIO, ZCASH, ZENOD,
+};
 use ivmlite_test::demo_bench::{measured_rounds, Workload, ROUNDS};
 use ivmlite_test::fluxflow::{
     apply_mixed_batch as apply_fluxflow_batch, seed as seed_fluxflow, FLOW_TABLE_DDL,
@@ -198,6 +200,14 @@ fn assert_demand_case_tracks_mixed_changes(
             .collect()
     };
     let initial_keys = keys(rows(&c, &view));
+    let hand = case.handwritten().map(|baseline| {
+        let h = rusqlite::Connection::open_in_memory().unwrap();
+        h.execute_batch(case.ddl).unwrap();
+        case.seed(&h, 1_200).unwrap();
+        (baseline.install)(&h).unwrap();
+        assert_eq!(rows(&h, baseline.read_sql), rows(&c, &view));
+        (h, baseline)
+    });
 
     for round in 0..ROUNDS {
         case.apply_mixed_batch(&c, 1_200, 40, round).unwrap();
@@ -208,6 +218,15 @@ fn assert_demand_case_tracks_mixed_changes(
         );
         refresh(&c, case.view_name).unwrap();
         assert_matches_oracle(&c, case.view_name, case.view_sql);
+        if let Some((h, baseline)) = &hand {
+            case.apply_mixed_batch(h, 1_200, 40, round).unwrap();
+            assert_eq!(
+                rows(h, baseline.read_sql),
+                rows(&c, &view),
+                "{} handwritten round {round}",
+                case.name
+            );
+        }
     }
 
     let after_last_refresh = rows(&c, &view);
@@ -243,6 +262,104 @@ fn kener_rollup_tracks_insert_status_rewrite_latency_update_and_delete() {
     assert!(
         !vanished.is_empty(),
         "some Kener group must disappear entirely"
+    );
+}
+
+#[test]
+fn zenod_totals_track_usage_corrections_and_retractions() {
+    assert_demand_case_tracks_mixed_changes(&ZENOD, 2);
+}
+
+#[test]
+fn nicti_facets_track_asset_and_keyword_mutations() {
+    assert_demand_case_tracks_mixed_changes(&NICTI, 3);
+}
+
+#[test]
+fn postio_footprint_tracks_soft_delete_restore_move_and_resize() {
+    assert_demand_case_tracks_mixed_changes(&POSTIO, 1);
+}
+
+#[test]
+fn phoenix_tokens_track_span_and_trace_changes() {
+    assert_demand_case_tracks_mixed_changes(&PHOENIX, 2);
+}
+
+#[test]
+fn pocketbase_counts_retract_the_last_book_of_an_author() {
+    assert!(!assert_demand_case_tracks_mixed_changes(&POCKETBASE, 1).is_empty());
+}
+
+/// Both maintenance implementations must handle zero sums, vanished groups,
+/// orphan joins and parent-key changes, beyond the large fixture's mix.
+fn check_edge_transitions(case: &DemandCase, initial: &str, steps: &[&str]) {
+    let c = open_with_extension(None).unwrap();
+    c.execute_batch(case.ddl).unwrap();
+    c.execute_batch(initial).unwrap();
+    create(&c, case.view_name, case.view_sql).unwrap();
+    let baseline = case.handwritten().unwrap();
+    (baseline.install)(&c).unwrap();
+    for sql in std::iter::once(&"").chain(steps.iter()) {
+        c.execute_batch(sql).unwrap();
+        refresh(&c, case.view_name).unwrap();
+        assert_matches_oracle(&c, case.view_name, case.view_sql);
+        assert_eq!(
+            rows(&c, baseline.read_sql),
+            rows(&c, case.view_sql),
+            "{}: {sql}",
+            case.name
+        );
+    }
+}
+
+#[test]
+fn new_rollups_handle_group_removal_zero_sums_and_join_rekeys() {
+    check_edge_transitions(
+        &ZENOD,
+        "INSERT INTO tenant_usage VALUES (1,1,'api',0)",
+        &[
+            "UPDATE tenant_usage SET tenant_id=2,kind='mcp'",
+            "DELETE FROM tenant_usage",
+        ],
+    );
+    check_edge_transitions(
+        &NICTI,
+        "INSERT INTO asset_keywords VALUES (1,1,'rust'),(2,1,'sqlite')",
+        &[
+            "INSERT INTO assets VALUES (1,'model',0)",
+            "UPDATE assets SET id=2",
+            "UPDATE asset_keywords SET asset_id=2",
+            "UPDATE assets SET model='new',rating=5",
+            "DELETE FROM assets",
+            "DELETE FROM asset_keywords",
+        ],
+    );
+    check_edge_transitions(
+        &POSTIO,
+        "INSERT INTO messages VALUES (1,1,0,0)",
+        &[
+            "UPDATE messages SET deleted_locally=1",
+            "UPDATE messages SET deleted_locally=0",
+            "UPDATE messages SET account_id=2",
+            "DELETE FROM messages",
+        ],
+    );
+    check_edge_transitions(
+        &PHOENIX,
+        "INSERT INTO spans VALUES (1,1,0,0,0),(2,1,0,10,20)",
+        &[
+            "INSERT INTO traces VALUES (1,1)",
+            "UPDATE traces SET id=2",
+            "UPDATE spans SET trace_id=2",
+            "UPDATE traces SET project_id=3",
+            "DELETE FROM spans WHERE id=2",
+            "DELETE FROM traces",
+        ],
+    );
+    check_edge_transitions(
+        &POCKETBASE,
+        "INSERT INTO books VALUES (1,'one')",
+        &["UPDATE books SET author='two'", "DELETE FROM books"],
     );
 }
 

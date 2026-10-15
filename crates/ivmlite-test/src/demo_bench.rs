@@ -1,6 +1,6 @@
 //! The shared runner of the demand-backed demo benchmarks
 //! (`docs/demos/README.md`): FluxFlow (`examples/fluxflow_demo.rs`) and the
-//! noop, Zcash and Kener cases (`examples/demand_case_bench.rs`).
+//! selectable demand cases (`examples/demand_case_bench.rs`).
 //!
 //! It follows the Phase 4 benchmark protocol
 //! (`docs/superpowers/specs/2026-09-28-m1b-phase4-benchmark-design.md` §3):
@@ -433,6 +433,11 @@ pub trait Workload {
     /// A covering index on the view's grouping and aggregated columns, for
     /// `Mode::IndexedRecompute`.
     fn covering_index_sql(&self) -> &'static str;
+    /// Equivalent query for the covering-index mode. A workload can force
+    /// its named indexes; its ordinary query remains the oracle.
+    fn indexed_recompute_sql(&self) -> &'static str {
+        self.view_sql()
+    }
     fn handwritten(&self) -> Option<Handwritten> {
         None
     }
@@ -603,15 +608,18 @@ fn verify(c: &Connection, workload: &dyn Workload, mode: Mode, when: &str) -> Re
 }
 
 /// The indexed baseline must really read the covering index.
-fn check_covering_plan(c: &Connection, workload: &dyn Workload) -> Result<()> {
-    let mut plan = c.prepare(&format!("EXPLAIN QUERY PLAN {}", workload.view_sql()))?;
+fn check_covering_plan(c: &Connection, name: &str, sql: &str) -> Result<()> {
+    let mut plan = c.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))?;
     let details: Vec<String> = plan
         .query_map([], |row| row.get(3))?
         .collect::<rusqlite::Result<_>>()?;
-    if !details.iter().any(|d| d.contains("COVERING INDEX")) {
+    let reads: Vec<_> = details
+        .iter()
+        .filter(|d| d.starts_with("SCAN ") || d.starts_with("SEARCH "))
+        .collect();
+    if reads.is_empty() || reads.iter().any(|d| !d.contains("USING COVERING INDEX")) {
         return Err(format!(
-            "{}: the indexed recompute does not use its covering index: {details:?}",
-            workload.name()
+            "{name}: the indexed recompute does not use its covering index: {details:?}"
         )
         .into());
     }
@@ -651,15 +659,16 @@ pub fn run_once(
     bootstrap(&c, workload, mode)?;
     let bootstrap_ms = elapsed_ms(start);
     if mode == Mode::IndexedRecompute {
-        check_covering_plan(&c, workload)?;
+        check_covering_plan(&c, workload.name(), workload.indexed_recompute_sql())?;
     }
     verify(&c, workload, mode, "after bootstrap")?;
 
     let mut writes = PreparedBatch::prepare(&c, workload.batch_sql(), workload.apply_fn())?;
     let mut maintenance = match mode {
         Mode::Ivmlite => Maintenance::Refresh(prepare_refresh(&c, workload.view_name())?),
-        Mode::UnindexedRecompute | Mode::IndexedRecompute => {
-            Maintenance::Recompute(c.prepare(workload.view_sql())?)
+        Mode::UnindexedRecompute => Maintenance::Recompute(c.prepare(workload.view_sql())?),
+        Mode::IndexedRecompute => {
+            Maintenance::Recompute(c.prepare(workload.indexed_recompute_sql())?)
         }
         Mode::NoMaintenance | Mode::HandwrittenTrigger => Maintenance::Nothing,
     };
@@ -700,11 +709,17 @@ pub fn run_once(
     }
 
     verify(&c, workload, mode, "after the last measured batch")?;
+    let database_kib = database_kib(&c)? as f64;
+    // A hinted query must preserve the ordinary query's complete result.
+    // Verify after timing/space sampling, so this check adds no warm-up.
+    if mode == Mode::IndexedRecompute {
+        check_same_multiset(&c, workload.indexed_recompute_sql(), workload.view_sql())?;
+    }
     Ok(Timing {
         bootstrap_ms,
         first_refresh_ms,
         steady: steady_state(&rounds).expect("MEASURED_ROUNDS is positive"),
-        database_kib: database_kib(&c)? as f64,
+        database_kib,
     })
 }
 
@@ -1062,13 +1077,29 @@ mod tests {
             c.execute_batch(workload.ddl()).unwrap();
             workload.seed(&c, 1_000).unwrap();
             assert!(
-                check_covering_plan(&c, workload).is_err(),
+                check_covering_plan(&c, workload.name(), workload.indexed_recompute_sql()).is_err(),
                 "{} is covered before its index exists",
                 workload.name()
             );
             c.execute_batch(workload.covering_index_sql()).unwrap();
-            check_covering_plan(&c, workload).unwrap();
+            check_covering_plan(&c, workload.name(), workload.indexed_recompute_sql()).unwrap();
         }
+    }
+
+    #[test]
+    fn joined_recompute_rejects_one_uncovered_relation() {
+        let c = Connection::open_in_memory().unwrap();
+        let case = &crate::demand_cases::NICTI;
+        c.execute_batch(case.ddl()).unwrap();
+        case.seed(&c, 1_200).unwrap();
+        c.execute_batch(case.covering_index_sql()).unwrap();
+        check_covering_plan(&c, case.name(), case.indexed_recompute_sql()).unwrap();
+        c.execute_batch("DROP INDEX assets_covering").unwrap();
+        let mixed_plan = "SELECT assets.model, assets.rating, asset_keywords.keyword, COUNT(*) \
+            FROM assets JOIN asset_keywords INDEXED BY keywords_covering \
+            ON assets.id=asset_keywords.asset_id \
+            GROUP BY assets.model,assets.rating,asset_keywords.keyword";
+        assert!(check_covering_plan(&c, case.name(), mixed_plan).is_err());
     }
 
     #[test]
@@ -1077,15 +1108,16 @@ mod tests {
             .modes()
             .contains(&Mode::HandwrittenTrigger));
         for case in crate::demand_cases::ALL {
-            assert_eq!(
-                case.modes(),
-                [
-                    Mode::NoMaintenance,
-                    Mode::UnindexedRecompute,
-                    Mode::IndexedRecompute,
-                    Mode::Ivmlite
-                ]
-            );
+            let mut expected = vec![
+                Mode::NoMaintenance,
+                Mode::UnindexedRecompute,
+                Mode::IndexedRecompute,
+            ];
+            if case.handwritten().is_some() {
+                expected.push(Mode::HandwrittenTrigger);
+            }
+            expected.push(Mode::Ivmlite);
+            assert_eq!(case.modes(), expected, "{}", case.name);
         }
     }
 

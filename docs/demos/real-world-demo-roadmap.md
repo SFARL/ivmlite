@@ -1,6 +1,6 @@
 # Real-world demo roadmap
 
-Research snapshot: 2026-10-08.
+Research snapshot: 2026-10-15.
 
 This document ranks public workload reports that could become ivmlite demos.
 They are demand evidence, not customer interviews, endorsements, adoption, or
@@ -35,6 +35,25 @@ reproduction of a production deployment.
 | P2 | [Kener #840](https://github.com/rajnandan1/kener/issues/840) / [PR #842](https://github.com/rajnandan1/kener/pull/842) | Issue-reported production numbers and an upstream rollup implementation; no production DB | Status-dimensional counts and integer latency sum fit; full rollup does not | Implemented high-cardinality slice |
 | P3 | [Bifrost #7460](https://github.com/maximhq/bifrost/issues/7460) | Issue-reported production numbers; no public DB or complete generator | Requires aggregates to survive raw deletion, which ivmlite does not support | Keep as a negative demo and sealing acceptance case |
 | Defer | [Claude Monitor #305](https://github.com/hoangsonww/Claude-Code-Agent-Monitor/issues/305) | Public proposal and small application fixtures; no row count, DB size, or timing in the issue | Also requires rollup-before-delete/sealing | Revisit after sealing exists |
+
+## October 15 expansion
+
+Implemented in this order through the shared extension runner. Each link
+records the pinned evidence, exact query, schema adaptations and boundaries.
+The fixture data is synthetic; source measurements are not ivmlite results.
+
+| Order | Case | Evidence and implemented slice | Important boundary |
+|---|---|---|---|
+| 1 | [Zenod](zenod.md) | Production usage ledger; tenant/kind COUNT + integer SUM | Explicit refresh differs from transactional quota totals; synthetic schema |
+| 2 | [Nicti](nicti.md) | Upstream synthetic 2M asset experiment; asset/keyword join count | Membership counts, not arbitrary distinct-asset facets |
+| 3 | [Postio](postio.md) | Open mailbox scan report; active-account COUNT + SUM(size) | Only one part of footprint; upstream schema is not STRICT |
+| 4 | [Phoenix](phoenix.md) | Reported 4.95M spans; project/day join token sums | Stored bucket replaces dynamic time window; old UI feature removed |
+| 5 | [PocketBase](pocketbase.md) | Open reproducer; grouped author book counts | Does not fix relation expand scheduling or prove extension loading |
+
+All five include a local SQL-trigger counterpart with the same schema,
+bootstrap, mutations and result relation. These are not ports of upstream
+trigger implementations. Oracle tests cover both implementations, both join
+inputs, orphan/rekey transitions, zero sums, group removal and refresh no-ops.
 
 ## P0: FluxFlow first
 
