@@ -101,7 +101,10 @@ full-footprint timing is context, not a baseline for this isolated query.
 
 This does not benchmark the GTK settings interaction, main-thread scheduling,
 attachments, local payload accounting, read-receipt count or mail sync. It
-does not prove that extension loading is available in Postio's chosen database
-engine. The synthetic STRICT schema differs from the source schema and is
+does not demonstrate integration with Postio's engine. At the pinned
+[source revision](https://github.com/dlapiduz/postio/blob/c32a6f4af191fb07c48176c7b77a1e502817c600/crates/postio-storage/Cargo.toml),
+`postio-storage` uses Turso's Rust engine, whereas this benchmark loads an
+extension into C SQLite through rusqlite. A Turso integration is unimplemented.
+The synthetic STRICT schema differs from the source schema and is
 not a drop-in migration. Actual integration would need to preserve refresh
 freshness, account isolation and delete/restore semantics.

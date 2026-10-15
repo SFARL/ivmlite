@@ -294,4 +294,15 @@ How often does the data change and the result get read? How stale may the result
 be? Can the deployed SQLite host load an extension and use the supported schema?
 
 Prioritize one successful external replay over adding a third polished demo.
-No outreach has been sent as part of this research.
+The original research snapshot above did not include outreach. On 2026-10-15,
+after merging runnable cases and publishing fresh alpha.4 raw results, we
+posted two English follow-ups on still-open issues:
+
+- [noop #2314](https://github.com/ryanbr/noop/issues/2314#issuecomment-6204360817):
+  stored-day counts, backfill/delete coverage and mobile integration limits;
+- [librustzcash #2476](https://github.com/zcash/librustzcash/issues/2476#issuecomment-6204361147):
+  denormalized eligibility, receive/spend/rewind coverage and wallet boundaries.
+
+Both comments distinguish synthetic timings from upstream application results.
+They report work completed after our earlier offers; they are not adoption
+signals.
