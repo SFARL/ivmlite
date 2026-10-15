@@ -1,6 +1,6 @@
 # Demand-backed demos
 
-Research snapshot: 2026-10-08. These are **documented problem patterns**, not
+Research snapshot: 2026-10-15. These are **documented problem patterns**, not
 customer interviews, endorsements, or evidence that their authors want ivmlite.
 Historical performance reports are not benchmarks of current software.
 
@@ -8,16 +8,21 @@ The [real-world demo roadmap](real-world-demo-roadmap.md) records the next
 source-backed candidates, their evidence levels, current ivmlite boundaries,
 and the order in which they were implemented.
 
-Four executable workloads from that roadmap now use the real extension,
+Nine executable workloads now use the real extension,
 deterministic large fixtures, mixed mutations and SQLite recomputation oracles:
 
 - [FluxFlow grouped-flow rollup](fluxflow.md), including a hand-written trigger
   baseline;
 - [noop gravity-witness count](noop.md);
 - [Zcash transparent balance](zcash.md);
-- [Kener quarter-hour status rollup](kener.md).
+- [Kener quarter-hour status rollup](kener.md);
+- [Zenod tenant usage totals](zenod.md);
+- [Nicti keyword facet counts](nicti.md);
+- [Postio mailbox footprint](postio.md);
+- [Phoenix project token rollup](phoenix.md);
+- [PocketBase author counts](pocketbase.md).
 
-The latter three share one selectable benchmark executable:
+All except FluxFlow share one selectable benchmark executable:
 
 ```sh
 cargo build --release --locked \
@@ -28,7 +33,21 @@ cargo run --release --locked -p ivmlite-test --example demand_case_bench -- \
   zcash_transparent_balance
 cargo run --release --locked -p ivmlite-test --example demand_case_bench -- \
   kener_quarter_hour_rollup
+# The next five, in implementation order:
+cargo run --release --locked -p ivmlite-test --example demand_case_bench -- zenod_usage_totals
+cargo run --release --locked -p ivmlite-test --example demand_case_bench -- nicti_facet_counts
+cargo run --release --locked -p ivmlite-test --example demand_case_bench -- postio_mailbox_footprint
+cargo run --release --locked -p ivmlite-test --example demand_case_bench -- phoenix_token_rollup
+cargo run --release --locked -p ivmlite-test --example demand_case_bench -- pocketbase_author_counts
 ```
+
+For the five new cases, `rows` means ledger events (Zenod), assets (Nicti),
+messages (Postio), spans (Phoenix), or books (PocketBase). Nicti seeds two
+memberships per asset; Phoenix seeds roughly one trace per 81 spans, with a
+128-trace minimum for small fixtures. A mixed operation is one application
+change: adding a Nicti asset also inserts two memberships, so a batch is not
+necessarily the same number of SQL statements across different cases.
+All modes within a case perform exactly the same statements.
 
 Each case records its public evidence, exact adaptation, unsupported behavior,
 source-scale command and raw output. These are synthetic development
@@ -62,7 +81,7 @@ Phase 4 benchmark protocol
      which may come from different batches;
   7. verify the final state, and record `database_kib`.
 
-  Every batch has the same mix, and no two batches touch the same rows, so
+  Every batch follows the same operation schedule, and no two batches touch the same rows, so
   one run applies eleven. The state is verified after the warm-up and after
   the last measured batch, outside the timers, but not between measured
   batches. Verification compares multisets of rows: duplicates count, and the
@@ -93,10 +112,16 @@ The modes are:
 - `indexed_recompute`: the same, over a covering index on the grouping and
   aggregated columns. The index is built at bootstrap (its `bootstrap_ms`);
   its maintenance is inside `apply_ms`; the runner checks with
-  `EXPLAIN QUERY PLAN` that the query reads it. This is the headline
-  baseline;
-- `handwritten_trigger` (FluxFlow only): a rollup table kept inside each write
-  by hand-written triggers; reading it is `read_ms`;
+  `EXPLAIN QUERY PLAN` that every base-table read uses a covering index.
+  Phoenix explicitly names both indexes with `INDEXED BY`; the unindexed
+  mode retains SQLite's natural plan. Both plans execute equivalent SQL,
+  checked against the ordinary query after timing and space sampling. Compare ivmlite with
+  the faster recomputation mode when discussing a speedup;
+- `handwritten_trigger` (FluxFlow and the five new rollups): a rollup table kept inside each write
+  by independent SQL triggers; reading it is `read_ms`. The new rollups
+  generate those triggers from fixed case definitions and maintain both
+  sides of each join. They are local counterparts, not copies of upstream
+  implementations;
 - `ivmlite`: capture triggers inside the writes, then explicit refresh
   (`maintain_ms`) and reading the view (`read_ms`).
 

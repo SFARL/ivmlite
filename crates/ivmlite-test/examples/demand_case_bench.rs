@@ -1,4 +1,4 @@
-//! Same-host benchmark for the noop, Zcash and Kener demand-shaped demos.
+//! Same-host benchmark for the selectable demand-shaped demos.
 //!
 //! Usage:
 //! `cargo run --release --locked -p ivmlite-test --example demand_case_bench -- \

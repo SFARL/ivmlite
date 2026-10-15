@@ -6,7 +6,10 @@
 
 use rusqlite::{params, Connection, Statement};
 
-use crate::demo_bench::{ApplyFn, Workload};
+use crate::demo_bench::{ApplyFn, Handwritten, Workload};
+
+mod rollups;
+pub use rollups::{NICTI, PHOENIX, POCKETBASE, POSTIO, ZENOD};
 
 pub struct DemandCase {
     pub name: &'static str,
@@ -16,12 +19,14 @@ pub struct DemandCase {
     /// A covering index on the grouping and aggregated columns, for the
     /// indexed recompute baseline (`docs/demos/README.md`).
     pub covering_index_sql: &'static str,
+    indexed_query: Option<&'static str>,
     pub default_rows: usize,
     pub default_batch: usize,
     seed_fn: fn(&Connection, usize) -> rusqlite::Result<()>,
     validate_fn: fn(usize, usize, usize) -> Result<(), String>,
     batch_sql: &'static [&'static str],
     apply_fn: ApplyFn,
+    handwritten: Option<Handwritten>,
 }
 
 impl Workload for DemandCase {
@@ -39,6 +44,12 @@ impl Workload for DemandCase {
     }
     fn covering_index_sql(&self) -> &'static str {
         self.covering_index_sql
+    }
+    fn indexed_recompute_sql(&self) -> &'static str {
+        self.indexed_query.unwrap_or(self.view_sql)
+    }
+    fn handwritten(&self) -> Option<Handwritten> {
+        self.handwritten
     }
     fn validate(&self, rows: usize, batch: usize, rounds: usize) -> Result<(), String> {
         (self.validate_fn)(rows, batch, rounds).map_err(|why| format!("{}: {why}", self.name))
@@ -92,6 +103,7 @@ pub const NOOP_MAX_ROWS: usize = NOOP_DAYS * SECONDS_PER_DAY / NOOP_SAMPLE_SECON
 const NOOP_CORRECTION_SECOND: usize = 43_205;
 
 pub static NOOP: DemandCase = DemandCase {
+    indexed_query: None,
     name: "noop_gravity_witness",
     ddl: "CREATE TABLE gravity_witness(
               id INTEGER PRIMARY KEY,
@@ -115,12 +127,14 @@ pub static NOOP: DemandCase = DemandCase {
         "UPDATE gravity_witness SET day_bucket = ?2, ts = ?3 WHERE id = ?1",
     ],
     apply_fn: apply_noop,
+    handwritten: None,
 };
 const NOOP_INSERT: usize = 0;
 const NOOP_DELETE: usize = 1;
 const NOOP_UPDATE: usize = 2;
 
 pub static ZCASH: DemandCase = DemandCase {
+    indexed_query: None,
     name: "zcash_transparent_balance",
     ddl: "CREATE TABLE transparent_outputs(
               id INTEGER PRIMARY KEY,
@@ -146,6 +160,7 @@ pub static ZCASH: DemandCase = DemandCase {
          WHERE id = ?1",
     ],
     apply_fn: apply_zcash,
+    handwritten: None,
 };
 const ZCASH_RECEIVE: usize = 0;
 const ZCASH_SPEND: usize = 1;
@@ -153,6 +168,7 @@ const ZCASH_REWIND: usize = 2;
 const ZCASH_CORRECT: usize = 3;
 
 pub static KENER: DemandCase = DemandCase {
+    indexed_query: None,
     name: "kener_quarter_hour_rollup",
     ddl: "CREATE TABLE monitoring_facts(
               id INTEGER PRIMARY KEY,
@@ -179,13 +195,23 @@ pub static KENER: DemandCase = DemandCase {
         "DELETE FROM monitoring_facts WHERE id = ?1",
     ],
     apply_fn: apply_kener,
+    handwritten: None,
 };
 const KENER_INSERT: usize = 0;
 const KENER_STATUS: usize = 1;
 const KENER_LATENCY: usize = 2;
 const KENER_DELETE: usize = 3;
 
-pub const ALL: [&DemandCase; 3] = [&NOOP, &ZCASH, &KENER];
+pub const ALL: [&DemandCase; 8] = [
+    &NOOP,
+    &ZCASH,
+    &KENER,
+    &ZENOD,
+    &NICTI,
+    &POSTIO,
+    &PHOENIX,
+    &POCKETBASE,
+];
 
 pub fn by_name(name: &str) -> Option<&'static DemandCase> {
     ALL.into_iter().find(|case| case.name == name)
