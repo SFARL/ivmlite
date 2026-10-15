@@ -63,9 +63,33 @@ Use the [shared benchmark protocol](README.md#benchmark-protocol) to interpret
 bootstrap, write capture, refresh, result read and SQLite page allocation.
 The indexed baseline uses `tenant_usage(tenant_id, kind, units)`. A local
 hand-written trigger baseline maintains the same grouped relation.
-Record raw output under
-`docs/demos/results/YYYY-MM-DD-zenod-<machine>.txt`; do not compare the
-upstream 2.9-second incident directly with this synthetic workload.
+
+The [recorded run](results/2026-10-15-zenod-m2pro.txt) on 2026-10-15 used
+commit `1c61d6e`, the `0.1.0-alpha.4` extension, bundled SQLite 3.53.2 and an
+Apple M2 Pro with 16 GiB memory. It used **three repeats**, rather than the
+five requested by the example command above, with fresh in-memory databases,
+1,760,000 base rows, 200-operation mixed batches and ten measured batches per
+repeat. Values below are medians across the three repeats. The total is the
+median of paired write + maintain + read batch totals; its range is the
+minimum–maximum across repeats.
+
+| Mode | Bootstrap ms | End-to-end ms (range) | SQLite pages KiB |
+|---|---:|---:|---:|
+| no maintenance | 0 | 0.066 (0.065–0.069) | 32,936 |
+| unindexed recompute | 0 | 757.665 (755.375–759.445) | 32,936 |
+| indexed recompute | 922.363 | 95.347 (95.233–96.397) | 66,580 |
+| hand-written triggers | 748.196 | 1.593 (1.586–1.597) | 32,952 |
+| ivmlite | 1,066.544 | 2.817 (2.809–2.931) | 33,104 |
+
+ivmlite's median write, steady-state refresh and read components were
+1.648 ms, 1.116 ms and 0.062 ms, respectively. Its first refresh was
+1.186 ms. Component medians do not sum exactly to the paired total.
+The local ivmlite path was about 33.8 times faster than indexed recomputation
+end to end, while the local hand-written trigger path was about 1.77 times
+faster than ivmlite. The one-minute load average fell from 9.04 to 5.80, so
+this was not an idle-machine run. The source-scale command completed with
+the SQLite oracle checks passing. The upstream 2.9-second incident is not a
+before/after baseline for these synthetic timings.
 
 ## Boundaries
 

@@ -1,0 +1,18 @@
+# machine: Apple M2 Pro, 16 GiB; Darwin-25.2.0-arm64-arm-64bit-Mach-O
+# started: 2026-10-15 18:23:55 -0400
+# load_average_before: (4.45703125, 4.7646484375, 5.27001953125)
+# command: target/release/examples/demand_case_bench pocketbase_author_counts 18000 40 3
+# commit: 1c61d6ed1f29281c7273660a793f56425f18ecc6; uncommitted changes under crates/, Cargo.toml or Cargo.lock: no
+# sqlite: 3.53.2 (bundled by rusqlite in this harness, which hosts the extension)
+# ivmlite extension: crates/ivmlite-sqlite/target/release/libivmlite_sqlite.dylib; built from ivmlite-sqlite 0.1.0-alpha.4; staleness check passed
+# workload: pocketbase_author_counts, 18000 base rows, 40-operation mixed batches, 3 repeats; rows report the median and min-max over the repeats
+# rounds: one warm-up batch, then 10 measured batches per run; apply_ms, maintain_ms and read_ms are each a run's median over its measured batches, and apply_plus_maintain_ms and end_to_end_ms the median of each batch's own sum
+case,mode,base_rows,batch_size,repeats,bootstrap_ms,bootstrap_min_ms,bootstrap_max_ms,first_refresh_ms,first_refresh_min_ms,first_refresh_max_ms,apply_ms,apply_min_ms,apply_max_ms,maintain_ms,maintain_min_ms,maintain_max_ms,read_ms,read_min_ms,read_max_ms,apply_plus_maintain_ms,apply_plus_maintain_min_ms,apply_plus_maintain_max_ms,end_to_end_ms,end_to_end_min_ms,end_to_end_max_ms,database_kib,database_kib_min,database_kib_max
+pocketbase_author_counts,no_maintenance,18000,40,3,0.000,0.000,0.000,0.000,0.000,0.000,0.012,0.012,0.012,0.000,0.000,0.000,0.000,0.000,0.000,0.012,0.012,0.012,0.012,0.012,0.012,344.0,344.0,344.0
+pocketbase_author_counts,unindexed_recompute,18000,40,3,0.000,0.000,0.000,2.983,2.874,3.229,0.019,0.016,0.019,2.839,2.790,2.925,0.000,0.000,0.000,2.853,2.811,2.944,2.853,2.812,2.945,344.0,344.0,344.0
+pocketbase_author_counts,indexed_recompute,18000,40,3,2.599,2.586,2.733,1.065,0.971,1.088,0.037,0.035,0.039,1.022,0.998,1.049,0.000,0.000,0.000,1.068,1.058,1.090,1.069,1.058,1.090,688.0,688.0,688.0
+pocketbase_author_counts,handwritten_trigger,18000,40,3,4.104,3.970,4.847,0.000,0.000,0.000,0.228,0.224,0.229,0.000,0.000,0.000,0.166,0.164,0.167,0.228,0.224,0.229,0.393,0.388,0.396,572.0,572.0,572.0
+pocketbase_author_counts,ivmlite,18000,40,3,30.293,29.654,31.415,0.731,0.704,0.792,0.297,0.276,0.299,0.447,0.432,0.458,0.912,0.883,0.967,0.734,0.732,0.778,1.678,1.641,1.796,1396.0,1396.0,1396.0
+# wall_seconds: 0.545
+# load_average_after: (4.45703125, 4.7646484375, 5.27001953125)
+# exit_status: 0

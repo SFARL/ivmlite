@@ -68,13 +68,41 @@ cargo run --release --locked -p ivmlite-test \
 ```
 
 The [shared protocol](README.md#benchmark-protocol) includes writes,
-maintenance and reading the maintained groups. Record raw output under
-`docs/demos/results/YYYY-MM-DD-nicti-<machine>.txt` and retain the fixture
-scale as assets, with twice as many initial membership rows.
+maintenance and reading the maintained groups. The fixture scale is assets,
+with twice as many initial membership rows.
 The indexed baseline uses `assets(model, rating, id)` and
 `asset_keywords(asset_id, keyword)`; the base schema already indexes
 `asset_keywords(asset_id)`. A local hand-written trigger baseline covers both
 join inputs and maintains the same membership counts.
+
+The [recorded run](results/2026-10-15-nicti-m2pro.txt) on 2026-10-15 used
+commit `1c61d6e`, the `0.1.0-alpha.4` extension, bundled SQLite 3.53.2 and an
+Apple M2 Pro with 16 GiB memory. It used **three repeats**, rather than the
+five in the example command, with fresh in-memory databases, 2,000,000 assets,
+4,000,000 initial keyword memberships, 200-operation mixed batches and ten
+measured batches per repeat. Values below are medians across repeats. Total
+ranges are minimum–maximum across repeats; totals use paired batch sums.
+
+| Mode | Bootstrap ms | End-to-end ms (range) | SQLite pages KiB |
+|---|---:|---:|---:|
+| no maintenance | 0 | 0.138 (0.137–0.145) | 180,052 |
+| unindexed recompute | 0 | 2,847.376 (2,833.964–3,034.455) | 180,052 |
+| indexed recompute | 2,059.449 | 3,059.668 (2,889.982–3,207.913) | 312,352 |
+| hand-written triggers | 2,883.293 | 2.508 (2.464–2.585) | 180,136 |
+| ivmlite | 25,351.129 | 8.101 (7.712–8.230) | 885,736 |
+
+ivmlite's median write, steady-state refresh and read components were
+2.501 ms, 5.337 ms and 0.229 ms. The first refresh was 10.291 ms.
+Component medians do not sum exactly to the paired total. The faster
+recomputation baseline here was the unindexed mode, which still has the base
+join-key index; use its 2,847.376 ms rather than the slower covering-index
+mode as the comparison. End to end, ivmlite was about 351 times faster than
+that baseline, while local hand-written triggers were about 3.23 times faster
+than ivmlite. ivmlite also used about 4.92 times the base SQLite page allocation
+and took 25.35 seconds to bootstrap. These are material space and startup
+costs of this join workload. The one-minute load average fell from 5.80 to
+4.83. The command completed with SQLite oracle checks passing; the upstream
+facet-query timings describe a different query and experiment.
 
 ## Boundaries
 

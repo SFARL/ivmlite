@@ -69,9 +69,33 @@ Interpret results using the [shared protocol](README.md#benchmark-protocol).
 The indexed baseline uses
 `messages(deleted_locally, account_id, size)`. A local hand-written trigger
 baseline maintains the same filtered count and sum.
-Record raw output under
-`docs/demos/results/YYYY-MM-DD-postio-<machine>.txt`. Compare the local modes
-against each other; upstream's 1.48-second full-footprint timing is context.
+
+The [recorded run](results/2026-10-15-postio-m2pro.txt) on 2026-10-15 used
+commit `1c61d6e`, the `0.1.0-alpha.4` extension, bundled SQLite 3.53.2 and an
+Apple M2 Pro with 16 GiB memory. It used **three repeats**, rather than the
+five in the example command, with fresh in-memory databases, 81,000 base
+rows, 200-operation mixed batches and ten measured batches per repeat. Values
+below are medians across repeats. Total ranges are minimum–maximum across
+repeats; totals use paired write + maintain + read batch sums.
+
+| Mode | Bootstrap ms | End-to-end ms (range) | SQLite pages KiB |
+|---|---:|---:|---:|
+| no maintenance | 0 | 0.049 (0.049–0.049) | 1,136 |
+| unindexed recompute | 0 | 5.921 (5.874–5.979) | 1,136 |
+| indexed recompute | 27.033 | 1.997 (1.965–2.067) | 2,284 |
+| hand-written triggers | 6.131 | 1.076 (1.059–1.114) | 1,140 |
+| ivmlite | 46.044 | 1.913 (1.904–1.964) | 1,236 |
+
+ivmlite's median write, steady-state refresh and read components were
+1.619 ms, 0.283 ms and 0.012 ms. The first refresh was 0.569 ms.
+Component medians do not sum exactly to the paired total. At this fixture size,
+indexed recomputation and ivmlite were close end to end: 1.997 versus 1.913 ms,
+about a 4% difference. Local hand-written triggers were about 1.78 times faster
+than ivmlite. This is not evidence that Postio needs an extension to meet its
+16 ms interaction budget: even local indexed recomputation was below it for
+this isolated query. The one-minute load average remained about 4.83. The
+command completed with SQLite oracle checks passing. Upstream's 1.48-second
+full-footprint timing is context, not a baseline for this isolated query.
 
 ## Boundaries
 

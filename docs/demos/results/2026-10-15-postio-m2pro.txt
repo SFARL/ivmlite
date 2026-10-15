@@ -1,0 +1,18 @@
+# machine: Apple M2 Pro, 16 GiB; Darwin-25.2.0-arm64-arm-64bit-Mach-O
+# started: 2026-10-15 18:19:09 -0400
+# load_average_before: (4.83203125, 5.46826171875, 5.662109375)
+# command: target/release/examples/demand_case_bench postio_mailbox_footprint 81000 200 3
+# commit: 1c61d6ed1f29281c7273660a793f56425f18ecc6; uncommitted changes under crates/, Cargo.toml or Cargo.lock: no
+# sqlite: 3.53.2 (bundled by rusqlite in this harness, which hosts the extension)
+# ivmlite extension: crates/ivmlite-sqlite/target/release/libivmlite_sqlite.dylib; built from ivmlite-sqlite 0.1.0-alpha.4; staleness check passed
+# workload: postio_mailbox_footprint, 81000 base rows, 200-operation mixed batches, 3 repeats; rows report the median and min-max over the repeats
+# rounds: one warm-up batch, then 10 measured batches per run; apply_ms, maintain_ms and read_ms are each a run's median over its measured batches, and apply_plus_maintain_ms and end_to_end_ms the median of each batch's own sum
+case,mode,base_rows,batch_size,repeats,bootstrap_ms,bootstrap_min_ms,bootstrap_max_ms,first_refresh_ms,first_refresh_min_ms,first_refresh_max_ms,apply_ms,apply_min_ms,apply_max_ms,maintain_ms,maintain_min_ms,maintain_max_ms,read_ms,read_min_ms,read_max_ms,apply_plus_maintain_ms,apply_plus_maintain_min_ms,apply_plus_maintain_max_ms,end_to_end_ms,end_to_end_min_ms,end_to_end_max_ms,database_kib,database_kib_min,database_kib_max
+postio_mailbox_footprint,no_maintenance,81000,200,3,0.000,0.000,0.000,0.000,0.000,0.000,0.049,0.049,0.049,0.000,0.000,0.000,0.000,0.000,0.000,0.049,0.049,0.049,0.049,0.049,0.049,1136.0,1136.0,1136.0
+postio_mailbox_footprint,unindexed_recompute,81000,200,3,0.000,0.000,0.000,6.010,5.866,6.320,0.054,0.051,0.056,5.861,5.825,5.922,0.000,0.000,0.000,5.921,5.874,5.979,5.921,5.874,5.979,1136.0,1136.0,1136.0
+postio_mailbox_footprint,indexed_recompute,81000,200,3,27.033,26.003,27.269,1.936,1.922,1.988,0.166,0.163,0.171,1.823,1.802,1.865,0.000,0.000,0.000,1.997,1.965,2.067,1.997,1.965,2.067,2284.0,2284.0,2284.0
+postio_mailbox_footprint,handwritten_trigger,81000,200,3,6.131,6.128,6.273,0.000,0.000,0.000,1.075,1.058,1.114,0.000,0.000,0.000,0.001,0.001,0.001,1.075,1.058,1.114,1.076,1.059,1.114,1140.0,1140.0,1140.0
+postio_mailbox_footprint,ivmlite,81000,200,3,46.044,42.168,46.554,0.569,0.456,0.587,1.619,1.616,1.634,0.283,0.275,0.307,0.012,0.009,0.013,1.901,1.894,1.953,1.913,1.904,1.964,1236.0,1236.0,1236.0
+# wall_seconds: 1.030
+# load_average_after: (4.83203125, 5.46826171875, 5.662109375)
+# exit_status: 0

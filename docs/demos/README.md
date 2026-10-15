@@ -137,7 +137,7 @@ they run the oracle's own query, so the check would be tautological.
 `database_kib` is SQLite's in-memory page allocation after the last batch,
 not an on-disk size.
 
-The checked-in results in [`results/`](results/) were taken on 2026-10-10 with
+The original four workloads' results in [`results/`](results/) were taken on 2026-10-10 with
 the `0.1.0-alpha.3` extension and the ten-batch protocol, one demo after
 another, while desktop applications stayed open; each file records its wall
 time and its load averages, and the one-minute load average was between 4.51
@@ -145,6 +145,12 @@ and 7.34. They show the shape of each comparison. The before/after comparison
 of M1b Phase 5 is in the "M1b Phase 5" section of
 [`docs/bench/README.md`](../bench/README.md), with its data in
 `docs/bench/m1b-phase5-demos.csv`.
+
+The [October 15 results](results/2026-10-15-summary.md) add the five new
+workloads at their documented scales with the `0.1.0-alpha.4` extension and
+three repeats. They include local SQL-trigger baselines, bootstrap/read/space
+costs, and counterexamples: Postio is approximately tied with indexed
+recomputation, and PocketBase is slower at the measured scale.
 
 ## Run the first two demos
 

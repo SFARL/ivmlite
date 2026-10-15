@@ -60,13 +60,41 @@ cargo run --release --locked -p ivmlite-test \
 ```
 
 The [shared protocol](README.md#benchmark-protocol) reports bootstrap, writes,
-refresh, result reads and page allocation. Record raw output under
-`docs/demos/results/YYYY-MM-DD-pocketbase-<machine>.txt`. Only the local
-benchmark modes form a controlled performance comparison.
+refresh, result reads and page allocation. Only the local benchmark modes
+form a controlled performance comparison.
 The indexed baseline uses `books(author)`. A local hand-written trigger
 baseline maintains the same count relation. Reassignments and inserts create
 new synthetic author IDs, so the result cardinality can grow beyond the
 5,000 seed authors.
+
+The [recorded run](results/2026-10-15-pocketbase-m2pro.txt) on 2026-10-15 used
+commit `1c61d6e`, the `0.1.0-alpha.4` extension, bundled SQLite 3.53.2 and an
+Apple M2 Pro with 16 GiB memory. It used **three repeats**, rather than the
+five in the example command, with fresh in-memory databases, 18,000 books,
+40-operation mixed batches and ten measured batches per repeat. Values below
+are medians across repeats. Total ranges are minimum–maximum across repeats;
+totals use paired write + maintain + read batch sums.
+
+| Mode | Bootstrap ms | End-to-end ms (range) | SQLite pages KiB |
+|---|---:|---:|---:|
+| no maintenance | 0 | 0.012 (0.012–0.012) | 344 |
+| unindexed recompute | 0 | 2.853 (2.812–2.945) | 344 |
+| indexed recompute | 2.599 | 1.069 (1.058–1.090) | 688 |
+| hand-written triggers | 4.104 | 0.393 (0.388–0.396) | 572 |
+| ivmlite | 30.293 | 1.678 (1.641–1.796) | 1,396 |
+
+ivmlite's median write, steady-state refresh and read components were
+0.297 ms, 0.447 ms and 0.912 ms. The first refresh was 0.731 ms.
+Component medians do not sum exactly to the paired total. At this fixture
+size, **ivmlite was about 1.57 times slower than indexed recomputation end
+to end**. Reading all count groups cost more than maintaining them; the
+benchmark does not push author filters into the materialized scan. Local
+hand-written triggers were about 4.27 times faster than ivmlite. ivmlite used
+about 4.06 times the base SQLite page allocation. The one-minute load average
+remained about 4.46. The command completed with SQLite oracle checks passing.
+This is a useful semantic demonstration and a measured limit of the current
+read path, rather than performance evidence for replacing this small indexed
+aggregate or fixing the PocketBase API request.
 
 ## Boundaries
 
