@@ -1,0 +1,16 @@
+# machine: Apple M2 Pro, 16 GiB; macOS-26.2-arm64-arm-64bit
+# load_average_before: (28.990234375, 13.052734375, 7.15087890625)
+# command: target/release/examples/demand_case_bench noop_gravity_witness 518400 200 3
+# commit: 4849ef4563e9c0f1081bde74db414ca90388d1ce; uncommitted changes under crates/, Cargo.toml or Cargo.lock: no
+# sqlite: 3.53.2 (bundled by rusqlite in this harness, which hosts the extension)
+# ivmlite extension: crates/ivmlite-sqlite/target/release/libivmlite_sqlite.dylib; built from ivmlite-sqlite 0.1.0-alpha.4; staleness check passed
+# workload: noop_gravity_witness, 518400 base rows, 200-operation mixed batches, 3 repeats; rows report the median and min-max over the repeats
+# rounds: one warm-up batch, then 10 measured batches per run; apply_ms, maintain_ms and read_ms are each a run's median over its measured batches, and apply_plus_maintain_ms and end_to_end_ms the median of each batch's own sum
+case,mode,base_rows,batch_size,repeats,bootstrap_ms,bootstrap_min_ms,bootstrap_max_ms,first_refresh_ms,first_refresh_min_ms,first_refresh_max_ms,apply_ms,apply_min_ms,apply_max_ms,maintain_ms,maintain_min_ms,maintain_max_ms,read_ms,read_min_ms,read_max_ms,apply_plus_maintain_ms,apply_plus_maintain_min_ms,apply_plus_maintain_max_ms,end_to_end_ms,end_to_end_min_ms,end_to_end_max_ms,database_kib,database_kib_min,database_kib_max
+noop_gravity_witness,no_maintenance,518400,200,3,0.000,0.000,0.000,0.000,0.000,0.000,0.186,0.186,0.191,0.000,0.000,0.000,0.000,0.000,0.000,0.186,0.186,0.191,0.186,0.186,0.191,15048.0,15048.0,15048.0
+noop_gravity_witness,unindexed_recompute,518400,200,3,0.000,0.000,0.000,169.055,168.692,172.187,0.263,0.258,0.265,171.114,169.186,171.882,0.000,0.000,0.000,171.362,169.447,172.141,171.362,169.447,172.141,15048.0,15048.0,15048.0
+noop_gravity_witness,indexed_recompute,518400,200,3,153.189,152.472,158.964,18.268,17.753,18.307,0.452,0.383,0.491,17.614,17.139,17.996,0.000,0.000,0.000,18.071,17.538,18.524,18.071,17.538,18.524,20852.0,20852.0,20852.0
+noop_gravity_witness,ivmlite,518400,200,3,209.313,206.729,217.257,0.843,0.799,0.859,1.981,1.884,1.997,0.480,0.478,0.487,0.021,0.018,0.022,2.470,2.364,2.480,2.488,2.382,2.503,15164.0,15164.0,15164.0
+# wall_seconds: 13.872
+# load_average_after: (25.517578125, 13.06591796875, 7.25830078125)
+# exit_status: 0

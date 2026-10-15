@@ -83,6 +83,38 @@ lookup.
 
 See the [raw results](results/2026-10-10-noop-macos-m2-pro.txt).
 
+## October 15 follow-up
+
+A fresh synthetic run on 2026-10-15 used source commit `4849ef4`, the
+`0.1.0-alpha.4` extension and bundled SQLite 3.53.2, built and run in an
+isolated worktree. It used an Apple M2 Pro with 16 GiB RAM, 518,400 initial
+rows, 200-operation mixed batches, three repeats and ten measured batches
+per repeat after one warm-up. Each total includes writes, maintenance and
+reading the result, using paired round sums. These numbers describe the
+adapted relation above, not the upstream application's original query.
+
+| Mode | Bootstrap ms | End-to-end ms (min–max) | SQLite pages KiB |
+|---|---:|---:|---:|
+| no_maintenance | 0.000 | 0.186 (0.186–0.191) | 15,048 |
+| unindexed_recompute | 0.000 | 171.362 (169.447–172.141) | 15,048 |
+| indexed_recompute | 153.189 | 18.071 (17.538–18.524) | 20,852 |
+| ivmlite | 209.313 | 2.488 (2.382–2.503) | 15,164 |
+
+The median write, refresh and read components were 1.981 ms,
+0.480 ms and 0.021 ms, respectively; separate medians
+must not be summed to reconstruct the paired total. Indexed recomputation
+was about 7.26 times the ivmlite total for this fixture.
+No handwritten-counter baseline is included for this case.
+
+The desktop was busy: one-minute load averages were between approximately
+23 and 29 across these two follow-up runs. The raw output retains load,
+command, clean source provenance and success status. Treat this as evidence
+of the comparison's shape, not a device result or a controlled comparison
+with October 10. Bootstrap and final results were checked against SQLite's
+full-recompute multiset oracle.
+
+[Raw output](results/2026-10-15-noop-m2pro.txt).
+
 ## Boundaries
 
 The stored day must be computed with the application's real timezone and DST

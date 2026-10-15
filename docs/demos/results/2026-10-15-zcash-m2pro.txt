@@ -1,0 +1,16 @@
+# machine: Apple M2 Pro, 16 GiB; macOS-26.2-arm64-arm-64bit
+# load_average_before: (25.517578125, 13.06591796875, 7.25830078125)
+# command: target/release/examples/demand_case_bench zcash_transparent_balance 500000 500 3
+# commit: 4849ef4563e9c0f1081bde74db414ca90388d1ce; uncommitted changes under crates/, Cargo.toml or Cargo.lock: no
+# sqlite: 3.53.2 (bundled by rusqlite in this harness, which hosts the extension)
+# ivmlite extension: crates/ivmlite-sqlite/target/release/libivmlite_sqlite.dylib; built from ivmlite-sqlite 0.1.0-alpha.4; staleness check passed
+# workload: zcash_transparent_balance, 500000 base rows, 500-operation mixed batches, 3 repeats; rows report the median and min-max over the repeats
+# rounds: one warm-up batch, then 10 measured batches per run; apply_ms, maintain_ms and read_ms are each a run's median over its measured batches, and apply_plus_maintain_ms and end_to_end_ms the median of each batch's own sum
+case,mode,base_rows,batch_size,repeats,bootstrap_ms,bootstrap_min_ms,bootstrap_max_ms,first_refresh_ms,first_refresh_min_ms,first_refresh_max_ms,apply_ms,apply_min_ms,apply_max_ms,maintain_ms,maintain_min_ms,maintain_max_ms,read_ms,read_min_ms,read_max_ms,apply_plus_maintain_ms,apply_plus_maintain_min_ms,apply_plus_maintain_max_ms,end_to_end_ms,end_to_end_min_ms,end_to_end_max_ms,database_kib,database_kib_min,database_kib_max
+zcash_transparent_balance,no_maintenance,500000,500,3,0.000,0.000,0.000,0.000,0.000,0.000,0.163,0.162,0.168,0.000,0.000,0.000,0.000,0.000,0.000,0.163,0.162,0.168,0.163,0.162,0.168,12328.0,12328.0,12328.0
+zcash_transparent_balance,unindexed_recompute,500000,500,3,0.000,0.000,0.000,117.399,116.416,117.498,0.184,0.181,0.184,116.730,116.706,117.898,0.000,0.000,0.000,116.921,116.890,118.081,116.921,116.890,118.081,12328.0,12328.0,12328.0
+zcash_transparent_balance,indexed_recompute,500000,500,3,219.311,216.418,221.173,22.562,22.144,23.007,0.981,0.960,1.187,22.440,22.275,22.795,0.000,0.000,0.000,23.435,23.368,24.053,23.435,23.368,24.053,25772.0,25772.0,25772.0
+zcash_transparent_balance,ivmlite,500000,500,3,568.624,566.082,590.492,3.148,3.024,3.220,4.579,4.546,4.597,2.526,2.524,2.592,0.056,0.052,0.058,7.131,7.080,7.206,7.191,7.145,7.310,12540.0,12540.0,12540.0
+# wall_seconds: 10.565
+# load_average_after: (22.5966796875, 12.84912109375, 7.24853515625)
+# exit_status: 0

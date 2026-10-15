@@ -70,6 +70,38 @@ treated as a before/after comparison.
 
 See the [raw results](results/2026-10-10-zcash-macos-m2-pro.txt).
 
+## October 15 follow-up
+
+A fresh synthetic run on 2026-10-15 used source commit `4849ef4`, the
+`0.1.0-alpha.4` extension and bundled SQLite 3.53.2, built and run in an
+isolated worktree. It used an Apple M2 Pro with 16 GiB RAM, 500,000 initial
+rows, 500-operation mixed batches, three repeats and ten measured batches
+per repeat after one warm-up. Each total includes writes, maintenance and
+reading the result, using paired round sums. These numbers describe the
+adapted relation above, not the upstream application's original query.
+
+| Mode | Bootstrap ms | End-to-end ms (min–max) | SQLite pages KiB |
+|---|---:|---:|---:|
+| no_maintenance | 0.000 | 0.163 (0.162–0.168) | 12,328 |
+| unindexed_recompute | 0.000 | 116.921 (116.890–118.081) | 12,328 |
+| indexed_recompute | 219.311 | 23.435 (23.368–24.053) | 25,772 |
+| ivmlite | 568.624 | 7.191 (7.145–7.310) | 12,540 |
+
+The median write, refresh and read components were 4.579 ms,
+2.526 ms and 0.056 ms, respectively; separate medians
+must not be summed to reconstruct the paired total. Indexed recomputation
+was about 3.26 times the ivmlite total for this fixture.
+No handwritten-counter baseline is included for this case.
+
+The desktop was busy: one-minute load averages were between approximately
+23 and 29 across these two follow-up runs. The raw output retains load,
+command, clean source provenance and success status. Treat this as evidence
+of the comparison's shape, not a device result or a controlled comparison
+with October 10. Bootstrap and final results were checked against SQLite's
+full-recompute multiset oracle.
+
+[Raw output](results/2026-10-15-zcash-m2pro.txt).
+
 ## Boundaries
 
 This is not a drop-in replacement for the source query. Current ivmlite does
