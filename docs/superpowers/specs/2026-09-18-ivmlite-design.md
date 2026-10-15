@@ -895,6 +895,8 @@ M1 used to be one block, with join pushed to M2. Both have changed:
 
 ### M2 — cross-system validation and standard benchmarks (after M1b)
 
+The first bounded step is [M2a: non-uniform validation](2026-10-15-m2a-nonuniform-validation-design.md): a proposed 32-cell Zipf/hot-update/fanout experiment with explicit correctness, timing and state-retention acceptance. Nexmark compatibility classification and the Turso comparability probe follow it; no M2a results are claimed yet.
+
 With join moved into M1a, this milestone keeps only what needs the real SQLite extension:
 
 - Bring in Turso, one setup serving two purposes: **correctness cross-validation** (the fourth layer of §9.1) and **performance peer comparison** (§10.2)
