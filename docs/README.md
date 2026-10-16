@@ -10,6 +10,7 @@
   - [`2026-10-08-m1b-phase5-refresh-performance-design.md`](superpowers/specs/2026-10-08-m1b-phase5-refresh-performance-design.md) — M1b Phase 5: refresh performance (schema-version-gated checks, set-based apply, format 4, an empty stage after bootstrap, multi-row staging)
   - [`2026-10-11-m1b-phase6-fixed-cost-design.md`](superpowers/specs/2026-10-11-m1b-phase6-fixed-cost-design.md) — M1b Phase 6: the fixed cost of a refresh (a per-view statement cache, a shared catalog snapshot, the progress index and format 5, a steady-state benchmark)
   - [`2026-10-12-m1b-phase7-refresh-all-design.md`](superpowers/specs/2026-10-12-m1b-phase7-refresh-all-design.md) — M1b Phase 7: `ivm_refresh_all()`, atomic or continuing, and an early return from a refresh with nothing new
+  - [`2026-10-15-m2a-nonuniform-validation-design.md`](superpowers/specs/2026-10-15-m2a-nonuniform-validation-design.md) — M2a: proposed 32-cell Zipf, hot-update and join-fanout validation, with correctness, timing and retained-state acceptance
 - **`superpowers/plans/`** — implementation plans.
   - [`2026-09-18-m0-test-and-bench-harness.md`](superpowers/plans/2026-09-18-m0-test-and-bench-harness.md) — M0: the test and benchmark harness
   - [`2026-09-20-m1a-phase1-multi-table-harness.md`](superpowers/plans/2026-09-20-m1a-phase1-multi-table-harness.md) — M1a Phase 1: the multi-table harness refactor
@@ -24,6 +25,7 @@
   - [`2026-10-08-m1b-phase5-refresh-performance.md`](superpowers/plans/2026-10-08-m1b-phase5-refresh-performance.md) — M1b Phase 5: make refresh cheaper, then measure it with Phase 4's protocol
   - [`2026-10-11-m1b-phase6-fixed-cost.md`](superpowers/plans/2026-10-11-m1b-phase6-fixed-cost.md) — M1b Phase 6: remove a refresh's fixed costs, make the benchmark measure the steady state, then measure the phase
   - [`2026-10-12-m1b-phase7-refresh-all.md`](superpowers/plans/2026-10-12-m1b-phase7-refresh-all.md) — M1b Phase 7: the early return, `ivm_refresh_all()`, then measure its call shapes
+- **`releases/`** — release notes and the [alpha.5 preparation evidence](releases/v0.1.0-alpha.5-validation.md), including local artifact validation and the remaining tag-time checks.
 - [`mutation-gates.md`](mutation-gates.md) — **the mutation-gate table**: spec requirement → mutation → the test that goes red. Every invariant M1 adds must be registered here.
 - **`bench/`** — benchmark results, charts and conclusions ([README](bench/README.md)), including the Phase 4 matrix, confirmation, ablation, write-amplification data, six charts, and [`phase4_tables.py`](bench/phase4_tables.py), which recomputes every Phase 4 table from the CSVs.
   Phase 5 adds its own matrix, confirmation, five-build ablation, demo before/after and six charts, and [`phase5_tables.py`](bench/phase5_tables.py), which recomputes every Phase 5 table from the CSVs.

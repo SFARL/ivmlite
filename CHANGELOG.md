@@ -7,8 +7,12 @@ SQL subset and persisted shadow-table format without migration.
 
 ## [Unreleased]
 
+## [0.1.0-alpha.5] - 2026-10-15
+
 ### Fixed
 
+- Catalog validation now qualifies pragma table-valued functions with `main`,
+  so a TEMP object with the same name cannot shadow the catalog checks.
 - A refused savepoint close in `ivm_refresh_all` now rolls back the call
   inside the application's transaction too. Cleanup guards remain armed
   until closing succeeds, and continue mode uses a distinct per-view
@@ -20,6 +24,13 @@ SQL subset and persisted shadow-table format without migration.
 
 ### Added
 
+- Five additional demand-shaped rollup demos: Zenod, Nicti, Postio, Phoenix
+  and PocketBase. Each runs mixed mutations against a SQLite multiset oracle
+  and compares ivmlite with ordinary/covering-index recomputation and local
+  SQL triggers. The saved [results](docs/demos/results/2026-10-15-summary.md)
+  include losses and bootstrap/space costs; fixtures are synthetic, and
+  public reports establish workload shapes rather than adoption. These runs
+  used the pre-bump alpha.4 package version at commit `1c61d6e`.
 - `ivm_refresh_all([mode])` refreshes every view of the database in one call,
   in `name` order. It must be called from a `SELECT`.
   - `ivm_refresh_all()`, the same as `ivm_refresh_all('atomic')`, refreshes
@@ -180,7 +191,7 @@ SQL subset and persisted shadow-table format without migration.
 
 > **Correction (2026-10-10):** the Kener entry under "Known limitations" below
 > was wrong, and the demo figures under "Added" came from the single-refresh
-> protocol; see "Fixed" under [Unreleased]. The text below is as released.
+> protocol; see "Fixed" under [0.1.0-alpha.4]. The text below is as released.
 
 ### Changed
 
@@ -312,7 +323,8 @@ First public technical preview.
 - The Org-roam join/count case is slower than full recomputation at both
   measured configurations.
 
-[Unreleased]: https://github.com/SFARL/ivmlite/compare/v0.1.0-alpha.4...HEAD
+[Unreleased]: https://github.com/SFARL/ivmlite/compare/v0.1.0-alpha.5...HEAD
+[0.1.0-alpha.5]: https://github.com/SFARL/ivmlite/releases/tag/v0.1.0-alpha.5
 [0.1.0-alpha.4]: https://github.com/SFARL/ivmlite/releases/tag/v0.1.0-alpha.4
 [0.1.0-alpha.3]: https://github.com/SFARL/ivmlite/releases/tag/v0.1.0-alpha.3
 [0.1.0-alpha.2]: https://github.com/SFARL/ivmlite/releases/tag/v0.1.0-alpha.2
