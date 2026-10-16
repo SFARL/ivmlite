@@ -39,6 +39,17 @@ jobs:
           cp "crates/ivmlite-sqlite/target/release/${LIBRARY_NAME}" "dist/${package}/"
           cp README.md LICENSE CHANGELOG.md "dist/${package}/"
           tar -C dist -czf "dist/${package}.tar.gz" "${package}"
+      - name: Smoke test packaged extension
+        env:
+          TARGET_NAME: ${{ matrix.target }}
+          LIBRARY_NAME: ${{ matrix.library }}
+        run: |
+          set -euo pipefail
+          package="ivmlite-${GITHUB_REF_NAME}-${TARGET_NAME}"
+          mkdir -p artifact-smoke
+          tar -C artifact-smoke -xzf "dist/${package}.tar.gz"
+          cargo run --locked -p ivmlite-test --example release_smoke -- \
+            "${PWD}/artifact-smoke/${package}/${LIBRARY_NAME}"
       - uses: actions/upload-artifact@v4
         with:
           name: ivmlite-${{ matrix.target }}
