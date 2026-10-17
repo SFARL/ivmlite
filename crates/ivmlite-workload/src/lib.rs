@@ -1,3 +1,5 @@
+pub mod m2a;
+
 use std::fs;
 use std::path::Path;
 
