@@ -23,7 +23,7 @@ use std::fs;
 use std::path::Path;
 
 use ivmlite_test::demo_bench::Summary;
-use ivmlite_workload::m2a::{Cell, Shape};
+use ivmlite_workload::m2a::{Cell, M2aConfig, Shape};
 use serde::{Deserialize, Serialize};
 
 use crate::m2a_runner::{Checkpoint, Measurement, Mode, Result, RoundTiming, TargetStats, MODES};
@@ -40,8 +40,9 @@ const COMPLETION_MARKER: &str = "completed.json";
 /// Ratios whose range or median is near these values need confirmation (spec section 4).
 const THRESHOLDS: [f64; 2] = [1.0, 2.0];
 const NEAR_BAND: f64 = 0.10;
-/// Share of group ranks that form the hot partition (`hot_group_fraction` of the workload).
-const HOT_GROUP_FRACTION: f64 = 0.10;
+/// Absorbs floating-point error at the exact edge of the near band, so 1.1 and 0.9 (and 2.2 and
+/// 1.8) are treated alike.
+const BAND_TOLERANCE: f64 = 1e-9;
 
 /// A cell and the fixture seed that a later confirmation run repeats.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -118,20 +119,27 @@ impl SpacePoint {
     }
 }
 
-struct CellRatios {
-    cell: Cell,
-    ratios: Vec<f64>,
-    expected_runs: usize,
+struct RatioStats {
     min: f64,
     median: f64,
     max: f64,
     candidate: bool,
     ivmlite_bootstrap_ms: f64,
+}
+
+/// One planned cell. A cell whose every run is lost has no `stats`.
+struct CellRatios {
+    id: String,
+    /// Known from any manifest of the cell; absent if no case of it got that far.
+    cell: Option<Cell>,
+    runs: usize,
+    expected_runs: usize,
+    stats: Option<RatioStats>,
     final_space_ratio: Option<f64>,
 }
 impl CellRatios {
     fn partial(&self) -> bool {
-        self.ratios.len() < self.expected_runs
+        self.runs < self.expected_runs
     }
 }
 
@@ -142,6 +150,8 @@ struct Derived {
     complete: usize,
     losses: Vec<Loss>,
     run_expected: BTreeMap<String, usize>,
+    /// Cell dimensions of planned run cells, from whichever manifest could be read.
+    run_cells: BTreeMap<String, Cell>,
 }
 
 fn ratio(numerator: u64, denominator: u64) -> Option<f64> {
@@ -185,7 +195,16 @@ fn mode_totals(m: &Measurement) -> Result<ModeTotals> {
     })
 }
 
-fn totals_by_mode(timing: &TimingFile) -> Result<BTreeMap<&'static str, ModeTotals>> {
+/// Fixture files carry the whole trace; only their workload configuration is read.
+#[derive(Deserialize)]
+struct FixtureConfig {
+    config: M2aConfig,
+}
+
+fn totals_by_mode(
+    timing: &TimingFile,
+    measured_rounds: usize,
+) -> Result<BTreeMap<&'static str, ModeTotals>> {
     let mut totals = BTreeMap::new();
     for mode in MODES {
         let mut found = timing.measurements.iter().filter(|m| m.mode == mode);
@@ -194,6 +213,14 @@ fn totals_by_mode(timing: &TimingFile) -> Result<BTreeMap<&'static str, ModeTota
             .ok_or_else(|| format!("timing lacks mode {}", mode.label()))?;
         if found.next().is_some() {
             return Err(format!("timing repeats mode {}", mode.label()).into());
+        }
+        if measurement.measured.len() != measured_rounds {
+            return Err(format!(
+                "{} has {} measured rounds, the fixture configures {measured_rounds}",
+                mode.label(),
+                measurement.measured.len()
+            )
+            .into());
         }
         totals.insert(mode.label(), mode_totals(measurement)?);
     }
@@ -233,7 +260,7 @@ fn run_ratio(totals: &BTreeMap<&'static str, ModeTotals>) -> Result<RunRatio> {
 fn is_candidate(min: f64, median: f64, max: f64) -> bool {
     THRESHOLDS
         .iter()
-        .any(|&t| (min <= t && t <= max) || (median - t).abs() <= NEAR_BAND * t)
+        .any(|&t| (min <= t && t <= max) || (median - t).abs() <= NEAR_BAND * t + BAND_TOLERANCE)
 }
 
 fn space_points(space: &[SpaceCheckpoint]) -> Result<Vec<SpacePoint>> {
@@ -264,18 +291,14 @@ fn space_points(space: &[SpaceCheckpoint]) -> Result<Vec<SpacePoint>> {
     Ok(points)
 }
 
-fn hot_groups(cell: &Cell) -> i64 {
-    (cell.group_cardinality as f64 * HOT_GROUP_FRACTION).floor() as i64
-}
-
 /// Share of the initial fixture's grouped rows that lie in the hot partition.
-fn initial_hot_share(cell: &Cell, correctness: &[Checkpoint]) -> Result<f64> {
+fn initial_hot_share(cell: &Cell, config: &M2aConfig, correctness: &[Checkpoint]) -> Result<f64> {
     let bootstrap = correctness
         .iter()
         .find(|c| c.phase == "bootstrap" && c.round.is_none())
         .ok_or("correctness lacks the bootstrap checkpoint")?;
     let histogram = &bootstrap.snapshot.group_histogram;
-    let hot = hot_groups(cell);
+    let hot = config.hot_group_count(cell.group_cardinality) as i64;
     let total: u64 = histogram.iter().map(|g| g.rows).sum();
     let hot_rows: u64 = histogram
         .iter()
@@ -296,12 +319,13 @@ fn read_manifest(dir: &Path, key: &ExpectedCase) -> Result<Manifest> {
 
 fn load_run(dir: &Path, key: &ExpectedCase) -> Result<RunCase> {
     let manifest = read_manifest(dir, key)?;
+    let fixture: FixtureConfig = read_json(&dir.join("fixture.json"))?;
     let timing: TimingFile = read_json(&dir.join("timing.json"))?;
-    let totals = totals_by_mode(&timing)?;
+    let totals = totals_by_mode(&timing, fixture.config.measured_rounds)?;
     let ratio = run_ratio(&totals)?;
     let space: Vec<SpaceCheckpoint> = read_json(&dir.join("space.json"))?;
     let correctness: Vec<Checkpoint> = read_json(&dir.join("correctness.json"))?;
-    let initial_hot_share = initial_hot_share(&manifest.cell, &correctness)?;
+    let initial_hot_share = initial_hot_share(&manifest.cell, &fixture.config, &correctness)?;
     Ok(RunCase {
         key: key.clone(),
         totals,
@@ -360,8 +384,16 @@ fn derive(out: &Path) -> Result<Derived> {
                 *derived.run_expected.entry(key.cell.clone()).or_default() += 1;
             }
             let dir = case_path(out, action, key);
+            let lost_cell = |derived: &mut Derived| {
+                if action == "run" {
+                    if let Ok(manifest) = read_manifest(&dir, key) {
+                        derived.run_cells.insert(key.cell.clone(), manifest.cell);
+                    }
+                }
+            };
             let loaded: Result<()> = if !dir.join(COMPLETION_MARKER).exists() {
                 let (phase, error) = missing_marker(&selection, &dir, key);
+                lost_cell(&mut derived);
                 derived.losses.push(Loss {
                     kind: action.to_owned(),
                     key: key.clone(),
@@ -378,12 +410,15 @@ fn derive(out: &Path) -> Result<Derived> {
             };
             match loaded {
                 Ok(()) => derived.complete += 1,
-                Err(error) => derived.losses.push(Loss {
-                    kind: action.to_owned(),
-                    key: key.clone(),
-                    phase: "artifact_read".into(),
-                    error: error.to_string(),
-                }),
+                Err(error) => {
+                    lost_cell(&mut derived);
+                    derived.losses.push(Loss {
+                        kind: action.to_owned(),
+                        key: key.clone(),
+                        phase: "artifact_read".into(),
+                        error: error.to_string(),
+                    });
+                }
             }
         }
     }
@@ -391,32 +426,46 @@ fn derive(out: &Path) -> Result<Derived> {
 }
 
 fn cell_ratios(derived: &Derived) -> Result<Vec<CellRatios>> {
-    let mut by_cell: BTreeMap<String, Vec<&RunCase>> = BTreeMap::new();
+    let mut by_cell: BTreeMap<&str, Vec<&RunCase>> = BTreeMap::new();
     for case in &derived.runs {
-        by_cell.entry(case.key.cell.clone()).or_default().push(case);
+        by_cell.entry(&case.key.cell).or_default().push(case);
     }
     let mut cells = Vec::new();
-    for (id, cases) in by_cell {
+    for (id, &expected_runs) in &derived.run_expected {
+        let cases = by_cell.remove(id.as_str()).unwrap_or_default();
         let ratios: Vec<f64> = cases.iter().map(|c| c.ratio.ratio).collect();
-        let summary = Summary::of(&ratios).ok_or("cell without ratios")?;
-        let bootstraps: Vec<f64> = cases
-            .iter()
-            .map(|c| c.totals[Mode::Ivmlite.label()].bootstrap_ms)
-            .collect();
+        let stats = match Summary::of(&ratios) {
+            None => None,
+            Some(summary) => {
+                let bootstraps: Vec<f64> = cases
+                    .iter()
+                    .map(|c| c.totals[Mode::Ivmlite.label()].bootstrap_ms)
+                    .collect();
+                Some(RatioStats {
+                    min: summary.min,
+                    median: summary.median,
+                    max: summary.max,
+                    candidate: is_candidate(summary.min, summary.median, summary.max),
+                    ivmlite_bootstrap_ms: median(&bootstraps)?,
+                })
+            }
+        };
         let finals: Vec<f64> = cases.iter().filter_map(|c| final_space_ratio(c)).collect();
         cells.push(CellRatios {
-            cell: cases[0].manifest.cell.clone(),
-            expected_runs: derived.run_expected.get(&id).copied().unwrap_or(0),
-            candidate: is_candidate(summary.min, summary.median, summary.max),
-            min: summary.min,
-            median: summary.median,
-            max: summary.max,
-            ratios,
-            ivmlite_bootstrap_ms: median(&bootstraps)?,
+            id: id.clone(),
+            cell: cases
+                .first()
+                .map(|c| c.manifest.cell.clone())
+                .or_else(|| derived.run_cells.get(id).cloned()),
+            runs: cases.len(),
+            expected_runs,
+            stats,
             final_space_ratio: Summary::of(&finals).map(|s| s.median),
         });
     }
-    cells.sort_by(|a, b| cell_order(&a.cell).cmp(&cell_order(&b.cell)));
+    cells.sort_by(|a, b| {
+        (a.cell.as_ref().map(cell_order), &a.id).cmp(&(b.cell.as_ref().map(cell_order), &b.id))
+    });
     Ok(cells)
 }
 
@@ -489,6 +538,12 @@ fn cell_fields(cell: &Cell) -> Vec<String> {
         cell.fanout.to_string(),
         cell.batch_size.to_string(),
     ]
+}
+/// Dimension columns of a cell known only by its id.
+fn cell_id_fields(id: &str) -> Vec<String> {
+    let mut fields = vec![id.to_owned()];
+    fields.resize(CELL_COLUMNS.len(), String::new());
+    fields
 }
 fn header(prefix: &[&str], rest: &[&str]) -> Vec<String> {
     prefix.iter().chain(rest).map(|c| (*c).to_owned()).collect()
@@ -586,19 +641,25 @@ fn ratios_csv(derived: &Derived, cells: &[CellRatios]) -> Csv {
         );
     }
     for cell in cells {
+        let stats = cell.stats.as_ref();
         csv.line(
-            joined(vec!["cell".to_owned()], cell_fields(&cell.cell))
-                .into_iter()
-                .chain(blank(9))
-                .chain([
-                    cell.ratios.len().to_string(),
-                    cell.expected_runs.to_string(),
-                    cell.partial().to_string(),
-                    num(cell.min),
-                    num(cell.median),
-                    num(cell.max),
-                    cell.candidate.to_string(),
-                ]),
+            joined(
+                vec!["cell".to_owned()],
+                cell.cell
+                    .as_ref()
+                    .map_or_else(|| cell_id_fields(&cell.id), cell_fields),
+            )
+            .into_iter()
+            .chain(blank(9))
+            .chain([
+                cell.runs.to_string(),
+                cell.expected_runs.to_string(),
+                cell.partial().to_string(),
+                opt(stats.map(|s| s.min)),
+                opt(stats.map(|s| s.median)),
+                opt(stats.map(|s| s.max)),
+                stats.is_some_and(|s| s.candidate).to_string(),
+            ]),
         );
     }
     csv
@@ -868,6 +929,7 @@ fn summary_md(out: &Path, derived: &Derived, cells: &[CellRatios]) -> Result<Str
             "extension sha256",
             field(&|m| m.extension_sha256.clone().unwrap_or_default()),
         ),
+        ("config sha256", field(&|m| m.config_sha256.clone())),
         ("SQLite", field(&|m| m.sqlite_version.clone())),
         ("rustc", field(&|m| m.runner_rustc.clone())),
         ("cpu", field(&|m| m.hardware.cpu.clone())),
@@ -880,32 +942,44 @@ fn summary_md(out: &Path, derived: &Derived, cells: &[CellRatios]) -> Result<Str
          |---|---|---|---|---|---|---|---|---|\n",
     );
     for c in cells {
+        let n = |value: Option<f64>| value.map_or_else(|| "n/a".to_owned(), |v| format!("{v:.3}"));
+        let stats = c.stats.as_ref();
+        let flag = match (stats, c.partial()) {
+            (None, _) => "no result",
+            (_, true) => "partial",
+            _ => "",
+        };
         let _ = writeln!(
             md,
-            "| {} | {}/{} | {:.3} | {:.3} | {:.3} | {} | {} | {:.3} | {} |",
-            c.cell.id(),
-            c.ratios.len(),
+            "| {} | {}/{} | {} | {} | {} | {} | {} | {} | {} |",
+            c.id,
+            c.runs,
             c.expected_runs,
-            c.min,
-            c.median,
-            c.max,
-            if c.candidate { "yes" } else { "no" },
-            if c.partial() { "partial" } else { "" },
-            c.ivmlite_bootstrap_ms,
-            c.final_space_ratio
-                .map_or_else(|| "n/a".to_owned(), |r| format!("{r:.3}")),
+            n(stats.map(|s| s.min)),
+            n(stats.map(|s| s.median)),
+            n(stats.map(|s| s.max)),
+            stats.map_or("n/a", |s| if s.candidate { "yes" } else { "no" }),
+            flag,
+            n(stats.map(|s| s.ivmlite_bootstrap_ms)),
+            n(c.final_space_ratio),
         );
     }
-    let above_all = cells.iter().filter(|c| c.min > 2.0).count();
-    let above_some = cells.iter().filter(|c| c.max > 2.0 && c.min <= 2.0).count();
+    let with = |keep: &dyn Fn(&RatioStats) -> bool| {
+        cells
+            .iter()
+            .filter_map(|c| c.stats.as_ref())
+            .filter(|s| keep(s))
+            .count()
+    };
     let _ = write!(
         md,
-        "\n## Does 2x survive\n\n{} of {} cells exceed 2x in every complete run; {} more exceed it in some run; {} never do. Cells below 1.0 in every run: {}.\n",
-        above_all,
+        "\n## Does 2x survive\n\n{} of {} cells exceed 2x in every complete run; {} more exceed it in some run; {} never do; {} have no result (every run lost). Cells below 1.0 in every run: {}.\n",
+        with(&|s| s.min > 2.0),
         cells.len(),
-        above_some,
-        cells.iter().filter(|c| c.max <= 2.0).count(),
-        cells.iter().filter(|c| c.max < 1.0).count()
+        with(&|s| s.max > 2.0 && s.min <= 2.0),
+        with(&|s| s.max <= 2.0),
+        cells.iter().filter(|c| c.stats.is_none()).count(),
+        with(&|s| s.max < 1.0)
     );
     Ok(md)
 }
@@ -918,9 +992,9 @@ pub fn report(out: &Path, dest: &Path) -> Result<ReportSummary> {
     let cells = cell_ratios(&derived)?;
     let candidates: Vec<CaseKey> = cells
         .iter()
-        .filter(|c| c.candidate)
+        .filter(|c| c.stats.as_ref().is_some_and(|s| s.candidate))
         .map(|c| CaseKey {
-            cell: c.cell.id(),
+            cell: c.id.clone(),
             seed: CONFIRM_SEED,
         })
         .collect::<BTreeSet<_>>()
@@ -943,7 +1017,10 @@ pub fn report(out: &Path, dest: &Path) -> Result<ReportSummary> {
         complete: derived.complete,
         incomplete: derived.losses.len(),
         candidates,
-        best_ratio: cells.iter().map(|c| c.median).max_by(f64::total_cmp),
+        best_ratio: cells
+            .iter()
+            .filter_map(|c| c.stats.as_ref().map(|s| s.median))
+            .max_by(f64::total_cmp),
     })
 }
 
@@ -953,7 +1030,7 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
-    use ivmlite_workload::m2a::{Cell, Profile, Shape, Table};
+    use ivmlite_workload::m2a::{Cell, M2aConfig, Profile, Shape, Table};
     use serde_json::json;
 
     use super::*;
@@ -1226,8 +1303,22 @@ mod tests {
             rounds: ROUNDS + 1,
         }
     }
+    fn config() -> M2aConfig {
+        M2aConfig::load(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../workloads/m2a.toml"))
+            .unwrap()
+    }
     /// Writes the artifacts of one `run` case; `finished` adds the completion marker.
     fn write_run_case(out: &Path, cell: &Cell, seed: u64, run: &Run, finished: bool) {
+        write_run_case_with(out, cell, seed, run, finished, &config());
+    }
+    fn write_run_case_with(
+        out: &Path,
+        cell: &Cell,
+        seed: u64,
+        run: &Run,
+        finished: bool,
+        config: &M2aConfig,
+    ) {
         let key = key("run", cell, seed);
         let dir = case_path(out, "run", &key);
         fs::create_dir_all(&dir).unwrap();
@@ -1265,6 +1356,8 @@ mod tests {
             measurements,
         };
         write_json(&dir.join("manifest.json"), &manifest).unwrap();
+        // The real fixture file also holds the trace; the report reads only its configuration.
+        write_json(&dir.join("fixture.json"), &json!({ "config": config })).unwrap();
         write_json(&dir.join("timing.json"), &timing).unwrap();
         write_json(&dir.join("space.json"), &space()).unwrap();
         write_json(
@@ -1692,7 +1785,131 @@ mod tests {
         assert_eq!((summary.complete, summary.incomplete), (0, 1));
         let losses = fs::read_to_string(dest.join("losses.csv")).unwrap();
         assert!(losses.contains("artifact_read"));
-        assert!(cell_rows(&dest).is_empty());
+        // The cell stays in the tables as a cell without a result.
+        let cells = cell_rows(&dest);
+        assert_eq!(cells.len(), 1);
+        assert_eq!(cells[0]["cell"], cell.id());
+        assert_eq!(cells[0]["profile"], "zipf_hot");
+        assert_eq!(cells[0]["runs"], "0");
+        assert_eq!(cells[0]["expected_runs"], "1");
+        assert_eq!(cells[0]["partial"], "true");
+        assert_eq!(cells[0]["ratio_min"], "");
+        assert_eq!(cells[0]["ratio_median"], "");
+        assert_eq!(cells[0]["candidate"], "false");
+        assert!(run_rows(&dest).is_empty());
+        assert!(summary.candidates.is_empty() && summary.best_ratio.is_none());
+        let text = fs::read_to_string(dest.join("summary.md")).unwrap();
+        assert!(text.contains("| no result |"));
+        assert!(text.contains("0 of 1 cells exceed 2x"));
+        assert!(text.contains("1 have no result"));
+    }
+
+    #[test]
+    fn a_cell_with_every_run_unstarted_is_still_listed() {
+        let out = temp();
+        let dest = out.join("report");
+        let finished = cell(Profile::ZipfHot, 8, 10);
+        let unstarted = cell(Profile::UniformHot, 8, 10);
+        matrix(&out, &[(&finished, 1, run_of(10.0, 12.0, 5.0), true)]);
+        write_selection(
+            &out,
+            "run",
+            false,
+            [key("run", &finished, 1), key("run", &unstarted, 1)].into(),
+            Vec::new(),
+        );
+        let summary = report(&out, &dest).unwrap();
+        assert_eq!((summary.complete, summary.incomplete), (1, 1));
+        let cells = cell_rows(&dest);
+        assert_eq!(cells.len(), 2);
+        let lost = cells.iter().find(|r| r["cell"] == unstarted.id()).unwrap();
+        // No manifest exists, so only the id is known.
+        assert_eq!((lost["runs"].as_str(), lost["profile"].as_str()), ("0", ""));
+        let text = fs::read_to_string(dest.join("summary.md")).unwrap();
+        assert!(text.contains("of 2 cells"));
+    }
+
+    #[test]
+    fn hot_share_follows_the_fixture_configuration() {
+        let out = temp();
+        let dest = out.join("report");
+        let cell = cell(Profile::ZipfHot, 8, 10);
+        let mut wide = config();
+        wide.hot_group_fraction = 0.25;
+        let run = run_of(10.0, 12.0, 5.0);
+        write_run_case_with(&out, &cell, 1, &run, true, &wide);
+        write_selection(
+            &out,
+            "run",
+            false,
+            BTreeSet::from([key("run", &cell, 1)]),
+            Vec::new(),
+        );
+        report(&out, &dest).unwrap();
+        // 25% of 20 groups is 5 hot groups, which hold all three populated groups.
+        near(
+            number(
+                &table(&dest.join("targets.csv"))[0],
+                "initial_hot_group_row_share",
+            ),
+            1.0,
+        );
+    }
+
+    #[test]
+    fn measured_round_count_must_match_the_fixture_configuration() {
+        let out = temp();
+        let dest = out.join("report");
+        let cell = cell(Profile::ZipfHot, 8, 10);
+        let mut short = config();
+        short.measured_rounds = 4;
+        write_run_case_with(&out, &cell, 1, &run_of(10.0, 12.0, 5.0), true, &short);
+        write_selection(
+            &out,
+            "run",
+            false,
+            BTreeSet::from([key("run", &cell, 1)]),
+            Vec::new(),
+        );
+        let summary = report(&out, &dest).unwrap();
+        assert_eq!((summary.complete, summary.incomplete), (0, 1));
+        let losses = fs::read_to_string(dest.join("losses.csv")).unwrap();
+        assert!(losses.contains("artifact_read"));
+        assert!(losses.contains("5 measured rounds, the fixture configures 4"));
+    }
+
+    #[test]
+    fn the_near_band_is_symmetric_at_its_exact_edge() {
+        for edge in [0.9, 1.1, 1.8, 2.2] {
+            assert!(is_candidate(edge, edge, edge), "{edge}");
+        }
+        for outside in [0.89, 1.11, 1.79, 2.21, 3.0] {
+            assert!(!is_candidate(outside, outside, outside), "{outside}");
+        }
+    }
+
+    #[test]
+    fn mixed_configurations_are_flagged() {
+        let out = temp();
+        let dest = out.join("report");
+        let cell = cell(Profile::ZipfHot, 8, 10);
+        matrix(
+            &out,
+            &[
+                (&cell, 1, run_of(10.0, 12.0, 5.0), true),
+                (&cell, 42, run_of(10.0, 12.0, 5.0), true),
+            ],
+        );
+        report(&out, &dest).unwrap();
+        let text = fs::read_to_string(dest.join("summary.md")).unwrap();
+        assert!(text.contains("- config sha256: config\n"));
+        let path = case_path(&out, "run", &key("run", &cell, 42)).join("manifest.json");
+        let mut manifest: Manifest = crate::read_json(&path).unwrap();
+        manifest.config_sha256 = "other".into();
+        write_json(&path, &manifest).unwrap();
+        report(&out, &dest).unwrap();
+        let text = fs::read_to_string(dest.join("summary.md")).unwrap();
+        assert!(text.contains("- config sha256 (MIXED): config; other\n"));
     }
 
     #[test]

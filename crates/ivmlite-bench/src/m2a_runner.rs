@@ -897,7 +897,7 @@ pub fn target_statistics(f: &Fixture, sqlite_changes: &[Vec<u64>]) -> Result<Vec
         }
     }
     let mut all = Vec::new();
-    let hot = (f.cell.group_cardinality as f64 * f.config.hot_group_fraction).floor() as i64;
+    let hot = f.config.hot_group_count(f.cell.group_cardinality) as i64;
     for (round, ops) in f.batches.iter().enumerate() {
         let mut stats = TargetStats {
             round,

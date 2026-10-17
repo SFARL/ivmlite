@@ -259,6 +259,10 @@ pub struct Fixture {
 }
 
 impl M2aConfig {
+    /// Number of leading group ranks that form the hot partition of `groups` groups.
+    pub fn hot_group_count(&self, groups: usize) -> usize {
+        (groups as f64 * self.hot_group_fraction).floor() as usize
+    }
     pub fn load(path: &Path) -> Result<Self, WorkloadError> {
         let text = std::fs::read_to_string(path).map_err(WorkloadError::Io)?;
         let config: Self =
@@ -345,7 +349,7 @@ impl M2aConfig {
             if i64::try_from(rows).is_err() {
                 return Err(invalid(format!("{name} row id overflow")));
             }
-            let hot = (groups as f64 * self.hot_group_fraction).floor() as usize;
+            let hot = self.hot_group_count(groups);
             if hot == 0 || hot >= groups {
                 return Err(invalid(format!(
                     "{name} hot partition must contain at least one and fewer than all groups"
@@ -775,7 +779,7 @@ impl Live {
         config: &M2aConfig,
         rng: &mut StdRng,
     ) -> Result<Row, WorkloadError> {
-        let hot = (cell.group_cardinality as f64 * config.hot_group_fraction).floor() as usize;
+        let hot = config.hot_group_count(cell.group_cardinality);
         let range = if cell.profile.locality() == TargetLocality::Uniform {
             0..self.groups.len()
         } else if rng.random_bool(config.hot_target_fraction) {
