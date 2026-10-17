@@ -1,0 +1,2028 @@
+{
+  "snapshot": "2026-10-17",
+  "taxonomy": "taxonomy.md (same directory)",
+  "conventions": [
+    "N1 parameter equality -> group key",
+    "N2 presentation ORDER BY / zero-fill by reader",
+    "N3 select-list order cosmetic",
+    "N4 arithmetic over a group's own aggregates by reader"
+  ],
+  "items": [
+    {
+      "id": "fluxflow",
+      "name": "FluxFlow getStats()",
+      "listed_in": [
+        "roadmap P0",
+        "docs/demos/fluxflow.md"
+      ],
+      "sources": [
+        "https://github.com/2ndtlmining/fluxflow/issues/3",
+        "https://github.com/2ndtlmining/fluxflow/blob/635fa43f8cff44e2265af3a78a70c69d5544db1f/src/lib/services/databaseService.js#L422-L473",
+        "https://github.com/2ndtlmining/fluxflow/blob/635fa43f8cff44e2265af3a78a70c69d5544db1f/src/lib/services/databaseService.js#L64-L127",
+        "https://github.com/2ndtlmining/fluxflow/pull/45",
+        "https://github.com/2ndtlmining/fluxflow/blob/ed26a17f5dbf3fcc0a5e2f1f7b9536877198ff3c/src/lib/server/db/migrations.ts"
+      ],
+      "revision": "635fa43f8cff44e2265af3a78a70c69d5544db1f (issue permalink); ed26a17 (PR #45 rollups)",
+      "evidence": "public generator (PR #45 bench-api.ts); issue-reported 700 ms at 1.5M flow_events",
+      "query": "SELECT COUNT(*) FROM blocks; SELECT COUNT(*) FROM transactions; SELECT COUNT(*) FROM flow_events; SELECT flow_type, COUNT(*) AS count, SUM(amount) AS total_amount FROM flow_events GROUP BY flow_type; SELECT classification_level, data_source, COUNT(*) FROM flow_events WHERE classification_level > 0 GROUP BY classification_level, data_source; SELECT MIN(height), MAX(height) FROM blocks",
+      "schema": "flow_events(id INTEGER PK AUTOINCREMENT, txid TEXT, vout INTEGER, block_height INTEGER, block_time INTEGER, from_*/to_* TEXT, flow_type TEXT NOT NULL, amount REAL NOT NULL, classification_level INTEGER DEFAULT 0, data_source TEXT DEFAULT 'sync', ...) non-STRICT; transactions has REAL value columns; blocks INTEGER/TEXT",
+      "runtime": {
+        "driver": "better-sqlite3 (Node)",
+        "loadable": "yes",
+        "note": "better-sqlite3 exposes loadExtension"
+      },
+      "features": [
+        "F2",
+        "F3e",
+        "F10a",
+        "F10b"
+      ],
+      "minimal_unlock": [
+        "F2",
+        "F3e",
+        "F10a",
+        "F10b"
+      ],
+      "adapted_unlock": [],
+      "adapted_query": "SELECT flow_type, COUNT(*), SUM(amount_base_units) FROM flow_proj GROUP BY flow_type; SELECT classification_level, data_source, COUNT(*) FROM flow_proj WHERE classification_level > 0 GROUP BY 1, 2; SELECT k, COUNT(*) FROM blocks_proj GROUP BY k (k constant 0); same for transactions",
+      "adaptation": "STRICT projections of flow_events, blocks and transactions; amount stored as integer base units (x1e8, exact only if amounts have at most 8 decimals); flow_events total = reader sum of flow_type groups; blocks/transactions global COUNT(*) via a constant-key column; MIN/MAX(height) stays an index seek.",
+      "adaptation_cost": "application-maintained STRICT projection (extra write per base-row change, extra storage, must be updated atomically with the base row and bootstrapped consistently); three projected tables, two of them only to count rows.",
+      "secondary": "Doc slice targets the PR #45 period summary (flow_type, day, counterparty, exchange; SUM sat, COUNT). PR #45 keeps rollups after retention deletes raw rows, so replacing it with retention enabled needs F13; it also needs F5 (day bucket) unless stored.",
+      "fit": "fits_with",
+      "confidence": {
+        "level": "high",
+        "reason": "The complaint is repeated full-scan counts/sums over a growing table, which upstream itself solved with maintained counters."
+      },
+      "in_place_unlock": [
+        "F10a",
+        "F10b"
+      ]
+    },
+    {
+      "id": "taproot",
+      "name": "Taproot Assets universe_stats",
+      "listed_in": [
+        "roadmap P0",
+        "docs/cases/evaluation"
+      ],
+      "sources": [
+        "https://github.com/lightninglabs/taproot-assets/issues/642",
+        "https://github.com/lightninglabs/taproot-assets/blob/e569cf553d324297c303d190678320fcc50b9c10/tapdb/sqlc/migrations/000010_universe_stats.up.sql",
+        "https://github.com/lightninglabs/taproot-assets/blob/e569cf553d324297c303d190678320fcc50b9c10/tapdb/sqlc/migrations/000007_universe.up.sql#L1-L86",
+        "https://github.com/lightninglabs/taproot-assets/blob/e569cf553d324297c303d190678320fcc50b9c10/go.mod"
+      ],
+      "revision": "e569cf553d324297c303d190678320fcc50b9c10",
+      "evidence": "public source/query; issue reports trouble above ~10M events; no timings",
+      "query": "CREATE VIEW universe_stats AS SELECT COUNT(CASE WHEN u.event_type = 'SYNC' THEN 1 ELSE NULL END) AS total_asset_syncs, COUNT(CASE WHEN u.event_type = 'NEW_PROOF' THEN 1 ELSE NULL END) AS total_asset_proofs, roots.asset_id, roots.group_key, roots.proof_type FROM universe_events u JOIN universe_roots roots ON u.universe_root_id = roots.id GROUP BY roots.asset_id, roots.group_key, roots.proof_type",
+      "schema": "universe_events(event_id BIGINT PK, event_type VARCHAR CHECK IN ('SYNC','NEW_PROOF','NEW_ROOT'), universe_root_id BIGINT, event_time TIMESTAMP); universe_roots(id BIGINT PK, namespace_root VARCHAR, asset_id BLOB, group_key BLOB, proof_type TEXT); non-STRICT",
+      "runtime": {
+        "driver": "modernc.org/sqlite v1.25.0 (pure Go); also PostgreSQL",
+        "loadable": "no",
+        "note": "pure-Go driver cannot load a native extension"
+      },
+      "features": [
+        "F4a",
+        "F10a",
+        "F10b",
+        "F14"
+      ],
+      "minimal_unlock": [
+        "F4a",
+        "F10a",
+        "F10b",
+        "F14"
+      ],
+      "adapted_unlock": [
+        "F14"
+      ],
+      "adapted_query": "SELECT r.asset_id_hex, r.group_key_hex, r.proof_type, e.event_type, COUNT(*) FROM events_proj e JOIN roots_proj r ON e.universe_root_id = r.id GROUP BY 1, 2, 3, 4",
+      "adaptation": "Pivot: event_type becomes a group key and the reader pivots SYNC/NEW_PROOF into columns, emitting 0/0 for groups that only have NEW_ROOT (this keeps those groups, unlike the docs' two filtered views, which drop them). BLOB keys projected to hex TEXT; both tables projected STRICT.",
+      "adaptation_cost": "application-maintained STRICT projection (extra write per base-row change, extra storage, must be updated atomically with the base row and bootstrapped consistently) for both join inputs; reader pivot.",
+      "secondary": "docs/cases/evaluation instead uses two filtered views (event_type = 'SYNC' / 'NEW_PROOF'); that loses groups with neither type.",
+      "fit": "out_of_scope",
+      "confidence": {
+        "level": "high",
+        "reason": "The SQL is tractable, but tapd opens SQLite through modernc.org/sqlite, so a native extension cannot load without changing the driver."
+      },
+      "in_place_unlock": [
+        "F10a",
+        "F10b",
+        "F14"
+      ]
+    },
+    {
+      "id": "noop",
+      "name": "noop gravity witness",
+      "listed_in": [
+        "roadmap P1",
+        "docs/demos/noop.md",
+        "community exclusions"
+      ],
+      "sources": [
+        "https://github.com/ryanbr/noop/issues/2314",
+        "https://github.com/ryanbr/noop/blob/8e4b0c16e7640607600fa6bde5424095eba6034e/android/app/src/main/java/com/noop/data/WhoopDao.kt#L1369-L1373",
+        "https://github.com/ryanbr/noop/blob/8e4b0c16e7640607600fa6bde5424095eba6034e/Packages/WhoopStore/Tests/WhoopStoreTests/Resources/schema_oracle.json",
+        "https://github.com/ryanbr/noop/blob/8e4b0c16e7640607600fa6bde5424095eba6034e/Packages/WhoopStore/Package.swift"
+      ],
+      "revision": "8e4b0c16e7640607600fa6bde5424095eba6034e (current main; issue cites build 519)",
+      "evidence": "device log 60 reads = 2,251 ms; Python in-memory comparisons",
+      "query": "SELECT COUNT(*) AS c, COALESCE(MAX(ts), 0) AS m FROM gravitySample WHERE deviceId = :deviceId AND ts >= :from AND ts <= :to  -- run once per local day for 60 days",
+      "schema": "gravitySample(deviceId TEXT, ts INTEGER, x REAL, y REAL, z REAL, synced INTEGER, dynAccel REAL, PK(deviceId, ts)); Room/GRDB, non-STRICT",
+      "runtime": {
+        "driver": "Android Room (framework SQLite) and iOS GRDB 6.29.3 over system SQLite",
+        "loadable": "no",
+        "note": "neither stock Android framework SQLite nor iOS system SQLite loads extensions; a bundled SQLite with static registration would be required"
+      },
+      "features": [
+        "F3c",
+        "F4b",
+        "F5",
+        "F6",
+        "F10a",
+        "F10b",
+        "F14"
+      ],
+      "minimal_unlock": [
+        "F3c",
+        "F5",
+        "F10a",
+        "F10b",
+        "F14"
+      ],
+      "adapted_unlock": [
+        "F14"
+      ],
+      "adapted_query": "SELECT device_id, day_bucket, COUNT(*) FROM gravity_witness GROUP BY device_id, day_bucket",
+      "adaptation": "Stored local-day bucket computed by the app with real timezone/DST rules; MAX(ts) stays an indexed seek read in the same snapshot; narrow STRICT projection (device_id, ts, day_bucket).",
+      "adaptation_cost": "application-maintained STRICT projection (extra write per base-row change, extra storage, must be updated atomically with the base row and bootstrapped consistently); one projection row per 10 s sample (~518k rows/device for 60 days).",
+      "fit": "out_of_scope",
+      "confidence": {
+        "level": "high",
+        "reason": "The COUNT half is IVM-shaped, but both mobile runtimes block native extension loading."
+      },
+      "in_place_unlock": [
+        "F10a",
+        "F10b",
+        "F14"
+      ]
+    },
+    {
+      "id": "zcash",
+      "name": "Zcash transparent balance",
+      "listed_in": [
+        "roadmap P1",
+        "docs/demos/zcash.md",
+        "community exclusions"
+      ],
+      "sources": [
+        "https://github.com/zcash/librustzcash/issues/2476",
+        "https://github.com/zcash/librustzcash/blob/894922072fdf37b4d0eb1a3b6f0d876a7c51bc6e/zcash_client_sqlite/src/wallet/transparent.rs#L1442-L1545"
+      ],
+      "revision": "894922072fdf37b4d0eb1a3b6f0d876a7c51bc6e (last main commit before the issue)",
+      "evidence": "issue-reported ~197 ms warm at 500k UTXOs",
+      "query": "SELECT accounts.uuid, SUM(u.value_zat) FROM transparent_received_outputs u JOIN accounts ON accounts.id = u.account_id JOIN transactions t ON t.id_tx = u.transaction_id JOIN addresses ON addresses.id = u.address_id WHERE (<mined or unexpired at :target_height>) AND u.id NOT IN (<spent utxos>) AND (<exclude ephemeral>) GROUP BY accounts.uuid; second query with mined_height/target_height/min_confirmations OR-predicates when min_confirmations > 0",
+      "schema": "rusqlite wallet schema; accounts.uuid BLOB; non-STRICT tables; value_zat INTEGER",
+      "runtime": {
+        "driver": "rusqlite (bundled SQLite)",
+        "loadable": "yes",
+        "note": "rusqlite can load extensions or register one statically; mobile wallets embed the crate"
+      },
+      "features": [
+        "F6",
+        "F6t",
+        "F7b",
+        "F8s",
+        "F10a",
+        "F10b"
+      ],
+      "minimal_unlock": [
+        "F6",
+        "F6t",
+        "F7b",
+        "F8s",
+        "F10a",
+        "F10b"
+      ],
+      "adapted_unlock": [],
+      "adapted_query": "SELECT account_id, SUM(value_zat) FROM transparent_outputs WHERE spendable = 1 GROUP BY account_id (and a second view on pending = 1)",
+      "adaptation": "App-maintained eligibility flags (spendable, pending) on a STRICT projection, flipped on receive, spend, rewind and at every new block for unmined/under-confirmed outputs (target_height moves); reader maps account_id to uuid.",
+      "adaptation_cost": "application-maintained STRICT projection (extra write per base-row change, extra storage, must be updated atomically with the base row and bootstrapped consistently); per-block re-evaluation of unmined/unconfirmed outputs; duplicates the spentness/confirmation logic in app code.",
+      "fit": "fits_with",
+      "confidence": {
+        "level": "low",
+        "reason": "The original needs a four-table join, NOT IN and a tip-relative predicate, and the faithful rewrite moves most of the logic into app-maintained flags."
+      },
+      "in_place_unlock": [
+        "F10a",
+        "F10b"
+      ]
+    },
+    {
+      "id": "kener",
+      "name": "Kener monitor bars",
+      "listed_in": [
+        "roadmap P2",
+        "docs/demos/kener.md"
+      ],
+      "sources": [
+        "https://github.com/rajnandan1/kener/issues/840",
+        "https://github.com/rajnandan1/kener/pull/842",
+        "https://github.com/rajnandan1/kener/blob/737899bf36ed62bc774027f6d14e93028f120bca/src/lib/server/db/repositories/monitoring.ts#L600-L636",
+        "https://github.com/rajnandan1/kener/blob/737899bf36ed62bc774027f6d14e93028f120bca/migrations/20250111153517_init.ts#L4-L13"
+      ],
+      "revision": "737899bf36ed62bc774027f6d14e93028f120bca (PR #842 base)",
+      "evidence": "issue-reported 5,631 ms over 4.4M rows; upstream rollup PR open",
+      "query": "SELECT monitor_tag, CAST((timestamp - ?) / ? AS INT) * ? + ? AS ts, SUM(CASE WHEN status = 'UP' THEN 1 ELSE 0 END), ... DOWN/DEGRADED/MAINTENANCE ..., AVG(latency), MAX(latency), MIN(latency) FROM monitoring_data WHERE monitor_tag IN (...) AND timestamp >= ? AND timestamp < ? GROUP BY monitor_tag, ts ORDER BY monitor_tag, ts",
+      "schema": "monitoring_data(monitor_tag VARCHAR(255) NOT NULL, timestamp INTEGER NOT NULL, status TEXT, latency FLOAT(8,2), type TEXT, PK(monitor_tag, timestamp)); knex, non-STRICT",
+      "runtime": {
+        "driver": "knex + better-sqlite3 (also pg/mysql)",
+        "loadable": "yes",
+        "note": "better-sqlite3 loadExtension"
+      },
+      "features": [
+        "F3b",
+        "F3c",
+        "F3e",
+        "F4a",
+        "F5",
+        "F6",
+        "F6t",
+        "F9",
+        "F10a",
+        "F10b"
+      ],
+      "minimal_unlock": [
+        "F3b",
+        "F3c",
+        "F3e",
+        "F4a",
+        "F5",
+        "F6",
+        "F6t",
+        "F10a",
+        "F10b"
+      ],
+      "adapted_unlock": [
+        "F3c"
+      ],
+      "adapted_query": "SELECT monitor_id, bucket_ts, status, SUM(latency_x100), COUNT(*), MIN(latency_x100), MAX(latency_x100) FROM monitoring_facts GROUP BY monitor_id, bucket_ts, status",
+      "adaptation": "Stored 15-minute bucket (every IANA offset is a multiple of 15 min), status pivoted to a group key, AVG = SUM/COUNT, latency scaled to integer hundredths, reader filters monitors/time window and composes viewer-timezone days. The docs' slice drops MIN/MAX; keeping them needs retraction-safe F3c (history is rewritten and deleted).",
+      "adaptation_cost": "application-maintained STRICT projection (extra write per base-row change, extra storage, must be updated atomically with the base row and bootstrapped consistently); 550k groups for 4.1M rows; reader composes 96 buckets per day.",
+      "fit": "fits_with",
+      "confidence": {
+        "level": "high",
+        "reason": "Upstream is building exactly this rollup, so the workload is IVM-shaped; MIN/MAX under deletes is the remaining gap."
+      },
+      "in_place_unlock": [
+        "F3c",
+        "F10a",
+        "F10b"
+      ]
+    },
+    {
+      "id": "bifrost",
+      "name": "Bifrost SQLite log stats",
+      "listed_in": [
+        "roadmap P3"
+      ],
+      "sources": [
+        "https://github.com/maximhq/bifrost/issues/7460",
+        "https://github.com/maximhq/bifrost/blob/a30e57dd9339f0d0efabdfdb1c96e63c462c41ae/framework/logstore/rdb.go#L1799-L1846",
+        "https://github.com/maximhq/bifrost/blob/a30e57dd9339f0d0efabdfdb1c96e63c462c41ae/framework/logstore/tables.go#L304-L402",
+        "https://github.com/maximhq/bifrost/blob/a30e57dd9339f0d0efabdfdb1c96e63c462c41ae/framework/go.mod"
+      ],
+      "revision": "a30e57dd9339f0d0efabdfdb1c96e63c462c41ae (main at census; issue reports v2.2.1)",
+      "evidence": "issue-reported 17.7 GB / 26.5k rows; 200 s before ANALYZE, 0.4-15 s after",
+      "query": "SELECT COUNT(*) AS completed_count, SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END), AVG(latency), SUM(total_tokens), SUM(prompt_tokens), SUM(completion_tokens), SUM(cost) FROM logs WHERE <applyFilters: time window, provider, model, ...> AND status IN (terminal statuses)",
+      "schema": "logs(id VARCHAR(255) PK, timestamp DATETIME, provider/model/status VARCHAR, latency REAL, cost REAL, *_tokens INTEGER, input_history TEXT ...); gorm, non-STRICT",
+      "runtime": {
+        "driver": "gorm.io/driver/sqlite over mattn/go-sqlite3 (cgo)",
+        "loadable": "yes",
+        "note": "mattn exposes LoadExtension unless built with sqlite_omit_load_extension"
+      },
+      "features": [
+        "F2",
+        "F3b",
+        "F3e",
+        "F4a",
+        "F6",
+        "F6t",
+        "F10a",
+        "F10b",
+        "F13"
+      ],
+      "minimal_unlock": [
+        "F2",
+        "F3b",
+        "F3e",
+        "F4a",
+        "F6",
+        "F6t",
+        "F10a",
+        "F10b",
+        "F13"
+      ],
+      "adapted_unlock": [
+        "F13"
+      ],
+      "adapted_query": "SELECT hour_bucket, provider, model, status, COUNT(*), SUM(latency_us), SUM(total_tokens), SUM(prompt_tokens), SUM(completion_tokens), SUM(cost_micro_usd) FROM logs_proj GROUP BY 1, 2, 3, 4",
+      "adaptation": "Hourly bucket stored, REAL cost/latency scaled to integers, status as a group key, AVG = SUM/COUNT, reader filters group dimensions; filters on non-grouped dimensions are not answerable. The issue's requirement is that the hourly totals survive raw-log retention, which is F13.",
+      "adaptation_cost": "application-maintained STRICT projection (extra write per base-row change, extra storage, must be updated atomically with the base row and bootstrapped consistently); only dimensions chosen up front can be filtered.",
+      "secondary": "The 200 s query was fixed by ANALYZE (a planner problem, not IVM).",
+      "fit": "fits_with",
+      "confidence": {
+        "level": "high",
+        "reason": "The issue asks for aggregates that outlive deleted raw rows, which ivmlite's retraction semantics cannot provide without F13."
+      },
+      "in_place_unlock": [
+        "F10a",
+        "F10b",
+        "F13"
+      ]
+    },
+    {
+      "id": "claude_monitor",
+      "name": "Claude Code Agent Monitor tiered retention",
+      "listed_in": [
+        "roadmap Defer"
+      ],
+      "sources": [
+        "https://github.com/hoangsonww/Claude-Code-Agent-Monitor/issues/305",
+        "https://github.com/hoangsonww/Claude-Code-Agent-Monitor/blob/a06db038a93b4d7316492dc55758f597e104894c/server/db.js#L195-L224"
+      ],
+      "revision": "a06db038a93b4d7316492dc55758f597e104894c",
+      "evidence": "proposal only; no row counts or timings",
+      "query": "Proposed rollup activity_rollups(day, project, provider, model, event_count, session_count, tool_counts JSON, input/output/cache tokens INTEGER, cost_usd REAL): i.e. GROUP BY date(created_at), project, provider, model with COUNT(*), COUNT(DISTINCT session_id), a per-tool JSON count map, SUM(tokens), SUM(cost) over events JOIN sessions JOIN token_usage",
+      "schema": "events(id INTEGER PK, session_id TEXT, agent_id TEXT, event_type TEXT, tool_name TEXT, summary TEXT, data TEXT, created_at TEXT); token_usage(session_id, model, ..., *_tokens INTEGER); non-STRICT",
+      "runtime": {
+        "driver": "better-sqlite3, fallback node:sqlite",
+        "loadable": "yes",
+        "note": ""
+      },
+      "features": [
+        "F3d",
+        "F3e",
+        "F3f",
+        "F5",
+        "F7b",
+        "F10a",
+        "F10b",
+        "F13"
+      ],
+      "minimal_unlock": [
+        "F3d",
+        "F3e",
+        "F3f",
+        "F5",
+        "F7b",
+        "F10a",
+        "F10b",
+        "F13"
+      ],
+      "adapted_unlock": [
+        "F13"
+      ],
+      "adapted_query": "SELECT day, project, tool_name, session_id, COUNT(*) FROM events_proj GROUP BY 1, 2, 3, 4 (reader derives event, session and per-tool counts); separate view summing token_usage tokens per day/project/model",
+      "adaptation": "Stored day and project on an events projection; COUNT(DISTINCT session) = number of finer groups; tool JSON map built by the reader; cost as integer micro-dollars. Rollups must survive deletion of cold raw rows (F13).",
+      "adaptation_cost": "application-maintained STRICT projection (extra write per base-row change, extra storage, must be updated atomically with the base row and bootstrapped consistently); the finer session-level view grows with sessions.",
+      "fit": "fits_with",
+      "confidence": {
+        "level": "low",
+        "reason": "This is a design proposal with no measured query, but rollup-before-delete is plainly F13."
+      },
+      "in_place_unlock": [
+        "F10a",
+        "F10b",
+        "F13"
+      ]
+    },
+    {
+      "id": "zenod",
+      "name": "Zenod tenant usage quota",
+      "listed_in": [
+        "docs/demos/zenod.md",
+        "community exclusions (#1391)"
+      ],
+      "sources": [
+        "https://github.com/zenod-ai/zenod/pull/1380",
+        "https://github.com/zenod-ai/zenod/issues/1391",
+        "https://github.com/zenod-ai/zenod/blob/44cee5384ae9061a92520565b70135d8aa3c2ea4/packages/mcp-chassis/src/usage.ts#L79-L88",
+        "https://github.com/zenod-ai/zenod/blob/44cee5384ae9061a92520565b70135d8aa3c2ea4/packages/mcp-chassis/src/usage.ts#L115-L136",
+        "https://github.com/zenod-ai/zenod/blob/44cee5384ae9061a92520565b70135d8aa3c2ea4/packages/mcp-chassis/src/usage.ts#L183-L198",
+        "https://github.com/zenod-ai/zenod/blob/9b036915af84f0f7e6e34cd49e2d6879158fd16c/packages/mcp-chassis/src/usage.ts"
+      ],
+      "revision": "44cee5384ae9061a92520565b70135d8aa3c2ea4 (PR #1380 base); fixed in 9b036915",
+      "evidence": "production 1.76M-row ledger, ~2.9 s blocking per request (author report)",
+      "query": "checkQuota -> summary(tenant, since=0): SELECT COUNT(*) AS events, COALESCE(SUM(units), 0) AS units FROM tenant_usage WHERE tenant_id = ? AND ts >= ?; SELECT kind, COUNT(*), COALESCE(SUM(units), 0) FROM tenant_usage WHERE tenant_id = ? AND ts >= ? GROUP BY kind ORDER BY kind",
+      "schema": "tenant_usage(id INTEGER PK AUTOINCREMENT, tenant_id TEXT NOT NULL, ts INTEGER NOT NULL, kind TEXT NOT NULL, units INTEGER NOT NULL DEFAULT 1, metadata_json TEXT); non-STRICT",
+      "runtime": {
+        "driver": "node:sqlite DatabaseSync",
+        "loadable": "yes",
+        "note": "node:sqlite supports loadExtension with allowExtension: true (recent Node)"
+      },
+      "features": [
+        "F4b",
+        "F6",
+        "F6t",
+        "F9",
+        "F10a"
+      ],
+      "minimal_unlock": [
+        "F10a"
+      ],
+      "adapted_unlock": [],
+      "adapted_query": "SELECT tenant_id, kind, COUNT(*), SUM(units) FROM tenant_usage GROUP BY tenant_id, kind",
+      "adaptation": "STRICT projection; tenant lifted to a group key (N1); hot path has since = 0. The since-filtered summary still needs F6t or stored buckets.",
+      "adaptation_cost": "application-maintained STRICT projection (extra write per base-row change, extra storage, must be updated atomically with the base row and bootstrapped consistently); explicit refresh vs transactional quota semantics must be decided.",
+      "fit": "fits_with",
+      "confidence": {
+        "level": "high",
+        "reason": "Upstream fixed it with exactly this maintained (tenant, kind) total."
+      },
+      "in_place_unlock": [
+        "F10a"
+      ]
+    },
+    {
+      "id": "nicti",
+      "name": "Nicti facet counts",
+      "listed_in": [
+        "docs/demos/nicti.md"
+      ],
+      "sources": [
+        "https://github.com/jordanfelle/nicti/issues/103",
+        "https://github.com/jordanfelle/nicti/blob/c3ec874a3b5827c89326890dc0323817774e013c/docs/adr/0103-facet-count-cache.md",
+        "https://github.com/jordanfelle/nicti/blob/c3ec874a3b5827c89326890dc0323817774e013c/crates/nicti-lair/src/schema.rs#L250-L262",
+        "https://github.com/jordanfelle/nicti/blob/c3ec874a3b5827c89326890dc0323817774e013c/crates/nicti-lair/src/sqlite.rs#L332-L360"
+      ],
+      "revision": "c3ec874a3b5827c89326890dc0323817774e013c",
+      "evidence": "upstream synthetic 2M-asset experiment (151 ms p95 vs 100 ms budget)",
+      "query": "Maintained grain (backfill of facet_counts): SELECT r.volume_id, COALESCE(a.model, ''), COALESCE(a.rating, -128), COUNT(*) FROM asset a JOIN root r ON r.id = a.root_id GROUP BY r.volume_id, COALESCE(a.model, ''), COALESCE(a.rating, -128); ADR's original hot query: faceted filter model = ? AND rating >= ? with keyword counts",
+      "schema": "asset(id INTEGER PK, root_id INTEGER NOT NULL, model TEXT, rating INTEGER NOT NULL DEFAULT 0, ... all INTEGER/TEXT); root(id INTEGER PK, volume_id INTEGER NOT NULL, ...); non-STRICT",
+      "runtime": {
+        "driver": "rusqlite 0.40 bundled",
+        "loadable": "yes",
+        "note": ""
+      },
+      "features": [
+        "F5",
+        "F10a"
+      ],
+      "minimal_unlock": [
+        "F5",
+        "F10a"
+      ],
+      "adapted_unlock": [],
+      "adapted_query": "SELECT r.volume_id, a.model, a.rating, COUNT(*) FROM asset a JOIN root r ON r.id = a.root_id GROUP BY 1, 2, 3",
+      "adaptation": "Drop COALESCE: NULL groups are native and the reader merges the NULL and '' model groups; STRICT projections of asset and root.",
+      "adaptation_cost": "application-maintained STRICT projection (extra write per base-row change, extra storage, must be updated atomically with the base row and bootstrapped consistently) for both join inputs; ADR-0107 moved the primary store toward DuckDB, so the SQLite path may not persist.",
+      "secondary": "The docs' demo uses the ADR-0103 (model, rating, keyword) grain; current main keeps (volume_id, model, rating).",
+      "fit": "fits_with",
+      "confidence": {
+        "level": "high",
+        "reason": "Upstream built trigger-maintained counts at exactly this grain."
+      },
+      "in_place_unlock": [
+        "F10a"
+      ]
+    },
+    {
+      "id": "postio",
+      "name": "Postio mailbox footprint",
+      "listed_in": [
+        "docs/demos/postio.md",
+        "community section 3"
+      ],
+      "sources": [
+        "https://github.com/dlapiduz/postio/issues/1508",
+        "https://github.com/dlapiduz/postio/blob/c32a6f4af191fb07c48176c7b77a1e502817c600/crates/postio-storage/src/repository/messages.rs#L2088-L2126",
+        "https://github.com/dlapiduz/postio/blob/c32a6f4af191fb07c48176c7b77a1e502817c600/crates/postio-storage/src/schema.rs#L717-L806",
+        "https://github.com/dlapiduz/postio/blob/5e6e34f478f53fb8c7f53b779655df390d4c86d9/crates/postio-storage/Cargo.toml#L41-L55"
+      ],
+      "revision": "c32a6f4af191fb07c48176c7b77a1e502817c600 (research snapshot); closed by PR #1871",
+      "evidence": "1.48 s on a real store (~81k messages); issue closed 2026-10-16 after maintained counters merged",
+      "query": "SELECT count(*), coalesce(sum(size), 0) FROM messages WHERE account_id = ?1 AND deleted_locally = 0; SELECT coalesce(sum(a.size), 0) FROM attachments a JOIN messages m ON m.id = a.message_id WHERE m.account_id = ?1 AND m.deleted_locally = 0; SELECT coalesce(sum(CASE m.body_state WHEN 'full' THEN m.size WHEN 'partial' THEN m.size - coalesce((SELECT sum(a.size) FROM attachments a WHERE a.message_id = m.id AND a.blob_id IS NULL), 0) ELSE 0 END), 0) FROM messages m WHERE m.account_id = ?1 AND m.deleted_locally = 0",
+      "schema": "messages(id INTEGER PK, account_id INTEGER, ..., size INTEGER NOT NULL DEFAULT 0, deleted_locally INTEGER NOT NULL DEFAULT 0, body_state TEXT ...); attachments(id, message_id INTEGER, size INTEGER, blob_id ...); non-STRICT",
+      "runtime": {
+        "driver": "Turso (Rust rewrite of SQLite)",
+        "loadable": "no",
+        "note": "Turso's engine cannot load a C SQLite extension"
+      },
+      "features": [
+        "F4a",
+        "F4b",
+        "F8s",
+        "F10a",
+        "F14"
+      ],
+      "minimal_unlock": [
+        "F4a",
+        "F8s",
+        "F10a",
+        "F14"
+      ],
+      "adapted_unlock": [
+        "F14"
+      ],
+      "adapted_query": "V1: SELECT account_id, body_state, COUNT(*), SUM(size) FROM messages_proj WHERE deleted_locally = 0 GROUP BY 1, 2; V2: SELECT m.account_id, m.body_state, a.has_blob, SUM(a.size) FROM attachments_proj a JOIN messages_proj m ON m.id = a.message_id WHERE m.deleted_locally = 0 GROUP BY 1, 2, 3",
+      "adaptation": "local_bytes = V1[full] + V1[partial] - V2[partial, has_blob = 0]; stored has_blob flag on an attachments projection; reader combines two views.",
+      "adaptation_cost": "application-maintained STRICT projection (extra write per base-row change, extra storage, must be updated atomically with the base row and bootstrapped consistently) for messages and attachments; upstream already ships trigger counters.",
+      "fit": "out_of_scope",
+      "confidence": {
+        "level": "high",
+        "reason": "Postio runs on Turso's engine, and the issue is now resolved upstream by maintained counters."
+      },
+      "in_place_unlock": [
+        "F10a",
+        "F14"
+      ]
+    },
+    {
+      "id": "phoenix",
+      "name": "Phoenix project token counts",
+      "listed_in": [
+        "docs/demos/phoenix.md"
+      ],
+      "sources": [
+        "https://github.com/Arize-ai/phoenix/issues/8068",
+        "https://github.com/Arize-ai/phoenix/pull/8357",
+        "https://github.com/Arize-ai/phoenix/blob/ca6a77924675faac05d29c5810a15b25d73be578/src/phoenix/db/models.py#L532-L612"
+      ],
+      "revision": "ca6a77924675faac05d29c5810a15b25d73be578 (PR #8357 base)",
+      "evidence": "reporter log: ~169 s over 4.95M spans; fix removed the feature",
+      "query": "SELECT traces.project_rowid, coalesce(sum(spans.llm_token_count_prompt), ?) AS prompt, coalesce(sum(spans.llm_token_count_completion), ?) AS completion, coalesce(sum(...prompt), ?) + coalesce(sum(...completion), ?) AS total FROM traces JOIN spans ON traces.id = spans.trace_rowid WHERE spans.start_time >= ? AND traces.project_rowid IN (?, ?, ?) GROUP BY traces.project_rowid",
+      "schema": "spans(id, trace_rowid INTEGER, start_time TIMESTAMP, attributes JSON, llm_token_count_prompt INTEGER NULL, ...); traces(id, project_rowid INTEGER, start_time TIMESTAMP); SQLAlchemy, non-STRICT",
+      "runtime": {
+        "driver": "SQLAlchemy + aiosqlite (Python sqlite3); also PostgreSQL",
+        "loadable": "yes",
+        "note": "needs a Python build with enable_load_extension (official Docker Python has it; macOS system Python does not)"
+      },
+      "features": [
+        "F4b",
+        "F6",
+        "F6t",
+        "F10a",
+        "F10b"
+      ],
+      "minimal_unlock": [
+        "F6t",
+        "F10a",
+        "F10b"
+      ],
+      "adapted_unlock": [],
+      "adapted_query": "SELECT t.project_id, s.minute_bucket, SUM(s.prompt_tokens), SUM(s.completion_tokens) FROM traces_proj t JOIN spans_proj s ON t.id = s.trace_id GROUP BY 1, 2",
+      "adaptation": "Stored minute bucket (UI windows start on a minute), reader sums buckets >= start; project IN lifted (N1); totals and coalesce in reader (N2/N4); STRICT projections of traces and spans.",
+      "adaptation_cost": "application-maintained STRICT projection (extra write per base-row change, extra storage, must be updated atomically with the base row and bootstrapped consistently) of 5M spans; reader sums O(minutes in window) rows; exact only for minute-aligned starts.",
+      "fit": "fits_with",
+      "confidence": {
+        "level": "low",
+        "reason": "The query was IVM-shaped, but upstream removed it instead, and exactness depends on how windows align."
+      },
+      "in_place_unlock": [
+        "F10a",
+        "F10b"
+      ]
+    },
+    {
+      "id": "pocketbase",
+      "name": "PocketBase author book counts",
+      "listed_in": [
+        "docs/demos/pocketbase.md"
+      ],
+      "sources": [
+        "https://github.com/pocketbase/pocketbase/discussions/7592",
+        "https://github.com/pocketbase/pocketbase/blob/6f370ea741f33adf889eef02e3c1b884a47aa522/go.mod"
+      ],
+      "revision": "6f370ea741f33adf889eef02e3c1b884a47aa522 (go.mod); view SQL from the discussion",
+      "evidence": "reporter 1,500 ms with expand; maintainer 425 ms; direct count view 75 ms",
+      "query": "SELECT author AS id, author, COUNT(*) AS cnt FROM books GROUP BY author  -- view collection, expanded as a back-relation",
+      "schema": "books(id TEXT PK, author TEXT relation, ...); PocketBase collection tables, non-STRICT",
+      "runtime": {
+        "driver": "modernc.org/sqlite (default; replaceable via DBConnect with a cgo driver)",
+        "loadable": "no",
+        "note": ""
+      },
+      "features": [
+        "F4b",
+        "F10a",
+        "F14"
+      ],
+      "minimal_unlock": [
+        "F10a",
+        "F14"
+      ],
+      "adapted_unlock": [
+        "F14"
+      ],
+      "adapted_query": "SELECT author, COUNT(*) FROM books_proj GROUP BY author",
+      "adaptation": "STRICT projection; duplicated output column done by reader.",
+      "adaptation_cost": "application-maintained STRICT projection (extra write per base-row change, extra storage, must be updated atomically with the base row and bootstrapped consistently)",
+      "fit": "not_ivm_shaped",
+      "confidence": {
+        "level": "high",
+        "reason": "The direct count view takes 75 ms; the cost is back-relation expand scheduling, i.e. per-record relation queries."
+      },
+      "in_place_unlock": [
+        "F10a",
+        "F14"
+      ]
+    },
+    {
+      "id": "datasette",
+      "name": "Datasette facet counts",
+      "listed_in": [
+        "docs/cases/evaluation"
+      ],
+      "sources": [
+        "https://github.com/simonw/datasette/issues/1684",
+        "https://github.com/simonw/datasette/issues/1513",
+        "https://sqlite.org/forum/forumpost/c0e0fcbe36",
+        "docs/cases/datasette/extracted/kentucky-facet-county.sql (local archive)"
+      ],
+      "revision": "SQLite forum first revision as archived in docs/cases/datasette",
+      "evidence": "reporter timings only; 805 MB covid.db not downloaded",
+      "query": "select county as value, count(*) as count from (select rowid, date, county, state, fips, cases, deaths from ny_times_us_counties where state = 'Kentucky') where county is not null group by county order by count desc, value limit 31",
+      "schema": "ny_times_us_counties(date TEXT, county TEXT, state TEXT, fips INTEGER, cases INTEGER, deaths INTEGER); csvs-to-sqlite, non-STRICT (full DDL not archived)",
+      "runtime": {
+        "driver": "Python sqlite3 (datasette --load-extension)",
+        "loadable": "yes",
+        "note": ""
+      },
+      "features": [
+        "F6",
+        "F8",
+        "F9",
+        "F10a"
+      ],
+      "minimal_unlock": [
+        "F6",
+        "F8",
+        "F9",
+        "F10a"
+      ],
+      "adapted_unlock": [],
+      "adapted_query": "SELECT county, COUNT(*) FROM counties_proj WHERE state = 'Kentucky' GROUP BY county",
+      "adaptation": "Flatten the projection subquery; drop county IS NOT NULL (reader drops the NULL group); top-31 by the reader over all groups; STRICT projection.",
+      "adaptation_cost": "application-maintained STRICT projection (extra write per base-row change, extra storage, must be updated atomically with the base row and bootstrapped consistently) of an 805 MB table; only predeclared facet/filter pairs benefit, while Datasette facets are ad hoc.",
+      "fit": "fits_with",
+      "confidence": {
+        "level": "low",
+        "reason": "Facet filters are user-chosen per request, so only a predeclared facet set is maintainable, and the reported remedies were limiting or disabling facets."
+      },
+      "in_place_unlock": [
+        "F10a"
+      ]
+    },
+    {
+      "id": "org_roam",
+      "name": "Org-roam denormalized node records",
+      "listed_in": [
+        "docs/cases/evaluation"
+      ],
+      "sources": [
+        "https://github.com/org-roam/org-roam/issues/1997",
+        "docs/cases/org-roam/extracted/original-query.el.txt and schema.sql (local archive)",
+        "https://org-roam.discourse.group/t/3483"
+      ],
+      "revision": "archived extracts (gist 192bafa002578f7691dda884f7bcc5f044dc721c)",
+      "evidence": "source reports on 9,554 notes; no public dataset",
+      "query": "SELECT id, ..., '(' || group_concat(tags, ' ') || ')' AS tags, aliases, refs FROM (SELECT ..., '(' || group_concat(aliases, ' ') || ')' AS aliases ... FROM (SELECT nodes.*, files.atime, files.mtime, files.title, tags.tag, aliases.alias, '(' || group_concat(RTRIM(refs.type, '\"') || ':' || LTRIM(refs.ref, '\"'), ' ') || ')' FROM nodes LEFT JOIN files ... LEFT JOIN tags ... LEFT JOIN aliases ... LEFT JOIN refs ... GROUP BY nodes.id, tags.tag, aliases.alias) GROUP BY id, tags) GROUP BY id",
+      "schema": "nodes/files/tags/aliases/refs with untyped columns (e.g. tags(node_id NOT NULL, tag)); non-STRICT",
+      "runtime": {
+        "driver": "emacsql over Emacs built-in sqlite or emacsql-sqlite",
+        "loadable": "uncertain",
+        "note": "Emacs 29+ has sqlite-load-extension, but newer Emacs restricts which extension names load; not verified"
+      },
+      "features": [
+        "F3f",
+        "F4a",
+        "F4b",
+        "F7a",
+        "F7b",
+        "F8",
+        "F10a",
+        "F10b"
+      ],
+      "minimal_unlock": [
+        "F3f",
+        "F4a",
+        "F4b",
+        "F7a",
+        "F7b",
+        "F8",
+        "F10a",
+        "F10b"
+      ],
+      "adapted_unlock": [
+        "F3f"
+      ],
+      "adapted_query": "SELECT node_id, group_concat(tag, ' ') FROM tags_proj GROUP BY node_id; same for aliases and formatted refs; reader joins nodes and files",
+      "adaptation": "Three single-table group_concat views (formatted ref stored on a refs projection), assembled with nodes/files by the reader; outer-join NULL lists handled by the reader. The docs' tag-count slice does not preserve the answer.",
+      "adaptation_cost": "application-maintained STRICT projection (extra write per base-row change, extra storage, must be updated atomically with the base row and bootstrapped consistently) for tags, aliases and refs; the nested grouping's de-duplication must be re-verified.",
+      "fit": "fits_with",
+      "confidence": {
+        "level": "low",
+        "reason": "This is record assembly rather than aggregation, and both the equivalence of the rewrite and the Emacs runtime are unverified."
+      },
+      "in_place_unlock": [
+        "F3f",
+        "F10a",
+        "F10b"
+      ]
+    },
+    {
+      "id": "better_ccflare",
+      "name": "better-ccflare dashboard stats",
+      "listed_in": [
+        "community section 1"
+      ],
+      "sources": [
+        "https://github.com/StartupBros-com/better-ccflare/issues/480",
+        "https://github.com/StartupBros-com/better-ccflare/blob/386c67c02136b7ba9b41fad3a9f690cae51c8742/packages/database/src/repositories/stats.repository.ts#L234-L285",
+        "https://github.com/StartupBros-com/better-ccflare/blob/386c67c02136b7ba9b41fad3a9f690cae51c8742/packages/database/src/repositories/stats.repository.ts#L440-L457",
+        "https://github.com/StartupBros-com/better-ccflare/blob/386c67c02136b7ba9b41fad3a9f690cae51c8742/packages/database/src/migrations.ts#L464-L509"
+      ],
+      "revision": "386c67c02136b7ba9b41fad3a9f690cae51c8742",
+      "evidence": "live uncached handler 2.7-2.9 s; per-query attribution missing",
+      "query": "Lifetime account stats: WITH raw AS (SELECT a.id, COUNT(r.id), SUM(CASE WHEN a.id IS NOT NULL OR r.account_used IS NULL OR r.account_used = ? THEN 1 ELSE 0 END), SUM(CASE WHEN (...) AND r.success = TRUE THEN 1 ELSE 0 END) FROM requests r LEFT JOIN accounts a ON a.id = r.account_used GROUP BY a.id), grouped AS (... COALESCE, MAX(a.total_requests) ... LEFT JOIN accounts ... GROUP BY 1, 2), rated AS (... SUM() OVER (PARTITION BY id)) SELECT ... WHERE request_count > 0 ORDER BY request_count DESC LIMIT ?; model counts: WITH model_counts AS (SELECT model, COUNT(*) FROM requests WHERE model IS NOT NULL GROUP BY model) ... ORDER BY count DESC LIMIT ?",
+      "schema": "requests(id TEXT PK, timestamp INTEGER, account_used TEXT, success BOOLEAN, model TEXT, cost_usd REAL, output_tokens_per_second REAL, account_generation BIGINT, ...); non-STRICT",
+      "runtime": {
+        "driver": "bun:sqlite",
+        "loadable": "yes",
+        "note": "bun:sqlite loadExtension; on macOS needs Database.setCustomSQLite"
+      },
+      "features": [
+        "F3a",
+        "F3c",
+        "F4a",
+        "F4b",
+        "F6",
+        "F7a",
+        "F8",
+        "F9",
+        "F10a",
+        "F10b"
+      ],
+      "minimal_unlock": [
+        "F3a",
+        "F3c",
+        "F4a",
+        "F4b",
+        "F6",
+        "F7a",
+        "F8",
+        "F9",
+        "F10a",
+        "F10b"
+      ],
+      "adapted_unlock": [],
+      "adapted_query": "SELECT account_used, COUNT(*), SUM(success) FROM requests_proj GROUP BY account_used; SELECT model, COUNT(*) FROM requests_proj GROUP BY model",
+      "adaptation": "The CASE conditions depend only on the group key and on whether that account exists, so the reader evaluates them per group after joining the small accounts table; COUNT(r.id) = COUNT(*) because id is the PK; success projected to 0/1; the reader computes window sums, percentages, ordering and LIMIT; the NULL model group is dropped.",
+      "adaptation_cost": "application-maintained STRICT projection (extra write per base-row change, extra storage, must be updated atomically with the base row and bootstrapped consistently) of requests (account_used, success, model); the reader handles fallback/no_account semantics.",
+      "fit": "fits_with",
+      "confidence": {
+        "level": "low",
+        "reason": "The stall is not yet attributed to any one of the five statistics paths, so the aggregate cost may not be the bottleneck."
+      },
+      "in_place_unlock": [
+        "F10a",
+        "F10b"
+      ]
+    },
+    {
+      "id": "context_guru",
+      "name": "context-guru replay ledger",
+      "listed_in": [
+        "community section 2"
+      ],
+      "sources": [
+        "https://github.com/rossoctl/context-guru/issues/588",
+        "https://github.com/rossoctl/context-guru/blob/1151c36eca75e1fdf5530293b64f93d573728bd2/dash/replaycap.go#L298-L307",
+        "https://github.com/rossoctl/context-guru/blob/1151c36eca75e1fdf5530293b64f93d573728bd2/dash/replaycap.go#L213-L290",
+        "https://github.com/rossoctl/context-guru/blob/1151c36eca75e1fdf5530293b64f93d573728bd2/go.mod#L33"
+      ],
+      "revision": "1151c36eca75e1fdf5530293b64f93d573728bd2",
+      "evidence": "relative timings only",
+      "query": "SELECT r.id, r.tenant_id, r.session_id, r.model, r.ts, r.bypassed, r.tokens_before, r.tokens_after, ..., c.component, c.saved_gross, c.saved_unique, c.saved_usd FROM requests r LEFT JOIN request_components c ON c.request_id = r.id AND ... AND c.saved_usd <> 0 AND c.saved_gross > 0 WHERE %s ORDER BY r.tenant_id, r.session_id, r.model, r.ts, r.id  -- then an ordered Go walk with 3-turn lookahead and max-credit de-duplication",
+      "schema": "requests/request_components; non-STRICT; REAL saved_usd",
+      "runtime": {
+        "driver": "modernc.org/sqlite",
+        "loadable": "no",
+        "note": ""
+      },
+      "features": [
+        "F7a",
+        "F9",
+        "F10a",
+        "F10b",
+        "F14",
+        "F15"
+      ],
+      "minimal_unlock": [
+        "F7a",
+        "F9",
+        "F10a",
+        "F10b",
+        "F14",
+        "F15"
+      ],
+      "adapted_unlock": [
+        "F14",
+        "F15"
+      ],
+      "adapted_query": null,
+      "adaptation": "None faithful: the result is an ordered state machine (compaction detection with lookahead, max-credit de-dup); F15 = ordered state machine.",
+      "adaptation_cost": "",
+      "fit": "out_of_scope",
+      "confidence": {
+        "level": "high",
+        "reason": "Ordered ledger semantics cannot be expressed as grouped COUNT/SUM, and the driver is pure Go."
+      },
+      "in_place_unlock": [
+        "F10a",
+        "F10b",
+        "F14",
+        "F15"
+      ]
+    },
+    {
+      "id": "openwhispr",
+      "name": "OpenWhispr get_stats by speaker",
+      "listed_in": [
+        "community additional checks"
+      ],
+      "sources": [
+        "https://github.com/futuregerald/openwhispr/issues/84",
+        "https://github.com/futuregerald/openwhispr/blob/d5e50fed042598c43152a20b0bf62c0cd1baa251/src/helpers/database.js#L2861-L2886",
+        "https://github.com/futuregerald/openwhispr/blob/d5e50fed042598c43152a20b0bf62c0cd1baa251/src/helpers/database.js#L840-L852",
+        "https://github.com/futuregerald/openwhispr/blob/d5e50fed042598c43152a20b0bf62c0cd1baa251/src/helpers/database.js#L233-L242"
+      ],
+      "revision": "d5e50fed042598c43152a20b0bf62c0cd1baa251",
+      "evidence": "reporter: 1,200 ms isolated on 20k notes / 2M segments",
+      "query": "SELECT s.speaker_name AS speaker, COUNT(*) AS segments, SUM(CASE WHEN trim(s.text) = '' THEN 0 ELSE length(trim(s.text)) - length(replace(trim(s.text), ' ', '')) + 1 END) AS words FROM transcript_segments s JOIN notes n ON n.id = s.note_id WHERE s.speaker_name IS NOT NULL AND n.deleted_at IS NULL [AND datetime(n.created_at) >= datetime(?) AND < datetime(?)] GROUP BY s.speaker_name ORDER BY segments DESC LIMIT ?",
+      "schema": "transcript_segments(note_id INTEGER, seq INTEGER, speaker_id TEXT, speaker_name TEXT, text TEXT NOT NULL, ..., PK(note_id, seq)); notes(id INTEGER PK, ..., audio_duration_seconds REAL, created_at DATETIME, deleted_at ...); non-STRICT",
+      "runtime": {
+        "driver": "better-sqlite3 in Electron main process",
+        "loadable": "yes",
+        "note": "Electron packaging of a native extension unverified"
+      },
+      "features": [
+        "F4a",
+        "F6",
+        "F6t",
+        "F9",
+        "F10a",
+        "F10b"
+      ],
+      "minimal_unlock": [
+        "F4a",
+        "F6",
+        "F9",
+        "F10a",
+        "F10b"
+      ],
+      "adapted_unlock": [],
+      "adapted_query": "SELECT s.speaker_name, COUNT(*), SUM(s.word_count) FROM segments_proj s JOIN notes_proj n ON n.id = s.note_id WHERE n.deleted = 0 GROUP BY s.speaker_name",
+      "adaptation": "Stored word_count per segment (same approximate rule), notes projection with a deleted flag, reader drops the NULL speaker group and applies top-N; the all-time call is the hot path. Date-bounded calls need a stored note-day bucket in the group key.",
+      "adaptation_cost": "application-maintained STRICT projection (extra write per base-row change, extra storage, must be updated atomically with the base row and bootstrapped consistently) of 2M segments plus notes; word_count recomputed on each text edit.",
+      "fit": "fits_with",
+      "confidence": {
+        "level": "low",
+        "reason": "The issue frames this as main-process availability, and its first fixes are a default range and moving the read off the main process."
+      },
+      "in_place_unlock": [
+        "F10a",
+        "F10b"
+      ]
+    },
+    {
+      "id": "garcon",
+      "name": "Garcon dashboard polling",
+      "listed_in": [
+        "community additional checks"
+      ],
+      "sources": [
+        "https://github.com/asieke/garcon/issues/38",
+        "https://github.com/asieke/garcon/blob/5a0ec29c4b521531deea704c9cf5cfb13253a03e/internal/store/store.go#L99-L139",
+        "https://github.com/asieke/garcon/blob/5a0ec29c4b521531deea704c9cf5cfb13253a03e/internal/store/sessions.go#L17-L57",
+        "https://github.com/asieke/garcon/blob/5a0ec29c4b521531deea704c9cf5cfb13253a03e/go.mod"
+      ],
+      "revision": "5a0ec29c4b521531deea704c9cf5cfb13253a03e",
+      "evidence": "no cardinality or latency numbers",
+      "query": "SELECT count(*) FROM requests  -- under s.mu every ~2.5 s; plus sessions(): window/JSON/DISTINCT/UNION ALL CTE ending in LIMIT 1000",
+      "schema": "requests(sequence, session_id, kind, state, time, record JSON TEXT, ...); non-STRICT",
+      "runtime": {
+        "driver": "modernc.org/sqlite v1.59.0, SetMaxOpenConns(1)",
+        "loadable": "no",
+        "note": ""
+      },
+      "features": [
+        "F2",
+        "F10a",
+        "F14"
+      ],
+      "minimal_unlock": [
+        "F2",
+        "F10a",
+        "F14"
+      ],
+      "adapted_unlock": [
+        "F14"
+      ],
+      "adapted_query": null,
+      "adaptation": "The cached count is an application counter; sessions() needs F3c/F3d/F5/F8/F8s/F9 and JSON functions.",
+      "adaptation_cost": "",
+      "fit": "not_ivm_shaped",
+      "confidence": {
+        "level": "high",
+        "reason": "The issue is about connection and mutex serialization; the proposed fixes are a read pool, a writer goroutine and a cached count."
+      },
+      "in_place_unlock": [
+        "F10a",
+        "F14"
+      ]
+    },
+    {
+      "id": "openvibely",
+      "name": "OpenVibely skills analytics",
+      "listed_in": [
+        "community published (#345 correction)"
+      ],
+      "sources": [
+        "https://github.com/openvibely/openvibely/issues/345",
+        "https://github.com/openvibely/openvibely/blob/fd9b3f08274e9b7dc1fa43f9801a04c69007aae9/internal/persistence/sqlite/skill_analytics_repo.go#L63-L76",
+        "https://github.com/openvibely/openvibely/blob/fd9b3f08274e9b7dc1fa43f9801a04c69007aae9/internal/persistence/sqlite/database/migrations/093_skill_analytics_events.sql",
+        "https://github.com/openvibely/openvibely/blob/fd9b3f08274e9b7dc1fa43f9801a04c69007aae9/go.mod"
+      ],
+      "revision": "fd9b3f08274e9b7dc1fa43f9801a04c69007aae9 (current main; files moved under internal/persistence/sqlite)",
+      "evidence": "reporter benchmark ~102 ms/op at 50k rows",
+      "query": "SELECT date(e.created_at, 'localtime') AS period, SUM(CASE WHEN event_type = 'selected' THEN 1 ELSE 0 END), ... (loaded/viewed/created/edited), COUNT(*) FROM skill_analytics_events e WHERE <project_id, date range, ...> GROUP BY period ORDER BY period",
+      "schema": "skill_analytics_events(id TEXT PK, created_at DATETIME, project_id TEXT, ..., skill_scope TEXT, skill_handle TEXT, event_type TEXT CHECK(...), source TEXT, surface TEXT); non-STRICT",
+      "runtime": {
+        "driver": "modernc.org/sqlite v1.60.1",
+        "loadable": "no",
+        "note": ""
+      },
+      "features": [
+        "F4a",
+        "F5",
+        "F6",
+        "F6t",
+        "F9",
+        "F10a",
+        "F10b",
+        "F14",
+        "F15"
+      ],
+      "minimal_unlock": [
+        "F4a",
+        "F5",
+        "F6",
+        "F6t",
+        "F10a",
+        "F10b",
+        "F14",
+        "F15"
+      ],
+      "adapted_unlock": [
+        "F14"
+      ],
+      "adapted_query": "SELECT project_id, local_day, event_type, COUNT(*) FROM events_proj GROUP BY 1, 2, 3",
+      "adaptation": "Pivot event_type; a stored local_day requires an explicit timezone policy (localtime is non-deterministic: F15 non-deterministic bucket).",
+      "adaptation_cost": "application-maintained STRICT projection (extra write per base-row change, extra storage, must be updated atomically with the base row and bootstrapped consistently)",
+      "fit": "not_ivm_shaped",
+      "confidence": {
+        "level": "high",
+        "reason": "The issue and its acceptance criteria ask for index-ordered plans without temp B-trees at 50k rows, not maintained aggregates."
+      },
+      "in_place_unlock": [
+        "F10a",
+        "F10b",
+        "F14"
+      ]
+    },
+    {
+      "id": "setu",
+      "name": "setu index facets",
+      "listed_in": [
+        "community exclusions"
+      ],
+      "sources": [
+        "https://github.com/withsetu/setu/issues/588",
+        "https://github.com/withsetu/setu/blob/8fe1dd0ef05a5e01e70cc40c94e645423cea74b7/packages/db-sqlite/src/index-port.ts#L47-L52",
+        "https://github.com/withsetu/setu/blob/8fe1dd0ef05a5e01e70cc40c94e645423cea74b7/packages/db-sqlite/package.json"
+      ],
+      "revision": "8fe1dd0ef05a5e01e70cc40c94e645423cea74b7",
+      "evidence": "owner UAT; 4x full scans; no numbers",
+      "query": "SELECT * FROM entry_index (loadAll) + JSON.parse + JS reduce, four times per /api/index/facets request",
+      "schema": "entry_index(key TEXT PK, row TEXT JSON); drizzle, non-STRICT",
+      "runtime": {
+        "driver": "better-sqlite3 via drizzle; browser db-idb adapter for parity",
+        "loadable": "yes",
+        "note": "the browser IndexedDB adapter could never load an extension (F14 for that adapter only)"
+      },
+      "features": [
+        "F5",
+        "F10a",
+        "F15"
+      ],
+      "minimal_unlock": [
+        "F5",
+        "F10a",
+        "F15"
+      ],
+      "adapted_unlock": [],
+      "adapted_query": "SELECT category, COUNT(*) FROM entry_proj GROUP BY category; SELECT tag, COUNT(*) FROM entry_tags_proj GROUP BY tag",
+      "adaptation": "Facets need json_extract / json_each unnesting (F15: table-valued unnest); a normalized tags projection avoids it.",
+      "adaptation_cost": "application-maintained STRICT projection (extra write per base-row change, extra storage, must be updated atomically with the base row and bootstrapped consistently)",
+      "fit": "not_ivm_shaped",
+      "confidence": {
+        "level": "high",
+        "reason": "The fix the issue names is to run a single scan or a plain SQL COUNT/GROUP BY instead of four JSON loads."
+      },
+      "in_place_unlock": [
+        "F10a"
+      ]
+    },
+    {
+      "id": "screenpipe",
+      "name": "screenpipe activity summary",
+      "listed_in": [
+        "community exclusions"
+      ],
+      "sources": [
+        "https://github.com/screenpipe/screenpipe/issues/7364",
+        "https://github.com/screenpipe/screenpipe/blob/5ce7edfcda145fa1bb074574925b290a1356bf2c/Cargo.toml"
+      ],
+      "revision": "5ce7edfcda145fa1bb074574925b290a1356bf2c (driver); query excerpt from the issue",
+      "evidence": "reporter log: 20-63 s per request every ~4 s",
+      "query": "WITH frame_fallback AS MATERIALIZED (... two correlated scalar subqueries per frame into ui_events ...), _bulk_logical_ui_events AS (...) ... WHERE timestamp BETWEEN ? AND ?",
+      "schema": "frames / ui_events / elements (~19M rows) hybrid Parquet index",
+      "runtime": {
+        "driver": "sqlx 0.9 + bundled libsqlite3-sys (Rust)",
+        "loadable": "yes",
+        "note": ""
+      },
+      "features": [
+        "F6",
+        "F6t",
+        "F8",
+        "F8s",
+        "F9",
+        "F10a"
+      ],
+      "minimal_unlock": [
+        "F6",
+        "F6t",
+        "F8",
+        "F8s",
+        "F9",
+        "F10a"
+      ],
+      "adapted_unlock": [
+        "F6t",
+        "F8s"
+      ],
+      "adapted_query": null,
+      "adaptation": "Resolving app_name at write time would remove the correlated subqueries; that is a write-time fix, not IVM.",
+      "adaptation_cost": "",
+      "fit": "not_ivm_shaped",
+      "confidence": {
+        "level": "high",
+        "reason": "The reporter confirmed the fix was a runaway polling loop plus correlated subqueries, which an index and write-time resolution address."
+      },
+      "in_place_unlock": [
+        "F6t",
+        "F8s",
+        "F10a"
+      ]
+    },
+    {
+      "id": "pulse",
+      "name": "Pulse protection observations",
+      "listed_in": [
+        "community exclusions"
+      ],
+      "sources": [
+        "https://github.com/rcourtman/Pulse/issues/2465",
+        "https://github.com/rcourtman/Pulse/blob/0728bda7acb9f4bb8de39bf1be2e5dc410f03c90/go.mod"
+      ],
+      "revision": "0728bda7acb9f4bb8de39bf1be2e5dc410f03c90 (go.mod); query described in the issue (store_posture.go L455 at v6.4.5)",
+      "evidence": "reporter: 0.76 s over 70,949 rows returning 2 rows",
+      "query": "SELECT * FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY provider, scope ORDER BY observed_at_ms DESC) ...) WHERE rn = 1  -- latest observation per (provider, scope)",
+      "schema": "protection_provider_observations(..., provider, scope, observed_at_ms, payload); index (provider, scope, observed_at_ms DESC)",
+      "runtime": {
+        "driver": "modernc.org/sqlite v1.59.0",
+        "loadable": "no",
+        "note": ""
+      },
+      "features": [
+        "F9",
+        "F10a",
+        "F14"
+      ],
+      "minimal_unlock": [
+        "F9",
+        "F10a",
+        "F14"
+      ],
+      "adapted_unlock": [
+        "F14"
+      ],
+      "adapted_query": null,
+      "adaptation": "Latest-per-key is an index seek per (provider, scope); top-1 semantics are F9.",
+      "adaptation_cost": "",
+      "fit": "not_ivm_shaped",
+      "confidence": {
+        "level": "high",
+        "reason": "The released fix was an indexed latest-row read, and the issue says the rollup query itself was fast."
+      },
+      "in_place_unlock": [
+        "F10a",
+        "F14"
+      ]
+    },
+    {
+      "id": "stash",
+      "name": "Stash studio performer counts",
+      "listed_in": [
+        "community exclusions"
+      ],
+      "sources": [
+        "https://github.com/stashapp/stash/issues/7222",
+        "https://github.com/stashapp/stash/blob/bdee3c83d33d802765332967f09db756e2877bcc/go.mod"
+      ],
+      "revision": "bdee3c83d33d802765332967f09db756e2877bcc (go.mod); query from the issue (v0.31.1)",
+      "evidence": "reporter: 4.2-9 s per card x ~25 cards; 5.6M images",
+      "query": "WITH studio(root_id, item_id) AS (VALUES(?, ?)), performer_studio AS (SELECT performer_id FROM scenes JOIN performers_scenes ... UNION SELECT performer_id FROM images JOIN performers_images ... UNION SELECT ... galleries ...) SELECT COUNT(*) FROM (SELECT DISTINCT performers.id FROM performers LEFT JOIN performer_studio ON ... WHERE performer_studio.performer_id IS NOT NULL)",
+      "schema": "scenes/images/galleries + performers_* link tables; images.studio_id has a partial index (WHERE studio_id IS NOT NULL)",
+      "runtime": {
+        "driver": "mattn/go-sqlite3",
+        "loadable": "yes",
+        "note": ""
+      },
+      "features": [
+        "F3d",
+        "F7a",
+        "F7b",
+        "F8",
+        "F10a",
+        "F15"
+      ],
+      "minimal_unlock": [
+        "F3d",
+        "F7a",
+        "F7b",
+        "F8",
+        "F10a",
+        "F15"
+      ],
+      "adapted_unlock": [
+        "F3d",
+        "F7b",
+        "F15"
+      ],
+      "adapted_query": null,
+      "adaptation": "F15 = UNION of three join branches; distinct performers per studio.",
+      "adaptation_cost": "",
+      "fit": "not_ivm_shaped",
+      "confidence": {
+        "level": "high",
+        "reason": "The root cause is a partial index the planner cannot use across a join; a full index or an IN rewrite fixes it."
+      },
+      "in_place_unlock": [
+        "F3d",
+        "F7b",
+        "F10a",
+        "F15"
+      ]
+    },
+    {
+      "id": "photo_triage",
+      "name": "photo-triage job counts",
+      "listed_in": [
+        "community watch list"
+      ],
+      "sources": [
+        "https://github.com/MusikPolice/photo-triage/issues/24",
+        "https://github.com/MusikPolice/photo-triage/pull/60",
+        "https://github.com/MusikPolice/photo-triage/blob/3e446dcb2129e3a7d0041eede865c9f9f68702d9/backend/src/photo_triage/api/activity.py#L80-L93",
+        "https://github.com/MusikPolice/photo-triage/blob/3e446dcb2129e3a7d0041eede865c9f9f68702d9/backend/src/photo_triage/db/migrations/versions/0001_phase_1_tables_items_jobs_job_stats.py#L81-L115"
+      ],
+      "revision": "3e446dcb2129e3a7d0041eede865c9f9f68702d9 (after PR #60 merged 2026-10-16)",
+      "evidence": "PR #60: 1M-row synthetic 493.6 ms -> 46-48 ms",
+      "query": "SELECT stage, status, COUNT(*) FROM jobs GROUP BY stage, status  (replaced by per-(stage, status) index range counts gated on PRAGMA data_version)",
+      "schema": "jobs(id INTEGER PK, item_id INTEGER, stage VARCHAR(32), priority INTEGER, status VARCHAR enum, enqueued_at DATETIME, ...); SQLAlchemy, non-STRICT",
+      "runtime": {
+        "driver": "SQLAlchemy + Python sqlite3",
+        "loadable": "yes",
+        "note": "depends on Python build"
+      },
+      "features": [
+        "F10a",
+        "F10b"
+      ],
+      "minimal_unlock": [
+        "F10a",
+        "F10b"
+      ],
+      "adapted_unlock": [],
+      "adapted_query": "SELECT stage, status, COUNT(*) FROM jobs_proj GROUP BY stage, status",
+      "adaptation": "STRICT projection.",
+      "adaptation_cost": "application-maintained STRICT projection (extra write per base-row change, extra storage, must be updated atomically with the base row and bootstrapped consistently)",
+      "fit": "not_ivm_shaped",
+      "confidence": {
+        "level": "high",
+        "reason": "An index range count plus a data_version gate met the 50 ms target, and the issue explicitly rejects running totals."
+      },
+      "in_place_unlock": [
+        "F10a",
+        "F10b"
+      ]
+    },
+    {
+      "id": "subwave",
+      "name": "Sub/Wave admin library stats",
+      "listed_in": [
+        "community watch list"
+      ],
+      "sources": [
+        "https://github.com/perminder-klair/subwave/issues/1937",
+        "https://github.com/perminder-klair/subwave/issues/1937#issuecomment-6225655379",
+        "https://github.com/perminder-klair/subwave/blob/d75122f007c6eb4d244228ed677d15eac270eb12/controller/src/music/library-db/tracks.ts#L103"
+      ],
+      "revision": "d75122f007c6eb4d244228ed677d15eac270eb12",
+      "evidence": "150,291 tracks / 600,987 facet rows; owner reproduced",
+      "query": "SELECT COUNT(*) AS n FROM tracks WHERE <SQL_HAS_MOODS expression>; similar coverage/stats() counts over wide tracks rows",
+      "schema": "tracks (wide rows), track_facet_status, track_moods; non-STRICT",
+      "runtime": {
+        "driver": "better-sqlite3",
+        "loadable": "yes",
+        "note": ""
+      },
+      "features": [
+        "F2",
+        "F6",
+        "F10a",
+        "F10b"
+      ],
+      "minimal_unlock": [
+        "F2",
+        "F6",
+        "F10a",
+        "F10b"
+      ],
+      "adapted_unlock": [],
+      "adapted_query": null,
+      "adaptation": "Not pursued: the owner's fix is indexes plus caching the counts until the library changes.",
+      "adaptation_cost": "",
+      "fit": "not_ivm_shaped",
+      "confidence": {
+        "level": "high",
+        "reason": "The owner attributes the cost to repeated wide-row scans fixed by indexes and a change-invalidated cache."
+      },
+      "in_place_unlock": [
+        "F10a",
+        "F10b"
+      ]
+    },
+    {
+      "id": "tautulli",
+      "name": "Tautulli history page",
+      "listed_in": [
+        "community watch list"
+      ],
+      "sources": [
+        "https://github.com/Tautulli/Tautulli/issues/1962",
+        "https://github.com/Tautulli/Tautulli/tree/668ef00718faac90dcd18e68fa965bf38f3d9444"
+      ],
+      "revision": "query from the 2023 issue; nightly 668ef00718faac90dcd18e68fa965bf38f3d9444 already aggregates before joins",
+      "evidence": "reporter ~20 s at 350k rows (2023); recent report 536k rows on v2.18.2",
+      "query": "SELECT * FROM (SELECT reference_id, MAX(started), MIN(started), MAX(stopped), SUM(CASE WHEN stopped > 0 THEN stopped - started ELSE 0 END) - SUM(...), ..., MAX(view_offset/duration*100), COUNT(*), GROUP_CONCAT(session_history.id) FROM session_history LEFT OUTER JOIN users ... JOIN session_history_metadata ... JOIN session_history_media_info ... GROUP BY reference_id UNION SELECT ... strftime('%s','now') ... ) ORDER BY ... LIMIT/OFFSET",
+      "schema": "session_history + metadata + media_info + users; non-STRICT, REAL arithmetic",
+      "runtime": {
+        "driver": "Python sqlite3",
+        "loadable": "yes",
+        "note": ""
+      },
+      "features": [
+        "F3c",
+        "F3e",
+        "F3f",
+        "F4a",
+        "F4b",
+        "F6t",
+        "F7a",
+        "F7b",
+        "F8",
+        "F9",
+        "F10a",
+        "F10b",
+        "F15"
+      ],
+      "minimal_unlock": [
+        "F3c",
+        "F3e",
+        "F3f",
+        "F4a",
+        "F4b",
+        "F6t",
+        "F7a",
+        "F7b",
+        "F8",
+        "F9",
+        "F10a",
+        "F10b",
+        "F15"
+      ],
+      "adapted_unlock": [
+        "F3c",
+        "F3f",
+        "F7a",
+        "F9"
+      ],
+      "adapted_query": null,
+      "adaptation": "F15 = UNION with live sessions; paginated history rows rather than a summary.",
+      "adaptation_cost": "",
+      "fit": "not_ivm_shaped",
+      "confidence": {
+        "level": "low",
+        "reason": "The reporter blames pagination and join strategy, and current nightly already aggregates before the wide joins; re-measurement is needed."
+      },
+      "in_place_unlock": [
+        "F3c",
+        "F3f",
+        "F7a",
+        "F9",
+        "F10a",
+        "F10b"
+      ]
+    },
+    {
+      "id": "unscreen",
+      "name": "Unscreen per-app usage totals",
+      "listed_in": [
+        "community watch list"
+      ],
+      "sources": [
+        "https://github.com/Sakth1/Unscreen/issues/30",
+        "https://github.com/Sakth1/Unscreen/blob/7e7885875beb7f52e31b5a4e733315ad6c343fc5/src/core/analytics/analytics_store.py#L1-L40",
+        "https://github.com/Sakth1/Unscreen/blob/7e7885875beb7f52e31b5a4e733315ad6c343fc5/src/core/storage/__init__.py#L724-L747"
+      ],
+      "revision": "7e7885875beb7f52e31b5a4e733315ad6c343fc5",
+      "evidence": "feature idea; no measured slow query; ADR-0004 says current queries suffice",
+      "query": "get_app_session_totals: SUM(CASE WHEN s.duration_s IS NOT NULL THEN s.duration_s ELSE (min(now, until) - start_ts)/1000 END) FROM app_sessions s WHERE start_ts >= ? AND start_ts < ? [AND device_id = ?] [AND app_key NOT IN (...)] GROUP BY app_key, payload",
+      "schema": "app_sessions(device_id, app_key, payload, start_ts INTEGER, end_ts INTEGER NULL, duration_s REAL?); non-STRICT",
+      "runtime": {
+        "driver": "Python sqlite3 inside a Flet Android/Windows app",
+        "loadable": "uncertain",
+        "note": "extension loading in the Android Python build is unverified"
+      },
+      "features": [
+        "F3e",
+        "F4a",
+        "F6",
+        "F6t",
+        "F9",
+        "F10a",
+        "F10b"
+      ],
+      "minimal_unlock": [
+        "F3e",
+        "F4a",
+        "F6",
+        "F6t",
+        "F10a",
+        "F10b"
+      ],
+      "adapted_unlock": [],
+      "adapted_query": "SELECT device_id, local_day, app_key, payload, SUM(duration_ms), COUNT(*) FROM closed_sessions_proj GROUP BY 1, 2, 3, 4",
+      "adaptation": "Closed sessions only, with stored local day and integer ms; open sessions (time-dependent) summed live by the reader; system-app exclusion and top-N by the reader.",
+      "adaptation_cost": "application-maintained STRICT projection (extra write per base-row change, extra storage, must be updated atomically with the base row and bootstrapped consistently); a reader merge of live open sessions.",
+      "fit": "fits_with",
+      "confidence": {
+        "level": "low",
+        "reason": "No slow query has been reported, open sessions are time-dependent, and the Android runtime is unverified."
+      },
+      "in_place_unlock": [
+        "F10a",
+        "F10b"
+      ]
+    },
+    {
+      "id": "orpheus",
+      "name": "Orpheus year-range history aggregates",
+      "listed_in": [
+        "community watch list"
+      ],
+      "sources": [
+        "https://github.com/scottchronicity/orpheus/issues/127"
+      ],
+      "revision": "issue text only; no SQL in the issue",
+      "evidence": "31.6 s page already fixed by SQL/index changes",
+      "query": "History/stats endpoints aggregate raw rows over covering indexes (exact SQL not in the issue)",
+      "schema": "not captured",
+      "runtime": {
+        "driver": "Python (sqlite3)",
+        "loadable": "uncertain",
+        "note": ""
+      },
+      "features": [
+        "F15"
+      ],
+      "minimal_unlock": [
+        "F15"
+      ],
+      "adapted_unlock": [
+        "F15"
+      ],
+      "adapted_query": null,
+      "adaptation": "F15 = owner forbids triggers or any write-path change, while ivmlite captures changes with triggers; summaries may refresh only on a maintenance tick.",
+      "adaptation_cost": "",
+      "fit": "not_ivm_shaped",
+      "confidence": {
+        "level": "high",
+        "reason": "The measured problem was fixed with SQL and index changes, and the escalation path rules out capture triggers."
+      },
+      "in_place_unlock": [
+        "F10a",
+        "F15"
+      ]
+    }
+  ],
+  "excluded": [
+    {
+      "id": "zero",
+      "source": "https://github.com/tursodatabase/libsql/issues/1631",
+      "reason": "Transaction/concurrency requirement (begin concurrent); no schema or query; libSQL runtime (would be F14)."
+    },
+    {
+      "id": "sqlite_forum_ivm",
+      "source": "https://sqlite.org/forum/forumpost/c7437e2f43",
+      "reason": "Generic capability request; no schema, query or data."
+    }
+  ],
+  "aggregates": {
+    "per_code": {
+      "F2": {
+        "need": 4,
+        "in_minimal": 4,
+        "in_adapted": 0,
+        "alone_as_is": [],
+        "alone_adapted": [],
+        "alone_in_place": []
+      },
+      "F3a": {
+        "need": 1,
+        "in_minimal": 1,
+        "in_adapted": 0,
+        "alone_as_is": [],
+        "alone_adapted": [],
+        "alone_in_place": []
+      },
+      "F3b": {
+        "need": 2,
+        "in_minimal": 2,
+        "in_adapted": 0,
+        "alone_as_is": [],
+        "alone_adapted": [],
+        "alone_in_place": []
+      },
+      "F3c": {
+        "need": 4,
+        "in_minimal": 4,
+        "in_adapted": 2,
+        "alone_as_is": [],
+        "alone_adapted": [
+          "kener"
+        ],
+        "alone_in_place": []
+      },
+      "F3d": {
+        "need": 2,
+        "in_minimal": 2,
+        "in_adapted": 1,
+        "alone_as_is": [],
+        "alone_adapted": [],
+        "alone_in_place": []
+      },
+      "F3e": {
+        "need": 6,
+        "in_minimal": 6,
+        "in_adapted": 0,
+        "alone_as_is": [],
+        "alone_adapted": [],
+        "alone_in_place": []
+      },
+      "F3f": {
+        "need": 3,
+        "in_minimal": 3,
+        "in_adapted": 2,
+        "alone_as_is": [],
+        "alone_adapted": [
+          "org_roam"
+        ],
+        "alone_in_place": []
+      },
+      "F4a": {
+        "need": 10,
+        "in_minimal": 10,
+        "in_adapted": 0,
+        "alone_as_is": [],
+        "alone_adapted": [],
+        "alone_in_place": []
+      },
+      "F4b": {
+        "need": 8,
+        "in_minimal": 3,
+        "in_adapted": 0,
+        "alone_as_is": [],
+        "alone_adapted": [],
+        "alone_in_place": []
+      },
+      "F5": {
+        "need": 6,
+        "in_minimal": 6,
+        "in_adapted": 0,
+        "alone_as_is": [],
+        "alone_adapted": [],
+        "alone_in_place": []
+      },
+      "F6": {
+        "need": 13,
+        "in_minimal": 10,
+        "in_adapted": 0,
+        "alone_as_is": [],
+        "alone_adapted": [],
+        "alone_in_place": []
+      },
+      "F6t": {
+        "need": 10,
+        "in_minimal": 8,
+        "in_adapted": 1,
+        "alone_as_is": [],
+        "alone_adapted": [],
+        "alone_in_place": []
+      },
+      "F7a": {
+        "need": 5,
+        "in_minimal": 5,
+        "in_adapted": 1,
+        "alone_as_is": [],
+        "alone_adapted": [],
+        "alone_in_place": []
+      },
+      "F7b": {
+        "need": 5,
+        "in_minimal": 5,
+        "in_adapted": 1,
+        "alone_as_is": [],
+        "alone_adapted": [],
+        "alone_in_place": []
+      },
+      "F8": {
+        "need": 6,
+        "in_minimal": 6,
+        "in_adapted": 0,
+        "alone_as_is": [],
+        "alone_adapted": [],
+        "alone_in_place": []
+      },
+      "F8s": {
+        "need": 3,
+        "in_minimal": 3,
+        "in_adapted": 1,
+        "alone_as_is": [],
+        "alone_adapted": [],
+        "alone_in_place": []
+      },
+      "F9": {
+        "need": 11,
+        "in_minimal": 7,
+        "in_adapted": 1,
+        "alone_as_is": [],
+        "alone_adapted": [],
+        "alone_in_place": []
+      },
+      "F10a": {
+        "need": 27,
+        "in_minimal": 27,
+        "in_adapted": 0,
+        "alone_as_is": [
+          "zenod"
+        ],
+        "alone_adapted": [],
+        "alone_in_place": [
+          "datasette",
+          "nicti",
+          "zenod"
+        ]
+      },
+      "F10b": {
+        "need": 17,
+        "in_minimal": 17,
+        "in_adapted": 0,
+        "alone_as_is": [],
+        "alone_adapted": [],
+        "alone_in_place": []
+      },
+      "F13": {
+        "need": 2,
+        "in_minimal": 2,
+        "in_adapted": 2,
+        "alone_as_is": [],
+        "alone_adapted": [
+          "bifrost",
+          "claude_monitor"
+        ],
+        "alone_in_place": []
+      },
+      "F14": {
+        "need": 8,
+        "in_minimal": 8,
+        "in_adapted": 8,
+        "alone_as_is": [],
+        "alone_adapted": [
+          "noop",
+          "postio",
+          "taproot"
+        ],
+        "alone_in_place": []
+      },
+      "F15": {
+        "need": 6,
+        "in_minimal": 6,
+        "in_adapted": 3,
+        "alone_as_is": [],
+        "alone_adapted": [],
+        "alone_in_place": []
+      }
+    },
+    "baseline": {
+      "as_is": [],
+      "adapted": [
+        "better_ccflare",
+        "datasette",
+        "fluxflow",
+        "nicti",
+        "openwhispr",
+        "phoenix",
+        "unscreen",
+        "zcash",
+        "zenod"
+      ],
+      "in_place": []
+    },
+    "best_bundles": {
+      "as_is_sql_only": [
+        {
+          "bundle": [
+            "F5",
+            "F10a"
+          ],
+          "unlocks": 2,
+          "ids": [
+            "nicti",
+            "zenod"
+          ]
+        },
+        {
+          "bundle": [
+            "F6t",
+            "F10a",
+            "F10b"
+          ],
+          "unlocks": 2,
+          "ids": [
+            "phoenix",
+            "zenod"
+          ]
+        }
+      ],
+      "as_is_any": [
+        {
+          "bundle": [
+            "F5",
+            "F10a"
+          ],
+          "unlocks": 2,
+          "ids": [
+            "nicti",
+            "zenod"
+          ]
+        },
+        {
+          "bundle": [
+            "F6t",
+            "F10a",
+            "F10b"
+          ],
+          "unlocks": 2,
+          "ids": [
+            "phoenix",
+            "zenod"
+          ]
+        }
+      ],
+      "adapted_sql_only": [
+        {
+          "bundle": [
+            "F3c",
+            "F3f"
+          ],
+          "unlocks": 2,
+          "ids": [
+            "kener",
+            "org_roam"
+          ]
+        }
+      ],
+      "adapted_any": [
+        {
+          "bundle": [
+            "F13",
+            "F14"
+          ],
+          "unlocks": 5,
+          "ids": [
+            "bifrost",
+            "claude_monitor",
+            "noop",
+            "postio",
+            "taproot"
+          ]
+        },
+        {
+          "bundle": [
+            "F3c",
+            "F13",
+            "F14"
+          ],
+          "unlocks": 6,
+          "ids": [
+            "bifrost",
+            "claude_monitor",
+            "kener",
+            "noop",
+            "postio",
+            "taproot"
+          ]
+        },
+        {
+          "bundle": [
+            "F3f",
+            "F13",
+            "F14"
+          ],
+          "unlocks": 6,
+          "ids": [
+            "bifrost",
+            "claude_monitor",
+            "noop",
+            "org_roam",
+            "postio",
+            "taproot"
+          ]
+        }
+      ],
+      "in_place_sql_only": [
+        {
+          "bundle": [
+            "F10a",
+            "F10b"
+          ],
+          "unlocks": 9,
+          "ids": [
+            "better_ccflare",
+            "datasette",
+            "fluxflow",
+            "nicti",
+            "openwhispr",
+            "phoenix",
+            "unscreen",
+            "zcash",
+            "zenod"
+          ]
+        },
+        {
+          "bundle": [
+            "F3c",
+            "F10a",
+            "F10b"
+          ],
+          "unlocks": 10,
+          "ids": [
+            "better_ccflare",
+            "datasette",
+            "fluxflow",
+            "kener",
+            "nicti",
+            "openwhispr",
+            "phoenix",
+            "unscreen",
+            "zcash",
+            "zenod"
+          ]
+        },
+        {
+          "bundle": [
+            "F3f",
+            "F10a",
+            "F10b"
+          ],
+          "unlocks": 10,
+          "ids": [
+            "better_ccflare",
+            "datasette",
+            "fluxflow",
+            "nicti",
+            "openwhispr",
+            "org_roam",
+            "phoenix",
+            "unscreen",
+            "zcash",
+            "zenod"
+          ]
+        }
+      ],
+      "in_place_any": [
+        {
+          "bundle": [
+            "F10a",
+            "F10b"
+          ],
+          "unlocks": 9,
+          "ids": [
+            "better_ccflare",
+            "datasette",
+            "fluxflow",
+            "nicti",
+            "openwhispr",
+            "phoenix",
+            "unscreen",
+            "zcash",
+            "zenod"
+          ]
+        },
+        {
+          "bundle": [
+            "F10a",
+            "F10b",
+            "F14"
+          ],
+          "unlocks": 12,
+          "ids": [
+            "better_ccflare",
+            "datasette",
+            "fluxflow",
+            "nicti",
+            "noop",
+            "openwhispr",
+            "phoenix",
+            "postio",
+            "taproot",
+            "unscreen",
+            "zcash",
+            "zenod"
+          ]
+        }
+      ]
+    },
+    "in_place_schema_baseline": [
+      "better_ccflare",
+      "datasette",
+      "fluxflow",
+      "nicti",
+      "openwhispr",
+      "phoenix",
+      "unscreen",
+      "zcash",
+      "zenod"
+    ],
+    "marginal_over_schema": {
+      "F3c": [
+        "kener"
+      ],
+      "F3f": [
+        "org_roam"
+      ],
+      "F13": [
+        "bifrost",
+        "claude_monitor"
+      ],
+      "F14": [
+        "noop",
+        "postio",
+        "taproot"
+      ]
+    },
+    "blocked": {
+      "F14": [
+        "context_guru",
+        "garcon",
+        "noop",
+        "openvibely",
+        "pocketbase",
+        "postio",
+        "pulse",
+        "taproot"
+      ],
+      "F14_uncertain": [
+        "org_roam",
+        "orpheus",
+        "unscreen"
+      ],
+      "F13": [
+        "bifrost",
+        "claude_monitor"
+      ],
+      "not_ivm_shaped": [
+        "garcon",
+        "openvibely",
+        "orpheus",
+        "photo_triage",
+        "pocketbase",
+        "pulse",
+        "screenpipe",
+        "setu",
+        "stash",
+        "subwave",
+        "tautulli"
+      ],
+      "F15_semantic": [
+        "context_guru",
+        "orpheus",
+        "stash"
+      ],
+      "any": [
+        "bifrost",
+        "claude_monitor",
+        "context_guru",
+        "garcon",
+        "noop",
+        "openvibely",
+        "orpheus",
+        "photo_triage",
+        "pocketbase",
+        "postio",
+        "pulse",
+        "screenpipe",
+        "setu",
+        "stash",
+        "subwave",
+        "taproot",
+        "tautulli"
+      ],
+      "sql_unlockable": [
+        "better_ccflare",
+        "datasette",
+        "fluxflow",
+        "kener",
+        "nicti",
+        "openwhispr",
+        "org_roam",
+        "phoenix",
+        "unscreen",
+        "zcash",
+        "zenod"
+      ]
+    },
+    "fits": {
+      "fits_now": [],
+      "fits_with": [
+        "better_ccflare",
+        "bifrost",
+        "claude_monitor",
+        "datasette",
+        "fluxflow",
+        "kener",
+        "nicti",
+        "openwhispr",
+        "org_roam",
+        "phoenix",
+        "unscreen",
+        "zcash",
+        "zenod"
+      ],
+      "out_of_scope": [
+        "context_guru",
+        "noop",
+        "postio",
+        "taproot"
+      ],
+      "not_ivm_shaped": [
+        "garcon",
+        "openvibely",
+        "orpheus",
+        "photo_triage",
+        "pocketbase",
+        "pulse",
+        "screenpipe",
+        "setu",
+        "stash",
+        "subwave",
+        "tautulli"
+      ]
+    }
+  }
+}
