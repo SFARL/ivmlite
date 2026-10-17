@@ -1025,6 +1025,7 @@ fn read_failed_case(a: &Args, key: &ExpectedCase) -> Result<FailedCase> {
 }
 /// Counts the full plan from this run's failures and the markers on disk, so a
 /// case that failed earlier and was skipped on resume still counts as lost.
+/// A case whose marker passed validation is never in `failed_now`.
 fn summarize(
     a: &Args,
     plan: &BTreeSet<ExpectedCase>,
@@ -1045,16 +1046,55 @@ fn summarize(
     }
     Ok(summary)
 }
-/// Runs every planned case, records each failure and keeps going, then writes
-/// the loss summary into the selection file. Fails iff any case is lost.
+/// Drops the failure records of a case that now completes. The top-level
+/// record is removed only when it names this exact case.
+fn clear_failure(a: &Args, key: &ExpectedCase) -> Result<()> {
+    let case_record = case_dir(a, key).join("failure.json");
+    if case_record.exists() {
+        fs::remove_file(case_record)?;
+    }
+    let top_level = a.out.join("failure.json");
+    if top_level.exists() {
+        let value: serde_json::Value = read_json(&top_level)?;
+        if value["action"] == a.action.as_str()
+            && value["cell"] == key.cell.as_str()
+            && value["seed"] == key.seed
+            && value["repeat"] == key.repeat
+        {
+            fs::remove_file(top_level)?;
+        }
+    }
+    Ok(())
+}
+/// Without `--resume` an existing completed case is never touched: refuse the
+/// whole invocation before anything is registered or written.
+fn refuse_completed_cases(a: &Args, to_run: &BTreeSet<ExpectedCase>) -> Result<()> {
+    if a.resume {
+        return Ok(());
+    }
+    for key in to_run {
+        let dir = case_dir(a, key);
+        if dir.join(marker_name(a)).exists() {
+            return Err(format!(
+                "completed case exists at {}; use --resume or a new output directory",
+                dir.display()
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+/// Runs every case of this invocation (`to_run`), records each failure and keeps going, then writes
+/// the loss summary for the whole merged `plan` into the selection file. Fails iff any case is lost.
 fn run_cases(
     a: &Args,
     ctx: &Context,
+    to_run: &BTreeSet<ExpectedCase>,
     plan: &BTreeSet<ExpectedCase>,
     mut run_one: impl FnMut(&ExpectedCase, &mut String) -> Result<()>,
 ) -> Result<()> {
     let mut failed_now = BTreeMap::new();
-    for key in plan {
+    for key in to_run {
         if a.resume && !a.retry_failed && is_failed(a, key) {
             eprintln!(
                 "skipping failed {} {} seed {} repeat {}; use --retry-failed to rerun",
@@ -1064,12 +1104,7 @@ fn run_cases(
         }
         let mut phase = "case_setup".to_owned();
         match run_one(key, &mut phase) {
-            Ok(()) => {
-                let stale = case_dir(a, key).join("failure.json");
-                if stale.exists() {
-                    fs::remove_file(stale)?;
-                }
-            }
+            Ok(()) => clear_failure(a, key)?,
             Err(error) => {
                 record_failure(a, &ctx.provenance, Some(ctx), Some(key), &phase, &error)?;
                 failed_now.insert(key.clone(), failed_case(key, &phase, &error));
@@ -1103,9 +1138,10 @@ fn run_inner(a: &Args, ctx: &Context) -> Result<()> {
             repeat: 0,
             rounds: f.rounds,
         };
-        let plan =
-            register_selection(a, json_hash(&f.config)?, ctx, BTreeSet::from([key.clone()]))?;
-        return run_cases(a, ctx, &plan, |key, phase| {
+        let to_run = BTreeSet::from([key]);
+        refuse_completed_cases(a, &to_run)?;
+        let plan = register_selection(a, json_hash(&f.config)?, ctx, to_run.clone())?;
+        return run_cases(a, ctx, &to_run, &plan, |key, phase| {
             execute_case(a, &f, key, ctx, phase)
         });
     }
@@ -1139,8 +1175,9 @@ fn run_inner(a: &Args, ctx: &Context) -> Result<()> {
             }
         }
     }
-    let plan = register_selection(a, json_hash(&cfg)?, ctx, expected)?;
-    run_cases(a, ctx, &plan, |key, phase| {
+    refuse_completed_cases(a, &expected)?;
+    let plan = register_selection(a, json_hash(&cfg)?, ctx, expected.clone())?;
+    run_cases(a, ctx, &expected, &plan, |key, phase| {
         *phase = "generate".into();
         let cell = cells
             .iter()
@@ -1584,6 +1621,76 @@ mod tests {
         let summary = stored_summary(&a);
         assert_eq!((summary.planned, summary.complete), (3, 3));
         assert!(summary.failed.is_empty());
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn a_second_invocation_with_other_cells_leaves_the_first_untouched() {
+        let dir = temp();
+        let mut a = smoke_run_args(&dir);
+        let keys = three_smoke_keys(&a);
+        let ctx = extension_context();
+        a.cells = vec![keys[0].cell.clone()];
+        run_inner(&a, &ctx).unwrap();
+        let first = case_dir(&a, &keys[0]);
+        let marker_before = file_hash(&first.join("completed.json")).unwrap();
+        let first_files = fs::read_dir(&first).unwrap().count();
+
+        a.cells = vec![keys[1].cell.clone()];
+        a.resume = true;
+        run_inner(&a, &ctx).unwrap();
+        assert_eq!(
+            file_hash(&first.join("completed.json")).unwrap(),
+            marker_before
+        );
+        assert_eq!(fs::read_dir(&first).unwrap().count(), first_files);
+        assert!(!first.join("failure.json").exists());
+        assert!(!dir.join("failure.json").exists());
+        let summary = stored_summary(&a);
+        assert_eq!((summary.planned, summary.complete), (2, 2));
+        assert!(summary.failed.is_empty());
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn rerun_without_resume_refuses_a_completed_case_and_writes_nothing() {
+        let dir = temp();
+        let mut a = smoke_run_args(&dir);
+        let keys = three_smoke_keys(&a);
+        a.cells = vec![keys[0].cell.clone()];
+        let ctx = extension_context();
+        run_inner(&a, &ctx).unwrap();
+        let case = case_dir(&a, &keys[0]);
+        let marker_before = file_hash(&case.join("completed.json")).unwrap();
+        let selection_before = file_hash(&selection_path(&a)).unwrap();
+
+        let error = run_inner(&a, &ctx).unwrap_err();
+        assert!(error.to_string().contains("use --resume"), "{error}");
+        assert!(!error.is::<CasesFailed>());
+        assert_eq!(
+            file_hash(&case.join("completed.json")).unwrap(),
+            marker_before
+        );
+        assert!(!case.join("failure.json").exists());
+        assert_eq!(file_hash(&selection_path(&a)).unwrap(), selection_before);
+        let summary = stored_summary(&a);
+        assert_eq!((summary.planned, summary.complete), (1, 1));
+        assert!(summary.failed.is_empty());
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn a_retried_case_clears_its_own_top_level_failure_record() {
+        let dir = temp();
+        let mut a = smoke_run_args(&dir);
+        let keys = three_smoke_keys(&a);
+        a.cells = vec![keys[0].cell.clone()];
+        let ctx = extension_context();
+        set_injected_failure(Some(&keys[0].cell));
+        run_inner(&a, &ctx).unwrap_err();
+        set_injected_failure(None);
+        assert!(dir.join("failure.json").exists());
+        a.resume = true;
+        a.retry_failed = true;
+        run_inner(&a, &ctx).unwrap();
+        assert!(!dir.join("failure.json").exists());
         fs::remove_dir_all(dir).unwrap();
     }
     #[test]
