@@ -1,0 +1,13 @@
+CREATE TABLE orders(id INTEGER PRIMARY KEY,k TEXT,v INTEGER) STRICT;
+INSERT INTO orders VALUES(1,'a',1),(2,'a',2),(3,'zero',7),(4,'zero',-7);
+CREATE MATERIALIZED VIEW totals AS SELECT k,COUNT(*) AS n,SUM(v) AS s FROM orders GROUP BY k;
+SELECT 'bootstrap',quote(k),n,quote(s),typeof(s),CAST(s AS INTEGER) FROM totals ORDER BY k;
+SELECT 'bootstrap_full',quote(k),n,quote(s),typeof(s),CAST(s AS INTEGER) FROM (SELECT k,COUNT(*) AS n,SUM(v) AS s FROM orders GROUP BY k) ORDER BY k;
+BEGIN;
+ INSERT INTO orders VALUES(5,'a',4);
+ UPDATE orders SET v=8 WHERE id=1;
+SELECT 'uncommitted',quote(k),n,quote(s),typeof(s),CAST(s AS INTEGER) FROM totals ORDER BY k;
+SELECT 'uncommitted_full',quote(k),n,quote(s),typeof(s),CAST(s AS INTEGER) FROM (SELECT k,COUNT(*) AS n,SUM(v) AS s FROM orders GROUP BY k) ORDER BY k;
+ROLLBACK;
+SELECT 'rollback',quote(k),n,quote(s),typeof(s),CAST(s AS INTEGER) FROM totals ORDER BY k;
+SELECT 'rollback_full',quote(k),n,quote(s),typeof(s),CAST(s AS INTEGER) FROM (SELECT k,COUNT(*) AS n,SUM(v) AS s FROM orders GROUP BY k) ORDER BY k;

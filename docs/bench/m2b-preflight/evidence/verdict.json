@@ -1,0 +1,21 @@
+{
+  "verdict": "blocked",
+  "blockers": [
+    "null-sum",
+    "integer-precision",
+    "null-join",
+    "rollback-then-begin",
+    "null-sum-transitions",
+    "precision-increment",
+    "turso_typed_output_difference"
+  ],
+  "original_nexmark_compiled": 0,
+  "original_nexmark_total": 24,
+  "original_rejections_are_inventory": true,
+  "adapted_queries": 2,
+  "adapted_checkpoints_per_query": 4,
+  "adapted_oracles_passed": true,
+  "typed_sql_equivalence": false,
+  "canonical_nexmark_score": false,
+  "performance_comparison_authorized_by_result": false
+}

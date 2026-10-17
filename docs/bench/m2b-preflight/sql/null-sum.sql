@@ -1,0 +1,5 @@
+CREATE TABLE t(k TEXT,v INTEGER) STRICT;
+ INSERT INTO t VALUES('n',NULL);
+ CREATE MATERIALIZED VIEW m AS SELECT k,COUNT(*) AS n,SUM(v) AS s FROM t GROUP BY k;
+ SELECT 'mv',k,n,quote(s),typeof(s) FROM m;
+ SELECT 'full',k,COUNT(*),quote(SUM(v)),typeof(SUM(v)) FROM t GROUP BY k;
