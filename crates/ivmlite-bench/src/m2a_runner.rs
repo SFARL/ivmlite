@@ -129,7 +129,7 @@ pub struct OperationStats {
     pub matched_hot_lhs_rows: usize,
     pub matched_distinct_groups: usize,
     pub matched_hot_groups: usize,
-    /// Rows the operation changed in the replayed table state; a valid trace changes exactly one.
+    /// Rows SQLite reported changed by the operation's statement during the correctness pass.
     pub rows_changed: u64,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -261,10 +261,14 @@ pub fn assert_ordinary_recompute_plan(shape: Shape, plan: &str) -> Result<()> {
     if shape != Shape::Join {
         return Ok(());
     }
-    let indexed = ["lhs_k", "rhs_k"].iter().any(|index| {
-        plan.contains(&format!("USING INDEX {index}"))
-            || plan.contains(&format!("USING COVERING INDEX {index}"))
-    });
+    let words: Vec<_> = plan.split_whitespace().collect();
+    let names_index = |index: &str| {
+        words.windows(3).any(|w| w == ["USING", "INDEX", index])
+            || words
+                .windows(4)
+                .any(|w| w == ["USING", "COVERING", "INDEX", index])
+    };
+    let indexed = names_index("lhs_k") || names_index("rhs_k");
     if !indexed {
         return Err(format!("ordinary recompute plan uses no join key index: {plan}").into());
     }
@@ -545,6 +549,14 @@ impl<'c> Prepared<'c> {
         })
     }
     pub fn apply(&mut self, ops: &[Mutation]) -> Result<f64> {
+        self.run_apply(ops, None)
+    }
+    /// `apply` that also appends, per operation, the row count SQLite reported for it. Only for
+    /// untimed passes: the push is not part of the measured apply.
+    pub fn apply_counting(&mut self, ops: &[Mutation], changes: &mut Vec<u64>) -> Result<f64> {
+        self.run_apply(ops, Some(changes))
+    }
+    fn run_apply(&mut self, ops: &[Mutation], mut changes: Option<&mut Vec<u64>>) -> Result<f64> {
         let start = Instant::now();
         self.begin.execute([])?;
         for op in ops {
@@ -566,6 +578,9 @@ impl<'c> Prepared<'c> {
                 },
                 _ => return Err("empty mutation".into()),
             };
+            if let Some(changes) = changes.as_deref_mut() {
+                changes.push(changed as u64);
+            }
             if changed != 1 {
                 return Err(format!("{} mutation changed {changed} rows", op.table.name()).into());
             }
@@ -728,7 +743,13 @@ pub fn time_fixture(f: &Fixture, mode: Mode, library: &Path) -> Result<Measureme
     })
 }
 
-pub fn correctness(f: &Fixture, library: &Path, inverse: bool) -> Result<Vec<Checkpoint>> {
+/// The checkpoints of a correctness pass and, per forward round and operation, the number of rows
+/// SQLite reported changed by that operation's statement.
+pub struct Correctness {
+    pub checkpoints: Vec<Checkpoint>,
+    pub rows_changed: Vec<Vec<u64>>,
+}
+pub fn correctness(f: &Fixture, library: &Path, inverse: bool) -> Result<Correctness> {
     f.validate()?;
     let c = open(Mode::Ivmlite, library)?;
     seed(&c, f)?;
@@ -746,13 +767,16 @@ pub fn correctness(f: &Fixture, library: &Path, inverse: bool) -> Result<Vec<Che
         snapshot: initial.into_summary(),
     }];
     let mut p = Prepared::new(&c, f, Mode::Ivmlite)?;
+    let mut rows_changed = Vec::new();
     for (round, ops) in f.batches.iter().enumerate() {
         let old = sorted_rows(&c, &format!("SELECT * FROM {VIEW}"))?;
         replay
             .apply(ops)
             .map_err(|e| format!("forward round {round}: {e}"))?;
-        p.apply(ops)
+        let mut changes = Vec::with_capacity(ops.len());
+        p.apply_counting(ops, &mut changes)
             .map_err(|e| format!("forward round {round} apply: {e}"))?;
+        rows_changed.push(changes);
         replay
             .verify(&c)
             .map_err(|e| format!("forward round {round} trace-prefix: {e}"))?;
@@ -841,11 +865,19 @@ pub fn correctness(f: &Fixture, library: &Path, inverse: bool) -> Result<Vec<Che
             }
         }
     }
-    Ok(checkpoints)
+    Ok(Correctness {
+        checkpoints,
+        rows_changed,
+    })
 }
 
 /// Independent live replay for operation/locality/fanout reporting, outside timing.
-pub fn target_statistics(f: &Fixture) -> Result<Vec<TargetStats>> {
+/// `sqlite_changes` holds the per-operation row counts SQLite reported (see `Correctness`); they
+/// are what `rows_changed` records, and the replayed table state must agree with them.
+pub fn target_statistics(f: &Fixture, sqlite_changes: &[Vec<u64>]) -> Result<Vec<TargetStats>> {
+    if sqlite_changes.len() != f.batches.len() {
+        return Err("SQLite row counts do not cover every round".into());
+    }
     let mut live: BTreeMap<Table, BTreeMap<i64, _>> = f
         .tables
         .iter()
@@ -885,6 +917,11 @@ pub fn target_statistics(f: &Fixture) -> Result<Vec<TargetStats>> {
             matched_partners_total: 0,
             per_operation: Vec::new(),
         };
+        if sqlite_changes[round].len() != ops.len() {
+            return Err(
+                format!("round {round}: SQLite row counts do not cover every operation").into(),
+            );
+        }
         let mut keys = BTreeSet::new();
         let mut existing_keys = BTreeSet::new();
         for (index, op) in ops.iter().enumerate() {
@@ -943,10 +980,10 @@ pub fn target_statistics(f: &Fixture) -> Result<Vec<TargetStats>> {
             stats.matched_partners_max = stats.matched_partners_max.max(partners);
             stats.matched_partners_total += partners;
             let table_rows = live.get_mut(&op.table).unwrap();
-            let mut rows_changed = 0;
+            let mut replayed_changes = 0;
             if let Some(r) = &op.before {
                 if table_rows.remove(&r.id).is_some() {
-                    rows_changed = 1;
+                    replayed_changes = 1;
                 }
                 if let Some(key) = r.k {
                     by_key
@@ -959,7 +996,7 @@ pub fn target_statistics(f: &Fixture) -> Result<Vec<TargetStats>> {
             }
             if let Some(r) = &op.after {
                 if table_rows.insert(r.id, r.clone()).is_none() && op.before.is_none() {
-                    rows_changed = 1;
+                    replayed_changes = 1;
                 }
                 if let Some(key) = r.k {
                     by_key
@@ -969,6 +1006,13 @@ pub fn target_statistics(f: &Fixture) -> Result<Vec<TargetStats>> {
                         .or_default()
                         .insert(r.id);
                 }
+            }
+            let rows_changed = sqlite_changes[round][index];
+            if rows_changed != replayed_changes {
+                return Err(format!(
+                    "round {round} operation {index}: SQLite changed {rows_changed} rows, the replayed table state changed {replayed_changes}"
+                )
+                .into());
             }
             stats.per_operation.push(OperationStats {
                 index,
@@ -1082,7 +1126,7 @@ mod tests {
     #[test]
     fn targets_report_real_hot_anchor_and_join_affected_groups() {
         let f = tiny(true);
-        let s = target_statistics(&f).unwrap();
+        let s = target_statistics(&f, &sqlite_changes(&f)).unwrap();
         assert_eq!(s.len(), 6);
         assert!(s.iter().all(|r| r.target_selections == 8));
         assert!(s.iter().all(|r| r.rhs_matched_lhs_rows > 0));
@@ -1184,13 +1228,53 @@ mod tests {
         assert_eq!(mismatch.actual_only, vec![vec![Some(2), Some(3)]]);
         assert!(oracle_check(&c, "SELECT * FROM a", "SELECT * FROM a").is_ok());
     }
+    fn sqlite_changes(f: &Fixture) -> Vec<Vec<u64>> {
+        correctness(f, &library(), false).unwrap().rows_changed
+    }
+    #[test]
+    fn apply_counting_records_the_count_sqlite_reports_even_when_it_is_wrong() {
+        let f = tiny(false);
+        let c = open(Mode::NoMaintenance, &library()).unwrap();
+        seed(&c, &f).unwrap();
+        let mut p = Prepared::new(&c, &f, Mode::NoMaintenance).unwrap();
+        // Matches every row of the update's group instead of one primary key.
+        p.rows.get_mut(&Table::Events).unwrap().update = c
+            .prepare("UPDATE events SET g=g+0*?2+0*?3 WHERE g=(SELECT g FROM events WHERE id=?1)")
+            .unwrap();
+        let op = f.batches[0]
+            .iter()
+            .find(|op| op.before.is_some() && op.after.is_some())
+            .unwrap();
+        let mut changes = Vec::new();
+        let error = p
+            .apply_counting(std::slice::from_ref(op), &mut changes)
+            .unwrap_err();
+        assert!(changes[0] > 1, "{changes:?}");
+        assert!(error.to_string().contains("changed"), "{error}");
+    }
     #[test]
     fn targets_record_rows_changed_per_operation() {
         for join in [false, true] {
-            let stats = target_statistics(&tiny(join)).unwrap();
-            let operations: Vec<_> = stats.iter().flat_map(|r| &r.per_operation).collect();
-            assert!(!operations.is_empty());
-            assert!(operations.iter().all(|op| op.rows_changed == 1));
+            let f = tiny(join);
+            let changes = sqlite_changes(&f);
+            let stats = target_statistics(&f, &changes).unwrap();
+            let recorded: Vec<Vec<u64>> = stats
+                .iter()
+                .map(|r| r.per_operation.iter().map(|op| op.rows_changed).collect())
+                .collect();
+            assert_eq!(recorded, changes);
+            assert!(recorded.iter().flatten().all(|&n| n == 1));
+            let mut wrong = changes.clone();
+            wrong[0][0] = 2;
+            let error = target_statistics(&f, &wrong).unwrap_err();
+            assert!(error.to_string().contains("SQLite changed 2"), "{error}");
         }
+    }
+    #[test]
+    fn the_join_key_index_must_be_named_exactly() {
+        let near_miss = "SCAN lhs\nSEARCH rhs USING INDEX rhs_k_amount (k=?)";
+        assert!(assert_ordinary_recompute_plan(Shape::Join, near_miss).is_err());
+        let covering = "SCAN lhs\nSEARCH rhs USING COVERING INDEX rhs_k (k=?)";
+        assert_ordinary_recompute_plan(Shape::Join, covering).unwrap();
     }
 }

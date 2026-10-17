@@ -724,6 +724,20 @@ fn validate_timing(file: &TimingFile, m: &Manifest, f: &Fixture) -> Result<()> {
         {
             return Err("missing/duplicate modes or incomplete measured rounds".into());
         }
+        let manifest_plan = match measurement.mode {
+            m2a_runner::Mode::Recompute => Some(&m.plans.ordinary_recompute),
+            m2a_runner::Mode::CoveringRecompute => Some(&m.plans.covering_recompute),
+            _ => None,
+        };
+        if let Some(expected) = manifest_plan {
+            if m2a_runner::plan_text(&measurement.plan) != *expected {
+                return Err(format!(
+                    "{} timing plan differs from the manifest plan",
+                    measurement.mode.label()
+                )
+                .into());
+            }
+        }
         validate_round(&measurement.warmup, measurement.mode, 0)?;
         for (n, r) in measurement.measured.iter().enumerate() {
             validate_round(r, measurement.mode, n + 1)?;
@@ -936,12 +950,13 @@ fn execute_case(
         *phase = "plan".into();
         m2a_runner::assert_plans(&m.plans, f.cell.shape)?;
         *phase = "correctness".into();
-        write_json(
-            &dir.join("correctness.json"),
-            &correctness(f, library, inverse)?,
-        )?;
+        let passed = correctness(f, library, inverse)?;
+        write_json(&dir.join("correctness.json"), &passed.checkpoints)?;
         *phase = "targets".into();
-        write_json(&dir.join("targets.json"), &target_statistics(f)?)?;
+        write_json(
+            &dir.join("targets.json"),
+            &target_statistics(f, &passed.rows_changed)?,
+        )?;
         if timing {
             *phase = "space".into();
             write_json(
@@ -1500,6 +1515,50 @@ mod tests {
         bad = round;
         bad.apply_ms = f64::NAN;
         assert!(validate_round(&bad, Mode::Recompute, 1).is_err());
+    }
+    #[test]
+    fn timing_validation_compares_recompute_plans_with_the_manifest() {
+        let f = tiny_fixture();
+        let library = ivmlite_test::extension_library();
+        let m = manifest(&f, &args(&["run", "--smoke"]), 0, &test_context()).unwrap();
+        let measurements = m
+            .mode_order
+            .iter()
+            .map(|label| {
+                let mode = MODES
+                    .into_iter()
+                    .find(|mode| mode.label() == label)
+                    .unwrap();
+                time_fixture(&f, mode, &library).unwrap()
+            })
+            .collect();
+        let mode_provenance = m
+            .mode_order
+            .iter()
+            .map(|mode| ModeProvenance {
+                mode: mode.clone(),
+                started_unix_ms: 1,
+                start_load: String::new(),
+                finished_unix_ms: 2,
+                finish_load: String::new(),
+            })
+            .collect();
+        let mut file = TimingFile {
+            manifest: m.clone(),
+            finished_unix_ms: 2,
+            finish_load: String::new(),
+            mode_provenance,
+            measurements,
+        };
+        validate_timing(&file, &m, &f).unwrap();
+        let covering = file
+            .measurements
+            .iter_mut()
+            .find(|x| x.mode == m2a_runner::Mode::CoveringRecompute)
+            .unwrap();
+        covering.plan.push("SCAN events".into());
+        let error = validate_timing(&file, &m, &f).unwrap_err();
+        assert!(error.to_string().contains("covering_recompute"), "{error}");
     }
     #[test]
     fn export_context_never_resolves_an_extension() {
