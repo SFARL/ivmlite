@@ -68,6 +68,35 @@ and a SQLite recomputation oracle after the final batch. The seeded text and
 speaker distribution are synthetic, so its times are not a reproduction of
 the reporter's production fixture.
 
+## Measured result
+
+The [raw output](results/2026-10-17-openwhispr-m2pro.txt) was collected on
+2026-10-17 from commit `138792d` with the `0.1.0-alpha.5` release extension,
+bundled SQLite 3.53.2 and an Apple M2 Pro with 16 GiB memory. Three repeats
+each used a fresh in-memory database, 2 million segments, 20,000 notes,
+200-operation batches, one warm-up and ten measured batches. The one-minute
+system load average was about 9.82 at the start and 7.49 at the end; other
+desktop work was running, so these are local measurements, not isolated
+hardware results. The ivmlite result matched SQLite recomputation after the
+final batch, and the covering-index query was checked for equivalent output.
+
+| Mode | Bootstrap ms | End-to-end per batch ms (repeat range) | SQLite pages KiB |
+|---|---:|---:|---:|
+| No maintenance | 0 | 0.094 (0.094–0.094) | 85,732 |
+| Unindexed recompute | 0 | 418.153 (415.981–429.203) | 85,732 |
+| Covering-index recompute | 655.854 | 516.904 (513.402–552.557) | 130,192 |
+| ivmlite | 8,044.412 | 14.864 (14.390–15.597) | 408,048 |
+
+The faster recomputation mode was the unindexed one. On this adapted query,
+ivmlite's end-to-end batch was about 28.1 times faster than recomputing every
+batch. Its median write, refresh and view read steps were 1.926, 12.866 and
+0.073 ms; the paired batch total is measured directly and need not equal the
+sum of these separately selected medians. The first refresh was 17.032 ms.
+The extension allocated about 4.76 times the base database's SQLite pages
+and took about 8.04 seconds to bootstrap. No hand-maintained summary was
+measured for this case, and these figures cannot be compared to the issue's
+1,200 ms original text-expression timing.
+
 ## Boundaries
 
 Real adoption would require a migration for stored word counts and a rule

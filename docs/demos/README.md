@@ -156,6 +156,12 @@ three repeats. They include local SQL-trigger baselines, bootstrap/read/space
 costs, and counterexamples: Postio is approximately tied with indexed
 recomputation, and PocketBase is slower at the measured scale.
 
+The [OpenWhispr result](openwhispr.md#measured-result) uses the
+`0.1.0-alpha.5` extension at the reporter's 2-million-segment scale. It
+compares a stored-word-count adaptation with SQLite recomputation and records
+the extension's substantially larger bootstrap and page allocation. It has
+no hand-written trigger baseline or Electron timing.
+
 ## Run the first two demos
 
 From the repository root, with the project's Rust toolchain installed:

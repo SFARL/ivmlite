@@ -1,0 +1,11 @@
+# command: target/release/examples/demand_case_bench openwhispr_speaker_words 2000000 200 3
+# commit: 138792d6e4978e7b2a1fa105c251e019fbcb2689; uncommitted changes under crates/, Cargo.toml or Cargo.lock: no
+# sqlite: 3.53.2 (bundled by rusqlite in this harness, which hosts the extension)
+# ivmlite extension: crates/ivmlite-sqlite/target/release/libivmlite_sqlite.dylib; built from ivmlite-sqlite 0.1.0-alpha.5; staleness check passed
+# workload: openwhispr_speaker_words, 2000000 base rows, 200-operation mixed batches, 3 repeats; rows report the median and min-max over the repeats
+# rounds: one warm-up batch, then 10 measured batches per run; apply_ms, maintain_ms and read_ms are each a run's median over its measured batches, and apply_plus_maintain_ms and end_to_end_ms the median of each batch's own sum
+case,mode,base_rows,batch_size,repeats,bootstrap_ms,bootstrap_min_ms,bootstrap_max_ms,first_refresh_ms,first_refresh_min_ms,first_refresh_max_ms,apply_ms,apply_min_ms,apply_max_ms,maintain_ms,maintain_min_ms,maintain_max_ms,read_ms,read_min_ms,read_max_ms,apply_plus_maintain_ms,apply_plus_maintain_min_ms,apply_plus_maintain_max_ms,end_to_end_ms,end_to_end_min_ms,end_to_end_max_ms,database_kib,database_kib_min,database_kib_max
+openwhispr_speaker_words,no_maintenance,2000000,200,3,0.000,0.000,0.000,0.000,0.000,0.000,0.094,0.094,0.094,0.000,0.000,0.000,0.000,0.000,0.000,0.094,0.094,0.094,0.094,0.094,0.094,85732.0,85732.0,85732.0
+openwhispr_speaker_words,unindexed_recompute,2000000,200,3,0.000,0.000,0.000,424.911,418.109,430.902,0.135,0.128,0.137,418.007,415.864,429.065,0.000,0.000,0.000,418.153,415.981,429.203,418.153,415.981,429.203,85732.0,85732.0,85732.0
+openwhispr_speaker_words,indexed_recompute,2000000,200,3,655.854,641.111,714.674,513.516,507.117,518.134,0.251,0.241,0.256,516.657,513.156,552.312,0.000,0.000,0.000,516.904,513.402,552.557,516.904,513.402,552.557,130192.0,130192.0,130192.0
+openwhispr_speaker_words,ivmlite,2000000,200,3,8044.412,7429.714,8272.885,17.032,15.123,18.024,1.926,1.901,1.947,12.866,12.383,13.508,0.073,0.070,0.090,14.783,14.315,15.511,14.864,14.390,15.597,408048.0,408048.0,408048.0
