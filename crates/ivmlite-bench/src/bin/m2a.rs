@@ -24,7 +24,7 @@ use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[derive(Debug)]
 struct Args {
@@ -49,7 +49,17 @@ struct Args {
     /// Overrides `churn.rounds` of the workload file.
     rounds: Option<usize>,
     repeats: usize,
+    /// Candidate cells of `confirm`, as written by `report` (`confirm-candidates.json`).
+    candidates: Option<PathBuf>,
+    /// `confirm` starts a repeat only while the 1-minute load average is at most this.
+    max_load: f64,
+    /// How long `confirm` waits for the load to drop before the repeat is lost as `host_not_idle`.
+    max_wait_seconds: u64,
 }
+/// A repeat needs an idle host: the default load-average ceiling and the longest wait for it.
+const DEFAULT_MAX_LOAD: f64 = 2.0;
+const DEFAULT_MAX_WAIT_SECONDS: u64 = 600;
+const IDLE_POLL: Duration = Duration::from_secs(5);
 fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
     let mut it = args.into_iter();
     let mut a = Args {
@@ -72,9 +82,12 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
         report: None,
         rounds: None,
         repeats: 5,
+        candidates: None,
+        max_load: DEFAULT_MAX_LOAD,
+        max_wait_seconds: DEFAULT_MAX_WAIT_SECONDS,
     };
     if !["export", "run", "verify", "churn", "confirm", "report"].contains(&a.action.as_str()) {
-        return Err("usage: m2a {export|run|verify|churn|confirm|report} [--workload FILE] [--out DIR] [--extension LIB] [--fixture FILE] [--cells IDS] [--profiles LABELS] [--shape single|join] [--fanout N] [--batch N] [--seeds N,...] [--smoke] [--skip-smoke-gate] [--resume] [--retry-failed] [--allow-dirty] [--rounds N] [--repeats N] [--report DIR]".into());
+        return Err("usage: m2a {export|run|verify|churn|confirm|report} [--workload FILE] [--out DIR] [--extension LIB] [--fixture FILE] [--cells IDS] [--profiles LABELS] [--shape single|join] [--fanout N] [--batch N] [--seeds N,...] [--smoke] [--skip-smoke-gate] [--resume] [--retry-failed] [--allow-dirty] [--rounds N] [--repeats N] [--candidates FILE] [--max-load L] [--max-wait-seconds N] [--report DIR]".into());
     }
     let mut seen = BTreeSet::new();
     while let Some(flag) = it.next() {
@@ -120,6 +133,9 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
                     "--report" => a.report = Some(value.into()),
                     "--rounds" => a.rounds = Some(value.parse()?),
                     "--repeats" => a.repeats = value.parse()?,
+                    "--candidates" => a.candidates = Some(value.into()),
+                    "--max-load" => a.max_load = value.parse()?,
+                    "--max-wait-seconds" => a.max_wait_seconds = value.parse()?,
                     _ => return Err(format!("unknown option {flag}").into()),
                 }
             }
@@ -127,6 +143,9 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
     }
     if a.rounds == Some(0) || a.repeats == 0 || a.fanout == Some(0) || a.batch == Some(0) {
         return Err("rounds/repeats/fanout/batch must be positive".into());
+    }
+    if !a.max_load.is_finite() || a.max_load <= 0.0 {
+        return Err("--max-load must be a positive number".into());
     }
     let only = |flag: &str, actions: &[&str]| -> Result<()> {
         if seen.contains(flag) && !actions.contains(&a.action.as_str()) {
@@ -139,22 +158,21 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
     only("--fixture", &["verify"])?;
     only("--rounds", &["churn"])?;
     only("--repeats", &["confirm"])?;
+    for flag in ["--candidates", "--max-load", "--max-wait-seconds"] {
+        only(flag, &["confirm"])?;
+    }
     only("--skip-smoke-gate", &["run"])?;
     if a.smoke && a.skip_smoke_gate {
         return Err("--skip-smoke-gate is meaningless with --smoke".into());
     }
     only("--seeds", &["run", "export"])?;
     only("--extension", &["run", "verify", "churn", "confirm"])?;
-    for flag in [
-        "--workload",
-        "--cells",
-        "--profiles",
-        "--shape",
-        "--fanout",
-        "--batch",
-        "--smoke",
-    ] {
+    for flag in ["--workload", "--smoke"] {
         only(flag, &["run", "export", "churn", "confirm"])?;
+    }
+    // Confirmation cells come from the candidates file alone.
+    for flag in ["--cells", "--profiles", "--shape", "--fanout", "--batch"] {
+        only(flag, &["run", "export", "churn"])?;
     }
     for flag in ["--resume", "--retry-failed", "--allow-dirty"] {
         only(flag, &["export", "run", "verify", "churn", "confirm"])?;
@@ -291,6 +309,66 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
+/// First number of `/proc/loadavg` ("0.52 0.58 0.59 1/467 12345") or of macOS
+/// `sysctl -n vm.loadavg` ("{ 1.52 1.60 1.64 }"): the 1-minute load average.
+fn parse_load_average(text: &str) -> Result<f64> {
+    let first = text
+        .split_whitespace()
+        .find(|token| *token != "{")
+        .ok_or("empty load average")?;
+    let load: f64 = first
+        .parse()
+        .map_err(|_| format!("unparsable load average: {text:?}"))?;
+    if !load.is_finite() || load < 0.0 {
+        return Err(format!("invalid load average: {text:?}").into());
+    }
+    Ok(load)
+}
+#[cfg(test)]
+thread_local! {
+    /// Test-only: the load average `system_load_average` reports instead of the host's.
+    static INJECTED_LOAD: std::cell::Cell<Option<f64>> = const { std::cell::Cell::new(None) };
+}
+fn system_load_average() -> Result<f64> {
+    #[cfg(test)]
+    if let Some(load) = INJECTED_LOAD.with(std::cell::Cell::get) {
+        return Ok(load);
+    }
+    if let Ok(text) = fs::read_to_string("/proc/loadavg") {
+        return parse_load_average(&text);
+    }
+    match command("sysctl", &["-n", "vm.loadavg"]).as_str() {
+        "unavailable" => {
+            Err("cannot read the load average (no /proc/loadavg, sysctl failed)".into())
+        }
+        text => parse_load_average(text),
+    }
+}
+/// Polls `read_load` every `poll` until it is at most `max_load` and returns that load. Once `cap`
+/// has passed without success the host is not idle and the error says so.
+fn wait_for_idle(
+    read_load: &mut dyn FnMut() -> Result<f64>,
+    max_load: f64,
+    cap: Duration,
+    poll: Duration,
+) -> Result<f64> {
+    let start = Instant::now();
+    loop {
+        let load = read_load()?;
+        if load <= max_load {
+            return Ok(load);
+        }
+        let waited = start.elapsed();
+        if waited >= cap {
+            return Err(format!(
+                "host not idle: 1-minute load average {load:.2} exceeds --max-load {max_load} after waiting {} s",
+                waited.as_secs()
+            )
+            .into());
+        }
+        std::thread::sleep(poll.min(cap - waited));
+    }
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct Provenance {
     invocation_id: String,
@@ -392,11 +470,19 @@ struct Manifest {
     plans: m2a_runner::Plans,
     mode_order: Vec<String>,
     provenance: Provenance,
+    /// 1-minute load average just before the first timed mode of a confirmation repeat.
+    #[serde(default)]
+    load_before: Option<f64>,
+    /// 1-minute load average just after its last timed mode.
+    #[serde(default)]
+    load_after: Option<f64>,
 }
 impl Manifest {
     fn compatible(&self, other: &Self) -> bool {
         let mut other = other.clone();
         other.provenance = self.provenance.clone();
+        other.load_before = self.load_before;
+        other.load_after = self.load_after;
         *self == other
     }
 }
@@ -533,7 +619,38 @@ fn load_config(a: &Args) -> Result<M2aConfig> {
     }
     Ok(cfg)
 }
+/// The cells of the candidates file that `report` wrote, each at the confirmation seed.
+fn candidate_cells(cfg: &M2aConfig, a: &Args) -> Result<Vec<Cell>> {
+    let path = a
+        .candidates
+        .as_ref()
+        .ok_or("confirm requires --candidates FILE (confirm-candidates.json from `m2a report`)")?;
+    let candidates: Vec<m2a_report::CaseKey> = read_json(path)?;
+    let ids: BTreeSet<&str> = candidates.iter().map(|c| c.cell.as_str()).collect();
+    if let Some(other) = candidates.iter().find(|c| c.seed != CONFIRM_SEED) {
+        return Err(format!(
+            "candidate {} names seed {}; confirmation repeats seed {CONFIRM_SEED}",
+            other.cell, other.seed
+        )
+        .into());
+    }
+    let cells: Vec<Cell> = cfg
+        .cells()?
+        .into_iter()
+        .filter(|c| ids.contains(c.id().as_str()))
+        .collect();
+    if cells.len() != ids.len() {
+        return Err("a candidate cell is absent from the workload".into());
+    }
+    if cells.is_empty() {
+        return Err(format!("{} lists no candidate cells to confirm", path.display()).into());
+    }
+    Ok(cells)
+}
 fn select_cells(cfg: &M2aConfig, a: &Args) -> Result<Vec<Cell>> {
+    if a.action == "confirm" {
+        return candidate_cells(cfg, a);
+    }
     let all = cfg.cells()?;
     if !a.cells.iter().all(|id| all.iter().any(|c| &c.id() == id)) {
         return Err("unknown cell selection".into());
@@ -611,6 +728,8 @@ fn manifest(f: &Fixture, a: &Args, repeat: usize, ctx: &Context) -> Result<Manif
             .map(|i| MODES[(i + offset) % 4].label().to_owned())
             .collect(),
         provenance: started,
+        load_before: None,
+        load_after: None,
     })
 }
 fn save_fixture(path: &Path, f: &Fixture) -> Result<()> {
@@ -881,15 +1000,17 @@ fn case_path(out: &Path, action: &str, key: &ExpectedCase) -> PathBuf {
         "verify" => out
             .join(format!("verify_{}", key.cell))
             .join(format!("seed-{}", key.seed)),
+        // Confirmations are always at `CONFIRM_SEED`, so the seed is not part of the path.
+        "confirm" => confirm_cell_path(out, &key.cell).join(format!("repeat-{}", key.repeat)),
         _ => out
             .join(&key.cell)
             .join(format!("seed-{}", key.seed))
-            .join(if action == "confirm" {
-                format!("confirm-repeat-{}", key.repeat)
-            } else {
-                format!("repeat-{}", key.repeat)
-            }),
+            .join(format!("repeat-{}", key.repeat)),
     }
+}
+/// Holds the once-per-cell evidence of a confirmation and the cell's `repeat-N` directories.
+fn confirm_cell_path(out: &Path, cell: &str) -> PathBuf {
+    out.join("confirm").join(cell)
 }
 fn marker_name(a: &Args) -> &'static str {
     if a.action == "export" {
@@ -910,6 +1031,51 @@ fn install_manifest(path: &Path, wanted: &Manifest) -> Result<Manifest> {
         Ok(wanted.clone())
     }
 }
+/// Artifacts of a completed `run` case; the report and the confirmation read them.
+const RUN_ARTIFACTS: [&str; 5] = [
+    "fixture.json",
+    "correctness.json",
+    "targets.json",
+    "space.json",
+    "timing.json",
+];
+/// Once per confirmed cell: the replay that the timing-only repeats rely on.
+const EVIDENCE_ARTIFACTS: [&str; 3] = ["correctness.json", "targets.json", "space.json"];
+const EVIDENCE_MARKER: &str = "evidence-completed.json";
+const CONFIRM_REPEAT_ARTIFACTS: [&str; 1] = ["timing.json"];
+/// Times the four modes of one paired run in the manifest's rotated order.
+fn time_modes(
+    f: &Fixture,
+    library: &Path,
+    repeat: usize,
+    phase: &mut String,
+) -> Result<(Vec<Measurement>, Vec<ModeProvenance>)> {
+    let offset = mode_offset(&f.config, &f.cell, f.seed, repeat)?;
+    let mut measurements = Vec::new();
+    let mut mode_provenance = Vec::new();
+    for i in 0..4 {
+        let mode = MODES[(offset + i) % 4];
+        *phase = format!("timing_{}", mode.label());
+        eprintln!(
+            "timing {} seed {} repeat {} {}",
+            f.cell.id(),
+            f.seed,
+            repeat,
+            mode.label()
+        );
+        let started_unix_ms = now_ms();
+        let start_load = command("uptime", &[]);
+        measurements.push(time_fixture(f, mode, library)?);
+        mode_provenance.push(ModeProvenance {
+            mode: mode.label().into(),
+            started_unix_ms,
+            start_load,
+            finished_unix_ms: now_ms(),
+            finish_load: command("uptime", &[]),
+        });
+    }
+    Ok((measurements, mode_provenance))
+}
 fn execute_case(
     a: &Args,
     f: &Fixture,
@@ -921,6 +1087,9 @@ fn execute_case(
     if INJECTED_FAILURE.with(|cell| cell.borrow().as_deref() == Some(key.cell.as_str())) {
         *phase = "injected".into();
         return Err("injected".into());
+    }
+    if a.action == "confirm" {
+        return execute_confirmation(a, f, key, ctx, phase);
     }
     let dir = case_dir(a, key);
     fs::create_dir_all(&dir)?;
@@ -934,18 +1103,12 @@ fn execute_case(
     *phase = "manifest".into();
     let m = install_manifest(&dir.join(manifest_name), &manifest(f, a, key.repeat, ctx)?)?;
     save_fixture(&dir.join("fixture.json"), f)?;
-    let timing = matches!(a.action.as_str(), "run" | "confirm");
+    let timing = a.action == "run";
     let inverse = matches!(a.action.as_str(), "churn" | "verify");
     let artifacts: &[&str] = if export {
         &["fixture.json"]
     } else if timing {
-        &[
-            "fixture.json",
-            "correctness.json",
-            "targets.json",
-            "space.json",
-            "timing.json",
-        ]
+        &RUN_ARTIFACTS
     } else {
         &["fixture.json", "correctness.json", "targets.json"]
     };
@@ -995,30 +1158,7 @@ fn execute_case(
                 &dir.join("space.json"),
                 &m2a_space::replay_space(f, library)?,
             )?;
-            let offset = mode_offset(&f.config, &f.cell, f.seed, key.repeat)?;
-            let mut measurements = Vec::new();
-            let mut mode_provenance = Vec::new();
-            for i in 0..4 {
-                let mode = MODES[(offset + i) % 4];
-                *phase = format!("timing_{}", mode.label());
-                eprintln!(
-                    "timing {} seed {} repeat {} {}",
-                    f.cell.id(),
-                    f.seed,
-                    key.repeat,
-                    mode.label()
-                );
-                let started_unix_ms = now_ms();
-                let start_load = command("uptime", &[]);
-                measurements.push(time_fixture(f, mode, library)?);
-                mode_provenance.push(ModeProvenance {
-                    mode: mode.label().into(),
-                    started_unix_ms,
-                    start_load,
-                    finished_unix_ms: now_ms(),
-                    finish_load: command("uptime", &[]),
-                });
-            }
+            let (measurements, mode_provenance) = time_modes(f, library, key.repeat, phase)?;
             let file = TimingFile {
                 manifest: m.clone(),
                 finished_unix_ms: now_ms(),
@@ -1041,6 +1181,117 @@ fn execute_case(
         f.seed,
         key.repeat
     );
+    Ok(())
+}
+/// Replays correctness, targets and space for a confirmed cell once; later repeats of the cell
+/// only validate and reuse the result.
+fn ensure_cell_evidence(
+    a: &Args,
+    f: &Fixture,
+    ctx: &Context,
+    library: &Path,
+    phase: &mut String,
+) -> Result<()> {
+    let dir = confirm_cell_path(&a.out, &f.cell.id());
+    fs::create_dir_all(&dir)?;
+    *phase = "evidence_manifest".into();
+    let m = install_manifest(&dir.join("manifest.json"), &manifest(f, a, 0, ctx)?)?;
+    if dir.join(EVIDENCE_MARKER).exists() {
+        *phase = "evidence_validation".into();
+        validate_completion(&dir, "manifest.json", EVIDENCE_MARKER, &EVIDENCE_ARTIFACTS)?;
+        return validate_evidence(&dir, f, false, true);
+    }
+    *phase = "plan".into();
+    m2a_runner::assert_plans(&m.plans, f.cell.shape)?;
+    *phase = "correctness".into();
+    let passed = correctness(f, library, false)?;
+    write_json(&dir.join("correctness.json"), &passed.checkpoints)?;
+    *phase = "targets".into();
+    write_json(
+        &dir.join("targets.json"),
+        &target_statistics(f, &passed.rows_changed)?,
+    )?;
+    *phase = "space".into();
+    write_json(
+        &dir.join("space.json"),
+        &m2a_space::replay_space(f, library)?,
+    )?;
+    *phase = "evidence_validation".into();
+    validate_evidence(&dir, f, false, true)?;
+    *phase = "completion".into();
+    complete(&dir, "manifest.json", EVIDENCE_MARKER, &EVIDENCE_ARTIFACTS)
+}
+/// One timing-only paired repeat of a confirmed cell, started only on an idle host. The fixture is
+/// the initial run's, so the repeat directory holds the manifest and the timing alone.
+fn execute_confirmation(
+    a: &Args,
+    f: &Fixture,
+    key: &ExpectedCase,
+    ctx: &Context,
+    phase: &mut String,
+) -> Result<()> {
+    let dir = case_dir(a, key);
+    fs::create_dir_all(&dir)?;
+    *phase = "manifest".into();
+    let mut m = install_manifest(
+        &dir.join("manifest.json"),
+        &manifest(f, a, key.repeat, ctx)?,
+    )?;
+    if dir.join("completed.json").exists() {
+        if !a.resume {
+            return Err(format!(
+                "completed case exists at {}; use --resume or a new output directory",
+                dir.display()
+            )
+            .into());
+        }
+        *phase = "resume_validation".into();
+        validate_completion(
+            &dir,
+            "manifest.json",
+            "completed.json",
+            &CONFIRM_REPEAT_ARTIFACTS,
+        )?;
+        validate_timing(&read_json(&dir.join("timing.json"))?, &m, f)?;
+        eprintln!("resumed confirm {} repeat {}", f.cell.id(), key.repeat);
+        return Ok(());
+    }
+    let library = ctx
+        .library
+        .as_deref()
+        .ok_or("execution requires an extension")?;
+    ensure_cell_evidence(a, f, ctx, library, phase)?;
+    *phase = "plan".into();
+    m2a_runner::assert_plans(&m.plans, f.cell.shape)?;
+    *phase = "host_not_idle".into();
+    m.load_before = Some(wait_for_idle(
+        &mut system_load_average,
+        a.max_load,
+        Duration::from_secs(a.max_wait_seconds),
+        IDLE_POLL,
+    )?);
+    let (measurements, mode_provenance) = time_modes(f, library, key.repeat, phase)?;
+    *phase = "load_after".into();
+    m.load_after = Some(system_load_average()?);
+    *phase = "timing_validation".into();
+    let file = TimingFile {
+        manifest: m.clone(),
+        finished_unix_ms: now_ms(),
+        finish_load: command("uptime", &[]),
+        mode_provenance,
+        measurements,
+    };
+    validate_timing(&file, &m, f)?;
+    write_json(&dir.join("manifest.json"), &m)?;
+    write_json(&dir.join("timing.json"), &file)?;
+    *phase = "completion".into();
+    complete(
+        &dir,
+        "manifest.json",
+        "completed.json",
+        &CONFIRM_REPEAT_ARTIFACTS,
+    )?;
+    eprintln!("completed confirm {} repeat {}", f.cell.id(), key.repeat);
     Ok(())
 }
 fn record_failure(
@@ -1223,6 +1474,34 @@ fn run_cases(
 }
 /// Confirmation cells repeat the seed-42 cells of the matrix.
 const CONFIRM_SEED: u64 = 42;
+/// The fixture of the initial `run` of a confirmed cell, bound to that run's manifest and to the
+/// workload of this invocation. The confirmation times exactly the data the candidate was found on.
+fn initial_fixture(a: &Args, cfg: &M2aConfig, key: &ExpectedCase) -> Result<Fixture> {
+    let initial = ExpectedCase {
+        kind: "run".into(),
+        repeat: 0,
+        ..key.clone()
+    };
+    let dir = case_path(&a.out, "run", &initial);
+    validate_completion(&dir, "manifest.json", "completed.json", &RUN_ARTIFACTS)
+        .map_err(|e| format!("initial run of {} is not complete: {e}", key.cell))?;
+    let recorded: Manifest = read_json(&dir.join("manifest.json"))?;
+    let f: Fixture = read_json(&dir.join("fixture.json"))?;
+    f.validate()?;
+    if f.cell.id() != key.cell
+        || f.seed != key.seed
+        || f.rounds != key.rounds
+        || json_hash(&f)? != recorded.fixture_sha256
+        || json_hash(&f.config)? != json_hash(cfg)?
+    {
+        return Err(format!(
+            "fixture of the initial run of {} differs from its manifest or the workload",
+            key.cell
+        )
+        .into());
+    }
+    Ok(f)
+}
 fn case_set(
     kind: &str,
     cells: &[Cell],
@@ -1353,10 +1632,13 @@ fn run_inner(a: &Args, ctx: &Context) -> Result<()> {
             .iter()
             .find(|c| c.id() == key.cell)
             .ok_or("planned cell disappeared")?;
-        let f = if a.action == "churn" {
-            cfg.generate_rounds(cell, key.seed, key.rounds)?
-        } else {
-            cfg.generate(cell, key.seed)?
+        let f = match a.action.as_str() {
+            "churn" => cfg.generate_rounds(cell, key.seed, key.rounds)?,
+            "confirm" => {
+                *phase = "fixture".into();
+                initial_fixture(a, &cfg, key)?
+            }
+            _ => cfg.generate(cell, key.seed)?,
         };
         execute_case(a, &f, key, ctx, phase)
     })
@@ -2235,5 +2517,334 @@ mod tests {
         let serialized = serde_json::to_vec(&a).unwrap();
         let decoded: serde_json::Value = serde_json::from_slice(&serialized).unwrap();
         assert_eq!(json_hash(&a).unwrap(), json_hash(&decoded).unwrap());
+    }
+    fn set_injected_load(load: Option<f64>) {
+        INJECTED_LOAD.with(|slot| slot.set(load));
+    }
+    /// Initial seed-42 smoke runs of two single-table cells, ready to be confirmed.
+    fn finished_initial_runs(out: &Path, ctx: &Context) -> Vec<String> {
+        let mut a = smoke_run_args(out);
+        a.seeds = Some(vec![CONFIRM_SEED]);
+        let cfg = load_config(&a).unwrap();
+        let mut cells: Vec<_> = select_cells(&cfg, &a)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.id())
+            .collect();
+        cells.sort();
+        cells.truncate(2);
+        a.cells = cells.clone();
+        run_inner(&a, ctx).unwrap();
+        cells
+    }
+    fn confirm_args(out: &Path, cells: &[String], repeats: usize) -> Args {
+        let candidates = out.join("confirm-candidates.json");
+        let listed: Vec<_> = cells
+            .iter()
+            .map(|cell| m2a_report::CaseKey {
+                cell: cell.clone(),
+                seed: CONFIRM_SEED,
+            })
+            .collect();
+        write_json(&candidates, &listed).unwrap();
+        let repeats = repeats.to_string();
+        let mut a = args(&[
+            "confirm",
+            "--smoke",
+            "--repeats",
+            &repeats,
+            "--candidates",
+            candidates.to_str().unwrap(),
+        ]);
+        a.workload = repo().join("workloads/m2a.toml");
+        a.out = out.to_owned();
+        a
+    }
+    fn confirm_key(cell: &str, repeat: usize, rounds: usize) -> ExpectedCase {
+        ExpectedCase {
+            kind: "confirm".into(),
+            cell: cell.into(),
+            seed: CONFIRM_SEED,
+            repeat,
+            rounds,
+        }
+    }
+    fn files_named(dir: &Path, name: &str) -> usize {
+        fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .map(|path| {
+                if path.is_dir() {
+                    files_named(&path, name)
+                } else {
+                    usize::from(path.file_name().is_some_and(|n| n == name))
+                }
+            })
+            .sum()
+    }
+    #[test]
+    fn confirm_reads_candidates_and_runs_timing_only_repeats() {
+        let dir = temp();
+        let ctx = extension_context();
+        let cells = finished_initial_runs(&dir, &ctx);
+        let first = confirm_args(&dir, &cells, 1);
+        let rounds = load_config(&first).unwrap().total_rounds().unwrap();
+        set_injected_load(Some(0.5));
+        run_inner(&first, &ctx).unwrap();
+        let replayed = |cell: &str| {
+            EVIDENCE_ARTIFACTS.map(|name| {
+                fs::metadata(confirm_cell_path(&dir, cell).join(name))
+                    .unwrap()
+                    .modified()
+                    .unwrap()
+            })
+        };
+        let evidence_times: Vec<_> = cells.iter().map(|cell| replayed(cell)).collect();
+        // A second repeat of each cell reuses the cell's replay instead of redoing it.
+        let mut a = confirm_args(&dir, &cells, 2);
+        a.resume = true;
+        run_inner(&a, &ctx).unwrap();
+        set_injected_load(None);
+        let after: Vec<_> = cells.iter().map(|cell| replayed(cell)).collect();
+        assert_eq!(evidence_times, after);
+
+        let summary = stored_summary(&a);
+        assert_eq!((summary.planned, summary.complete), (4, 4));
+        assert!(summary.failed.is_empty());
+        assert_eq!(files_named(&dir.join("confirm"), "correctness.json"), 2);
+        for cell in &cells {
+            let cell_dir = confirm_cell_path(&dir, cell);
+            for name in EVIDENCE_ARTIFACTS.iter().chain(&[EVIDENCE_MARKER]) {
+                assert!(cell_dir.join(name).exists(), "{cell} {name}");
+            }
+            let initial: Manifest = read_json(
+                &case_path(
+                    &dir,
+                    "run",
+                    &ExpectedCase {
+                        kind: "run".into(),
+                        ..confirm_key(cell, 0, rounds)
+                    },
+                )
+                .join("manifest.json"),
+            )
+            .unwrap();
+            let mut orders = Vec::new();
+            for repeat in 0..2 {
+                let repeat_dir = case_dir(&a, &confirm_key(cell, repeat, rounds));
+                assert_eq!(repeat_dir, cell_dir.join(format!("repeat-{repeat}")));
+                for name in ["manifest.json", "timing.json", "completed.json"] {
+                    assert!(repeat_dir.join(name).exists(), "{cell} {repeat} {name}");
+                }
+                for name in [
+                    "correctness.json",
+                    "space.json",
+                    "targets.json",
+                    "fixture.json",
+                ] {
+                    assert!(!repeat_dir.join(name).exists(), "{cell} {repeat} {name}");
+                }
+                let m: Manifest = read_json(&repeat_dir.join("manifest.json")).unwrap();
+                assert_eq!((m.kind.as_str(), m.seed, m.repeat), ("confirm", 42, repeat));
+                assert_eq!((m.load_before, m.load_after), (Some(0.5), Some(0.5)));
+                assert_eq!(m.fixture_sha256, initial.fixture_sha256);
+                let timing: TimingFile = read_json(&repeat_dir.join("timing.json")).unwrap();
+                assert_eq!(timing.manifest, m);
+                assert_eq!(timing.measurements.len(), MODES.len());
+                orders.push(m.mode_order);
+            }
+            assert_ne!(orders[0], orders[1], "paired repeats rotate the mode order");
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn confirm_records_host_not_idle_when_load_stays_high() {
+        let dir = temp();
+        let ctx = extension_context();
+        let cells = finished_initial_runs(&dir, &ctx);
+        let mut a = confirm_args(&dir, &cells[..1], 2);
+        a.max_wait_seconds = 0;
+        set_injected_load(Some(9.0));
+        let error = run_inner(&a, &ctx).unwrap_err();
+        assert!(error.is::<CasesFailed>(), "{error}");
+        assert!(error.to_string().contains("2 of 2 cases failed"), "{error}");
+        let summary = stored_summary(&a);
+        assert_eq!(summary.failed.len(), 2);
+        for failed in &summary.failed {
+            assert_eq!((failed.phase.as_str(), failed.seed), ("host_not_idle", 42));
+            assert!(
+                failed.error.contains("load average 9.00"),
+                "{}",
+                failed.error
+            );
+        }
+        let rounds = load_config(&a).unwrap().total_rounds().unwrap();
+        for repeat in 0..2 {
+            let repeat_dir = case_dir(&a, &confirm_key(&cells[0], repeat, rounds));
+            assert!(!repeat_dir.join("timing.json").exists());
+            assert!(!repeat_dir.join("completed.json").exists());
+            assert!(repeat_dir.join("failure.json").exists());
+        }
+        // The loss is retryable once the host is idle again; the cell replay is not redone.
+        set_injected_load(Some(0.5));
+        a.resume = true;
+        a.retry_failed = true;
+        run_inner(&a, &ctx).unwrap();
+        set_injected_load(None);
+        let summary = stored_summary(&a);
+        assert_eq!((summary.planned, summary.complete), (2, 2));
+        assert!(summary.failed.is_empty());
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn confirm_refuses_a_fixture_that_differs_from_the_initial_run() {
+        let dir = temp();
+        let ctx = extension_context();
+        let cells = finished_initial_runs(&dir, &ctx);
+        let a = confirm_args(&dir, &cells[..1], 1);
+        let rounds = load_config(&a).unwrap().total_rounds().unwrap();
+        let initial = ExpectedCase {
+            kind: "run".into(),
+            ..confirm_key(&cells[0], 0, rounds)
+        };
+        let fixture = case_path(&dir, "run", &initial).join("fixture.json");
+        fs::write(
+            &fixture,
+            format!("{} ", fs::read_to_string(&fixture).unwrap()),
+        )
+        .unwrap();
+        set_injected_load(Some(0.5));
+        let error = run_inner(&a, &ctx).unwrap_err();
+        set_injected_load(None);
+        assert!(error.is::<CasesFailed>(), "{error}");
+        let failed = &stored_summary(&a).failed[0];
+        assert_eq!(failed.phase, "fixture");
+        assert!(
+            failed.error.contains("artifact hash differs"),
+            "{}",
+            failed.error
+        );
+        assert!(!confirm_cell_path(&dir, &cells[0])
+            .join("correctness.json")
+            .exists());
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn confirm_options_and_candidates_are_validated() {
+        let ok = args(&[
+            "confirm",
+            "--candidates",
+            "c.json",
+            "--max-load",
+            "1.5",
+            "--max-wait-seconds",
+            "0",
+        ]);
+        assert_eq!(
+            (ok.candidates, ok.max_load, ok.max_wait_seconds),
+            (Some("c.json".into()), 1.5, 0)
+        );
+        let default = args(&["confirm"]);
+        assert_eq!(
+            (default.max_load, default.max_wait_seconds, default.repeats),
+            (2.0, 600, 5)
+        );
+        for bad in [
+            vec!["run", "--candidates", "c.json"],
+            vec!["run", "--max-load", "1"],
+            vec!["churn", "--max-wait-seconds", "1"],
+            vec!["confirm", "--max-load", "0"],
+            vec!["confirm", "--max-load", "nan"],
+            vec!["confirm", "--cells", "a"],
+            vec!["confirm", "--shape", "single"],
+        ] {
+            assert!(
+                parse(bad.iter().map(|s| (*s).to_owned())).is_err(),
+                "{bad:?}"
+            );
+        }
+
+        let dir = temp();
+        let cfg = cfg();
+        let cell = cfg.cells().unwrap().remove(0).id();
+        let mut a = args(&["confirm"]);
+        let error = select_cells(&cfg, &a).unwrap_err().to_string();
+        assert!(error.contains("--candidates"), "{error}");
+        let write = |name: &str, body: serde_json::Value| {
+            let path = dir.join(name);
+            write_json(&path, &body).unwrap();
+            path
+        };
+        a.candidates = Some(write(
+            "seed.json",
+            serde_json::json!([{"cell": cell, "seed": 1}]),
+        ));
+        assert!(select_cells(&cfg, &a)
+            .unwrap_err()
+            .to_string()
+            .contains("seed 1"));
+        a.candidates = Some(write(
+            "unknown.json",
+            serde_json::json!([{"cell": "nope", "seed": 42}]),
+        ));
+        assert!(select_cells(&cfg, &a)
+            .unwrap_err()
+            .to_string()
+            .contains("absent"));
+        a.candidates = Some(write("empty.json", serde_json::json!([])));
+        assert!(select_cells(&cfg, &a)
+            .unwrap_err()
+            .to_string()
+            .contains("no candidate"));
+        a.candidates = Some(write(
+            "twice.json",
+            serde_json::json!([{"cell": cell, "seed": 42}, {"cell": cell, "seed": 42}]),
+        ));
+        assert_eq!(select_cells(&cfg, &a).unwrap().len(), 1);
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn load_average_parses_linux_and_macos_formats() {
+        assert_eq!(
+            parse_load_average("0.52 0.58 0.59 1/467 12345\n").unwrap(),
+            0.52
+        );
+        assert_eq!(parse_load_average("{ 1.52 1.60 1.64 }\n").unwrap(), 1.52);
+        for bad in ["", "{ }", "unavailable", "-1.0 0 0", "NaN 0 0"] {
+            assert!(parse_load_average(bad).is_err(), "{bad:?}");
+        }
+    }
+    #[test]
+    fn waiting_for_an_idle_host_polls_until_the_cap() {
+        let poll = Duration::from_millis(1);
+        let mut readings = [5.0, 5.0, 1.0].into_iter();
+        let mut calls = 0;
+        let mut read = || {
+            calls += 1;
+            Ok(readings.next().unwrap())
+        };
+        let load = wait_for_idle(&mut read, 2.0, Duration::from_secs(5), poll);
+        assert_eq!(load.unwrap(), 1.0);
+        assert_eq!(calls, 3);
+
+        let mut busy = 0;
+        let mut read = || {
+            busy += 1;
+            Ok(9.0)
+        };
+        let error = wait_for_idle(&mut read, 2.0, Duration::ZERO, poll).unwrap_err();
+        assert_eq!(busy, 1, "a zero cap reads the load once");
+        assert!(error.to_string().contains("host not idle"), "{error}");
+
+        let mut busy = 0;
+        let mut read = || {
+            busy += 1;
+            Ok(9.0)
+        };
+        wait_for_idle(&mut read, 2.0, Duration::from_millis(30), poll).unwrap_err();
+        assert!(busy > 1, "a positive cap keeps polling");
+
+        let mut read = || Err("unreadable".into());
+        assert!(wait_for_idle(&mut read, 2.0, Duration::ZERO, poll).is_err());
     }
 }

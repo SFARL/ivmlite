@@ -15,6 +15,9 @@
 //!   whose median is within 10% of 1.0 or 2.0.
 //! * A case without `completed.json`, or whose completed artifacts cannot be read, is a loss in
 //!   `losses.csv` and contributes to no table.
+//! * Confirmation repeats (`confirm`) are timing-only paired runs of a candidate cell at seed 42.
+//!   They get their own `confirmations.csv` and never enter the seed tables (`timing.csv`,
+//!   `ratios.csv`).
 //!
 //! Smoke selections (`selection-*-smoke.json`) are never read into a table.
 use std::collections::{BTreeMap, BTreeSet};
@@ -100,6 +103,15 @@ struct RunCase {
     initial_hot_share: f64,
 }
 
+/// One timing-only repeat of a confirmed cell.
+struct ConfirmCase {
+    key: ExpectedCase,
+    manifest: Manifest,
+    ratio: RunRatio,
+    load_before: f64,
+    load_after: f64,
+}
+
 struct ChurnCase {
     manifest: Manifest,
     correctness: Vec<Checkpoint>,
@@ -147,9 +159,12 @@ impl CellRatios {
 struct Derived {
     runs: Vec<RunCase>,
     churns: Vec<ChurnCase>,
+    confirmations: Vec<ConfirmCase>,
     complete: usize,
     losses: Vec<Loss>,
     run_expected: BTreeMap<String, usize>,
+    /// Planned confirmation repeats per cell.
+    confirm_expected: BTreeMap<String, usize>,
     /// Cell dimensions of planned run cells, from whichever manifest could be read.
     run_cells: BTreeMap<String, Cell>,
 }
@@ -338,6 +353,46 @@ fn load_run(dir: &Path, key: &ExpectedCase) -> Result<RunCase> {
     })
 }
 
+/// `measured_rounds` of the workload that the initial run of `key`'s cell used. Confirmation
+/// repeats keep no fixture of their own.
+fn initial_measured_rounds(out: &Path, key: &ExpectedCase) -> Result<usize> {
+    let initial = ExpectedCase {
+        kind: "run".into(),
+        repeat: 0,
+        ..key.clone()
+    };
+    let fixture: FixtureConfig = read_json(&case_path(out, "run", &initial).join("fixture.json"))?;
+    Ok(fixture.config.measured_rounds)
+}
+
+fn load_confirmation(
+    out: &Path,
+    dir: &Path,
+    key: &ExpectedCase,
+    measured_rounds: &mut BTreeMap<String, usize>,
+) -> Result<ConfirmCase> {
+    let manifest = read_manifest(dir, key)?;
+    let (Some(load_before), Some(load_after)) = (manifest.load_before, manifest.load_after) else {
+        return Err("confirmation manifest lacks its load averages".into());
+    };
+    let rounds = match measured_rounds.get(&key.cell) {
+        Some(&rounds) => rounds,
+        None => {
+            let rounds = initial_measured_rounds(out, key)?;
+            measured_rounds.insert(key.cell.clone(), rounds);
+            rounds
+        }
+    };
+    let timing: TimingFile = read_json(&dir.join("timing.json"))?;
+    Ok(ConfirmCase {
+        key: key.clone(),
+        ratio: run_ratio(&totals_by_mode(&timing, rounds)?)?,
+        manifest,
+        load_before,
+        load_after,
+    })
+}
+
 fn load_churn(dir: &Path, key: &ExpectedCase) -> Result<ChurnCase> {
     Ok(ChurnCase {
         manifest: read_manifest(dir, key)?,
@@ -373,6 +428,7 @@ fn derive(out: &Path) -> Result<Derived> {
         .into());
     }
     let mut derived = Derived::default();
+    let mut measured_rounds = BTreeMap::new();
     for action in ACTIONS {
         let path = selection_file(out, action, false);
         if !path.exists() {
@@ -382,6 +438,12 @@ fn derive(out: &Path) -> Result<Derived> {
         for key in &selection.expected {
             if action == "run" {
                 *derived.run_expected.entry(key.cell.clone()).or_default() += 1;
+            }
+            if action == "confirm" {
+                *derived
+                    .confirm_expected
+                    .entry(key.cell.clone())
+                    .or_default() += 1;
             }
             let dir = case_path(out, action, key);
             let lost_cell = |derived: &mut Derived| {
@@ -405,6 +467,8 @@ fn derive(out: &Path) -> Result<Derived> {
                 match action {
                     "run" => load_run(&dir, key).map(|case| derived.runs.push(case)),
                     "churn" => load_churn(&dir, key).map(|case| derived.churns.push(case)),
+                    "confirm" => load_confirmation(out, &dir, key, &mut measured_rounds)
+                        .map(|case| derived.confirmations.push(case)),
                     _ => Ok(()),
                 }
             };
@@ -665,6 +729,102 @@ fn ratios_csv(derived: &Derived, cells: &[CellRatios]) -> Csv {
     csv
 }
 
+/// Repeat rows and one range row per confirmed cell. The seed tables stay as they are; the initial
+/// range is repeated here only to read the two side by side.
+fn confirmations_csv(derived: &Derived, cells: &[CellRatios]) -> Csv {
+    let mut csv = with_header(header(
+        &["scope"],
+        &[
+            "cell",
+            "shape",
+            "profile",
+            "fanout",
+            "batch_size",
+            "repeat",
+            "fastest_recompute_mode",
+            "fastest_recompute_ms",
+            "ordinary_recompute_ms",
+            "covering_recompute_ms",
+            "ivmlite_ms",
+            "ratio",
+            "load_before",
+            "load_after",
+            "repeats",
+            "expected_repeats",
+            "partial",
+            "ratio_min",
+            "ratio_median",
+            "ratio_max",
+            "straddles_1x",
+            "straddles_2x",
+            "initial_ratio_min",
+            "initial_ratio_median",
+            "initial_ratio_max",
+        ],
+    ));
+    let blank = |n: usize| std::iter::repeat_n(String::new(), n);
+    for (id, &expected) in &derived.confirm_expected {
+        let mut repeats: Vec<&ConfirmCase> = derived
+            .confirmations
+            .iter()
+            .filter(|c| &c.key.cell == id)
+            .collect();
+        repeats.sort_by_key(|c| c.key.repeat);
+        let initial = cells.iter().find(|c| &c.id == id);
+        let dims = initial
+            .and_then(|c| c.cell.as_ref())
+            .or_else(|| repeats.first().map(|c| &c.manifest.cell))
+            .map_or_else(|| cell_id_fields(id), cell_fields);
+        for case in &repeats {
+            let r = &case.ratio;
+            csv.line(
+                joined(vec!["repeat".to_owned()], dims.clone())
+                    .into_iter()
+                    .chain([
+                        case.key.repeat.to_string(),
+                        r.fastest.label().to_owned(),
+                        num(r.fastest_ms),
+                        num(r.ordinary_ms),
+                        num(r.covering_ms),
+                        num(r.ivmlite_ms),
+                        num(r.ratio),
+                        num(case.load_before),
+                        num(case.load_after),
+                    ])
+                    .chain(blank(11)),
+            );
+        }
+        let ratios: Vec<f64> = repeats.iter().map(|c| c.ratio.ratio).collect();
+        let stats = Summary::of(&ratios);
+        let straddles = |threshold: f64| {
+            stats
+                .as_ref()
+                .map(|s| (s.min <= threshold && threshold <= s.max).to_string())
+                .unwrap_or_default()
+        };
+        let initial = initial.and_then(|c| c.stats.as_ref());
+        csv.line(
+            joined(vec!["cell".to_owned()], dims)
+                .into_iter()
+                .chain(blank(9))
+                .chain([
+                    repeats.len().to_string(),
+                    expected.to_string(),
+                    (repeats.len() < expected).to_string(),
+                    opt(stats.as_ref().map(|s| s.min)),
+                    opt(stats.as_ref().map(|s| s.median)),
+                    opt(stats.as_ref().map(|s| s.max)),
+                    straddles(1.0),
+                    straddles(2.0),
+                    opt(initial.map(|s| s.min)),
+                    opt(initial.map(|s| s.median)),
+                    opt(initial.map(|s| s.max)),
+                ]),
+        );
+    }
+    csv
+}
+
 fn state_header() -> [&'static str; 6] {
     [
         "joined_rows",
@@ -882,6 +1042,11 @@ hot share of the groups matched by each batch.
 - Churn: page_count, freelist_count and logical state rows per round, per profile.
 - A case without `completed.json` (or whose artifacts cannot be read) is listed in `losses.csv` \
 with its phase and error and contributes to no ratio.
+- Confirmation (`confirmations.csv`): five timing-only paired repeats of each candidate cell at \
+seed 42 on an idle host (1-minute load average recorded before and after each repeat). Ratios use \
+the same definition as above. They are reported separately and never enter `timing.csv` or \
+`ratios.csv`; the cell row gives the full range of the repeats and whether it still contains 1.0 or \
+2.0, next to the initial seed range for comparison.
 - Smoke selections are reported on one line and are never mixed into the matrix tables.
 ";
 
@@ -984,8 +1149,57 @@ fn summary_md(out: &Path, derived: &Derived, cells: &[CellRatios]) -> Result<Str
     Ok(md)
 }
 
-/// Writes `timing.csv`, `ratios.csv`, `confirm-candidates.json`, `space.csv`, `targets.csv`,
-/// `churn.csv`, `losses.csv` and `summary.md` to `dest`, derived from the case directories that the
+/// Per confirmed cell: the range of its repeats against 1.0 and 2.0, beside the initial range.
+fn confirmation_md(derived: &Derived, cells: &[CellRatios]) -> String {
+    let mut md = String::from("\n## Confirmation of candidate cells\n\n");
+    if derived.confirm_expected.is_empty() {
+        md.push_str("No confirmation run.\n");
+        return md;
+    }
+    md.push_str(
+        "| cell | repeats | min | median | max | straddles 1x | straddles 2x | initial min | initial max |\n\
+         |---|---|---|---|---|---|---|---|---|\n",
+    );
+    let n = |value: Option<f64>| value.map_or_else(|| "n/a".to_owned(), |v| format!("{v:.3}"));
+    for (id, &expected) in &derived.confirm_expected {
+        let ratios: Vec<f64> = derived
+            .confirmations
+            .iter()
+            .filter(|c| &c.key.cell == id)
+            .map(|c| c.ratio.ratio)
+            .collect();
+        let stats = Summary::of(&ratios);
+        let straddles = |threshold: f64| {
+            stats.as_ref().map_or("n/a", |s| {
+                if s.min <= threshold && threshold <= s.max {
+                    "yes"
+                } else {
+                    "no"
+                }
+            })
+        };
+        let initial = cells
+            .iter()
+            .find(|c| &c.id == id)
+            .and_then(|c| c.stats.as_ref());
+        let _ = writeln!(
+            md,
+            "| {id} | {}/{expected} | {} | {} | {} | {} | {} | {} | {} |",
+            ratios.len(),
+            n(stats.as_ref().map(|s| s.min)),
+            n(stats.as_ref().map(|s| s.median)),
+            n(stats.as_ref().map(|s| s.max)),
+            straddles(1.0),
+            straddles(2.0),
+            n(initial.map(|s| s.min)),
+            n(initial.map(|s| s.max)),
+        );
+    }
+    md
+}
+
+/// Writes `timing.csv`, `ratios.csv`, `confirm-candidates.json`, `confirmations.csv`, `space.csv`,
+/// `targets.csv`, `churn.csv`, `losses.csv` and `summary.md` to `dest`, derived from the case directories that the
 /// non-smoke selections of `out` plan.
 pub fn report(out: &Path, dest: &Path) -> Result<ReportSummary> {
     let derived = derive(out)?;
@@ -1004,6 +1218,7 @@ pub fn report(out: &Path, dest: &Path) -> Result<ReportSummary> {
     for (name, csv) in [
         ("timing.csv", timing_csv(&derived)),
         ("ratios.csv", ratios_csv(&derived, &cells)),
+        ("confirmations.csv", confirmations_csv(&derived, &cells)),
         ("space.csv", space_csv(&derived)),
         ("targets.csv", targets_csv(&derived)),
         ("churn.csv", churn_csv(&derived)),
@@ -1012,7 +1227,9 @@ pub fn report(out: &Path, dest: &Path) -> Result<ReportSummary> {
         fs::write(dest.join(name), csv.text)?;
     }
     write_json(&dest.join("confirm-candidates.json"), &candidates)?;
-    fs::write(dest.join("summary.md"), summary_md(out, &derived, &cells)?)?;
+    let mut summary = summary_md(out, &derived, &cells)?;
+    summary.push_str(&confirmation_md(&derived, &cells));
+    fs::write(dest.join("summary.md"), summary)?;
     Ok(ReportSummary {
         complete: derived.complete,
         incomplete: derived.losses.len(),
@@ -1182,6 +1399,8 @@ mod tests {
             },
             mode_order: order.iter().map(|m| m.label().to_owned()).collect(),
             provenance: provenance(),
+            load_before: None,
+            load_after: None,
         }
     }
     fn snapshot(joined_rows: u64, histogram: &[(i64, u64)], pages: &PageMetrics) -> Checkpoint {
@@ -1307,6 +1526,40 @@ mod tests {
         M2aConfig::load(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../workloads/m2a.toml"))
             .unwrap()
     }
+    const ORDER: [Mode; 4] = [
+        Mode::NoMaintenance,
+        Mode::Recompute,
+        Mode::CoveringRecompute,
+        Mode::Ivmlite,
+    ];
+    fn timing_file(manifest: &Manifest, run: &Run) -> TimingFile {
+        let measurements = vec![
+            measurement(
+                Mode::NoMaintenance,
+                0.0,
+                [(run.no_maintenance_apply, 0.0, 0.0); ROUNDS],
+            ),
+            measurement(Mode::Recompute, 1.5, run.ordinary),
+            measurement(Mode::CoveringRecompute, 2.5, run.covering),
+            measurement(Mode::Ivmlite, 9.0, run.ivmlite),
+        ];
+        TimingFile {
+            manifest: manifest.clone(),
+            finished_unix_ms: 2,
+            finish_load: "idle".into(),
+            mode_provenance: ORDER
+                .iter()
+                .map(|m| ModeProvenance {
+                    mode: m.label().into(),
+                    started_unix_ms: 1,
+                    start_load: "idle".into(),
+                    finished_unix_ms: 2,
+                    finish_load: "idle".into(),
+                })
+                .collect(),
+            measurements,
+        }
+    }
     /// Writes the artifacts of one `run` case; `finished` adds the completion marker.
     fn write_run_case(out: &Path, cell: &Cell, seed: u64, run: &Run, finished: bool) {
         write_run_case_with(out, cell, seed, run, finished, &config());
@@ -1322,39 +1575,8 @@ mod tests {
         let key = key("run", cell, seed);
         let dir = case_path(out, "run", &key);
         fs::create_dir_all(&dir).unwrap();
-        let order = [
-            Mode::NoMaintenance,
-            Mode::Recompute,
-            Mode::CoveringRecompute,
-            Mode::Ivmlite,
-        ];
-        let manifest = manifest("run", cell, seed, key.rounds, &order);
-        let measurements = vec![
-            measurement(
-                Mode::NoMaintenance,
-                0.0,
-                [(run.no_maintenance_apply, 0.0, 0.0); ROUNDS],
-            ),
-            measurement(Mode::Recompute, 1.5, run.ordinary),
-            measurement(Mode::CoveringRecompute, 2.5, run.covering),
-            measurement(Mode::Ivmlite, 9.0, run.ivmlite),
-        ];
-        let timing = TimingFile {
-            manifest: manifest.clone(),
-            finished_unix_ms: 2,
-            finish_load: "idle".into(),
-            mode_provenance: order
-                .iter()
-                .map(|m| ModeProvenance {
-                    mode: m.label().into(),
-                    started_unix_ms: 1,
-                    start_load: "idle".into(),
-                    finished_unix_ms: 2,
-                    finish_load: "idle".into(),
-                })
-                .collect(),
-            measurements,
-        };
+        let manifest = manifest("run", cell, seed, key.rounds, &ORDER);
+        let timing = timing_file(&manifest, run);
         write_json(&dir.join("manifest.json"), &manifest).unwrap();
         // The real fixture file also holds the trace; the report reads only its configuration.
         write_json(&dir.join("fixture.json"), &json!({ "config": config })).unwrap();
@@ -1379,6 +1601,27 @@ mod tests {
                 ],
             )
             .unwrap();
+        }
+    }
+    fn confirm_key(cell: &Cell, repeat: usize) -> ExpectedCase {
+        ExpectedCase {
+            repeat,
+            ..key("confirm", cell, 42)
+        }
+    }
+    /// A timing-only confirmation repeat: manifest and timing, no fixture, correctness or space.
+    fn write_confirm_case(out: &Path, cell: &Cell, repeat: usize, run: &Run, finished: bool) {
+        let key = confirm_key(cell, repeat);
+        let dir = case_path(out, "confirm", &key);
+        fs::create_dir_all(&dir).unwrap();
+        let mut manifest = manifest("confirm", cell, 42, key.rounds, &ORDER);
+        manifest.repeat = repeat;
+        manifest.load_before = Some(0.25);
+        manifest.load_after = Some(0.5);
+        write_json(&dir.join("manifest.json"), &manifest).unwrap();
+        write_json(&dir.join("timing.json"), &timing_file(&manifest, run)).unwrap();
+        if finished {
+            complete(&dir, "manifest.json", "completed.json", &["timing.json"]).unwrap();
         }
     }
     fn write_churn_case(out: &Path, cell: &Cell, rounds: usize) {
@@ -1613,6 +1856,105 @@ mod tests {
         }
     }
 
+    #[test]
+    fn report_lists_confirmations_separately() {
+        let out = temp();
+        let dest = out.join("report");
+        let straddling = cell(Profile::ZipfUniform, 8, 10);
+        let clear = cell(Profile::ZipfHot, 8, 10);
+        // Fastest recompute total is 10, so the ivmlite total is 10 / ratio.
+        let at = |ratio: f64| run_of(10.0, 20.0, 10.0 / ratio);
+        let mut cases: Vec<_> = [(1, 1.8), (42, 2.2), (2026, 2.0)]
+            .into_iter()
+            .map(|(seed, ratio)| (&straddling, seed, at(ratio), true))
+            .collect();
+        cases.extend([1, 42, 2026].map(|seed| (&clear, seed, at(5.0), true)));
+        matrix(&out, &cases);
+        assert_eq!(report(&out, &dest).unwrap().candidates.len(), 1);
+        let seed_tables = ["timing.csv", "ratios.csv"].map(|n| fs::read(dest.join(n)).unwrap());
+        assert!(fs::read_to_string(dest.join("summary.md"))
+            .unwrap()
+            .contains("No confirmation run."));
+        assert!(table(&dest.join("confirmations.csv")).is_empty());
+
+        // Four planned repeats of the candidate: three finish, one is lost.
+        for (repeat, ratio) in [(0, 1.9), (1, 2.05), (2, 2.3)] {
+            write_confirm_case(&out, &straddling, repeat, &at(ratio), true);
+        }
+        write_confirm_case(&out, &straddling, 3, &at(9.0), false);
+        write_selection(
+            &out,
+            "confirm",
+            false,
+            (0..4).map(|r| confirm_key(&straddling, r)).collect(),
+            vec![FailedCase {
+                cell: straddling.id(),
+                seed: 42,
+                repeat: 3,
+                phase: "host_not_idle".into(),
+                error: "load".into(),
+            }],
+        );
+        let summary = report(&out, &dest).unwrap();
+        assert_eq!(summary.complete, 6 + 3);
+        assert_eq!(summary.incomplete, 1);
+        assert_eq!(
+            summary.candidates.len(),
+            1,
+            "confirmations never add candidates"
+        );
+
+        let rows = table(&dest.join("confirmations.csv"));
+        let repeats: Vec<_> = rows.iter().filter(|r| r["scope"] == "repeat").collect();
+        assert_eq!(repeats.len(), 3);
+        for (row, ratio) in repeats.iter().zip([1.9, 2.05, 2.3]) {
+            assert_eq!(row["cell"], straddling.id());
+            near(number(row, "ratio"), ratio);
+            near(number(row, "ivmlite_ms"), 10.0 / ratio);
+            assert_eq!(row["fastest_recompute_mode"], "recompute");
+            assert_eq!(
+                (row["load_before"].as_str(), row["load_after"].as_str()),
+                ("0.25", "0.5")
+            );
+        }
+        let range: Vec<_> = rows.iter().filter(|r| r["scope"] == "cell").collect();
+        assert_eq!(range.len(), 1, "only the confirmed cell is listed");
+        let range = range[0];
+        assert_eq!(range["cell"], straddling.id());
+        near(number(range, "ratio_min"), 1.9);
+        near(number(range, "ratio_median"), 2.05);
+        near(number(range, "ratio_max"), 2.3);
+        assert_eq!(
+            (
+                range["straddles_1x"].as_str(),
+                range["straddles_2x"].as_str()
+            ),
+            ("false", "true")
+        );
+        assert_eq!(
+            (
+                range["repeats"].as_str(),
+                range["expected_repeats"].as_str()
+            ),
+            ("3", "4")
+        );
+        assert_eq!(range["partial"], "true");
+        near(number(range, "initial_ratio_min"), 1.8);
+        near(number(range, "initial_ratio_max"), 2.2);
+
+        let seed_tables_after =
+            ["timing.csv", "ratios.csv"].map(|n| fs::read(dest.join(n)).unwrap());
+        assert_eq!(
+            seed_tables, seed_tables_after,
+            "confirmations stay out of the seed tables"
+        );
+        let losses = fs::read_to_string(dest.join("losses.csv")).unwrap();
+        assert!(losses.contains("confirm,"), "{losses}");
+        assert!(losses.contains("host_not_idle"), "{losses}");
+        let text = fs::read_to_string(dest.join("summary.md")).unwrap();
+        assert!(text.contains("## Confirmation of candidate cells"));
+        assert!(text.contains(&format!("| {} | 3/4 |", straddling.id())));
+    }
     #[test]
     fn incomplete_case_is_a_loss_not_a_ratio() {
         let out = temp();
