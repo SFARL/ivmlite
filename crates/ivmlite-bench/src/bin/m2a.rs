@@ -38,10 +38,12 @@ struct Args {
     fanout: Option<usize>,
     batch: Option<usize>,
     smoke: bool,
+    skip_smoke_gate: bool,
     resume: bool,
     retry_failed: bool,
     allow_dirty: bool,
-    rounds: usize,
+    /// Overrides `churn.rounds` of the workload file.
+    rounds: Option<usize>,
     repeats: usize,
 }
 fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
@@ -59,14 +61,15 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
         fanout: None,
         batch: None,
         smoke: false,
+        skip_smoke_gate: false,
         resume: false,
         retry_failed: false,
         allow_dirty: false,
-        rounds: 100,
+        rounds: None,
         repeats: 5,
     };
     if !["export", "run", "verify", "churn", "confirm"].contains(&a.action.as_str()) {
-        return Err("usage: m2a {export|run|verify|churn|confirm} [--workload FILE] [--out DIR] [--extension LIB] [--fixture FILE] [--cells IDS] [--profiles LABELS] [--shape single|join] [--fanout N] [--batch N] [--seeds N,...] [--smoke] [--resume] [--retry-failed] [--allow-dirty] [--rounds N] [--repeats N]".into());
+        return Err("usage: m2a {export|run|verify|churn|confirm} [--workload FILE] [--out DIR] [--extension LIB] [--fixture FILE] [--cells IDS] [--profiles LABELS] [--shape single|join] [--fanout N] [--batch N] [--seeds N,...] [--smoke] [--skip-smoke-gate] [--resume] [--retry-failed] [--allow-dirty] [--rounds N] [--repeats N]".into());
     }
     let mut seen = BTreeSet::new();
     while let Some(flag) = it.next() {
@@ -75,6 +78,7 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
         }
         match flag.as_str() {
             "--smoke" => a.smoke = true,
+            "--skip-smoke-gate" => a.skip_smoke_gate = true,
             "--resume" => a.resume = true,
             "--retry-failed" => a.retry_failed = true,
             "--allow-dirty" => a.allow_dirty = true,
@@ -108,14 +112,14 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
                         }
                         a.seeds = Some(v);
                     }
-                    "--rounds" => a.rounds = value.parse()?,
+                    "--rounds" => a.rounds = Some(value.parse()?),
                     "--repeats" => a.repeats = value.parse()?,
                     _ => return Err(format!("unknown option {flag}").into()),
                 }
             }
         }
     }
-    if a.rounds == 0 || a.repeats == 0 || a.fanout == Some(0) || a.batch == Some(0) {
+    if a.rounds == Some(0) || a.repeats == 0 || a.fanout == Some(0) || a.batch == Some(0) {
         return Err("rounds/repeats/fanout/batch must be positive".into());
     }
     let only = |flag: &str, actions: &[&str]| -> Result<()> {
@@ -128,6 +132,10 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
     only("--fixture", &["verify"])?;
     only("--rounds", &["churn"])?;
     only("--repeats", &["confirm"])?;
+    only("--skip-smoke-gate", &["run"])?;
+    if a.smoke && a.skip_smoke_gate {
+        return Err("--skip-smoke-gate is meaningless with --smoke".into());
+    }
     only("--seeds", &["run", "export"])?;
     only("--extension", &["run", "verify", "churn", "confirm"])?;
     for flag in [
@@ -283,6 +291,17 @@ struct Provenance {
     extension: Option<PathBuf>,
     worktree_status: String,
     hardware: Hardware,
+    /// Whether a full run was admitted by a completed smoke run or by `--skip-smoke-gate`.
+    #[serde(default)]
+    smoke_gate: SmokeGate,
+}
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum SmokeGate {
+    #[default]
+    NotApplicable,
+    Passed,
+    Skipped,
 }
 fn provenance() -> Provenance {
     let started_unix_ms = now_ms();
@@ -295,6 +314,7 @@ fn provenance() -> Provenance {
         extension: None,
         worktree_status: command("git", &["status", "--porcelain"]),
         hardware: hardware(),
+        smoke_gate: SmokeGate::NotApplicable,
     }
 }
 struct Context {
@@ -448,8 +468,13 @@ thread_local! {
     static INJECTED_FAILURE: std::cell::RefCell<Option<String>> =
         const { std::cell::RefCell::new(None) };
 }
+/// Smoke selections have their own file, so a smoke and a full run can share one output directory.
+fn selection_file(out: &Path, action: &str, smoke: bool) -> PathBuf {
+    let suffix = if smoke { "-smoke" } else { "" };
+    out.join(format!("selection-{action}{suffix}.json"))
+}
 fn selection_path(a: &Args) -> PathBuf {
-    a.out.join(format!("selection-{}.json", a.action))
+    selection_file(&a.out, &a.action, a.smoke)
 }
 fn merge_selection(path: &Path, mut wanted: Selection) -> Result<Selection> {
     if path.exists() {
@@ -481,13 +506,8 @@ fn merge_selection(path: &Path, mut wanted: Selection) -> Result<Selection> {
 fn load_config(a: &Args) -> Result<M2aConfig> {
     let mut cfg = M2aConfig::load(&a.workload)?;
     if a.smoke {
-        cfg.single_rows = 4096;
-        cfg.single_groups = 64;
-        cfg.join_rows = 4096;
-        cfg.join_groups = 64;
-        cfg.batch_sizes = vec![10, 100];
+        cfg = cfg.smoke_variant();
     }
-    cfg.validate()?;
     if !a
         .profiles
         .iter()
@@ -520,9 +540,9 @@ fn select_cells(cfg: &M2aConfig, a: &Args) -> Result<Vec<Cell>> {
         .filter(|c| {
             a.action != "churn"
                 || (c.shape == Shape::Join
-                    && c.fanout == 64
-                    && (a.smoke || c.batch_size == 1000)
-                    && ["uniform_uniform", "zipf_hot"].contains(&c.profile.label()))
+                    && c.fanout == cfg.churn.fanout
+                    && (a.smoke || c.batch_size == cfg.churn.batch)
+                    && cfg.churn.profiles.iter().any(|p| p == c.profile.label()))
         })
         .collect();
     if selected.is_empty() {
@@ -551,7 +571,7 @@ fn manifest(f: &Fixture, a: &Args, repeat: usize, ctx: &Context) -> Result<Manif
     started.started_utc = command("date", &["-u", "+%Y-%m-%dT%H:%M:%SZ"]);
     started.start_load = command("uptime", &[]);
     Ok(Manifest {
-        schema_version: 3,
+        schema_version: 4,
         kind: a.action.clone(),
         cell: f.cell.clone(),
         seed: f.seed,
@@ -1189,6 +1209,109 @@ fn run_cases(
         ))))
     }
 }
+/// Confirmation cells repeat the seed-42 cells of the matrix.
+const CONFIRM_SEED: u64 = 42;
+fn case_set(
+    kind: &str,
+    cells: &[Cell],
+    seeds: &[u64],
+    repeats: usize,
+    rounds: usize,
+) -> BTreeSet<ExpectedCase> {
+    let mut expected = BTreeSet::new();
+    for c in cells {
+        for &seed in seeds {
+            for repeat in 0..repeats {
+                expected.insert(ExpectedCase {
+                    kind: kind.to_owned(),
+                    cell: c.id(),
+                    seed,
+                    repeat,
+                    rounds,
+                });
+            }
+        }
+    }
+    expected
+}
+/// The cases this invocation runs. Churn seed and rounds come from the workload file;
+/// `--rounds` overrides the rounds.
+fn planned_cases(a: &Args, cfg: &M2aConfig, cells: &[Cell]) -> Result<BTreeSet<ExpectedCase>> {
+    let seeds = match a.action.as_str() {
+        "churn" => vec![cfg.churn.seed],
+        "confirm" => {
+            if !cfg.seeds.contains(&CONFIRM_SEED) {
+                return Err(format!("seed {CONFIRM_SEED} required for confirmation").into());
+            }
+            vec![CONFIRM_SEED]
+        }
+        _ => a.seeds.clone().unwrap_or_else(|| cfg.seeds.clone()),
+    };
+    let repeats = if a.action == "confirm" { a.repeats } else { 1 };
+    let rounds = if a.action == "churn" {
+        a.rounds.unwrap_or(cfg.churn.rounds)
+    } else {
+        cfg.total_rounds()?
+    };
+    Ok(case_set(&a.action, cells, &seeds, repeats, rounds))
+}
+/// Every case of the unfiltered smoke matrix, which a full run requires to have completed.
+fn smoke_plan(smoke: &M2aConfig) -> Result<BTreeSet<ExpectedCase>> {
+    Ok(case_set(
+        "run",
+        &smoke.cells()?,
+        &smoke.seeds,
+        1,
+        smoke.total_rounds()?,
+    ))
+}
+fn check_smoke_completed(a: &Args, ctx: &Context) -> Result<()> {
+    let smoke = M2aConfig::load(&a.workload)?.smoke_variant();
+    let path = selection_file(&a.out, "run", true);
+    if !path.exists() {
+        return Err(format!("no smoke run found at {}", path.display()).into());
+    }
+    let selection: Selection = read_json(&path)?;
+    let identity = &selection.identity;
+    if identity.config_sha256 != json_hash(&smoke)?
+        || identity.source_sha256 != ctx.source_sha256
+        || identity.runner_sha256 != ctx.runner_sha256
+        || identity.extension_sha256 != ctx.extension_sha256
+    {
+        return Err("the smoke run used a different workload, source, runner or extension".into());
+    }
+    let plan = smoke_plan(&smoke)?;
+    if !plan.is_subset(&selection.expected) {
+        return Err("the smoke run does not cover every smoke case".into());
+    }
+    if let Some(key) = plan
+        .iter()
+        .find(|key| !case_dir(a, key).join(marker_name(a)).exists())
+    {
+        return Err(format!("smoke case {} seed {} is not complete", key.cell, key.seed).into());
+    }
+    Ok(())
+}
+/// A full `run` starts only after the smoke matrix passed with this exact source, runner and
+/// extension in the same output directory, unless `--skip-smoke-gate` is given. The outcome
+/// is recorded in the provenance.
+fn apply_smoke_gate(a: &Args, ctx: &mut Context) -> Result<()> {
+    if a.action != "run" || a.smoke {
+        return Ok(());
+    }
+    ctx.provenance.smoke_gate = if a.skip_smoke_gate {
+        SmokeGate::Skipped
+    } else {
+        check_smoke_completed(a, ctx).map_err(|reason| {
+            format!(
+                "full run requires a completed smoke run: {reason}; run `m2a run --smoke --out {}` first or pass --skip-smoke-gate",
+                a.out.display()
+            )
+        })?;
+        SmokeGate::Passed
+    };
+    Ok(())
+}
 fn run_inner(a: &Args, ctx: &Context) -> Result<()> {
     if a.action == "verify" {
         let f: Fixture = read_json(a.fixture.as_ref().unwrap())?;
@@ -1209,34 +1332,7 @@ fn run_inner(a: &Args, ctx: &Context) -> Result<()> {
     }
     let cfg = load_config(a)?;
     let cells = select_cells(&cfg, a)?;
-    let seeds = if matches!(a.action.as_str(), "churn" | "confirm") {
-        if !cfg.seeds.contains(&42) {
-            return Err("seed 42 required for confirmation/churn".into());
-        }
-        vec![42]
-    } else {
-        a.seeds.clone().unwrap_or_else(|| cfg.seeds.clone())
-    };
-    let repeats = if a.action == "confirm" { a.repeats } else { 1 };
-    let rounds = if a.action == "churn" {
-        a.rounds
-    } else {
-        cfg.total_rounds()?
-    };
-    let mut expected = BTreeSet::new();
-    for c in &cells {
-        for &seed in &seeds {
-            for repeat in 0..repeats {
-                expected.insert(ExpectedCase {
-                    kind: a.action.clone(),
-                    cell: c.id(),
-                    seed,
-                    repeat,
-                    rounds,
-                });
-            }
-        }
-    }
+    let expected = planned_cases(a, &cfg, &cells)?;
     refuse_completed_cases(a, &expected)?;
     let plan = register_selection(a, json_hash(&cfg)?, ctx, expected.clone())?;
     run_cases(a, ctx, &expected, &plan, |key, phase| {
@@ -1256,13 +1352,17 @@ fn run_inner(a: &Args, ctx: &Context) -> Result<()> {
 fn run(a: Args) -> Result<()> {
     fs::create_dir_all(&a.out)?;
     let provenance = provenance();
-    let ctx = match context(&a, provenance.clone()) {
+    let mut ctx = match context(&a, provenance.clone()) {
         Ok(ctx) => ctx,
         Err(error) => {
             record_failure(&a, &provenance, None, None, "setup", &*error)?;
             return Err(error);
         }
     };
+    if let Err(error) = apply_smoke_gate(&a, &mut ctx) {
+        record_failure(&a, &ctx.provenance, Some(&ctx), None, "smoke_gate", &*error)?;
+        return Err(error);
+    }
     if let Err(error) = run_inner(&a, &ctx) {
         if error.is::<CasesFailed>() {
             return Err(error);
@@ -1291,6 +1391,7 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ivmlite_workload::m2a::Table;
     fn args(items: &[&str]) -> Args {
         parse(items.iter().map(|s| (*s).to_owned())).unwrap()
     }
@@ -1319,6 +1420,7 @@ mod tests {
                 extension: None,
                 worktree_status: String::new(),
                 hardware,
+                smoke_gate: SmokeGate::NotApplicable,
             },
         }
     }
@@ -1871,6 +1973,211 @@ mod tests {
     fn retry_failed_requires_resume() {
         assert!(parse(["run", "--retry-failed"].map(str::to_owned)).is_err());
         assert!(parse(["run", "--resume", "--retry-failed"].map(str::to_owned)).is_ok());
+    }
+    /// The shipped workload with the churn rounds and the smoke single-table rows replaced.
+    fn edited_workload(dir: &Path) -> PathBuf {
+        let text = fs::read_to_string(repo().join("workloads/m2a.toml"))
+            .unwrap()
+            .replace("rounds = 100", "rounds = 7")
+            .replace("single_rows = 4096", "single_rows = 512");
+        let path = dir.join("workload.toml");
+        fs::write(&path, text).unwrap();
+        path
+    }
+    fn args_for(items: &[&str], workload: &Path, out: &Path) -> Args {
+        let mut a = args(items);
+        a.workload = workload.to_owned();
+        a.out = out.to_owned();
+        a
+    }
+    fn plan_of(a: &Args) -> (M2aConfig, BTreeSet<ExpectedCase>) {
+        let cfg = load_config(a).unwrap();
+        let cells = select_cells(&cfg, a).unwrap();
+        let plan = planned_cases(a, &cfg, &cells).unwrap();
+        (cfg, plan)
+    }
+    #[test]
+    fn churn_and_smoke_come_from_the_workload_file() {
+        let dir = temp();
+        let workload = edited_workload(&dir);
+
+        let (cfg, plan) = plan_of(&args_for(&["churn"], &workload, &dir));
+        assert_eq!(cfg.churn.rounds, 7);
+        assert_eq!(plan.len(), 2);
+        assert!(plan.iter().all(|c| c.rounds == 7 && c.seed == 42));
+        assert!(plan.iter().all(|c| c.cell.contains("_f64_b1000")));
+
+        let (_, plan) = plan_of(&args_for(&["churn", "--rounds", "3"], &workload, &dir));
+        assert!(plan.iter().all(|c| c.rounds == 3), "--rounds overrides");
+
+        let smoke = args_for(&["churn", "--smoke"], &workload, &dir);
+        let (cfg, plan) = plan_of(&smoke);
+        assert_eq!(plan.len(), 4, "two profiles at both smoke batch sizes");
+        assert!(plan
+            .iter()
+            .all(|c| c.cell.contains("_n4096_g64_f64_b") && c.rounds == 7));
+
+        assert_eq!(cfg.single_rows, 512);
+        let cell = cfg
+            .cells()
+            .unwrap()
+            .into_iter()
+            .find(|c| c.shape == Shape::Single)
+            .unwrap();
+        let fixture = cfg.generate(&cell, 1).unwrap();
+        assert_eq!(fixture.tables[&Table::Events].len(), 512);
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn smoke_and_full_runs_keep_separate_selection_files() {
+        let out = Path::new("out");
+        let full = args_for(&["run"], Path::new("w.toml"), out);
+        let smoke = args_for(&["run", "--smoke"], Path::new("w.toml"), out);
+        assert_eq!(selection_path(&full), out.join("selection-run.json"));
+        assert_eq!(selection_path(&smoke), out.join("selection-run-smoke.json"));
+    }
+    /// Writes the smoke selection a finished `run --smoke` leaves: every smoke case planned,
+    /// complete and carrying a completion marker.
+    fn finished_smoke_run(a: &Args, ctx: &Context) {
+        let smoke = M2aConfig::load(&a.workload).unwrap().smoke_variant();
+        let plan = smoke_plan(&smoke).unwrap();
+        for key in &plan {
+            let dir = case_dir(a, key);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("completed.json"), "{}").unwrap();
+        }
+        let summary = Summary {
+            planned: plan.len() as u64,
+            complete: plan.len() as u64,
+            failed: vec![],
+        };
+        write_json(
+            &selection_file(&a.out, "run", true),
+            &Selection {
+                identity: SelectionIdentity {
+                    schema_version: 1,
+                    kind: "run".into(),
+                    config_sha256: json_hash(&smoke).unwrap(),
+                    source_sha256: ctx.source_sha256.clone(),
+                    runner_sha256: ctx.runner_sha256.clone(),
+                    extension_sha256: ctx.extension_sha256.clone(),
+                    smoke: true,
+                    hardware: ctx.provenance.hardware.clone(),
+                },
+                expected: plan,
+                invocations: vec![],
+                summary,
+            },
+        )
+        .unwrap();
+    }
+    #[test]
+    fn full_run_refuses_without_a_matching_completed_smoke() {
+        let dir = temp();
+        let workload = repo().join("workloads/m2a.toml");
+        let mut ctx = test_context();
+        ctx.extension_sha256 = Some("extension".into());
+
+        let full = args_for(&["run"], &workload, &dir);
+        let error = apply_smoke_gate(&full, &mut ctx).unwrap_err().to_string();
+        assert!(error.contains("smoke"), "{error}");
+        assert_eq!(ctx.provenance.smoke_gate, SmokeGate::NotApplicable);
+
+        finished_smoke_run(&full, &ctx);
+        apply_smoke_gate(&full, &mut ctx).unwrap();
+        assert_eq!(ctx.provenance.smoke_gate, SmokeGate::Passed);
+
+        let mut other_runner = test_context();
+        other_runner.extension_sha256 = Some("extension".into());
+        other_runner.runner_sha256 = "another runner".into();
+        let error = apply_smoke_gate(&full, &mut other_runner).unwrap_err();
+        assert!(error.to_string().contains("smoke"), "{error}");
+
+        let mut other_extension = test_context();
+        other_extension.extension_sha256 = Some("another extension".into());
+        assert!(apply_smoke_gate(&full, &mut other_extension).is_err());
+
+        let key = smoke_plan(&M2aConfig::load(&workload).unwrap().smoke_variant())
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+        fs::remove_file(case_dir(&full, &key).join("completed.json")).unwrap();
+        let error = apply_smoke_gate(&full, &mut ctx).unwrap_err();
+        assert!(error.to_string().contains("not complete"), "{error}");
+
+        let empty = temp();
+        let mut skipping = args_for(&["run", "--skip-smoke-gate"], &workload, &empty);
+        let mut ctx = test_context();
+        apply_smoke_gate(&skipping, &mut ctx).unwrap();
+        assert_eq!(ctx.provenance.smoke_gate, SmokeGate::Skipped);
+        let recorded = manifest(&tiny_fixture(), &skipping, 0, &ctx).unwrap();
+        let json = serde_json::to_value(&recorded).unwrap();
+        assert_eq!(json["provenance"]["smoke_gate"], "skipped");
+
+        skipping.smoke = true;
+        let mut ctx = test_context();
+        apply_smoke_gate(&skipping, &mut ctx).unwrap();
+        assert_eq!(ctx.provenance.smoke_gate, SmokeGate::NotApplicable);
+        fs::remove_dir_all(dir).unwrap();
+        fs::remove_dir_all(empty).unwrap();
+    }
+    #[test]
+    fn the_gate_applies_only_to_full_runs() {
+        let dir = temp();
+        let workload = repo().join("workloads/m2a.toml");
+        for items in [
+            &["run", "--smoke"][..],
+            &["churn"],
+            &["confirm"],
+            &["export"],
+        ] {
+            let mut ctx = test_context();
+            apply_smoke_gate(&args_for(items, &workload, &dir), &mut ctx).unwrap();
+            assert_eq!(
+                ctx.provenance.smoke_gate,
+                SmokeGate::NotApplicable,
+                "{items:?}"
+            );
+        }
+        assert!(parse(["run", "--smoke", "--skip-smoke-gate"].map(str::to_owned)).is_err());
+        assert!(parse(["churn", "--skip-smoke-gate"].map(str::to_owned)).is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
+    /// The first pair is the plan's example and happens to survive a default decode;
+    /// the second pair is one that a default `serde_json` decode shifts by one ULP.
+    #[test]
+    fn fixture_floats_round_trip_exactly() {
+        let dir = temp();
+        for (zipf_exponent, hot_group_fraction) in [
+            (1.170_000_000_000_000_2, 0.300_000_000_000_000_04),
+            (1.004_721_517_217_110_7, 0.104_940_354_630_094_99),
+        ] {
+            let mut config = cfg();
+            config.single_rows = 800;
+            config.single_groups = 20;
+            config.join_rows = 800;
+            config.join_groups = 20;
+            config.fanouts = vec![8];
+            config.batch_sizes = vec![10];
+            config.zipf_exponent = zipf_exponent;
+            config.hot_group_fraction = hot_group_fraction;
+            let cell = config.cells().unwrap().remove(0);
+            let f = config.generate(&cell, 1).unwrap();
+            let path = dir.join(format!("fixture-{zipf_exponent}.json"));
+            save_fixture(&path, &f).unwrap();
+            let loaded: Fixture = read_json(&path).unwrap();
+            assert_eq!(
+                loaded.config.zipf_exponent.to_bits(),
+                zipf_exponent.to_bits()
+            );
+            assert_eq!(
+                loaded.config.hot_group_fraction.to_bits(),
+                hot_group_fraction.to_bits()
+            );
+            assert_eq!(json_hash(&loaded).unwrap(), json_hash(&f).unwrap());
+        }
+        fs::remove_dir_all(dir).unwrap();
     }
     #[test]
     fn json_roundtrip_is_content_stable() {

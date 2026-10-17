@@ -108,6 +108,32 @@ pub struct M2aConfig {
     pub warmup_rounds: usize,
     pub measured_rounds: usize,
     pub operation_order: Vec<OperationKind>,
+    pub churn: ChurnConfig,
+    pub smoke: SmokeConfig,
+}
+
+/// Bounded churn probe: join cells of these profiles at one fanout and batch
+/// size, replayed for `rounds` balanced batches from one seed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChurnConfig {
+    /// Profile labels; each must name a profile of the matrix.
+    pub profiles: Vec<String>,
+    pub fanout: usize,
+    pub batch: usize,
+    pub seed: u64,
+    pub rounds: usize,
+}
+
+/// Reduced dimensions the smoke matrix uses in place of the full ones.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SmokeConfig {
+    pub single_rows: usize,
+    pub single_groups: usize,
+    pub join_rows: usize,
+    pub join_groups: usize,
+    pub batch_sizes: Vec<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -240,7 +266,55 @@ impl M2aConfig {
         config.validate()?;
         Ok(config)
     }
+    /// The same workload at smoke dimensions: only sizes and batch sizes change.
+    pub fn smoke_variant(&self) -> Self {
+        Self {
+            single_rows: self.smoke.single_rows,
+            single_groups: self.smoke.single_groups,
+            join_rows: self.smoke.join_rows,
+            join_groups: self.smoke.join_groups,
+            batch_sizes: self.smoke.batch_sizes.clone(),
+            ..self.clone()
+        }
+    }
+    /// Validates the whole workload file: the matrix, the churn probe and the
+    /// smoke dimensions. `cells` and fixtures check the matrix alone, because a
+    /// smoke variant carries the full churn section unchanged.
     pub fn validate(&self) -> Result<(), WorkloadError> {
+        self.validate_matrix()?;
+        self.validate_churn()?;
+        self.smoke_variant()
+            .validate_matrix()
+            .map_err(|e| invalid(format!("smoke: {e}")))
+    }
+    fn validate_churn(&self) -> Result<(), WorkloadError> {
+        let churn = &self.churn;
+        if churn.profiles.is_empty() {
+            return Err(invalid("churn.profiles must not be empty"));
+        }
+        reject_duplicates("M2a churn.profiles", &churn.profiles)?;
+        for label in &churn.profiles {
+            if !self.profiles.iter().any(|p| p.label() == label) {
+                return Err(invalid(format!(
+                    "churn.profiles names {label:?}, which is not a profile of the workload"
+                )));
+            }
+        }
+        if !self.fanouts.contains(&churn.fanout) {
+            return Err(invalid("churn.fanout must be one of fanouts"));
+        }
+        if !self.batch_sizes.contains(&churn.batch) {
+            return Err(invalid("churn.batch must be one of batch_sizes"));
+        }
+        if !self.seeds.contains(&churn.seed) {
+            return Err(invalid("churn.seed must be one of seeds"));
+        }
+        if churn.rounds == 0 {
+            return Err(invalid("churn.rounds must be positive"));
+        }
+        self.check_trace_size(churn.batch, churn.rounds)
+    }
+    fn validate_matrix(&self) -> Result<(), WorkloadError> {
         if self.schema_version != 1 {
             return Err(invalid("unsupported M2a schema_version"));
         }
@@ -394,7 +468,7 @@ impl M2aConfig {
         Ok(())
     }
     pub fn cells(&self) -> Result<Vec<Cell>, WorkloadError> {
-        self.validate()?;
+        self.validate_matrix()?;
         let mut cells = Vec::new();
         for &profile in &self.profiles {
             for &batch_size in &self.batch_sizes {
@@ -1156,6 +1230,78 @@ mod tests {
         let result = M2aConfig::load(&path);
         std::fs::remove_file(path).unwrap();
         assert!(result.unwrap_err().to_string().contains("batch_sizes"));
+    }
+    fn load_text(text: &str) -> Result<M2aConfig, WorkloadError> {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "ivmlite-m2a-churn-{}-{}.toml",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::write(&path, text).unwrap();
+        let result = M2aConfig::load(&path);
+        std::fs::remove_file(path).unwrap();
+        result
+    }
+    fn shipped_text() -> String {
+        std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../workloads/m2a.toml"),
+        )
+        .unwrap()
+    }
+    #[test]
+    fn invalid_churn_is_rejected() {
+        let text = shipped_text();
+        for (from, to, field) in [
+            (
+                "\"zipf_hot\"]\nfanout",
+                "\"zipf_bogus\"]\nfanout",
+                "churn.profiles",
+            ),
+            ("fanout = 64\nbatch", "fanout = 3\nbatch", "churn.fanout"),
+            ("batch = 1000\nseed", "batch = 20\nseed", "churn.batch"),
+            ("seed = 42\nrounds", "seed = 43\nrounds", "churn.seed"),
+            ("rounds = 100\n", "rounds = 0\n", "churn.rounds"),
+        ] {
+            assert!(text.contains(from), "{from}");
+            let error = load_text(&text.replace(from, to)).unwrap_err().to_string();
+            assert!(error.contains(field), "{field}: {error}");
+        }
+    }
+    #[test]
+    fn invalid_smoke_dimensions_are_rejected_naming_smoke() {
+        let text = shipped_text();
+        let bad = text.replace("single_groups = 64", "single_groups = 4097");
+        let error = load_text(&bad).unwrap_err().to_string();
+        assert!(error.contains("smoke"), "{error}");
+        let bad = text.replace("batch_sizes = [10, 100]", "batch_sizes = [10, 15]");
+        assert!(load_text(&bad).unwrap_err().to_string().contains("smoke"));
+    }
+    #[test]
+    fn smoke_variant_changes_only_sizes_and_batch_sizes() {
+        let config = shipped();
+        let smoke = config.smoke_variant();
+        assert_eq!(
+            (
+                smoke.single_rows,
+                smoke.single_groups,
+                smoke.join_rows,
+                smoke.join_groups
+            ),
+            (4_096, 64, 4_096, 64)
+        );
+        assert_eq!(smoke.batch_sizes, vec![10, 100]);
+        assert_eq!(
+            M2aConfig {
+                single_rows: config.single_rows,
+                single_groups: config.single_groups,
+                join_rows: config.join_rows,
+                join_groups: config.join_groups,
+                batch_sizes: config.batch_sizes.clone(),
+                ..smoke
+            },
+            config
+        );
     }
     #[test]
     fn unavailable_hot_partition_is_an_error_without_fallback() {

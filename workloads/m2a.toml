@@ -21,3 +21,21 @@ measured_rounds = 5
 # INSERT consumes the preceding DELETE's join key, with a fresh primary key.
 # Group-uniform existing-row selection differs from row-uniform selection.
 operation_order = ["delete", "insert", "delete", "insert", "amount", "amount", "amount", "group", "group", "group"]
+
+# Bounded churn probe (spec section 5): join cells of these profiles at one
+# fanout and batch size, replayed from one seed for `rounds` balanced batches.
+[churn]
+profiles = ["uniform_uniform", "zipf_hot"]
+fanout = 64
+batch = 1000
+seed = 42
+rounds = 100
+
+# Smoke matrix: the same profiles, seeds and fanouts at reduced size. Smoke
+# churn runs at every smoke batch size.
+[smoke]
+single_rows = 4096
+single_groups = 64
+join_rows = 4096
+join_groups = 64
+batch_sizes = [10, 100]
