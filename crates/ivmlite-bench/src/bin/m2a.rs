@@ -39,6 +39,7 @@ struct Args {
     batch: Option<usize>,
     smoke: bool,
     resume: bool,
+    retry_failed: bool,
     allow_dirty: bool,
     rounds: usize,
     repeats: usize,
@@ -59,12 +60,13 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
         batch: None,
         smoke: false,
         resume: false,
+        retry_failed: false,
         allow_dirty: false,
         rounds: 100,
         repeats: 5,
     };
     if !["export", "run", "verify", "churn", "confirm"].contains(&a.action.as_str()) {
-        return Err("usage: m2a {export|run|verify|churn|confirm} [--workload FILE] [--out DIR] [--extension LIB] [--fixture FILE] [--cells IDS] [--profiles LABELS] [--shape single|join] [--fanout N] [--batch N] [--seeds N,...] [--smoke] [--resume] [--allow-dirty] [--rounds N] [--repeats N]".into());
+        return Err("usage: m2a {export|run|verify|churn|confirm} [--workload FILE] [--out DIR] [--extension LIB] [--fixture FILE] [--cells IDS] [--profiles LABELS] [--shape single|join] [--fanout N] [--batch N] [--seeds N,...] [--smoke] [--resume] [--retry-failed] [--allow-dirty] [--rounds N] [--repeats N]".into());
     }
     let mut seen = BTreeSet::new();
     while let Some(flag) = it.next() {
@@ -74,6 +76,7 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
         match flag.as_str() {
             "--smoke" => a.smoke = true,
             "--resume" => a.resume = true,
+            "--retry-failed" => a.retry_failed = true,
             "--allow-dirty" => a.allow_dirty = true,
             _ => {
                 let value = it
@@ -137,6 +140,9 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
         "--smoke",
     ] {
         only(flag, &["run", "export", "churn", "confirm"])?;
+    }
+    if a.retry_failed && !a.resume {
+        return Err("--retry-failed requires --resume".into());
     }
     if a.action == "verify" && a.fixture.is_none() {
         return Err("verify requires --fixture".into());
@@ -395,13 +401,53 @@ struct SelectionIdentity {
     smoke: bool,
     hardware: Hardware,
 }
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct FailedCase {
+    cell: String,
+    seed: u64,
+    repeat: usize,
+    phase: String,
+    error: String,
+}
+/// Losses by cell: every planned case is complete, failed or not yet run.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+struct Summary {
+    planned: u64,
+    complete: u64,
+    failed: Vec<FailedCase>,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Selection {
     identity: SelectionIdentity,
     expected: BTreeSet<ExpectedCase>,
     invocations: Vec<Provenance>,
+    #[serde(default)]
+    summary: Summary,
 }
-fn merge_selection(path: &Path, mut wanted: Selection) -> Result<()> {
+/// Returned when one or more cases failed; the matrix still ran to the end.
+struct CasesFailed(String);
+impl std::fmt::Display for CasesFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+// `main` prints the Debug form, so keep it as plain as the message.
+impl std::fmt::Debug for CasesFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
+    }
+}
+impl std::error::Error for CasesFailed {}
+#[cfg(test)]
+thread_local! {
+    /// Test-only: the cell whose cases `execute_case` must fail with "injected".
+    static INJECTED_FAILURE: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+fn selection_path(a: &Args) -> PathBuf {
+    a.out.join(format!("selection-{}.json", a.action))
+}
+fn merge_selection(path: &Path, mut wanted: Selection) -> Result<Selection> {
     if path.exists() {
         let old: Selection = read_json(path)?;
         if old.identity != wanted.identity {
@@ -422,8 +468,11 @@ fn merge_selection(path: &Path, mut wanted: Selection) -> Result<()> {
         let mut invocations = old.invocations;
         invocations.extend(wanted.invocations);
         wanted.invocations = invocations;
+        wanted.summary = old.summary;
     }
-    write_json(path, &wanted)
+    wanted.summary.planned = wanted.expected.len() as u64;
+    write_json(path, &wanted)?;
+    Ok(wanted)
 }
 fn load_config(a: &Args) -> Result<M2aConfig> {
     let mut cfg = M2aConfig::load(&a.workload)?;
@@ -759,6 +808,13 @@ fn case_dir(a: &Args, key: &ExpectedCase) -> PathBuf {
             }),
     }
 }
+fn marker_name(a: &Args) -> &'static str {
+    if a.action == "export" {
+        "export-completed.json"
+    } else {
+        "completed.json"
+    }
+}
 fn install_manifest(path: &Path, wanted: &Manifest) -> Result<Manifest> {
     if path.exists() {
         let old: Manifest = read_json(path)?;
@@ -778,6 +834,11 @@ fn execute_case(
     ctx: &Context,
     phase: &mut String,
 ) -> Result<()> {
+    #[cfg(test)]
+    if INJECTED_FAILURE.with(|cell| cell.borrow().as_deref() == Some(key.cell.as_str())) {
+        *phase = "injected".into();
+        return Err("injected".into());
+    }
     let dir = case_dir(a, key);
     fs::create_dir_all(&dir)?;
     let export = a.action == "export";
@@ -786,11 +847,7 @@ fn execute_case(
     } else {
         "manifest.json"
     };
-    let marker = if export {
-        "export-completed.json"
-    } else {
-        "completed.json"
-    };
+    let marker = marker_name(a);
     *phase = "manifest".into();
     let m = install_manifest(&dir.join(manifest_name), &manifest(f, a, key.repeat, ctx)?)?;
     save_fixture(&dir.join("fixture.json"), f)?;
@@ -922,9 +979,9 @@ fn register_selection(
     cfg_hash: String,
     ctx: &Context,
     expected: BTreeSet<ExpectedCase>,
-) -> Result<()> {
-    merge_selection(
-        &a.out.join(format!("selection-{}.json", a.action)),
+) -> Result<BTreeSet<ExpectedCase>> {
+    let merged = merge_selection(
+        &selection_path(a),
         Selection {
             identity: SelectionIdentity {
                 schema_version: 1,
@@ -938,12 +995,105 @@ fn register_selection(
             },
             expected,
             invocations: vec![ctx.provenance.clone()],
+            summary: Summary::default(),
         },
-    )
+    )?;
+    Ok(merged.expected)
+}
+fn is_failed(a: &Args, key: &ExpectedCase) -> bool {
+    let dir = case_dir(a, key);
+    dir.join("failure.json").exists() && !dir.join(marker_name(a)).exists()
+}
+fn failed_case(key: &ExpectedCase, phase: &str, error: &dyn std::fmt::Display) -> FailedCase {
+    FailedCase {
+        cell: key.cell.clone(),
+        seed: key.seed,
+        repeat: key.repeat,
+        phase: phase.to_owned(),
+        error: error.to_string(),
+    }
+}
+fn read_failed_case(a: &Args, key: &ExpectedCase) -> Result<FailedCase> {
+    let value: serde_json::Value = read_json(&case_dir(a, key).join("failure.json"))?;
+    let field = |name: &str| -> Result<String> {
+        Ok(value[name]
+            .as_str()
+            .ok_or_else(|| format!("failure.json lacks {name}"))?
+            .to_owned())
+    };
+    Ok(failed_case(key, &field("phase")?, &field("error")?))
+}
+/// Counts the full plan from this run's failures and the markers on disk, so a
+/// case that failed earlier and was skipped on resume still counts as lost.
+fn summarize(
+    a: &Args,
+    plan: &BTreeSet<ExpectedCase>,
+    failed_now: &BTreeMap<ExpectedCase, FailedCase>,
+) -> Result<Summary> {
+    let mut summary = Summary {
+        planned: plan.len() as u64,
+        ..Summary::default()
+    };
+    for key in plan {
+        if let Some(failure) = failed_now.get(key) {
+            summary.failed.push(failure.clone());
+        } else if case_dir(a, key).join(marker_name(a)).exists() {
+            summary.complete += 1;
+        } else if is_failed(a, key) {
+            summary.failed.push(read_failed_case(a, key)?);
+        }
+    }
+    Ok(summary)
+}
+/// Runs every planned case, records each failure and keeps going, then writes
+/// the loss summary into the selection file. Fails iff any case is lost.
+fn run_cases(
+    a: &Args,
+    ctx: &Context,
+    plan: &BTreeSet<ExpectedCase>,
+    mut run_one: impl FnMut(&ExpectedCase, &mut String) -> Result<()>,
+) -> Result<()> {
+    let mut failed_now = BTreeMap::new();
+    for key in plan {
+        if a.resume && !a.retry_failed && is_failed(a, key) {
+            eprintln!(
+                "skipping failed {} {} seed {} repeat {}; use --retry-failed to rerun",
+                a.action, key.cell, key.seed, key.repeat
+            );
+            continue;
+        }
+        let mut phase = "case_setup".to_owned();
+        match run_one(key, &mut phase) {
+            Ok(()) => {
+                let stale = case_dir(a, key).join("failure.json");
+                if stale.exists() {
+                    fs::remove_file(stale)?;
+                }
+            }
+            Err(error) => {
+                record_failure(a, &ctx.provenance, Some(ctx), Some(key), &phase, &error)?;
+                failed_now.insert(key.clone(), failed_case(key, &phase, &error));
+            }
+        }
+    }
+    let summary = summarize(a, plan, &failed_now)?;
+    let path = selection_path(a);
+    let mut selection: Selection = read_json(&path)?;
+    selection.summary = summary.clone();
+    write_json(&path, &selection)?;
+    if summary.failed.is_empty() {
+        Ok(())
+    } else {
+        Err(Box::new(CasesFailed(format!(
+            "{} of {} cases failed; see {}",
+            summary.failed.len(),
+            summary.planned,
+            path.display()
+        ))))
+    }
 }
 fn run_inner(a: &Args, ctx: &Context) -> Result<()> {
     if a.action == "verify" {
-        let mut phase = "fixture_load".to_owned();
         let f: Fixture = read_json(a.fixture.as_ref().unwrap())?;
         f.validate()?;
         let key = ExpectedCase {
@@ -953,12 +1103,11 @@ fn run_inner(a: &Args, ctx: &Context) -> Result<()> {
             repeat: 0,
             rounds: f.rounds,
         };
-        register_selection(a, json_hash(&f.config)?, ctx, BTreeSet::from([key.clone()]))?;
-        if let Err(error) = execute_case(a, &f, &key, ctx, &mut phase) {
-            record_failure(a, &ctx.provenance, Some(ctx), Some(&key), &phase, &error)?;
-            return Err(error);
-        }
-        return Ok(());
+        let plan =
+            register_selection(a, json_hash(&f.config)?, ctx, BTreeSet::from([key.clone()]))?;
+        return run_cases(a, ctx, &plan, |key, phase| {
+            execute_case(a, &f, key, ctx, phase)
+        });
     }
     let cfg = load_config(a)?;
     let cells = select_cells(&cfg, a)?;
@@ -990,27 +1139,20 @@ fn run_inner(a: &Args, ctx: &Context) -> Result<()> {
             }
         }
     }
-    register_selection(a, json_hash(&cfg)?, ctx, expected.clone())?;
-    for key in expected {
-        let mut phase = "generate".to_owned();
-        let result = (|| -> Result<()> {
-            let cell = cells
-                .iter()
-                .find(|c| c.id() == key.cell)
-                .ok_or("planned cell disappeared")?;
-            let f = if a.action == "churn" {
-                cfg.generate_rounds(cell, key.seed, key.rounds)?
-            } else {
-                cfg.generate(cell, key.seed)?
-            };
-            execute_case(a, &f, &key, ctx, &mut phase)
-        })();
-        if let Err(error) = result {
-            record_failure(a, &ctx.provenance, Some(ctx), Some(&key), &phase, &error)?;
-            return Err(error);
-        }
-    }
-    Ok(())
+    let plan = register_selection(a, json_hash(&cfg)?, ctx, expected)?;
+    run_cases(a, ctx, &plan, |key, phase| {
+        *phase = "generate".into();
+        let cell = cells
+            .iter()
+            .find(|c| c.id() == key.cell)
+            .ok_or("planned cell disappeared")?;
+        let f = if a.action == "churn" {
+            cfg.generate_rounds(cell, key.seed, key.rounds)?
+        } else {
+            cfg.generate(cell, key.seed)?
+        };
+        execute_case(a, &f, key, ctx, phase)
+    })
 }
 fn run(a: Args) -> Result<()> {
     fs::create_dir_all(&a.out)?;
@@ -1023,6 +1165,9 @@ fn run(a: Args) -> Result<()> {
         }
     };
     if let Err(error) = run_inner(&a, &ctx) {
+        if error.is::<CasesFailed>() {
+            return Err(error);
+        }
         let recorded = read_json::<serde_json::Value>(&a.out.join("failure.json"))
             .ok()
             .is_some_and(|v| v["invocation_id"].as_str() == Some(&ctx.provenance.invocation_id));
@@ -1213,6 +1358,7 @@ mod tests {
                 identity: identity.clone(),
                 expected: BTreeSet::from([first.clone(), second.clone()]),
                 invocations: vec![],
+                summary: Summary::default(),
             },
         )
         .unwrap();
@@ -1222,6 +1368,7 @@ mod tests {
                 identity: identity.clone(),
                 expected: BTreeSet::from([second]),
                 invocations: vec![],
+                summary: Summary::default(),
             },
         )
         .unwrap();
@@ -1236,7 +1383,8 @@ mod tests {
             Selection {
                 identity: changed,
                 expected: BTreeSet::from([first]),
-                invocations: vec![]
+                invocations: vec![],
+                summary: Summary::default()
             }
         )
         .is_err());
@@ -1334,6 +1482,114 @@ mod tests {
             .contains("artifact hash differs"));
         assert_eq!(phase, "resume_validation");
         fs::remove_dir_all(dir).unwrap();
+    }
+    fn smoke_run_args(out: &Path) -> Args {
+        let mut a = args(&["run", "--smoke", "--seeds", "1", "--shape", "single"]);
+        a.workload = repo().join("workloads/m2a.toml");
+        a.out = out.to_owned();
+        a.batch = Some(10);
+        a
+    }
+    fn extension_context() -> Context {
+        let mut ctx = test_context();
+        let library = ivmlite_test::extension_library();
+        ctx.extension_sha256 = Some(file_hash(&library).unwrap());
+        ctx.library = Some(library);
+        ctx
+    }
+    /// Three planned smoke cells, ordered as the runner executes them.
+    fn three_smoke_keys(a: &Args) -> Vec<ExpectedCase> {
+        let cfg = load_config(a).unwrap();
+        let mut cells: Vec<_> = select_cells(&cfg, a)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.id())
+            .collect();
+        cells.sort();
+        cells.truncate(3);
+        cells
+            .into_iter()
+            .map(|cell| ExpectedCase {
+                kind: "run".into(),
+                cell,
+                seed: 1,
+                repeat: 0,
+                rounds: cfg.total_rounds().unwrap(),
+            })
+            .collect()
+    }
+    fn set_injected_failure(cell: Option<&str>) {
+        INJECTED_FAILURE.with(|slot| *slot.borrow_mut() = cell.map(str::to_owned));
+    }
+    fn stored_summary(a: &Args) -> Summary {
+        read_json::<Selection>(&selection_path(a)).unwrap().summary
+    }
+    #[test]
+    fn a_failing_case_is_recorded_and_the_rest_still_run() {
+        let dir = temp();
+        let mut a = smoke_run_args(&dir);
+        let keys = three_smoke_keys(&a);
+        a.cells = keys.iter().map(|k| k.cell.clone()).collect();
+        set_injected_failure(Some(&keys[1].cell));
+        let error = run_inner(&a, &extension_context()).unwrap_err();
+        set_injected_failure(None);
+        assert!(error.is::<CasesFailed>());
+        assert!(error.to_string().contains("1 of 3 cases failed"), "{error}");
+        assert!(case_dir(&a, &keys[0]).join("completed.json").exists());
+        assert!(case_dir(&a, &keys[2]).join("completed.json").exists());
+        let failed = case_dir(&a, &keys[1]);
+        assert!(!failed.join("completed.json").exists());
+        let failure: serde_json::Value = read_json(&failed.join("failure.json")).unwrap();
+        assert_eq!(failure["phase"], "injected");
+        assert_eq!(failure["error"], "injected");
+        let summary = stored_summary(&a);
+        assert_eq!((summary.planned, summary.complete), (3, 2));
+        assert_eq!(
+            summary.failed,
+            vec![FailedCase {
+                cell: keys[1].cell.clone(),
+                seed: 1,
+                repeat: 0,
+                phase: "injected".into(),
+                error: "injected".into(),
+            }]
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn resume_skips_failed_cases_unless_retry_failed_is_set() {
+        let dir = temp();
+        let mut a = smoke_run_args(&dir);
+        let keys = three_smoke_keys(&a);
+        a.cells = keys.iter().map(|k| k.cell.clone()).collect();
+        let ctx = extension_context();
+        set_injected_failure(Some(&keys[1].cell));
+        run_inner(&a, &ctx).unwrap_err();
+        set_injected_failure(None);
+        let failed = case_dir(&a, &keys[1]);
+
+        a.resume = true;
+        let error = run_inner(&a, &ctx).unwrap_err();
+        assert!(error.to_string().contains("1 of 3 cases failed"), "{error}");
+        assert!(!failed.join("completed.json").exists());
+        assert!(failed.join("failure.json").exists());
+        let summary = stored_summary(&a);
+        assert_eq!((summary.complete, summary.failed.len()), (2, 1));
+        assert_eq!(summary.failed[0].phase, "injected");
+
+        a.retry_failed = true;
+        run_inner(&a, &ctx).unwrap();
+        assert!(failed.join("completed.json").exists());
+        assert!(!failed.join("failure.json").exists());
+        let summary = stored_summary(&a);
+        assert_eq!((summary.planned, summary.complete), (3, 3));
+        assert!(summary.failed.is_empty());
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn retry_failed_requires_resume() {
+        assert!(parse(["run", "--retry-failed"].map(str::to_owned)).is_err());
+        assert!(parse(["run", "--resume", "--retry-failed"].map(str::to_owned)).is_ok());
     }
     #[test]
     fn json_roundtrip_is_content_stable() {
