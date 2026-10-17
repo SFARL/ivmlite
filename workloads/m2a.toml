@@ -1,0 +1,23 @@
+# Portable M2a schema version 1. Every engine replays the exported fixture and
+# trace; this file derives the complete 32-cell matrix before seed expansion.
+schema_version = 1
+name = "m2a-nonuniform"
+seeds = [1, 42, 2026]
+profiles = ["uniform_uniform", "zipf_uniform", "uniform_hot", "zipf_hot"]
+batch_sizes = [10, 1000]
+fanouts = [1, 8, 64]
+single_rows = 100000
+single_groups = 1000
+join_rows = 32768
+join_groups = 1024
+zipf_exponent = 1.2
+# First floor(group_cardinality * fraction) group ranks form the hot partition.
+hot_group_fraction = 0.1
+hot_target_fraction = 0.8
+amount_min = -100
+amount_max = 100
+warmup_rounds = 1
+measured_rounds = 5
+# INSERT consumes the preceding DELETE's join key, with a fresh primary key.
+# Group-uniform existing-row selection differs from row-uniform selection.
+operation_order = ["delete", "insert", "delete", "insert", "amount", "amount", "amount", "group", "group", "group"]

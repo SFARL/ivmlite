@@ -1,0 +1,11 @@
+CREATE TABLE orders(id INTEGER PRIMARY KEY,k TEXT,v INTEGER) STRICT;
+INSERT INTO orders VALUES(1,'a',1),(2,'a',2);
+CREATE MATERIALIZED VIEW totals AS SELECT k,COUNT(*) AS n,SUM(v) AS s FROM orders GROUP BY k;
+BEGIN;
+ UPDATE orders SET v=2 WHERE id=1;
+ COMMIT;
+ BEGIN;
+ UPDATE orders SET v=3 WHERE id=1;
+ COMMIT;
+SELECT 'committed_twice',quote(k),n,quote(s),typeof(s),CAST(s AS INTEGER) FROM totals ORDER BY k;
+SELECT 'committed_twice_full',quote(k),n,quote(s),typeof(s),CAST(s AS INTEGER) FROM (SELECT k,COUNT(*) AS n,SUM(v) AS s FROM orders GROUP BY k) ORDER BY k;

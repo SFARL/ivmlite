@@ -1,0 +1,55 @@
+{
+  "nexmark": {
+    "revision": "6b3646c3baec701f1fa74baf938d235f742e5d3c",
+    "tracked_clean": true
+  },
+  "turso": {
+    "revision": "1f48d31b11effb623c2ebd5df6216bb6753d6fe5",
+    "tracked_clean": true
+  },
+  "schema_version": 1,
+  "captured_at_utc": "2026-10-16T04:45:19.882972+00:00",
+  "host": {
+    "os": "Darwin",
+    "release": "25.2.0",
+    "architecture": "arm64"
+  },
+  "python_version": "3.14.4",
+  "sqlite_version": "3.53.0",
+  "runner_sha256": "47190d32301ca169ff4ab6a28b5ee1de4c1e3630f92e9e050c8dec8c264ac7a4",
+  "extension_sha256": "8448448b6ea64ccf54fb59b3f8fc1aff8c0bef14dbaa37fd68e23ca2649a53d4",
+  "turso_binary_sha256": "712af68f3f5980491f1c070a56cbd52d266a760a9bb689e86b81280e04884063",
+  "turso_version": "Turso 0.9.0-pre.1",
+  "turso_binary_association": "supplied binary and verified clean source checkout; digest recorded, not a reproducible-build attestation",
+  "fixture_sha256": {
+    "auto-rollback-zero.sql": "7a4bd56791b0ae9dda8a6cddd70b3cbcdfa8d67822c7e977a92ee1180bdc8b91",
+    "commit-twice.sql": "16f0c8d9c4de78bdccbf54bd2ef27faef9cc878058643d1e7161acc76c19af46",
+    "delete-last-row.sql": "e6eadeaaa21873e351a2dada6cb88862dd744c542763172cef604268b1090028",
+    "drop-cleanup.sql": "1f000b6e028c9993bf45057e5a2877e3c73b39d53a9077bc53c92c41805c2af8",
+    "flag-required.sql": "e342e6bec087f886368fafcbf438f08d499c42d03ce7ff102a18562be3089f08",
+    "integer-precision.sql": "c1f6c33bf31555b9d5baa3d95b5fd7545378b7d1b25927425f4d303ed18d4791",
+    "mvcc-rejected.sql": "700ef0329b916af606d674a85581b7d5797222a7edac659fda08ebfa995e8b55",
+    "nonnull-join-updates.sql": "aa3c60c0716f0abc5677b31dcb13a9422b2129a6f0f1926f5926872e668f9802",
+    "null-join.sql": "36fa389194263c80c25ade117aec01b8e35757d99c5a4b1b9bf214afb401189a",
+    "null-sum-transitions.sql": "a6c364315ecf9523201fc0a144cb685f8e8dc5b69671245f8e4cfbb6ab8a75f4",
+    "null-sum.sql": "03473481703ae246c45fd4d3b149e893deaa645eee28fc10534b3832fa37618b",
+    "precision-increment.sql": "c88473ab52b6be1517e51bd05f6f7aa85d6dd4e1960a90f38ed4f669a7dbd2c3",
+    "refresh-rejected.sql": "73f3a5e32ad3aea5a31b478d2c80d8bebd26214e69a07844f32db58b2367363f",
+    "reopen-create.sql": "09d90c0c4defd205d205d045485004a44d5f3f69c4290acb21d08ba1d7ff6c93",
+    "reopen-update.sql": "ea39c188711d2582693a3de4fa6ad5cf500cc4e058aa5ef3ff007840c38cfdf8",
+    "rollback-then-begin.sql": "55a8f77b2230a640552dd03b1b4630effd58f80bc13dafb7bcc59825e2b1cdfc"
+  },
+  "replay_command": [
+    "python3",
+    "scripts/probe-m2b.py",
+    "--nexmark-repo",
+    "${NEXMARK_REPO}",
+    "--turso-bin",
+    "${TURSO_BIN}",
+    "--extension",
+    "${EXTENSION}",
+    "--out",
+    "${OUT}",
+    "--fail-on-incompatibility"
+  ]
+}

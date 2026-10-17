@@ -1,0 +1,746 @@
+{
+  "variant": "nexmark-flink SQL, queries directory, Q0-Q23",
+  "schema_mapping": "\nCREATE TABLE bid(auction INTEGER,bidder INTEGER,price INTEGER,channel TEXT,\n url TEXT,dateTime INTEGER,extra TEXT) STRICT;\nCREATE TABLE auction(id INTEGER,itemName TEXT,description TEXT,initialBid INTEGER,\n reserve INTEGER,dateTime INTEGER,expires INTEGER,seller INTEGER,category INTEGER,\n extra TEXT) STRICT;\nCREATE TABLE person(id INTEGER,name TEXT,emailAddress TEXT,creditCard TEXT,\n city TEXT,state TEXT,dateTime INTEGER,extra TEXT) STRICT;\nCREATE TABLE side_input(key INTEGER,value TEXT) STRICT;\n",
+  "original_inventory": [
+    {
+      "query": "Q0",
+      "source": "nexmark-flink/src/main/resources/queries/q0.sql",
+      "source_sha256": "7499f56f8a19faa838a078fea0532fe7a98684856a5c9253605d068c06b82790",
+      "select_sha256": "7dad7af51695ad0f51c2707ff532647b4d43479d7a84ed7551b651da5807f408",
+      "status": "rejected",
+      "error": "column auction is in the SELECT list but neither in GROUP BY nor aggregated"
+    },
+    {
+      "query": "Q1",
+      "source": "nexmark-flink/src/main/resources/queries/q1.sql",
+      "source_sha256": "89d869f270fc2cc1f0cf5fd9b73ca031dc2699b5d3cf8c19035377346a38ea3d",
+      "select_sha256": "cbeee2520959e637a49ba1aa1afc160b3e794dedebce024e49effb0a414842bd",
+      "status": "rejected",
+      "error": "the SELECT expression `0.908 * price` (v0 selects bare columns, COUNT(*) and SUM(column)) is not supported in an ivmlite v0 view (spec \u00a713)"
+    },
+    {
+      "query": "Q2",
+      "source": "nexmark-flink/src/main/resources/queries/q2.sql",
+      "source_sha256": "b89ce03dab2098872cdce3e07bfe83e7f19e800eb8d6f22b3d66c255936cbe3a",
+      "select_sha256": "099d36edf2789ef85ea8ce0ffca7a2e696d593fe719e2306f2bad06558023709",
+      "status": "rejected",
+      "error": "column auction is in the SELECT list but neither in GROUP BY nor aggregated"
+    },
+    {
+      "query": "Q3",
+      "source": "nexmark-flink/src/main/resources/queries/q3.sql",
+      "source_sha256": "f34f6320bf1ef57485e312b9f08f3f1cd7b8126699defbc8786550514872d7bb",
+      "select_sha256": "9c37c8cb96aa2d36a41f269880b3cacb48f6eb26531d492d9589ae077e9568bc",
+      "status": "rejected",
+      "error": "column name is in the SELECT list but neither in GROUP BY nor aggregated"
+    },
+    {
+      "query": "Q4",
+      "source": "nexmark-flink/src/main/resources/queries/q4.sql",
+      "source_sha256": "2cb31ee31ef2f5c96c110e49d9e09c6c5cf69fe92bb26839d324ca5a64bb8897",
+      "select_sha256": "fae9fc5c024ed76bd481192f8425129292b358d627525ad6651e7ea9a6444ac4",
+      "status": "rejected",
+      "error": "a subquery or table function in FROM is not supported in an ivmlite v0 view (spec \u00a713)"
+    },
+    {
+      "query": "Q5",
+      "source": "nexmark-flink/src/main/resources/queries/q5.sql",
+      "source_sha256": "94898ce319d8cfdc6be94965fe320097fa8f67723e22d316f6c139bd94c79485",
+      "select_sha256": "1f714d75175a0b9c3a9ce2db8595deb97d5574f9f9a709b5e29aa38d7b045bb6",
+      "status": "rejected",
+      "error": "cannot parse the view's SQL: sql parser error: Expected: joined table, found: , at Line: 4, Column: 13"
+    },
+    {
+      "query": "Q6",
+      "source": "nexmark-flink/src/main/resources/queries/q6.sql",
+      "source_sha256": "1fa0c3f7967dae7a583674e19d28b9ed50f9920a47ca48a1cc83520bf7f81cec",
+      "select_sha256": "98985b80b520553e4841f1a7c7ac7fd867d1c04682e0fc421a7ce0d1f3b5726e",
+      "status": "rejected",
+      "error": "a subquery or table function in FROM is not supported in an ivmlite v0 view (spec \u00a713)"
+    },
+    {
+      "query": "Q7",
+      "source": "nexmark-flink/src/main/resources/queries/q7.sql",
+      "source_sha256": "4b261d8d3fd3ab61c323f38cddcb508809ac5c100d5ad0f35b50aedc121a1847",
+      "select_sha256": "c4a2acf17aa3ef2b1567298724b3b4b19f9688330ba68aa9a7b00abc56efc5fe",
+      "status": "rejected",
+      "error": "cannot parse the view's SQL: sql parser error: Expected: joined table, found: AS at Line: 4, Column: 21"
+    },
+    {
+      "query": "Q8",
+      "source": "nexmark-flink/src/main/resources/queries/q8.sql",
+      "source_sha256": "023924aaf8fdf1087812844ff724ec315add4d8cc5315ec9732793474ac48806",
+      "select_sha256": "8dfab74be14957578796ca2357cc6e1f664af7d0ecd1f0f1db9effc129051461",
+      "status": "rejected",
+      "error": "cannot parse the view's SQL: sql parser error: Expected: joined table, found: , at Line: 3, Column: 12"
+    },
+    {
+      "query": "Q9",
+      "source": "nexmark-flink/src/main/resources/queries/q9.sql",
+      "source_sha256": "537d1abeb3692854f98c5674db486c36fd7457f00df73c599dc87ca0da61c455",
+      "select_sha256": "d22f938b49a8eb8df1c39498033b4ab43eb0675cff9af1946000412041263399",
+      "status": "rejected",
+      "error": "a subquery or table function in FROM is not supported in an ivmlite v0 view (spec \u00a713)"
+    },
+    {
+      "query": "Q10",
+      "source": "nexmark-flink/src/main/resources/queries/q10.sql",
+      "source_sha256": "979af9ac20d0e678161ab30b5bb3eff2de865e5c216b80edf21eab063580103c",
+      "select_sha256": "49eb1716cd6335bd774a86306062cc1ac3d5a63d5755b7f1271f3fab3939422b",
+      "status": "rejected",
+      "error": "the function `DATE_FORMAT` (v0's aggregates are COUNT(*) and SUM; MIN, MAX, AVG and the rest are not) is not supported in an ivmlite v0 view (spec \u00a713)"
+    },
+    {
+      "query": "Q11",
+      "source": "nexmark-flink/src/main/resources/queries/q11.sql",
+      "source_sha256": "9aeaeecf0416c2e35ec920761bd9736fd0c1e71685becce0033d63a2333e3a1a",
+      "select_sha256": "f75ef2747935d16b34e552c8bd2010ec447866a757ef5762a87051d6a6902663",
+      "status": "rejected",
+      "error": "the function `SESSION_START` (v0's aggregates are COUNT(*) and SUM; MIN, MAX, AVG and the rest are not) is not supported in an ivmlite v0 view (spec \u00a713)"
+    },
+    {
+      "query": "Q12",
+      "source": "nexmark-flink/src/main/resources/queries/q12.sql",
+      "source_sha256": "6209fefe44ff5d1b4129aa4b85f3b7b7d170937839c59476b0298856957eea0e",
+      "select_sha256": "fa5ee2bee18d78820ab4afff82fa9cb8e75206ee4a750d560ea30c45db865771",
+      "status": "rejected",
+      "error": "cannot parse the view's SQL: sql parser error: Expected: ), found: B at Line: 7, Column: 22"
+    },
+    {
+      "query": "Q13",
+      "source": "nexmark-flink/src/main/resources/queries/q13.sql",
+      "source_sha256": "55360c56110d409df5e85c57ad7ca7e7c617f13ec0a31e0c27077f2de8623bfe",
+      "select_sha256": "a1b352cdc1c92e2b643b95e43892ab765e8c6fcd9bbd4b42712c9edbc9fd70c6",
+      "status": "rejected",
+      "error": "cannot parse the view's SQL: sql parser error: Expected: one of UPDATE or SHARE, found: SYSTEM_TIME at Line: 8, Column: 21"
+    },
+    {
+      "query": "Q14",
+      "source": "nexmark-flink/src/main/resources/queries/q14.sql",
+      "source_sha256": "07f6fb5078828c6fec8de4faa56c90450210e268ed7e92745b8f2c20dd4c5da2",
+      "select_sha256": "73006e05b07903eef5e62cfc97510a6be5ac7d97a298685da288ae4482238dc8",
+      "status": "rejected",
+      "error": "the SELECT expression `0.908 * price` (v0 selects bare columns, COUNT(*) and SUM(column)) is not supported in an ivmlite v0 view (spec \u00a713)"
+    },
+    {
+      "query": "Q15",
+      "source": "nexmark-flink/src/main/resources/queries/q15.sql",
+      "source_sha256": "b70503a689cc8e24ea965316d98b5b3b5ae3b830e949a07903aca6b8931e73a4",
+      "select_sha256": "38cadac5fd3cd3402d327a0dcd31119d8ac5f2774ebc16ee8b95ac42b7b607c1",
+      "status": "rejected",
+      "error": "the function `DATE_FORMAT` (v0's aggregates are COUNT(*) and SUM; MIN, MAX, AVG and the rest are not) is not supported in an ivmlite v0 view (spec \u00a713)"
+    },
+    {
+      "query": "Q16",
+      "source": "nexmark-flink/src/main/resources/queries/q16.sql",
+      "source_sha256": "5100c9c4fd496dcb5be8782fbc56b884aa966a825bc9e713e887acbaf7e2b4e4",
+      "select_sha256": "634b0b9f64025e2380114dbc6b3b6a862358ee5e22d59b836efd0f4be2de61b3",
+      "status": "rejected",
+      "error": "the function `DATE_FORMAT` (v0's aggregates are COUNT(*) and SUM; MIN, MAX, AVG and the rest are not) is not supported in an ivmlite v0 view (spec \u00a713)"
+    },
+    {
+      "query": "Q17",
+      "source": "nexmark-flink/src/main/resources/queries/q17.sql",
+      "source_sha256": "f62129ff60a42f631a314091b1863be880e2cb8adcb57709bd971b59e4191943",
+      "select_sha256": "dd90dff9438127664633482db7ca582e37133699fa424af1b44495cce9b76343",
+      "status": "rejected",
+      "error": "the function `DATE_FORMAT` (v0's aggregates are COUNT(*) and SUM; MIN, MAX, AVG and the rest are not) is not supported in an ivmlite v0 view (spec \u00a713)"
+    },
+    {
+      "query": "Q18",
+      "source": "nexmark-flink/src/main/resources/queries/q18.sql",
+      "source_sha256": "6da7ef6c356265d180955e8ee18cdd5f330ece73a3c9879674e913eb5584a9ef",
+      "select_sha256": "31acf5689dd5d333cad78bddde9cef7d6334ccfd2534b856a6f2d0728fdd70d5",
+      "status": "rejected",
+      "error": "a subquery or table function in FROM is not supported in an ivmlite v0 view (spec \u00a713)"
+    },
+    {
+      "query": "Q19",
+      "source": "nexmark-flink/src/main/resources/queries/q19.sql",
+      "source_sha256": "e3a6954a923707f76a7b4e6eef3cf16a7a2434f7f4783c13c26825ea5f437b92",
+      "select_sha256": "9cb4d48e85a8646b5ef1b4aef00beefb10cf34cc0e4efa92d5ae72ac2efb25f8",
+      "status": "rejected",
+      "error": "a subquery or table function in FROM is not supported in an ivmlite v0 view (spec \u00a713)"
+    },
+    {
+      "query": "Q20",
+      "source": "nexmark-flink/src/main/resources/queries/q20.sql",
+      "source_sha256": "70ed24fc63604da32841023cabb65647438fbe61495cfa8b8ddf6bb9267d2e71",
+      "select_sha256": "06418509ff28e772ff6b6039fbb76425c7a96a3ca2b256b7ba9cf2dc6822ebe6",
+      "status": "rejected",
+      "error": "two result columns are named dateTime; give one an alias"
+    },
+    {
+      "query": "Q21",
+      "source": "nexmark-flink/src/main/resources/queries/q21.sql",
+      "source_sha256": "ce2d0fc72b26332e900f54322712b00e2f23fa6e3d38797da2330e7ddeadf5bf",
+      "select_sha256": "aa53dd9145adbf011ac0295fba21ff133cd56bcd20361e497c3b057a87cbc9cd",
+      "status": "rejected",
+      "error": "the SELECT expression `CASE WHEN lower(channel) = 'apple' THEN '0' WHEN lower(channel) = 'google' THEN '1' WHEN lower(channel) = 'facebook' THEN '2' WHEN lower(channel) = 'baidu' THEN '3' ELSE REGEXP_EXTRACT(url, '(&|^)channel_id=([^&]*)', 2) END` (v0 selects bare columns, COUNT(*) and SUM(column)) is not supported in an ivmlite v0 view (spec \u00a713)"
+    },
+    {
+      "query": "Q22",
+      "source": "nexmark-flink/src/main/resources/queries/q22.sql",
+      "source_sha256": "8682770dcef15e12a707e687426c66dafe541cbf6f21dc5f3d1a91222dc0157a",
+      "select_sha256": "6aee9dcdbaad77c1d059c4524250be50d365684b946d095bb1dd4231143d87d2",
+      "status": "rejected",
+      "error": "the function `SPLIT_INDEX` (v0's aggregates are COUNT(*) and SUM; MIN, MAX, AVG and the rest are not) is not supported in an ivmlite v0 view (spec \u00a713)"
+    },
+    {
+      "query": "Q23",
+      "source": "nexmark-flink/src/main/resources/queries/q23.sql",
+      "source_sha256": "217b2f85d6d88453a325c7900ba07f4553272aa1b970921c22374f2346244c49",
+      "select_sha256": "8a1fdbecd76374d7efa1648cc3bee767036a4c54fe0c259c250862ac2525a639",
+      "status": "rejected",
+      "error": "a join of more than two tables is not supported in an ivmlite v0 view (spec \u00a713)"
+    }
+  ],
+  "original_compiled": 0,
+  "canonical_nexmark_score": false,
+  "adapted_queries": [
+    {
+      "name": "q0_bag",
+      "original_select": "SELECT auction,bidder,price,dateTime,extra FROM bid",
+      "adapted_select": "SELECT auction,bidder,price,dateTime,extra,COUNT(*) AS multiplicity FROM bid GROUP BY auction,bidder,price,dateTime,extra"
+    },
+    {
+      "name": "q20_bag",
+      "original_select": "SELECT auction,bidder,price,channel,url,B.dateTime AS bid_dateTime,B.extra AS bid_extra,itemName,description,initialBid,reserve,A.dateTime AS auction_dateTime,expires,seller,category,A.extra AS auction_extra FROM bid B INNER JOIN auction A ON B.auction=A.id WHERE A.category=10",
+      "adapted_select": "SELECT auction,bidder,price,channel,url,B.dateTime AS bid_dateTime,B.extra AS bid_extra,itemName,description,initialBid,reserve,A.dateTime AS auction_dateTime,expires,seller,category,A.extra AS auction_extra,COUNT(*) AS multiplicity FROM bid B INNER JOIN auction A ON B.auction=A.id WHERE A.category=10 GROUP BY auction,bidder,price,channel,url,B.dateTime,B.extra,itemName,description,initialBid,reserve,A.dateTime,expires,seller,category,A.extra"
+    }
+  ],
+  "initial_data": "\nINSERT INTO bid VALUES (1,11,20,'web','url',100,'x'),\n (1,11,20,'web','url',100,'x'),(2,12,30,'app',NULL,101,NULL);\nINSERT INTO auction VALUES (1,'item1','desc',1,10,0,1000,7,10,'a'),\n (1,'item1','desc',1,10,0,1000,7,10,'a'),\n (2,'item2','desc',1,10,0,1000,8,11,NULL);\n",
+  "mutations": [
+    "UPDATE auction SET category=10 WHERE id=2; UPDATE bid SET price=21 WHERE bidder=11;",
+    "DELETE FROM bid WHERE rowid=(SELECT min(rowid) FROM bid WHERE bidder=11);",
+    "INSERT INTO bid VALUES (1,11,21,'web','url',100,'x'); DELETE FROM auction WHERE rowid=(SELECT min(rowid) FROM auction WHERE id=1);"
+  ],
+  "adapted_checkpoints": [
+    {
+      "query": "q0_bag",
+      "checkpoint": 0,
+      "equal": true,
+      "actual": [
+        {
+          "row": [
+            1,
+            11,
+            20,
+            100,
+            "x"
+          ],
+          "multiplicity": 2
+        },
+        {
+          "row": [
+            2,
+            12,
+            30,
+            101,
+            null
+          ],
+          "multiplicity": 1
+        }
+      ],
+      "oracle": [
+        {
+          "row": [
+            1,
+            11,
+            20,
+            100,
+            "x"
+          ],
+          "multiplicity": 2
+        },
+        {
+          "row": [
+            2,
+            12,
+            30,
+            101,
+            null
+          ],
+          "multiplicity": 1
+        }
+      ]
+    },
+    {
+      "query": "q20_bag",
+      "checkpoint": 0,
+      "equal": true,
+      "actual": [
+        {
+          "row": [
+            1,
+            11,
+            20,
+            "web",
+            "url",
+            100,
+            "x",
+            "item1",
+            "desc",
+            1,
+            10,
+            0,
+            1000,
+            7,
+            10,
+            "a"
+          ],
+          "multiplicity": 4
+        }
+      ],
+      "oracle": [
+        {
+          "row": [
+            1,
+            11,
+            20,
+            "web",
+            "url",
+            100,
+            "x",
+            "item1",
+            "desc",
+            1,
+            10,
+            0,
+            1000,
+            7,
+            10,
+            "a"
+          ],
+          "multiplicity": 4
+        }
+      ]
+    },
+    {
+      "query": "q0_bag",
+      "checkpoint": 1,
+      "equal": true,
+      "actual": [
+        {
+          "row": [
+            1,
+            11,
+            21,
+            100,
+            "x"
+          ],
+          "multiplicity": 2
+        },
+        {
+          "row": [
+            2,
+            12,
+            30,
+            101,
+            null
+          ],
+          "multiplicity": 1
+        }
+      ],
+      "oracle": [
+        {
+          "row": [
+            1,
+            11,
+            21,
+            100,
+            "x"
+          ],
+          "multiplicity": 2
+        },
+        {
+          "row": [
+            2,
+            12,
+            30,
+            101,
+            null
+          ],
+          "multiplicity": 1
+        }
+      ]
+    },
+    {
+      "query": "q20_bag",
+      "checkpoint": 1,
+      "equal": true,
+      "actual": [
+        {
+          "row": [
+            1,
+            11,
+            21,
+            "web",
+            "url",
+            100,
+            "x",
+            "item1",
+            "desc",
+            1,
+            10,
+            0,
+            1000,
+            7,
+            10,
+            "a"
+          ],
+          "multiplicity": 4
+        },
+        {
+          "row": [
+            2,
+            12,
+            30,
+            "app",
+            null,
+            101,
+            null,
+            "item2",
+            "desc",
+            1,
+            10,
+            0,
+            1000,
+            8,
+            10,
+            null
+          ],
+          "multiplicity": 1
+        }
+      ],
+      "oracle": [
+        {
+          "row": [
+            1,
+            11,
+            21,
+            "web",
+            "url",
+            100,
+            "x",
+            "item1",
+            "desc",
+            1,
+            10,
+            0,
+            1000,
+            7,
+            10,
+            "a"
+          ],
+          "multiplicity": 4
+        },
+        {
+          "row": [
+            2,
+            12,
+            30,
+            "app",
+            null,
+            101,
+            null,
+            "item2",
+            "desc",
+            1,
+            10,
+            0,
+            1000,
+            8,
+            10,
+            null
+          ],
+          "multiplicity": 1
+        }
+      ]
+    },
+    {
+      "query": "q0_bag",
+      "checkpoint": 2,
+      "equal": true,
+      "actual": [
+        {
+          "row": [
+            1,
+            11,
+            21,
+            100,
+            "x"
+          ],
+          "multiplicity": 1
+        },
+        {
+          "row": [
+            2,
+            12,
+            30,
+            101,
+            null
+          ],
+          "multiplicity": 1
+        }
+      ],
+      "oracle": [
+        {
+          "row": [
+            1,
+            11,
+            21,
+            100,
+            "x"
+          ],
+          "multiplicity": 1
+        },
+        {
+          "row": [
+            2,
+            12,
+            30,
+            101,
+            null
+          ],
+          "multiplicity": 1
+        }
+      ]
+    },
+    {
+      "query": "q20_bag",
+      "checkpoint": 2,
+      "equal": true,
+      "actual": [
+        {
+          "row": [
+            1,
+            11,
+            21,
+            "web",
+            "url",
+            100,
+            "x",
+            "item1",
+            "desc",
+            1,
+            10,
+            0,
+            1000,
+            7,
+            10,
+            "a"
+          ],
+          "multiplicity": 2
+        },
+        {
+          "row": [
+            2,
+            12,
+            30,
+            "app",
+            null,
+            101,
+            null,
+            "item2",
+            "desc",
+            1,
+            10,
+            0,
+            1000,
+            8,
+            10,
+            null
+          ],
+          "multiplicity": 1
+        }
+      ],
+      "oracle": [
+        {
+          "row": [
+            1,
+            11,
+            21,
+            "web",
+            "url",
+            100,
+            "x",
+            "item1",
+            "desc",
+            1,
+            10,
+            0,
+            1000,
+            7,
+            10,
+            "a"
+          ],
+          "multiplicity": 2
+        },
+        {
+          "row": [
+            2,
+            12,
+            30,
+            "app",
+            null,
+            101,
+            null,
+            "item2",
+            "desc",
+            1,
+            10,
+            0,
+            1000,
+            8,
+            10,
+            null
+          ],
+          "multiplicity": 1
+        }
+      ]
+    },
+    {
+      "query": "q0_bag",
+      "checkpoint": 3,
+      "equal": true,
+      "actual": [
+        {
+          "row": [
+            1,
+            11,
+            21,
+            100,
+            "x"
+          ],
+          "multiplicity": 2
+        },
+        {
+          "row": [
+            2,
+            12,
+            30,
+            101,
+            null
+          ],
+          "multiplicity": 1
+        }
+      ],
+      "oracle": [
+        {
+          "row": [
+            1,
+            11,
+            21,
+            100,
+            "x"
+          ],
+          "multiplicity": 2
+        },
+        {
+          "row": [
+            2,
+            12,
+            30,
+            101,
+            null
+          ],
+          "multiplicity": 1
+        }
+      ]
+    },
+    {
+      "query": "q20_bag",
+      "checkpoint": 3,
+      "equal": true,
+      "actual": [
+        {
+          "row": [
+            1,
+            11,
+            21,
+            "web",
+            "url",
+            100,
+            "x",
+            "item1",
+            "desc",
+            1,
+            10,
+            0,
+            1000,
+            7,
+            10,
+            "a"
+          ],
+          "multiplicity": 2
+        },
+        {
+          "row": [
+            2,
+            12,
+            30,
+            "app",
+            null,
+            101,
+            null,
+            "item2",
+            "desc",
+            1,
+            10,
+            0,
+            1000,
+            8,
+            10,
+            null
+          ],
+          "multiplicity": 1
+        }
+      ],
+      "oracle": [
+        {
+          "row": [
+            1,
+            11,
+            21,
+            "web",
+            "url",
+            100,
+            "x",
+            "item1",
+            "desc",
+            1,
+            10,
+            0,
+            1000,
+            7,
+            10,
+            "a"
+          ],
+          "multiplicity": 2
+        },
+        {
+          "row": [
+            2,
+            12,
+            30,
+            "app",
+            null,
+            101,
+            null,
+            "item2",
+            "desc",
+            1,
+            10,
+            0,
+            1000,
+            8,
+            10,
+            null
+          ],
+          "multiplicity": 1
+        }
+      ]
+    }
+  ]
+}

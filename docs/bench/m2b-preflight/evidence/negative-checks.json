@@ -1,0 +1,114 @@
+[
+  {
+    "name": "missing_binary",
+    "command": [
+      "python3",
+      "scripts/probe-m2b.py",
+      "--nexmark-repo",
+      "target/m2b-probes/nexmark",
+      "--turso-bin",
+      "target/m2b-probes/no-such-bin",
+      "--extension",
+      "target/alpha5-validation/artifact-smoke/ivmlite-v0.1.0-alpha.5-macos-arm64/libivmlite_sqlite.dylib",
+      "--out",
+      "target/m2b-probes/negative-unused"
+    ],
+    "exit_code": 1,
+    "stdout": "",
+    "stderr": "M2b probe error: --turso-bin must be an existing executable\n"
+  },
+  {
+    "name": "missing_extension",
+    "command": [
+      "python3",
+      "scripts/probe-m2b.py",
+      "--nexmark-repo",
+      "target/m2b-probes/nexmark",
+      "--turso-bin",
+      "target/m2b-probes/turso/target/debug/tursodb",
+      "--extension",
+      "target/m2b-probes/no-such-library",
+      "--out",
+      "target/m2b-probes/negative-unused"
+    ],
+    "exit_code": 1,
+    "stdout": "",
+    "stderr": "M2b probe error: --extension must be an existing file\n"
+  },
+  {
+    "name": "wrong_nexmark_pin",
+    "command": [
+      "python3",
+      "scripts/probe-m2b.py",
+      "--nexmark-repo",
+      ".",
+      "--turso-bin",
+      "target/m2b-probes/turso/target/debug/tursodb",
+      "--extension",
+      "target/alpha5-validation/artifact-smoke/ivmlite-v0.1.0-alpha.5-macos-arm64/libivmlite_sqlite.dylib",
+      "--out",
+      "target/m2b-probes/negative-unused"
+    ],
+    "exit_code": 1,
+    "stdout": "",
+    "stderr": "M2b probe error: Nexmark checkout must have HEAD 6b3646c3baec701f1fa74baf938d235f742e5d3c\n"
+  },
+  {
+    "name": "wrong_turso_pin",
+    "command": [
+      "python3",
+      "scripts/probe-m2b.py",
+      "--nexmark-repo",
+      "target/m2b-probes/nexmark",
+      "--turso-bin",
+      "target/m2b-probes/turso/target/debug/tursodb",
+      "--extension",
+      "target/alpha5-validation/artifact-smoke/ivmlite-v0.1.0-alpha.5-macos-arm64/libivmlite_sqlite.dylib",
+      "--out",
+      "target/m2b-probes/negative-unused",
+      "--turso-repo",
+      "."
+    ],
+    "exit_code": 1,
+    "stdout": "",
+    "stderr": "M2b probe error: Turso checkout must have HEAD 1f48d31b11effb623c2ebd5df6216bb6753d6fe5\n"
+  },
+  {
+    "name": "wrong_binary_version",
+    "command": [
+      "python3",
+      "scripts/probe-m2b.py",
+      "--nexmark-repo",
+      "target/m2b-probes/nexmark",
+      "--turso-bin",
+      "/usr/bin/true",
+      "--extension",
+      "target/alpha5-validation/artifact-smoke/ivmlite-v0.1.0-alpha.5-macos-arm64/libivmlite_sqlite.dylib",
+      "--out",
+      "target/m2b-probes/negative-unused",
+      "--turso-repo",
+      "target/m2b-probes/turso"
+    ],
+    "exit_code": 1,
+    "stdout": "",
+    "stderr": "M2b probe error: --turso-bin must report Turso 0.9.0-pre.1\n"
+  },
+  {
+    "name": "nonempty_output",
+    "command": [
+      "python3",
+      "scripts/probe-m2b.py",
+      "--nexmark-repo",
+      "target/m2b-probes/nexmark",
+      "--turso-bin",
+      "target/m2b-probes/turso/target/debug/tursodb",
+      "--extension",
+      "target/alpha5-validation/artifact-smoke/ivmlite-v0.1.0-alpha.5-macos-arm64/libivmlite_sqlite.dylib",
+      "--out",
+      "target/m2b-probes/reusable-run-3"
+    ],
+    "exit_code": 1,
+    "stdout": "",
+    "stderr": "M2b probe error: --out must be a new or empty directory\n"
+  }
+]
