@@ -308,7 +308,7 @@ fn openwhispr_speaker_rollup_matches_the_source_word_expression() {
     OPENWHISPR.seed(&c, 1_200).unwrap();
     create(&c, OPENWHISPR.view_name, OPENWHISPR.view_sql).unwrap();
 
-    for round in 0..ROUNDS {
+    for round in 0..=ROUNDS {
         if round > 0 {
             OPENWHISPR
                 .apply_mixed_batch(&c, 1_200, 40, round - 1)
