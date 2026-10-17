@@ -1821,6 +1821,8 @@ mod tests {
             ([3.0, 3.1, 3.2], false),
             ([1.08, 1.09, 1.09], true),
             ([1.5, 1.5, 1.6], false),
+            // The median is far from both thresholds but the range straddles them.
+            ([0.5, 1.5, 3.0], true),
         ] {
             let out = temp();
             let dest = out.join("report");

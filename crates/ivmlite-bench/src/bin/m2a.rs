@@ -1839,6 +1839,12 @@ mod tests {
         assert!(
             validate_completion(&dir, "manifest.json", "completed.json", &["data.json"]).is_err()
         );
+        write_json(&dir.join("data.json"), &vec![1]).unwrap();
+        validate_completion(&dir, "manifest.json", "completed.json", &["data.json"]).unwrap();
+        write_json(&dir.join("manifest.json"), &serde_json::json!({"x":2})).unwrap();
+        assert!(
+            validate_completion(&dir, "manifest.json", "completed.json", &["data.json"]).is_err()
+        );
         fs::remove_dir_all(dir).unwrap();
     }
     #[test]
@@ -1993,6 +1999,36 @@ mod tests {
         covering.plan.push("SCAN events".into());
         let error = validate_timing(&file, &m, &f).unwrap_err();
         assert!(error.to_string().contains("covering_recompute"), "{error}");
+        let covering = file
+            .measurements
+            .iter_mut()
+            .find(|x| x.mode == m2a_runner::Mode::CoveringRecompute)
+            .unwrap();
+        covering.plan.pop();
+        validate_timing(&file, &m, &f).unwrap();
+
+        // A stored summary must be what the paired raw rounds give, field by field.
+        let tampers: [fn(&mut m2a_runner::SteadyState); 5] = [
+            |s| s.apply_ms += 1.0,
+            |s| s.maintain_ms = s.maintain_ms.map(|v| v + 1.0),
+            |s| s.read_ms = s.read_ms.map(|v| v + 1.0),
+            |s| s.apply_plus_maintain_ms = s.apply_plus_maintain_ms.map(|v| v + 1.0),
+            |s| s.total_ms = s.total_ms.map(|v| v + 1.0),
+        ];
+        let ivmlite = file
+            .measurements
+            .iter()
+            .position(|x| x.mode == m2a_runner::Mode::Ivmlite)
+            .unwrap();
+        for tamper in tampers {
+            let measurement = &mut file.measurements[ivmlite];
+            let honest = measurement.summary.clone();
+            tamper(&mut measurement.summary);
+            let error = validate_timing(&file, &m, &f).unwrap_err();
+            assert!(error.to_string().contains("summary differs"), "{error}");
+            file.measurements[ivmlite].summary = honest;
+        }
+        validate_timing(&file, &m, &f).unwrap();
     }
     #[test]
     fn export_context_never_resolves_an_extension() {
@@ -2429,11 +2465,36 @@ mod tests {
         other_extension.extension_sha256 = Some("another extension".into());
         assert!(apply_smoke_gate(&full, &mut other_extension).is_err());
 
+        let mut other_source = test_context();
+        other_source.extension_sha256 = Some("extension".into());
+        other_source.source_sha256 = "another source".into();
+        assert!(apply_smoke_gate(&full, &mut other_source).is_err());
+
+        let other_workload = dir.join("other-workload.toml");
+        fs::write(
+            &other_workload,
+            fs::read_to_string(&workload)
+                .unwrap()
+                .replace("rounds = 100", "rounds = 7"),
+        )
+        .unwrap();
+        let edited = args_for(&["run"], &other_workload, &dir);
+        assert!(apply_smoke_gate(&edited, &mut ctx).is_err());
+
         let key = smoke_plan(&M2aConfig::load(&workload).unwrap().smoke_variant())
             .unwrap()
             .into_iter()
             .next()
             .unwrap();
+        let selection_path = selection_file(&dir, "run", true);
+        let mut selection: Selection = read_json(&selection_path).unwrap();
+        selection.expected.remove(&key);
+        write_json(&selection_path, &selection).unwrap();
+        let error = apply_smoke_gate(&full, &mut ctx).unwrap_err();
+        assert!(error.to_string().contains("does not cover"), "{error}");
+        finished_smoke_run(&full, &ctx);
+        apply_smoke_gate(&full, &mut ctx).unwrap();
+
         fs::remove_file(case_dir(&full, &key).join("completed.json")).unwrap();
         let error = apply_smoke_gate(&full, &mut ctx).unwrap_err();
         assert!(error.to_string().contains("not complete"), "{error}");
@@ -2453,6 +2514,23 @@ mod tests {
         assert_eq!(ctx.provenance.smoke_gate, SmokeGate::NotApplicable);
         fs::remove_dir_all(dir).unwrap();
         fs::remove_dir_all(empty).unwrap();
+    }
+    #[test]
+    fn a_full_run_without_a_smoke_run_stops_before_any_case() {
+        let dir = temp();
+        let library = ivmlite_test::extension_library();
+        let mut a = args(&["run", "--allow-dirty"]);
+        a.workload = repo().join("workloads/m2a.toml");
+        a.out = dir.clone();
+        a.extension = Some(library);
+        // Were the gate not wired in, the run would go on and fail here instead of executing a matrix.
+        a.cells = vec!["no-such-cell".into()];
+        let error = run(a).unwrap_err();
+        assert!(error.to_string().contains("completed smoke run"), "{error}");
+        let failure: serde_json::Value = read_json(&dir.join("failure.json")).unwrap();
+        assert_eq!(failure["phase"], "smoke_gate");
+        assert!(!selection_file(&dir, "run", false).exists());
+        fs::remove_dir_all(dir).unwrap();
     }
     #[test]
     fn the_gate_applies_only_to_full_runs() {
@@ -2730,6 +2808,96 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
     #[test]
+    fn confirm_with_a_failing_replay_writes_no_timing() {
+        let dir = temp();
+        let ctx = extension_context();
+        let cells = finished_initial_runs(&dir, &ctx);
+        let mut a = confirm_args(&dir, &cells[..1], 2);
+        set_injected_load(Some(0.5));
+        // A base row leaves the trace right after the first batch is applied.
+        let fault = m2a_runner::inject_fault(|stage, round, connection| {
+            if stage == m2a_runner::Stage::Applied && round == 0 {
+                connection
+                    .execute_batch(
+                        "UPDATE events SET amount = amount + 1 WHERE id = (SELECT min(id) FROM events)",
+                    )
+                    .unwrap();
+            }
+        });
+        let error = run_inner(&a, &ctx).unwrap_err();
+        assert!(error.is::<CasesFailed>(), "{error}");
+        let summary = stored_summary(&a);
+        assert_eq!((summary.planned, summary.complete), (2, 0));
+        for failed in &summary.failed {
+            assert_eq!(failed.phase, "correctness");
+            assert!(failed.error.contains("trace-prefix"), "{}", failed.error);
+        }
+        let confirmations = dir.join("confirm");
+        assert_eq!(files_named(&confirmations, "timing.json"), 0);
+        assert_eq!(files_named(&confirmations, "completed.json"), 0);
+        assert_eq!(files_named(&confirmations, EVIDENCE_MARKER), 0);
+
+        // Once the replay passes again the lost repeats can be retried.
+        drop(fault);
+        a.resume = true;
+        a.retry_failed = true;
+        run_inner(&a, &ctx).unwrap();
+        set_injected_load(None);
+        assert_eq!(files_named(&confirmations, "timing.json"), 2);
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn confirm_refuses_a_fixture_its_manifest_or_workload_does_not_describe() {
+        let dir = temp();
+        let ctx = extension_context();
+        let cells = finished_initial_runs(&dir, &ctx);
+        let a = confirm_args(&dir, &cells[..1], 1);
+        let rounds = load_config(&a).unwrap().total_rounds().unwrap();
+        let initial = ExpectedCase {
+            kind: "run".into(),
+            ..confirm_key(&cells[0], 0, rounds)
+        };
+        let run_dir = case_path(&dir, "run", &initial);
+
+        // Another workload: only the churn rounds differ, so the cell is still planned.
+        let other = dir.join("other-workload.toml");
+        let text = fs::read_to_string(repo().join("workloads/m2a.toml")).unwrap();
+        fs::write(&other, text.replace("rounds = 100", "rounds = 7")).unwrap();
+        let mut b = confirm_args(&dir, &cells[..1], 1);
+        b.workload = other;
+        set_injected_load(Some(0.5));
+        assert!(run_inner(&b, &ctx).unwrap_err().is::<CasesFailed>());
+        let failed = &stored_summary(&b).failed[0];
+        assert_eq!(failed.phase, "fixture");
+        assert!(
+            failed
+                .error
+                .contains("differs from its manifest or the workload"),
+            "{}",
+            failed.error
+        );
+
+        // A manifest that names another fixture, with its completion marker bound to the edit.
+        let mut manifest: Manifest = read_json(&run_dir.join("manifest.json")).unwrap();
+        manifest.fixture_sha256 = "0".repeat(64);
+        write_json(&run_dir.join("manifest.json"), &manifest).unwrap();
+        complete(&run_dir, "manifest.json", "completed.json", &RUN_ARTIFACTS).unwrap();
+        fs::remove_file(selection_path(&a)).unwrap();
+        assert!(run_inner(&a, &ctx).unwrap_err().is::<CasesFailed>());
+        set_injected_load(None);
+        let failed = &stored_summary(&a).failed[0];
+        assert_eq!(failed.phase, "fixture");
+        assert!(
+            failed
+                .error
+                .contains("differs from its manifest or the workload"),
+            "{}",
+            failed.error
+        );
+        assert_eq!(files_named(&dir.join("confirm"), "timing.json"), 0);
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
     fn confirm_options_and_candidates_are_validated() {
         let ok = args(&[
             "confirm",
@@ -2826,6 +2994,10 @@ mod tests {
         let load = wait_for_idle(&mut read, 2.0, Duration::from_secs(5), poll);
         assert_eq!(load.unwrap(), 1.0);
         assert_eq!(calls, 3);
+
+        let mut exactly_at_the_limit = || Ok(2.0);
+        let load = wait_for_idle(&mut exactly_at_the_limit, 2.0, Duration::ZERO, poll);
+        assert_eq!(load.unwrap(), 2.0, "a load equal to --max-load is idle");
 
         let mut busy = 0;
         let mut read = || {

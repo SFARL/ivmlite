@@ -1147,7 +1147,8 @@ mod tests {
         assert!(bad.validate().is_err());
         let mut bad = fixture.clone();
         bad.batches[0][1].after.as_mut().unwrap().k = Some(999);
-        assert!(bad.validate().is_err());
+        let error = bad.validate().unwrap_err().to_string();
+        assert!(error.contains("retain deleted join key"), "{error}");
         let mut bad = fixture.clone();
         bad.batches[0][4].after = bad.batches[0][4].before.clone();
         assert!(bad.validate().is_err());
@@ -1222,6 +1223,28 @@ mod tests {
                 assert_eq!(joined, cell.base_rows * cell.fanout);
             }
         }
+    }
+    #[test]
+    fn checkpoint_rejects_a_join_key_with_the_wrong_multiplicity() {
+        let config = tiny();
+        let cell = config
+            .cells()
+            .unwrap()
+            .into_iter()
+            .find(|c| c.shape == Shape::Join && c.fanout == 8)
+            .unwrap();
+        let fixture = config.generate(&cell, 42).unwrap();
+        let mut live = Live::new(&cell, &fixture.tables).unwrap();
+        live.checkpoint(&cell).unwrap();
+        // Same row count on both sides, but key 0 now has seven rhs rows and key 1 nine.
+        live.rows
+            .get_mut(&Table::Rhs)
+            .unwrap()
+            .get_mut(&0)
+            .unwrap()
+            .k = Some(1);
+        let error = live.checkpoint(&cell).unwrap_err().to_string();
+        assert!(error.contains("multiplicity"), "{error}");
     }
     #[test]
     fn load_calls_validation_and_rejects_duplicate_cells() {

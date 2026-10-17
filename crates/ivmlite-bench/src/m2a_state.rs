@@ -786,6 +786,105 @@ mod tests {
         assert!(error.contains("pending deltas"), "{error}");
     }
 
+    fn staged(operations: &[(&str, u64)]) -> Snapshot {
+        Snapshot {
+            stage_rows: operations.iter().map(|&(_, rows)| rows).sum(),
+            stage_operation_counts: operations
+                .iter()
+                .map(|&(operation, rows)| (operation.to_owned(), rows))
+                .collect(),
+            ..consumed_snapshot()
+        }
+    }
+
+    #[test]
+    fn validate_consumed_accepts_one_sentinel_with_known_operations_only() {
+        validate_consumed(&staged(&[
+            ("apply", 1),
+            ("state", 2),
+            ("out+", 1),
+            ("out-", 1),
+            ("progress", 1),
+        ]))
+        .unwrap();
+        for operations in [
+            &[("apply", 1), ("bogus", 2)][..],
+            &[("apply", 2), ("state", 1)][..],
+        ] {
+            let error = validate_consumed(&staged(operations)).unwrap_err();
+            assert!(
+                error.contains("not already applied"),
+                "{operations:?}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_consumed_rejects_replacement_candidates() {
+        let snapshot = Snapshot {
+            pending: vec![PendingMetrics {
+                base_table: "events".to_owned(),
+                delta_rows: 0,
+                replace_candidate_rows: 1,
+            }],
+            ..consumed_snapshot()
+        };
+        let error = validate_consumed(&snapshot).unwrap_err();
+        assert!(error.contains("replacement candidates"), "{error}");
+    }
+
+    #[test]
+    fn validate_idle_rejects_changed_retained_state_and_live_bases() {
+        let before = consumed_snapshot();
+        validate_idle(&before, &before.clone()).unwrap();
+        let mut retained = before.clone();
+        retained.retained.output.push((vec![Datum::Int(99)], 1));
+        let error = validate_idle(&before, &retained).unwrap_err();
+        assert!(error.contains("retained operator/output state"), "{error}");
+        let live = [
+            Snapshot {
+                base_rows: BTreeMap::from([("events".to_owned(), 999)]),
+                ..before.clone()
+            },
+            Snapshot {
+                joined_rows: before.joined_rows + 1,
+                ..before.clone()
+            },
+            Snapshot {
+                live_output_groups: before.live_output_groups + 1,
+                ..before.clone()
+            },
+            Snapshot {
+                group_histogram: vec![GroupCount {
+                    group: Some(1),
+                    rows: 1,
+                }],
+                ..before.clone()
+            },
+        ];
+        for after in live {
+            let error = validate_idle(&before, &after).unwrap_err();
+            assert!(error.contains("live-base diagnostics"), "{error}");
+        }
+    }
+
+    #[test]
+    fn m2a_state_rejects_zero_and_negative_retained_weights() {
+        for weight in [0, -1] {
+            let conn = fixture(true);
+            conn.execute(
+                &format!("UPDATE __ivm_state_mv_m2a_2_join_left SET w={weight} WHERE key=x'010000000000000008'"),
+                [],
+            )
+            .unwrap();
+            let error = capture_snapshot(&conn, true, VIEW).unwrap_err();
+            assert!(
+                error.contains("nonpositive retained weight"),
+                "{weight}: {error}"
+            );
+        }
+    }
+
     #[test]
     fn m2a_state_summary_drops_decoded_rows_and_preserves_every_exported_field() {
         let conn = fixture(true);

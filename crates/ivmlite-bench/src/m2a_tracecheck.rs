@@ -383,6 +383,31 @@ mod tests {
     }
 
     #[test]
+    fn m2a_trace_prefix_judges_each_operation_by_the_batch_before_it() {
+        let fixture = fixture(false);
+        let mut replay = TraceReplay::new(&fixture).unwrap();
+        replay.apply(&fixture.batches[0][..4]).unwrap();
+        let update = fixture.batches[0][4].clone();
+        // A second UPDATE of the same row reads what the first one wrote.
+        let mut again = update.clone();
+        again.before = update.after.clone();
+        again.after.as_mut().unwrap().amount = update.after.as_ref().unwrap().amount.map(|a| a + 1);
+        replay.apply(&[update.clone(), again]).unwrap();
+
+        let mut replay = TraceReplay::new(&fixture).unwrap();
+        replay.apply(&fixture.batches[0][..4]).unwrap();
+        let mut noop = update.clone();
+        noop.after = noop.before.clone();
+        assert!(replay.apply(&[noop]).unwrap_err().contains("no-op UPDATE"));
+        let mut moved = update;
+        moved.after.as_mut().unwrap().id += 1_000_000;
+        assert!(replay
+            .apply(&[moved])
+            .unwrap_err()
+            .contains("changes its primary key"));
+    }
+
+    #[test]
     fn m2a_trace_prefix_rejects_missing_extra_and_corrupted_bootstrap_rows() {
         let fixture = fixture(false);
         let connection = database(&fixture, false);
@@ -407,5 +432,14 @@ mod tests {
             .execute("DELETE FROM events WHERE id=0", [])
             .unwrap();
         assert!(replay.verify(&connection).is_err());
+        // A missing row at the very end is found only when the SQL side runs out first.
+        let truncated = database(&fixture, false);
+        truncated
+            .execute(
+                "DELETE FROM events WHERE id=(SELECT max(id) FROM events)",
+                [],
+            )
+            .unwrap();
+        assert!(replay.verify(&truncated).is_err());
     }
 }

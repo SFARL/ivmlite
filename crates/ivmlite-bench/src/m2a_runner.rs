@@ -350,6 +350,59 @@ thread_local! {
     /// Test-only: makes `probe_provenance` capture plans without the join key indexes.
     pub(crate) static DROP_ORDINARY_INDEXES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
+/// Test-only: where a replay lets a test corrupt its connection, to prove that the check after
+/// that point notices.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Stage {
+    /// `time_fixture`: the base tables are seeded and nothing else has run.
+    Seeded,
+    /// The mode's bootstrap is done.
+    Bootstrapped,
+    /// `time_fixture`: the warm-up round is done.
+    WarmedUp,
+    /// `time_fixture`: every measured round is done.
+    Measured,
+    /// `correctness`: a forward batch is applied and not yet refreshed.
+    Applied,
+    /// `correctness`: a forward batch is refreshed once.
+    Refreshed,
+    /// `correctness`: a forward batch is refreshed a second time with no writes in between.
+    Idled,
+    /// `correctness`: an inverse batch is applied and not yet refreshed.
+    InverseApplied,
+    /// `correctness`: an inverse batch is refreshed.
+    InverseRefreshed,
+    /// `correctness`: every inverse batch is applied and refreshed.
+    Inverted,
+}
+#[cfg(test)]
+type Fault = std::rc::Rc<dyn Fn(Stage, usize, &Connection)>;
+#[cfg(test)]
+thread_local! {
+    static FAULT: std::cell::RefCell<Option<Fault>> = const { std::cell::RefCell::new(None) };
+}
+/// Removes the installed fault when dropped, so a failing assertion cannot leak it into a later test.
+#[cfg(test)]
+pub(crate) struct FaultGuard;
+#[cfg(test)]
+impl Drop for FaultGuard {
+    fn drop(&mut self) {
+        FAULT.with(|slot| *slot.borrow_mut() = None);
+    }
+}
+/// Runs `fault(stage, round, connection)` at every stage of this thread's replays until the guard drops.
+#[cfg(test)]
+pub(crate) fn inject_fault(fault: impl Fn(Stage, usize, &Connection) + 'static) -> FaultGuard {
+    FAULT.with(|slot| *slot.borrow_mut() = Some(std::rc::Rc::new(fault)));
+    FaultGuard
+}
+#[cfg(test)]
+fn at_stage(stage: Stage, round: usize, c: &Connection) {
+    if let Some(fault) = FAULT.with(|slot| slot.borrow().clone()) {
+        fault(stage, round, c);
+    }
+}
 pub(crate) fn bootstrap(c: &Connection, f: &Fixture, mode: Mode) -> Result<f64> {
     let start = Instant::now();
     if mode == Mode::CoveringRecompute {
@@ -664,6 +717,8 @@ pub fn time_fixture(f: &Fixture, mode: Mode, library: &Path) -> Result<Measureme
     }
     let c = open(mode, library)?;
     seed(&c, f)?;
+    #[cfg(test)]
+    at_stage(Stage::Seeded, 0, &c);
     let mut warmup_trace = TraceReplay::new(f)?;
     warmup_trace
         .verify(&c)
@@ -676,6 +731,8 @@ pub fn time_fixture(f: &Fixture, mode: Mode, library: &Path) -> Result<Measureme
     let base_pages = capture_pages(&c)?;
     let bootstrap_ms = bootstrap(&c, f, mode)?;
     let bootstrap_pages = capture_pages(&c)?;
+    #[cfg(test)]
+    at_stage(Stage::Bootstrapped, 0, &c);
     verify(&c, f, mode)?;
     let query = if mode == Mode::CoveringRecompute {
         indexed_query(f)
@@ -710,6 +767,8 @@ pub fn time_fixture(f: &Fixture, mode: Mode, library: &Path) -> Result<Measureme
     assert_dml_plans(&dml_plans(&c, f.tables.keys().copied())?)?;
     let mut prepared = Prepared::new(&c, f, mode)?;
     let warmup = prepared.round(0, &f.batches[0])?;
+    #[cfg(test)]
+    at_stage(Stage::WarmedUp, 0, &c);
     warmup_trace
         .verify(&c)
         .map_err(|e| format!("warm-up trace-prefix: {e}"))?;
@@ -721,6 +780,8 @@ pub fn time_fixture(f: &Fixture, mode: Mode, library: &Path) -> Result<Measureme
         let read = prepared.read()?;
         measured.push(RoundTiming::new(n, apply, maintain, read));
     }
+    #[cfg(test)]
+    at_stage(Stage::Measured, 0, &c);
     verify(&c, f, mode)?;
     if mode == Mode::CoveringRecompute {
         oracle_check(&c, &query, f.cell.view_sql())?;
@@ -754,6 +815,8 @@ pub fn correctness(f: &Fixture, library: &Path, inverse: bool) -> Result<Correct
     let c = open(Mode::Ivmlite, library)?;
     seed(&c, f)?;
     bootstrap(&c, f, Mode::Ivmlite)?;
+    #[cfg(test)]
+    at_stage(Stage::Bootstrapped, 0, &c);
     let mut replay = TraceReplay::new(f)?;
     replay
         .verify(&c)
@@ -777,6 +840,8 @@ pub fn correctness(f: &Fixture, library: &Path, inverse: bool) -> Result<Correct
         p.apply_counting(ops, &mut changes)
             .map_err(|e| format!("forward round {round} apply: {e}"))?;
         rows_changed.push(changes);
+        #[cfg(test)]
+        at_stage(Stage::Applied, round, &c);
         replay
             .verify(&c)
             .map_err(|e| format!("forward round {round} trace-prefix: {e}"))?;
@@ -790,9 +855,12 @@ pub fn correctness(f: &Fixture, library: &Path, inverse: bool) -> Result<Correct
             snapshot: capture_snapshot(&c, join, VIEW)?.into_summary(),
         });
         p.maintain()?;
+        #[cfg(test)]
+        at_stage(Stage::Refreshed, round, &c);
         verify(&c, f, Mode::Ivmlite)
             .map_err(|e| e.with_context(&format!("forward round {round} oracle")))?;
-        let maintained = validate_snapshot(&c, join, VIEW)?;
+        let maintained = validate_snapshot(&c, join, VIEW)
+            .map_err(|e| format!("forward round {round} refreshed state: {e}"))?;
         let before_idle = maintained.clone();
         checkpoints.push(Checkpoint {
             phase: "refreshed".into(),
@@ -800,8 +868,12 @@ pub fn correctness(f: &Fixture, library: &Path, inverse: bool) -> Result<Correct
             snapshot: maintained.into_summary(),
         });
         p.maintain()?;
-        let idle = validate_snapshot(&c, join, VIEW)?;
-        validate_idle(&before_idle, &idle)?;
+        #[cfg(test)]
+        at_stage(Stage::Idled, round, &c);
+        let idle = validate_snapshot(&c, join, VIEW)
+            .map_err(|e| format!("forward round {round} idle state: {e}"))?;
+        validate_idle(&before_idle, &idle)
+            .map_err(|e| format!("forward round {round} idle refresh: {e}"))?;
         checkpoints.push(Checkpoint {
             phase: "idle".into(),
             round: Some(round),
@@ -815,20 +887,28 @@ pub fn correctness(f: &Fixture, library: &Path, inverse: bool) -> Result<Correct
                 .map_err(|e| format!("inverse round {round}: {e}"))?;
             p.apply(ops)
                 .map_err(|e| format!("inverse round {round} apply: {e}"))?;
+            #[cfg(test)]
+            at_stage(Stage::InverseApplied, round, &c);
             replay
                 .verify(&c)
                 .map_err(|e| format!("inverse round {round} trace-prefix: {e}"))?;
             p.maintain()?;
+            #[cfg(test)]
+            at_stage(Stage::InverseRefreshed, round, &c);
             verify(&c, f, Mode::Ivmlite)
                 .map_err(|e| e.with_context(&format!("inverse round {round} oracle")))?;
-            let snapshot = validate_snapshot(&c, join, VIEW)?;
+            let snapshot = validate_snapshot(&c, join, VIEW)
+                .map_err(|e| format!("inverse round {round} state: {e}"))?;
             checkpoints.push(Checkpoint {
                 phase: "inverse".into(),
                 round: Some(round),
                 snapshot: snapshot.into_summary(),
             });
         }
-        let restored = validate_snapshot(&c, join, VIEW)?;
+        #[cfg(test)]
+        at_stage(Stage::Inverted, f.batches.len(), &c);
+        let restored = validate_snapshot(&c, join, VIEW)
+            .map_err(|e| format!("inverse restored state: {e}"))?;
         if restored.retained_signature() != &signature {
             return Err("inverse trace did not restore decoded bootstrap state".into());
         }
@@ -1269,6 +1349,221 @@ mod tests {
             let error = target_statistics(&f, &wrong).unwrap_err();
             assert!(error.to_string().contains("SQLite changed 2"), "{error}");
         }
+    }
+    /// A fault that runs `sql` when a replay reaches `stage` of `round`.
+    fn run_at(
+        stage: Stage,
+        round: usize,
+        sql: &'static str,
+    ) -> impl Fn(Stage, usize, &Connection) + 'static {
+        move |at, n, c| {
+            if at == stage && n == round {
+                c.execute_batch(sql).unwrap();
+            }
+        }
+    }
+    /// The error the correctness replay of `f` fails with once `fault` is installed.
+    fn correctness_error(
+        f: &Fixture,
+        inverse: bool,
+        fault: impl Fn(Stage, usize, &Connection) + 'static,
+    ) -> String {
+        let _fault = inject_fault(fault);
+        match correctness(f, &library(), inverse) {
+            Ok(_) => panic!("the correctness replay accepted a corrupted connection"),
+            Err(error) => error.to_string(),
+        }
+    }
+    /// The error `time_fixture` fails with once `fault` is installed.
+    fn timing_error(
+        f: &Fixture,
+        mode: Mode,
+        fault: impl Fn(Stage, usize, &Connection) + 'static,
+    ) -> String {
+        let _fault = inject_fault(fault);
+        match time_fixture(f, mode, &library()) {
+            Ok(_) => panic!("the timed replay accepted a corrupted connection in {mode:?}"),
+            Err(error) => error.to_string(),
+        }
+    }
+    const DROP_OUTPUT_ROW: &str =
+        "DELETE FROM __ivm_out_mv_m2a WHERE rowid IN (SELECT rowid FROM __ivm_out_mv_m2a LIMIT 1)";
+    const SKEW_RETAINED_WEIGHTS: &str = "UPDATE __ivm_state_mv_m2a_0_agg_groups SET w = w + 1";
+    const SKEW_BASE_AMOUNT: &str =
+        "UPDATE events SET amount = amount + 1 WHERE id = (SELECT min(id) FROM events)";
+    #[test]
+    fn correctness_replay_fails_on_a_wrong_view_result() {
+        for join in [false, true] {
+            let error = correctness_error(
+                &tiny(join),
+                false,
+                run_at(Stage::Refreshed, 0, DROP_OUTPUT_ROW),
+            );
+            assert!(error.contains("forward round 0 oracle"), "{error}");
+        }
+    }
+    #[test]
+    fn correctness_replay_fails_on_wrong_retained_state_the_view_hides() {
+        let error = correctness_error(
+            &tiny(false),
+            false,
+            run_at(Stage::Refreshed, 0, SKEW_RETAINED_WEIGHTS),
+        );
+        assert!(error.contains("forward round 0 refreshed state"), "{error}");
+        assert!(error.contains("decoded arrangement mismatch"), "{error}");
+    }
+    #[test]
+    fn timed_replay_fails_on_a_wrong_final_result() {
+        let f = tiny(false);
+        for mode in [Mode::Recompute, Mode::CoveringRecompute, Mode::Ivmlite] {
+            let corrupt = if mode == Mode::Ivmlite {
+                DROP_OUTPUT_ROW
+            } else {
+                "DELETE FROM m2a_result WHERE rowid IN (SELECT rowid FROM m2a_result LIMIT 1)"
+            };
+            let error = timing_error(&f, mode, run_at(Stage::Measured, 0, corrupt));
+            assert!(error.contains("diverged from"), "{mode:?}: {error}");
+        }
+    }
+    #[test]
+    fn correctness_replay_fails_when_the_sql_bases_leave_the_trace() {
+        let f = tiny(false);
+        let applied = correctness_error(&f, true, run_at(Stage::Applied, 0, SKEW_BASE_AMOUNT));
+        assert!(
+            applied.contains("forward round 0 trace-prefix"),
+            "{applied}"
+        );
+        let inverse =
+            correctness_error(&f, true, run_at(Stage::InverseApplied, 0, SKEW_BASE_AMOUNT));
+        assert!(
+            inverse.contains("inverse round 0 trace-prefix"),
+            "{inverse}"
+        );
+        let bootstrap =
+            correctness_error(&f, false, run_at(Stage::Bootstrapped, 0, SKEW_BASE_AMOUNT));
+        assert!(bootstrap.contains("bootstrap trace-prefix"), "{bootstrap}");
+    }
+    #[test]
+    fn timed_replay_fails_when_the_sql_bases_leave_the_trace() {
+        let f = tiny(false);
+        for (stage, label) in [
+            (Stage::Seeded, "bootstrap trace-prefix"),
+            (Stage::WarmedUp, "warm-up trace-prefix"),
+            (Stage::Measured, "final trace-prefix"),
+        ] {
+            // No maintained result exists, so only the trace-prefix check can notice.
+            let error = timing_error(&f, Mode::NoMaintenance, run_at(stage, 0, SKEW_BASE_AMOUNT));
+            assert!(error.contains(label), "{stage:?}: {error}");
+        }
+    }
+    #[test]
+    fn correctness_replay_fails_when_an_idle_refresh_adds_retained_rows() {
+        let error = correctness_error(
+            &tiny(false),
+            false,
+            run_at(
+                Stage::Idled,
+                0,
+                "INSERT INTO __ivm_stage_mv_m2a(op) VALUES('state')",
+            ),
+        );
+        assert!(error.contains("forward round 0 idle refresh"), "{error}");
+        assert!(error.contains("retained staging rows"), "{error}");
+    }
+    #[test]
+    fn inverse_replay_fails_unless_it_restores_the_bootstrap_state() {
+        let f = tiny(false);
+        let refresh = "INSERT INTO mv_m2a(mv_m2a) VALUES('refresh')";
+        let state = correctness_error(&f, true, move |stage, _, c| {
+            if stage == Stage::Inverted {
+                c.execute_batch(SKEW_BASE_AMOUNT).unwrap();
+                c.execute_batch(refresh).unwrap();
+            }
+        });
+        assert!(
+            state.contains("did not restore decoded bootstrap state"),
+            "{state}"
+        );
+        // The decoded state is unchanged, but a base row now has another primary key.
+        let table = correctness_error(&f, true, move |stage, _, c| {
+            if stage == Stage::Inverted {
+                c.execute_batch(
+                    "UPDATE events SET id = id + 1000000 WHERE id = (SELECT max(id) FROM events)",
+                )
+                .unwrap();
+                c.execute_batch(refresh).unwrap();
+            }
+        });
+        assert!(table.contains("did not restore events"), "{table}");
+        let oracle = correctness_error(
+            &f,
+            true,
+            run_at(Stage::InverseRefreshed, 0, DROP_OUTPUT_ROW),
+        );
+        assert!(oracle.contains("inverse round 0 oracle"), "{oracle}");
+    }
+    #[test]
+    fn assert_plans_checks_the_recompute_and_the_dml_plans() {
+        let good = Plans {
+            view_sql_reference: String::new(),
+            ordinary_recompute: "SEARCH rhs USING INDEX rhs_k (k=?)".into(),
+            covering_recompute: String::new(),
+            dml: BTreeMap::from([(
+                "lhs.update".to_owned(),
+                "SEARCH lhs USING INTEGER PRIMARY KEY (rowid=?)".to_owned(),
+            )]),
+        };
+        assert_plans(&good, Shape::Join).unwrap();
+        let scanning = Plans {
+            dml: BTreeMap::from([("lhs.update".to_owned(), "SCAN lhs".to_owned())]),
+            ..good.clone()
+        };
+        let error = assert_plans(&scanning, Shape::Join).unwrap_err();
+        assert!(error.to_string().contains("not a rowid lookup"), "{error}");
+        let unindexed = Plans {
+            ordinary_recompute: "SCAN lhs\nSCAN rhs".into(),
+            ..good
+        };
+        let error = assert_plans(&unindexed, Shape::Join).unwrap_err();
+        assert!(error.to_string().contains("join key index"), "{error}");
+    }
+    #[test]
+    fn timed_replay_asserts_the_dml_plans_of_its_own_connection() {
+        // The table is rebuilt without a primary key, so an UPDATE by id scans it.
+        let error = timing_error(
+            &tiny(false),
+            Mode::NoMaintenance,
+            run_at(
+                Stage::Bootstrapped,
+                0,
+                "CREATE TABLE rebuilt AS SELECT * FROM events; DROP TABLE events; ALTER TABLE rebuilt RENAME TO events;",
+            ),
+        );
+        assert!(error.contains("not a rowid lookup"), "{error}");
+    }
+    #[test]
+    fn timed_replay_asserts_the_recompute_plans_of_its_own_connection() {
+        let ordinary = timing_error(
+            &tiny(true),
+            Mode::Recompute,
+            run_at(
+                Stage::Bootstrapped,
+                0,
+                "DROP INDEX lhs_k; DROP INDEX rhs_k;",
+            ),
+        );
+        assert!(ordinary.contains("join key index"), "{ordinary}");
+        // Present under its name but no longer covering the grouped columns.
+        let covering = timing_error(
+            &tiny(false),
+            Mode::CoveringRecompute,
+            run_at(
+                Stage::Bootstrapped,
+                0,
+                "DROP INDEX events_g_amount; CREATE INDEX events_g_amount ON events(g);",
+            ),
+        );
+        assert!(covering.contains("covering plan missing"), "{covering}");
     }
     #[test]
     fn the_join_key_index_must_be_named_exactly() {
