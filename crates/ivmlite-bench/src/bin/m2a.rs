@@ -1,4 +1,7 @@
 //! Portable M2a export, correctness/state replay, timing and bounded churn.
+#[cfg(test)]
+#[path = "../m2a_fixtures.rs"]
+mod m2a_fixtures;
 #[path = "../m2a_runner.rs"]
 mod m2a_runner;
 #[path = "../m2a_space.rs"]
