@@ -112,7 +112,7 @@ pub struct Measurement {
     pub final_pages: PageMetrics,
     pub plan: Vec<String>,
 }
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Checkpoint {
     pub phase: String,
     pub round: Option<usize>,

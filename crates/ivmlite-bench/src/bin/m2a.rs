@@ -2,6 +2,8 @@
 #[cfg(test)]
 #[path = "../m2a_fixtures.rs"]
 mod m2a_fixtures;
+#[path = "../m2a_report.rs"]
+mod m2a_report;
 #[path = "../m2a_runner.rs"]
 mod m2a_runner;
 #[path = "../m2a_space.rs"]
@@ -42,6 +44,8 @@ struct Args {
     resume: bool,
     retry_failed: bool,
     allow_dirty: bool,
+    /// Destination of the `report` tables; `<out>/report` when absent.
+    report: Option<PathBuf>,
     /// Overrides `churn.rounds` of the workload file.
     rounds: Option<usize>,
     repeats: usize,
@@ -65,11 +69,12 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
         resume: false,
         retry_failed: false,
         allow_dirty: false,
+        report: None,
         rounds: None,
         repeats: 5,
     };
-    if !["export", "run", "verify", "churn", "confirm"].contains(&a.action.as_str()) {
-        return Err("usage: m2a {export|run|verify|churn|confirm} [--workload FILE] [--out DIR] [--extension LIB] [--fixture FILE] [--cells IDS] [--profiles LABELS] [--shape single|join] [--fanout N] [--batch N] [--seeds N,...] [--smoke] [--skip-smoke-gate] [--resume] [--retry-failed] [--allow-dirty] [--rounds N] [--repeats N]".into());
+    if !["export", "run", "verify", "churn", "confirm", "report"].contains(&a.action.as_str()) {
+        return Err("usage: m2a {export|run|verify|churn|confirm|report} [--workload FILE] [--out DIR] [--extension LIB] [--fixture FILE] [--cells IDS] [--profiles LABELS] [--shape single|join] [--fanout N] [--batch N] [--seeds N,...] [--smoke] [--skip-smoke-gate] [--resume] [--retry-failed] [--allow-dirty] [--rounds N] [--repeats N] [--report DIR]".into());
     }
     let mut seen = BTreeSet::new();
     while let Some(flag) = it.next() {
@@ -112,6 +117,7 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
                         }
                         a.seeds = Some(v);
                     }
+                    "--report" => a.report = Some(value.into()),
                     "--rounds" => a.rounds = Some(value.parse()?),
                     "--repeats" => a.repeats = value.parse()?,
                     _ => return Err(format!("unknown option {flag}").into()),
@@ -129,6 +135,7 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
             Ok(())
         }
     };
+    only("--report", &["report"])?;
     only("--fixture", &["verify"])?;
     only("--rounds", &["churn"])?;
     only("--repeats", &["confirm"])?;
@@ -148,6 +155,9 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Args> {
         "--smoke",
     ] {
         only(flag, &["run", "export", "churn", "confirm"])?;
+    }
+    for flag in ["--resume", "--retry-failed", "--allow-dirty"] {
+        only(flag, &["export", "run", "verify", "churn", "confirm"])?;
     }
     if a.retry_failed && !a.resume {
         return Err("--retry-failed requires --resume".into());
@@ -862,17 +872,19 @@ fn validate_evidence(dir: &Path, f: &Fixture, inverse: bool, space: bool) -> Res
     Ok(())
 }
 fn case_dir(a: &Args, key: &ExpectedCase) -> PathBuf {
-    match a.action.as_str() {
-        "churn" => a.out.join(format!("churn_{}", key.cell)),
-        "verify" => a
-            .out
+    case_path(&a.out, &a.action, key)
+}
+/// Where `action` stores the artifacts of `key` under `out`.
+fn case_path(out: &Path, action: &str, key: &ExpectedCase) -> PathBuf {
+    match action {
+        "churn" => out.join(format!("churn_{}", key.cell)),
+        "verify" => out
             .join(format!("verify_{}", key.cell))
             .join(format!("seed-{}", key.seed)),
-        _ => a
-            .out
+        _ => out
             .join(&key.cell)
             .join(format!("seed-{}", key.seed))
-            .join(if a.action == "confirm" {
+            .join(if action == "confirm" {
                 format!("confirm-repeat-{}", key.repeat)
             } else {
                 format!("repeat-{}", key.repeat)
@@ -1349,7 +1361,26 @@ fn run_inner(a: &Args, ctx: &Context) -> Result<()> {
         execute_case(a, &f, key, ctx, phase)
     })
 }
+/// Derives the published tables from the raw artifacts; nothing is executed or timed.
+fn report(a: &Args) -> Result<()> {
+    let dest = a.report.clone().unwrap_or_else(|| a.out.join("report"));
+    let summary = m2a_report::report(&a.out, &dest)?;
+    println!(
+        "report {}: {} complete, {} incomplete, {} confirmation candidates, best median ratio {}",
+        dest.display(),
+        summary.complete,
+        summary.incomplete,
+        summary.candidates.len(),
+        summary
+            .best_ratio
+            .map_or("n/a".to_owned(), |ratio| format!("{ratio:.3}"))
+    );
+    Ok(())
+}
 fn run(a: Args) -> Result<()> {
+    if a.action == "report" {
+        return report(&a);
+    }
     fs::create_dir_all(&a.out)?;
     let provenance = provenance();
     let mut ctx = match context(&a, provenance.clone()) {
@@ -1445,6 +1476,25 @@ mod tests {
         ));
         fs::create_dir_all(&p).unwrap();
         p
+    }
+    #[test]
+    fn report_action_takes_out_and_report_only() {
+        let a = args(&["report", "--out", "x", "--report", "y"]);
+        assert_eq!((a.out, a.report), ("x".into(), Some("y".into())));
+        assert!(args(&["report"]).report.is_none());
+        for bad in [
+            vec!["report", "--extension", "x"],
+            vec!["report", "--resume"],
+            vec!["report", "--allow-dirty"],
+            vec!["report", "--smoke"],
+            vec!["report", "--seeds", "1"],
+            vec!["run", "--report", "y"],
+        ] {
+            assert!(
+                parse(bad.iter().map(|s| (*s).to_owned())).is_err(),
+                "{bad:?}"
+            );
+        }
     }
     #[test]
     fn cli_rejects_unknown_duplicate_empty_and_inapplicable_options() {

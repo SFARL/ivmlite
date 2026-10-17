@@ -61,7 +61,7 @@ pub(crate) struct PageMetrics {
     pub live_page_bytes: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Snapshot {
     pub base_rows: BTreeMap<String, u64>,
     /// Number of logical joined rows (or events for the single-table shape).
