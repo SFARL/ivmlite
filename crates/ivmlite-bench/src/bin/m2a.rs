@@ -353,9 +353,13 @@ struct Manifest {
     extension_sha256: Option<String>,
     runner_sha256: String,
     sqlite_version: String,
-    rustc: String,
+    /// `rustc -vV` of the compiler that built this runner, lines joined with "; ".
+    runner_rustc: String,
     hardware: Hardware,
-    pragmas: String,
+    /// Read back from a live connection after setup, never copied from the setup string.
+    pragmas: BTreeMap<String, String>,
+    target_selection: String,
+    plans: m2a_runner::Plans,
     mode_order: Vec<String>,
     provenance: Provenance,
 }
@@ -541,14 +545,43 @@ fn mode_offset(cfg: &M2aConfig, cell: &Cell, seed: u64, repeat: usize) -> Result
 }
 fn manifest(f: &Fixture, a: &Args, repeat: usize, ctx: &Context) -> Result<Manifest> {
     let offset = mode_offset(&f.config, &f.cell, f.seed, repeat)?;
+    let probe = m2a_runner::probe_provenance(f)?;
     let mut started = ctx.provenance.clone();
     started.started_unix_ms = now_ms();
     started.started_utc = command("date", &["-u", "+%Y-%m-%dT%H:%M:%SZ"]);
     started.start_load = command("uptime", &[]);
-    Ok(Manifest{schema_version:2,kind:a.action.clone(),cell:f.cell.clone(),seed:f.seed,repeat,rounds:f.rounds,smoke:a.smoke,fixture_sha256:json_hash(f)?,initial_data_sha256:json_hash(&f.tables)?,trace_sha256:json_hash(&f.batches)?,
-        sql_sha256:hash(f.cell.view_sql().as_bytes()),view_sql:f.cell.view_sql().into(),schema_ddl:f.cell.schema_ddl().into(),ordinary_index_ddl:f.cell.ordinary_indexes().into(),covering_index_ddl:f.cell.covering_indexes().into(),config_sha256:json_hash(&f.config)?,
-        source_revision:ctx.source_revision.clone(),source_sha256:ctx.source_sha256.clone(),extension_sha256:ctx.extension_sha256.clone(),runner_sha256:ctx.runner_sha256.clone(),sqlite_version:rusqlite::version().into(),rustc:command("rustc",&["--version"]),hardware:ctx.provenance.hardware.clone(),
-        pragmas:"page_size=4096;cache_size=-65536;temp_store=MEMORY;journal_mode=MEMORY;synchronous=OFF;foreign_keys=ON;recursive_triggers=ON".into(),mode_order:(0..4).map(|i|MODES[(i+offset)%4].label().to_owned()).collect(),provenance:started})
+    Ok(Manifest {
+        schema_version: 3,
+        kind: a.action.clone(),
+        cell: f.cell.clone(),
+        seed: f.seed,
+        repeat,
+        rounds: f.rounds,
+        smoke: a.smoke,
+        fixture_sha256: json_hash(f)?,
+        initial_data_sha256: json_hash(&f.tables)?,
+        trace_sha256: json_hash(&f.batches)?,
+        sql_sha256: hash(f.cell.view_sql().as_bytes()),
+        view_sql: f.cell.view_sql().into(),
+        schema_ddl: f.cell.schema_ddl().into(),
+        ordinary_index_ddl: f.cell.ordinary_indexes().into(),
+        covering_index_ddl: f.cell.covering_indexes().into(),
+        config_sha256: json_hash(&f.config)?,
+        source_revision: ctx.source_revision.clone(),
+        source_sha256: ctx.source_sha256.clone(),
+        extension_sha256: ctx.extension_sha256.clone(),
+        runner_sha256: ctx.runner_sha256.clone(),
+        sqlite_version: rusqlite::version().into(),
+        runner_rustc: env!("M2A_RUSTC_VV").into(),
+        hardware: ctx.provenance.hardware.clone(),
+        pragmas: probe.pragmas,
+        target_selection: "group_then_row".into(),
+        plans: probe.plans,
+        mode_order: (0..4)
+            .map(|i| MODES[(i + offset) % 4].label().to_owned())
+            .collect(),
+        provenance: started,
+    })
 }
 fn save_fixture(path: &Path, f: &Fixture) -> Result<()> {
     if path.exists() {
@@ -684,6 +717,10 @@ fn validate_timing(file: &TimingFile, m: &Manifest, f: &Fixture) -> Result<()> {
             || !measurement.bootstrap_ms.is_finite()
             || measurement.bootstrap_ms < 0.0
             || measurement.plan.is_empty()
+                != !matches!(
+                    measurement.mode,
+                    m2a_runner::Mode::Recompute | m2a_runner::Mode::CoveringRecompute
+                )
         {
             return Err("missing/duplicate modes or incomplete measured rounds".into());
         }
@@ -896,6 +933,8 @@ fn execute_case(
             .library
             .as_deref()
             .ok_or("execution requires an extension")?;
+        *phase = "plan".into();
+        m2a_runner::assert_plans(&m.plans, f.cell.shape)?;
         *phase = "correctness".into();
         write_json(
             &dir.join("correctness.json"),
@@ -963,7 +1002,7 @@ fn record_failure(
     ctx: Option<&Context>,
     key: Option<&ExpectedCase>,
     phase: &str,
-    error: &dyn std::fmt::Display,
+    error: &(dyn std::error::Error + 'static),
 ) -> Result<()> {
     let value = serde_json::json!({"schema_version":1,"invocation_id":provenance.invocation_id,"action":a.action,"cell":key.map(|k|&k.cell),"seed":key.map(|k|k.seed),"repeat":key.map(|k|k.repeat),"phase":phase,"error":error.to_string(),"source_sha256":ctx.map(|c|&c.source_sha256),"extension_sha256":ctx.and_then(|c|c.extension_sha256.as_ref()),"runner_sha256":ctx.map(|c|&c.runner_sha256),"provenance":provenance});
     write_json(&a.out.join("failure.json"), &value)?;
@@ -971,6 +1010,12 @@ fn record_failure(
         let dir = case_dir(a, key);
         fs::create_dir_all(&dir)?;
         write_json(&dir.join("failure.json"), &value)?;
+        if let Some(mismatch) = error.downcast_ref::<m2a_runner::MultisetMismatch>() {
+            write_json(
+                &dir.join("failure-rows.json"),
+                &serde_json::json!({"expected_only":mismatch.expected_only,"actual_only":mismatch.actual_only}),
+            )?;
+        }
     }
     Ok(())
 }
@@ -1049,9 +1094,11 @@ fn summarize(
 /// Drops the failure records of a case that now completes. The top-level
 /// record is removed only when it names this exact case.
 fn clear_failure(a: &Args, key: &ExpectedCase) -> Result<()> {
-    let case_record = case_dir(a, key).join("failure.json");
-    if case_record.exists() {
-        fs::remove_file(case_record)?;
+    for name in ["failure.json", "failure-rows.json"] {
+        let case_record = case_dir(a, key).join(name);
+        if case_record.exists() {
+            fs::remove_file(case_record)?;
+        }
     }
     let top_level = a.out.join("failure.json");
     if top_level.exists() {
@@ -1106,7 +1153,7 @@ fn run_cases(
         match run_one(key, &mut phase) {
             Ok(()) => clear_failure(a, key)?,
             Err(error) => {
-                record_failure(a, &ctx.provenance, Some(ctx), Some(key), &phase, &error)?;
+                record_failure(a, &ctx.provenance, Some(ctx), Some(key), &phase, &*error)?;
                 failed_now.insert(key.clone(), failed_case(key, &phase, &error));
             }
         }
@@ -1197,7 +1244,7 @@ fn run(a: Args) -> Result<()> {
     let ctx = match context(&a, provenance.clone()) {
         Ok(ctx) => ctx,
         Err(error) => {
-            record_failure(&a, &provenance, None, None, "setup", &error)?;
+            record_failure(&a, &provenance, None, None, "setup", &*error)?;
             return Err(error);
         }
     };
@@ -1215,7 +1262,7 @@ fn run(a: Args) -> Result<()> {
                 Some(&ctx),
                 None,
                 "selection_or_fixture_preflight",
-                &error,
+                &*error,
             )?;
         }
         return Err(error);
@@ -1691,6 +1738,74 @@ mod tests {
         a.retry_failed = true;
         run_inner(&a, &ctx).unwrap();
         assert!(!dir.join("failure.json").exists());
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn manifest_records_live_pragmas_plans_toolchain_and_target_selection() {
+        let a = args(&["run", "--smoke"]);
+        let m = manifest(&tiny_fixture(), &a, 0, &test_context()).unwrap();
+        assert_eq!(m.pragmas["cache_size"], "-65536");
+        assert_eq!(m.pragmas.len(), 7);
+        assert_eq!(m.target_selection, "group_then_row");
+        assert!(m.runner_rustc.starts_with("rustc "), "{}", m.runner_rustc);
+        assert!(m.runner_rustc.contains("release:"), "{}", m.runner_rustc);
+        assert!(!m.runner_rustc.contains('\n'));
+        assert!(m.plans.covering_recompute.contains("COVERING INDEX"));
+        assert!(m
+            .plans
+            .dml
+            .values()
+            .all(|p| p.contains("INTEGER PRIMARY KEY")));
+        m2a_runner::assert_plans(&m.plans, m.cell.shape).unwrap();
+    }
+    #[test]
+    fn an_oracle_mismatch_writes_failure_rows_next_to_the_failure() {
+        let dir = temp();
+        let mut a = smoke_run_args(&dir);
+        let key = three_smoke_keys(&a).remove(0);
+        a.cells = vec![key.cell.clone()];
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE a(x INTEGER, y INTEGER); CREATE TABLE b(x INTEGER, y INTEGER);
+                 INSERT INTO a VALUES(1,5),(2,3); INSERT INTO b VALUES(1,5),(3,3),(3,3);",
+            )
+            .unwrap();
+        let mismatch = m2a_runner::oracle_check(&connection, "SELECT * FROM a", "SELECT * FROM b")
+            .unwrap_err();
+        let ctx = test_context();
+        record_failure(
+            &a,
+            &ctx.provenance,
+            Some(&ctx),
+            Some(&key),
+            "timing_ivmlite",
+            &mismatch,
+        )
+        .unwrap();
+        let rows: serde_json::Value =
+            read_json(&case_dir(&a, &key).join("failure-rows.json")).unwrap();
+        assert_eq!(rows["expected_only"], serde_json::json!([[3, 3], [3, 3]]));
+        assert_eq!(rows["actual_only"], serde_json::json!([[2, 3]]));
+        clear_failure(&a, &key).unwrap();
+        assert!(!case_dir(&a, &key).join("failure-rows.json").exists());
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn a_failing_plan_assertion_is_a_plan_phase_case_failure() {
+        let dir = temp();
+        let mut a = smoke_run_args(&dir);
+        a.shape = Some(Shape::Join);
+        let keys = three_smoke_keys(&a);
+        a.cells = keys.iter().map(|k| k.cell.clone()).collect();
+        m2a_runner::DROP_ORDINARY_INDEXES.with(|flag| flag.set(true));
+        let error = run_inner(&a, &extension_context()).unwrap_err();
+        m2a_runner::DROP_ORDINARY_INDEXES.with(|flag| flag.set(false));
+        assert!(error.is::<CasesFailed>(), "{error}");
+        let summary = stored_summary(&a);
+        assert_eq!((summary.planned, summary.complete), (3, 0));
+        assert!(summary.failed.iter().all(|f| f.phase == "plan"));
+        assert!(summary.failed[0].error.contains("join key index"));
         fs::remove_dir_all(dir).unwrap();
     }
     #[test]

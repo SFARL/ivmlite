@@ -4,9 +4,10 @@ use std::hint::black_box;
 use std::path::Path;
 use std::time::Instant;
 
-use ivmlite_test::demo_bench::{check_same_multiset, multiset_difference, sorted_rows, Summary};
+use ivmlite_test::demo_bench::{multiset_difference, sorted_rows, Summary};
 use ivmlite_test::open_with_extension_at;
 use ivmlite_workload::m2a::{Fixture, Mutation, Shape, Table};
+use rusqlite::types::Value;
 use rusqlite::{params, Connection, Statement, StatementStatus};
 use serde::{Deserialize, Serialize};
 
@@ -128,6 +129,8 @@ pub struct OperationStats {
     pub matched_hot_lhs_rows: usize,
     pub matched_distinct_groups: usize,
     pub matched_hot_groups: usize,
+    /// Rows the operation changed in the replayed table state; a valid trace changes exactly one.
+    pub rows_changed: u64,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TargetStats {
@@ -155,8 +158,46 @@ pub fn open(mode: Mode, library: &Path) -> Result<Connection> {
     } else {
         Connection::open_in_memory()?
     };
-    c.execute_batch("PRAGMA page_size=4096; PRAGMA cache_size=-65536; PRAGMA temp_store=MEMORY; PRAGMA journal_mode=MEMORY; PRAGMA synchronous=OFF; PRAGMA foreign_keys=ON; PRAGMA recursive_triggers=ON;")?;
+    apply_pragmas(&c)?;
     Ok(c)
+}
+const PRAGMA_SETUP: &str = "PRAGMA page_size=4096; PRAGMA cache_size=-65536; PRAGMA temp_store=MEMORY; PRAGMA journal_mode=MEMORY; PRAGMA synchronous=OFF; PRAGMA foreign_keys=ON; PRAGMA recursive_triggers=ON;";
+/// What `PRAGMA <name>` must report once `PRAGMA_SETUP` has run (SQLite reports enumerations
+/// numerically: temp_store MEMORY is 2, synchronous OFF is 0).
+const PINNED_PRAGMAS: [(&str, &str); 7] = [
+    ("page_size", "4096"),
+    ("cache_size", "-65536"),
+    ("temp_store", "2"),
+    ("journal_mode", "memory"),
+    ("synchronous", "0"),
+    ("foreign_keys", "1"),
+    ("recursive_triggers", "1"),
+];
+fn apply_pragmas(c: &Connection) -> Result<()> {
+    c.execute_batch(PRAGMA_SETUP)?;
+    check_pragmas(&read_pragmas(c)?)
+}
+/// The value each pinned pragma currently has on `c`, read with `PRAGMA <name>`.
+pub fn read_pragmas(c: &Connection) -> Result<BTreeMap<String, String>> {
+    let mut out = BTreeMap::new();
+    for (name, _) in PINNED_PRAGMAS {
+        let value = match c.query_row(&format!("PRAGMA {name}"), [], |r| r.get::<_, Value>(0))? {
+            Value::Integer(i) => i.to_string(),
+            Value::Text(t) => t,
+            other => return Err(format!("PRAGMA {name} returned {other:?}").into()),
+        };
+        out.insert(name.to_owned(), value);
+    }
+    Ok(out)
+}
+pub fn check_pragmas(read: &BTreeMap<String, String>) -> Result<()> {
+    for (name, pinned) in PINNED_PRAGMAS {
+        let actual = read.get(name).map(String::as_str);
+        if actual != Some(pinned) {
+            return Err(format!("M2a pragma {name} is {actual:?}, pinned to {pinned}").into());
+        }
+    }
+    Ok(())
 }
 pub fn seed(c: &Connection, fixture: &Fixture) -> Result<()> {
     c.execute_batch(fixture.cell.schema_ddl())?;
@@ -195,13 +236,115 @@ fn update_sql(t: Table) -> &'static str {
         Table::Rhs => "UPDATE rhs SET k=?2,amount=?3 WHERE id=?1",
     }
 }
+fn delete_sql(t: Table) -> String {
+    format!("DELETE FROM {} WHERE id=?1", t.name())
+}
 fn indexed_query(f: &Fixture) -> String {
     match f.cell.shape {Shape::Single=>"SELECT g, COUNT(*), SUM(amount) FROM events INDEXED BY events_g_amount GROUP BY g".into(),Shape::Join=>"SELECT lhs.g, COUNT(*), SUM(rhs.amount) FROM lhs INDEXED BY lhs_g_k JOIN rhs INDEXED BY rhs_k_amount ON lhs.k = rhs.k GROUP BY lhs.g".into()}
 }
 fn query_plan(c: &Connection, query: &str) -> Result<Vec<String>> {
-    Ok(c.prepare(&format!("EXPLAIN QUERY PLAN {query}"))?
-        .query_map([], |r| r.get::<_, String>(3))?
-        .collect::<rusqlite::Result<_>>()?)
+    let mut statement = c.prepare(&format!("EXPLAIN QUERY PLAN {query}"))?;
+    let unbound = vec![Value::Null; statement.parameter_count()];
+    let plan = statement
+        .query_map(rusqlite::params_from_iter(unbound), |r| {
+            r.get::<_, String>(3)
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(plan)
+}
+pub fn plan_text(plan: &[String]) -> String {
+    plan.join("\n")
+}
+/// A plan that never uses an index on the join key would make the recompute baseline a nested
+/// full scan, so the comparison against it would not be a fair baseline.
+pub fn assert_ordinary_recompute_plan(shape: Shape, plan: &str) -> Result<()> {
+    if shape != Shape::Join {
+        return Ok(());
+    }
+    let indexed = ["lhs_k", "rhs_k"].iter().any(|index| {
+        plan.contains(&format!("USING INDEX {index}"))
+            || plan.contains(&format!("USING COVERING INDEX {index}"))
+    });
+    if !indexed {
+        return Err(format!("ordinary recompute plan uses no join key index: {plan}").into());
+    }
+    Ok(())
+}
+/// The plan of every UPDATE and DELETE the apply path prepares, keyed `<table>.<update|delete>`.
+pub fn dml_plans(
+    c: &Connection,
+    tables: impl IntoIterator<Item = Table>,
+) -> Result<BTreeMap<String, String>> {
+    let mut plans = BTreeMap::new();
+    for t in tables {
+        for (kind, sql) in [
+            ("update", update_sql(t).to_owned()),
+            ("delete", delete_sql(t)),
+        ] {
+            plans.insert(
+                format!("{}.{kind}", t.name()),
+                plan_text(&query_plan(c, &sql)?),
+            );
+        }
+    }
+    Ok(plans)
+}
+/// Every UPDATE and DELETE must find its row by primary key, or the timed apply cost would grow
+/// with table size.
+pub fn assert_dml_plans(plans: &BTreeMap<String, String>) -> Result<()> {
+    for (label, plan) in plans {
+        if !plan.contains("USING INTEGER PRIMARY KEY") {
+            return Err(format!("{label} plan is not a rowid lookup: {plan}").into());
+        }
+    }
+    Ok(())
+}
+/// Query plans and connection settings, captured on a data-free copy of a fixture's schema
+/// (SQLite plans without ANALYZE statistics do not depend on row counts).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Plans {
+    pub view_sql_reference: String,
+    pub ordinary_recompute: String,
+    pub covering_recompute: String,
+    pub dml: BTreeMap<String, String>,
+}
+pub struct Provenance {
+    pub pragmas: BTreeMap<String, String>,
+    pub plans: Plans,
+}
+pub fn probe_provenance(f: &Fixture) -> Result<Provenance> {
+    let c = Connection::open_in_memory()?;
+    c.execute_batch(PRAGMA_SETUP)?;
+    let pragmas = read_pragmas(&c)?;
+    c.execute_batch(f.cell.schema_ddl())?;
+    c.execute_batch(f.cell.ordinary_indexes())?;
+    #[cfg(test)]
+    if DROP_ORDINARY_INDEXES.with(std::cell::Cell::get) {
+        c.execute_batch("DROP INDEX IF EXISTS lhs_k; DROP INDEX IF EXISTS rhs_k;")?;
+    }
+    let view_sql_reference = plan_text(&query_plan(&c, f.cell.view_sql())?);
+    let dml = dml_plans(&c, f.tables.keys().copied())?;
+    c.execute_batch(f.cell.covering_indexes())?;
+    let covering_recompute = plan_text(&query_plan(&c, &indexed_query(f))?);
+    Ok(Provenance {
+        pragmas,
+        plans: Plans {
+            ordinary_recompute: view_sql_reference.clone(),
+            view_sql_reference,
+            covering_recompute,
+            dml,
+        },
+    })
+}
+/// The plan checks that must hold before any timing starts.
+pub fn assert_plans(plans: &Plans, shape: Shape) -> Result<()> {
+    assert_ordinary_recompute_plan(shape, &plans.ordinary_recompute)?;
+    assert_dml_plans(&plans.dml)
+}
+#[cfg(test)]
+thread_local! {
+    /// Test-only: makes `probe_provenance` capture plans without the join key indexes.
+    pub(crate) static DROP_ORDINARY_INDEXES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 pub(crate) fn bootstrap(c: &Connection, f: &Fixture, mode: Mode) -> Result<f64> {
     let start = Instant::now();
@@ -226,14 +369,112 @@ pub(crate) fn bootstrap(c: &Connection, f: &Fixture, mode: Mode) -> Result<f64> 
     }
     Ok(start.elapsed().as_secs_f64() * 1000.0)
 }
-fn verify(c: &Connection, f: &Fixture, mode: Mode) -> Result<()> {
+/// A row of an oracle comparison; every M2a result column is an INTEGER or NULL.
+type OracleRow = Vec<Option<i64>>;
+/// A result that is not the same multiset of rows as its oracle, with the full difference.
+#[derive(Debug)]
+pub struct MultisetMismatch {
+    message: String,
+    /// Rows only the oracle returned, sorted, duplicates kept.
+    pub expected_only: Vec<OracleRow>,
+    /// Rows only the checked result returned, sorted, duplicates kept.
+    pub actual_only: Vec<OracleRow>,
+}
+impl MultisetMismatch {
+    pub fn with_context(mut self, context: &str) -> Self {
+        self.message = format!("{context}: {}", self.message);
+        self
+    }
+}
+impl std::fmt::Display for MultisetMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+impl std::error::Error for MultisetMismatch {}
+/// The rows only in `expected` and the rows only in `actual`, each sorted, duplicates kept.
+pub fn symmetric_difference<T: Ord + Clone>(expected: &[T], actual: &[T]) -> (Vec<T>, Vec<T>) {
+    let (mut expected, mut actual) = (expected.to_vec(), actual.to_vec());
+    expected.sort();
+    actual.sort();
+    let (mut expected_only, mut actual_only) = (Vec::new(), Vec::new());
+    let (mut e, mut a) = (0, 0);
+    while e < expected.len() || a < actual.len() {
+        match (expected.get(e), actual.get(a)) {
+            (Some(x), Some(y)) if x == y => {
+                e += 1;
+                a += 1;
+            }
+            (Some(x), Some(y)) if x < y => {
+                expected_only.push(x.clone());
+                e += 1;
+            }
+            (Some(_), Some(y)) => {
+                actual_only.push(y.clone());
+                a += 1;
+            }
+            (Some(x), None) => {
+                expected_only.push(x.clone());
+                e += 1;
+            }
+            (None, Some(y)) => {
+                actual_only.push(y.clone());
+                a += 1;
+            }
+            (None, None) => unreachable!("the loop ends when both sides are consumed"),
+        }
+    }
+    (expected_only, actual_only)
+}
+fn oracle_rows(rows: &[Vec<Value>]) -> std::result::Result<Vec<OracleRow>, String> {
+    rows.iter()
+        .map(|row| {
+            row.iter()
+                .map(|value| match value {
+                    Value::Integer(i) => Ok(Some(*i)),
+                    Value::Null => Ok(None),
+                    other => Err(format!(
+                        "oracle comparison got a non-integer value {other:?}"
+                    )),
+                })
+                .collect()
+        })
+        .collect()
+}
+/// `Ok` when `actual_sql` returns the same multiset of rows as `oracle_sql`.
+pub fn oracle_check(
+    c: &Connection,
+    actual_sql: &str,
+    oracle_sql: &str,
+) -> std::result::Result<(), MultisetMismatch> {
+    let query_failed = |why: String| MultisetMismatch {
+        message: why,
+        expected_only: Vec::new(),
+        actual_only: Vec::new(),
+    };
+    let actual = sorted_rows(c, actual_sql).map_err(|e| query_failed(e.to_string()))?;
+    let expected = sorted_rows(c, oracle_sql).map_err(|e| query_failed(e.to_string()))?;
+    let Some(why) = multiset_difference(&actual, &expected) else {
+        return Ok(());
+    };
+    let (expected_only, actual_only) = symmetric_difference(
+        &oracle_rows(&expected).map_err(query_failed)?,
+        &oracle_rows(&actual).map_err(query_failed)?,
+    );
+    Err(MultisetMismatch {
+        message: format!("`{actual_sql}` diverged from `{oracle_sql}`: {why}"),
+        expected_only,
+        actual_only,
+    })
+}
+fn verify(c: &Connection, f: &Fixture, mode: Mode) -> std::result::Result<(), MultisetMismatch> {
     if mode != Mode::NoMaintenance {
         let actual = if mode == Mode::Ivmlite {
             format!("SELECT * FROM {VIEW}")
         } else {
             "SELECT * FROM m2a_result".into()
         };
-        check_same_multiset(c, &actual, f.cell.view_sql())?;
+        oracle_check(c, &actual, f.cell.view_sql())?;
     }
     Ok(())
 }
@@ -266,7 +507,7 @@ impl<'c> Prepared<'c> {
                 t,
                 RowStatements {
                     insert: c.prepare(insert_sql(t))?,
-                    delete: c.prepare(&format!("DELETE FROM {} WHERE id=?1", t.name()))?,
+                    delete: c.prepare(&delete_sql(t))?,
                     update: c.prepare(update_sql(t))?,
                 },
             );
@@ -426,7 +667,15 @@ pub fn time_fixture(f: &Fixture, mode: Mode, library: &Path) -> Result<Measureme
     } else {
         f.cell.view_sql().into()
     };
-    let plan = query_plan(&c, &query)?;
+    let recomputes = matches!(mode, Mode::Recompute | Mode::CoveringRecompute);
+    let plan = if recomputes {
+        query_plan(&c, &query)?
+    } else {
+        Vec::new()
+    };
+    if mode == Mode::Recompute {
+        assert_ordinary_recompute_plan(f.cell.shape, &plan_text(&plan))?;
+    }
     if mode == Mode::CoveringRecompute {
         let required = if f.cell.shape == Shape::Join {
             vec!["lhs_g_k", "rhs_k_amount"]
@@ -441,8 +690,9 @@ pub fn time_fixture(f: &Fixture, mode: Mode, library: &Path) -> Result<Measureme
                 return Err(format!("covering plan missing {index}: {plan:?}").into());
             }
         }
-        check_same_multiset(&c, &query, f.cell.view_sql())?;
+        oracle_check(&c, &query, f.cell.view_sql())?;
     }
+    assert_dml_plans(&dml_plans(&c, f.tables.keys().copied())?)?;
     let mut prepared = Prepared::new(&c, f, mode)?;
     let warmup = prepared.round(0, &f.batches[0])?;
     warmup_trace
@@ -458,7 +708,7 @@ pub fn time_fixture(f: &Fixture, mode: Mode, library: &Path) -> Result<Measureme
     }
     verify(&c, f, mode)?;
     if mode == Mode::CoveringRecompute {
-        check_same_multiset(&c, &query, f.cell.view_sql())?;
+        oracle_check(&c, &query, f.cell.view_sql())?;
     }
     final_trace
         .verify(&c)
@@ -516,7 +766,8 @@ pub fn correctness(f: &Fixture, library: &Path, inverse: bool) -> Result<Vec<Che
             snapshot: capture_snapshot(&c, join, VIEW)?.into_summary(),
         });
         p.maintain()?;
-        verify(&c, f, Mode::Ivmlite).map_err(|e| format!("forward round {round} oracle: {e}"))?;
+        verify(&c, f, Mode::Ivmlite)
+            .map_err(|e| e.with_context(&format!("forward round {round} oracle")))?;
         let maintained = validate_snapshot(&c, join, VIEW)?;
         let before_idle = maintained.clone();
         checkpoints.push(Checkpoint {
@@ -545,7 +796,7 @@ pub fn correctness(f: &Fixture, library: &Path, inverse: bool) -> Result<Vec<Che
                 .map_err(|e| format!("inverse round {round} trace-prefix: {e}"))?;
             p.maintain()?;
             verify(&c, f, Mode::Ivmlite)
-                .map_err(|e| format!("inverse round {round} oracle: {e}"))?;
+                .map_err(|e| e.with_context(&format!("inverse round {round} oracle")))?;
             let snapshot = validate_snapshot(&c, join, VIEW)?;
             checkpoints.push(Checkpoint {
                 phase: "inverse".into(),
@@ -688,22 +939,15 @@ pub fn target_statistics(f: &Fixture) -> Result<Vec<TargetStats>> {
                     matches.len()
                 }
             };
-            stats.per_operation.push(OperationStats {
-                index,
-                table: op.table,
-                primary_key: row.id,
-                kind: format!("{:?}", op.kind()?),
-                anchor_group: op.anchor_group,
-                matched_partners: partners,
-                matched_hot_lhs_rows: hot_rows,
-                matched_distinct_groups: group_count,
-                matched_hot_groups: hot_groups,
-            });
             stats.matched_partners_min = stats.matched_partners_min.min(partners);
             stats.matched_partners_max = stats.matched_partners_max.max(partners);
             stats.matched_partners_total += partners;
+            let table_rows = live.get_mut(&op.table).unwrap();
+            let mut rows_changed = 0;
             if let Some(r) = &op.before {
-                live.get_mut(&op.table).unwrap().remove(&r.id);
+                if table_rows.remove(&r.id).is_some() {
+                    rows_changed = 1;
+                }
                 if let Some(key) = r.k {
                     by_key
                         .get_mut(&op.table)
@@ -714,7 +958,9 @@ pub fn target_statistics(f: &Fixture) -> Result<Vec<TargetStats>> {
                 }
             }
             if let Some(r) = &op.after {
-                live.get_mut(&op.table).unwrap().insert(r.id, r.clone());
+                if table_rows.insert(r.id, r.clone()).is_none() && op.before.is_none() {
+                    rows_changed = 1;
+                }
                 if let Some(key) = r.k {
                     by_key
                         .entry(op.table)
@@ -724,6 +970,18 @@ pub fn target_statistics(f: &Fixture) -> Result<Vec<TargetStats>> {
                         .insert(r.id);
                 }
             }
+            stats.per_operation.push(OperationStats {
+                index,
+                table: op.table,
+                primary_key: row.id,
+                kind: format!("{:?}", op.kind()?),
+                anchor_group: op.anchor_group,
+                matched_partners: partners,
+                matched_hot_lhs_rows: hot_rows,
+                matched_distinct_groups: group_count,
+                matched_hot_groups: hot_groups,
+                rows_changed,
+            });
         }
         stats.distinct_primary_keys = keys.len();
         all.push(stats);
@@ -832,5 +1090,107 @@ mod tests {
             .iter()
             .all(|r| r.matched_partners_min == f.cell.fanout
                 && r.matched_partners_max == f.cell.fanout));
+    }
+    #[test]
+    fn ordinary_recompute_plan_uses_a_join_key_index() {
+        let f = tiny(true);
+        let c = open(Mode::Recompute, &library()).unwrap();
+        seed(&c, &f).unwrap();
+        let plan = plan_text(&query_plan(&c, f.cell.view_sql()).unwrap());
+        assert!(
+            plan.contains("USING INDEX lhs_k") || plan.contains("USING INDEX rhs_k"),
+            "{plan}"
+        );
+        assert_ordinary_recompute_plan(Shape::Join, &plan).unwrap();
+        c.execute_batch("DROP INDEX lhs_k; DROP INDEX rhs_k;")
+            .unwrap();
+        let unindexed = plan_text(&query_plan(&c, f.cell.view_sql()).unwrap());
+        let error = assert_ordinary_recompute_plan(Shape::Join, &unindexed).unwrap_err();
+        assert!(error.to_string().contains("join key index"), "{error}");
+    }
+    #[test]
+    fn dml_plans_use_rowid_lookups() {
+        for join in [false, true] {
+            let f = tiny(join);
+            let c = open(Mode::Recompute, &library()).unwrap();
+            seed(&c, &f).unwrap();
+            let plans = dml_plans(&c, f.tables.keys().copied()).unwrap();
+            assert_eq!(plans.len(), 2 * f.tables.len());
+            assert_dml_plans(&plans).unwrap();
+        }
+        let f = tiny(false);
+        let c = open(Mode::Recompute, &library()).unwrap();
+        seed(&c, &f).unwrap();
+        let rewritten =
+            plan_text(&query_plan(&c, "UPDATE events SET g=?2 WHERE amount=?1").unwrap());
+        let plans = BTreeMap::from([("events.update".to_owned(), rewritten)]);
+        let error = assert_dml_plans(&plans).unwrap_err();
+        assert!(error.to_string().contains("events.update"), "{error}");
+    }
+    #[test]
+    fn dml_plans_are_unchanged_by_the_view_triggers() {
+        let f = tiny(true);
+        let plain = open(Mode::Recompute, &library()).unwrap();
+        seed(&plain, &f).unwrap();
+        let ivm = open(Mode::Ivmlite, &library()).unwrap();
+        seed(&ivm, &f).unwrap();
+        bootstrap(&ivm, &f, Mode::Ivmlite).unwrap();
+        let tables = || f.tables.keys().copied();
+        let live = dml_plans(&ivm, tables()).unwrap();
+        assert_dml_plans(&live).unwrap();
+        assert_eq!(live, dml_plans(&plain, tables()).unwrap());
+    }
+    #[test]
+    fn manifest_pragmas_are_read_back_from_the_connection() {
+        let f = tiny(false);
+        let probe = probe_provenance(&f).unwrap();
+        for name in [
+            "foreign_keys",
+            "recursive_triggers",
+            "journal_mode",
+            "synchronous",
+            "page_size",
+            "cache_size",
+            "temp_store",
+        ] {
+            assert!(probe.pragmas.contains_key(name), "{name}");
+        }
+        let c = open(Mode::Recompute, &library()).unwrap();
+        assert_eq!(read_pragmas(&c).unwrap(), probe.pragmas);
+        c.execute_batch("PRAGMA cache_size=-1000").unwrap();
+        let changed = read_pragmas(&c).unwrap();
+        assert_eq!(changed["cache_size"], "-1000");
+        assert_ne!(changed, probe.pragmas);
+        let error = check_pragmas(&changed).unwrap_err();
+        assert!(error.to_string().contains("cache_size"), "{error}");
+    }
+    #[test]
+    fn mismatch_writes_the_full_symmetric_difference() {
+        let (expected_only, actual_only) =
+            symmetric_difference(&[(1, 1, 5), (2, 1, 3)], &[(1, 1, 5), (3, 1, 3), (3, 1, 3)]);
+        assert_eq!(expected_only, vec![(2, 1, 3)]);
+        assert_eq!(actual_only, vec![(3, 1, 3), (3, 1, 3)]);
+    }
+    #[test]
+    fn oracle_check_reports_the_differing_rows_of_a_real_comparison() {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE a(x INTEGER, y INTEGER); CREATE TABLE b(x INTEGER, y INTEGER);
+             INSERT INTO a VALUES(1,5),(2,3); INSERT INTO b VALUES(1,5),(3,3),(3,3);",
+        )
+        .unwrap();
+        let mismatch = oracle_check(&c, "SELECT * FROM a", "SELECT * FROM b").unwrap_err();
+        assert_eq!(mismatch.expected_only, vec![vec![Some(3), Some(3)]; 2]);
+        assert_eq!(mismatch.actual_only, vec![vec![Some(2), Some(3)]]);
+        assert!(oracle_check(&c, "SELECT * FROM a", "SELECT * FROM a").is_ok());
+    }
+    #[test]
+    fn targets_record_rows_changed_per_operation() {
+        for join in [false, true] {
+            let stats = target_statistics(&tiny(join)).unwrap();
+            let operations: Vec<_> = stats.iter().flat_map(|r| &r.per_operation).collect();
+            assert!(!operations.is_empty());
+            assert!(operations.iter().all(|op| op.rows_changed == 1));
+        }
     }
 }
