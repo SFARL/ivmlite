@@ -16,7 +16,7 @@
 #
 # Environment overrides, used by smoke tests:
 #   DEMOS       newline-separated demo runs, each `<example> [arguments...]`
-#               (default: the nine demos at their documented scale)
+#               (default: the ten demos at their documented scale)
 #   OUT         demo CSV (default: docs/bench/m1b-phase5-demos.csv)
 #   BUILDS_OUT  label-to-commit CSV (default: OUT with `-builds.csv`)
 set -euo pipefail
@@ -38,7 +38,8 @@ demand_case_bench zenod_usage_totals 1760000 200
 demand_case_bench nicti_facet_counts 2000000 200
 demand_case_bench postio_mailbox_footprint 81000 200
 demand_case_bench phoenix_token_rollup 4952148 200
-demand_case_bench pocketbase_author_counts 18000 40"
+demand_case_bench pocketbase_author_counts 18000 40
+demand_case_bench openwhispr_speaker_words 2000000 200"
 demos="${DEMOS:-$default_demos}"
 out="${OUT:-docs/bench/m1b-phase5-demos.csv}"
 builds_out="${BUILDS_OUT:-${out%.csv}-builds.csv}"

@@ -1,6 +1,6 @@
 # Demand-backed demos
 
-Research snapshot: 2026-10-15. These are **documented problem patterns**, not
+Research snapshot: 2026-10-17. These are **documented problem patterns**, not
 customer interviews, endorsements, or evidence that their authors want ivmlite.
 Historical performance reports are not benchmarks of current software.
 
@@ -8,7 +8,7 @@ The [real-world demo roadmap](real-world-demo-roadmap.md) records the next
 source-backed candidates, their evidence levels, current ivmlite boundaries,
 and the order in which they were implemented.
 
-Nine executable workloads now use the real extension,
+Ten executable workloads now use the real extension,
 deterministic large fixtures, mixed mutations and SQLite recomputation oracles:
 
 - [FluxFlow grouped-flow rollup](fluxflow.md), including a hand-written trigger
@@ -20,7 +20,8 @@ deterministic large fixtures, mixed mutations and SQLite recomputation oracles:
 - [Nicti keyword facet counts](nicti.md);
 - [Postio mailbox footprint](postio.md);
 - [Phoenix project token rollup](phoenix.md);
-- [PocketBase author counts](pocketbase.md).
+- [PocketBase author counts](pocketbase.md);
+- [OpenWhispr speaker counts and word sums](openwhispr.md).
 
 All except FluxFlow share one selectable benchmark executable:
 
@@ -39,6 +40,7 @@ cargo run --release --locked -p ivmlite-test --example demand_case_bench -- nict
 cargo run --release --locked -p ivmlite-test --example demand_case_bench -- postio_mailbox_footprint
 cargo run --release --locked -p ivmlite-test --example demand_case_bench -- phoenix_token_rollup
 cargo run --release --locked -p ivmlite-test --example demand_case_bench -- pocketbase_author_counts
+cargo run --release --locked -p ivmlite-test --example demand_case_bench -- openwhispr_speaker_words
 ```
 
 For the five new cases, `rows` means ledger events (Zenod), assets (Nicti),
@@ -48,6 +50,8 @@ memberships per asset; Phoenix seeds roughly one trace per 81 spans, with a
 change: adding a Nicti asset also inserts two memberships, so a batch is not
 necessarily the same number of SQL statements across different cases.
 All modes within a case perform exactly the same statements.
+The OpenWhispr case has 100 synthetic segments per note and checks a stored
+word count against the source's text expression after mixed edits.
 
 Each case records its public evidence, exact adaptation, unsupported behavior,
 source-scale command and raw output. These are synthetic development

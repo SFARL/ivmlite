@@ -9,7 +9,7 @@ mod common;
 use common::*;
 
 use ivmlite_test::demand_cases::{
-    DemandCase, KENER, NICTI, NOOP, PHOENIX, POCKETBASE, POSTIO, ZCASH, ZENOD,
+    DemandCase, KENER, NICTI, NOOP, OPENWHISPR, PHOENIX, POCKETBASE, POSTIO, ZCASH, ZENOD,
 };
 use ivmlite_test::demo_bench::{measured_rounds, Workload, ROUNDS};
 use ivmlite_test::fluxflow::{
@@ -288,6 +288,53 @@ fn phoenix_tokens_track_span_and_trace_changes() {
 #[test]
 fn pocketbase_counts_retract_the_last_book_of_an_author() {
     assert!(!assert_demand_case_tracks_mixed_changes(&POCKETBASE, 1).is_empty());
+}
+
+#[test]
+fn openwhispr_speaker_rollup_tracks_segment_and_note_changes() {
+    assert_demand_case_tracks_mixed_changes(&OPENWHISPR, 1);
+}
+
+#[test]
+fn openwhispr_speaker_rollup_matches_the_source_word_expression() {
+    const SOURCE_SQL: &str = "SELECT s.speaker_name, COUNT(*),
+        SUM(CASE WHEN trim(s.text) = '' THEN 0
+                 ELSE length(trim(s.text)) - length(replace(trim(s.text), ' ', '')) + 1 END)
+        FROM transcript_segments s JOIN notes n ON n.id=s.note_id
+        WHERE s.speaker_name IS NOT NULL AND n.deleted_at IS NULL
+        GROUP BY s.speaker_name";
+    let c = open_with_extension(None).unwrap();
+    c.execute_batch(OPENWHISPR.ddl).unwrap();
+    OPENWHISPR.seed(&c, 1_200).unwrap();
+    create(&c, OPENWHISPR.view_name, OPENWHISPR.view_sql).unwrap();
+
+    for round in 0..ROUNDS {
+        if round > 0 {
+            OPENWHISPR
+                .apply_mixed_batch(&c, 1_200, 40, round - 1)
+                .unwrap();
+            refresh(&c, OPENWHISPR.view_name).unwrap();
+        }
+        assert_matches_oracle(&c, OPENWHISPR.view_name, OPENWHISPR.view_sql);
+        let missing_projection: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM transcript_segments
+                 WHERE word_count != CASE WHEN trim(text) = '' THEN 0
+                     ELSE length(trim(text)) - length(replace(trim(text), ' ', '')) + 1 END",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(missing_projection, 0, "round {round}");
+        assert_eq!(
+            rows(
+                &c,
+                "SELECT * FROM openwhispr_speakers WHERE speaker_name IS NOT NULL"
+            ),
+            rows(&c, SOURCE_SQL),
+            "source query round {round}"
+        );
+    }
 }
 
 /// Both maintenance implementations must handle zero sums, vanished groups,
