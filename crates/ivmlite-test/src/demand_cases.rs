@@ -8,7 +8,9 @@ use rusqlite::{params, Connection, Statement};
 
 use crate::demo_bench::{ApplyFn, Handwritten, Workload};
 
+mod openwhispr;
 mod rollups;
+pub use openwhispr::OPENWHISPR;
 pub use rollups::{NICTI, PHOENIX, POCKETBASE, POSTIO, ZENOD};
 
 pub struct DemandCase {
@@ -202,7 +204,7 @@ const KENER_STATUS: usize = 1;
 const KENER_LATENCY: usize = 2;
 const KENER_DELETE: usize = 3;
 
-pub const ALL: [&DemandCase; 8] = [
+pub const ALL: [&DemandCase; 9] = [
     &NOOP,
     &ZCASH,
     &KENER,
@@ -211,6 +213,7 @@ pub const ALL: [&DemandCase; 8] = [
     &POSTIO,
     &PHOENIX,
     &POCKETBASE,
+    &OPENWHISPR,
 ];
 
 pub fn by_name(name: &str) -> Option<&'static DemandCase> {
