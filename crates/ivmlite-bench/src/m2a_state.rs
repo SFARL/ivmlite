@@ -74,6 +74,12 @@ pub(crate) struct Snapshot {
     pub output_weight_total: i64,
     pub pending: Vec<PendingMetrics>,
     pub stage_rows: u64,
+    /// Retained space of the stage table: its row count at this checkpoint,
+    /// including the single `apply` sentinel. Format 5 empties the stage at the
+    /// start of the next apply, so after a refresh this is the last applied
+    /// batch (equal to `stage_rows`), and it is 0 after bootstrap. It is
+    /// reported beside the other state and is never a pending delta.
+    pub retained_stage_rows: u64,
     /// Refresh retains its last already-applied staging batch. Bootstrap is
     /// empty, and an idle refresh leaves this histogram unchanged.
     pub stage_operation_counts: BTreeMap<String, u64>,
@@ -411,6 +417,7 @@ pub(crate) fn capture_snapshot(conn: &Connection, join: bool, view: &str) -> Res
             ))
         })
         .collect::<Result<_>>()?;
+    let stage_rows = count(conn, &stage_table)?;
     Ok(Snapshot {
         base_rows,
         joined_rows,
@@ -421,7 +428,8 @@ pub(crate) fn capture_snapshot(conn: &Connection, join: bool, view: &str) -> Res
         output_rows: retained.output.len() as u64,
         output_weight_total,
         pending,
-        stage_rows: count(conn, &stage_table)?,
+        stage_rows,
+        retained_stage_rows: stage_rows,
         stage_operation_counts,
         pages: capture_pages(conn)?,
         retained,
@@ -482,6 +490,10 @@ fn expected_arrangements(
     Ok(expected)
 }
 
+/// Spec §5 (amended 2026-10-17): pending deltas and replacement candidates
+/// must be empty. The stage table may hold exactly the last applied batch,
+/// marked by one `apply` sentinel, because format 5 empties it at the start of
+/// the next apply. Its rows are retained space, not pending work.
 fn validate_consumed(snapshot: &Snapshot) -> Result<()> {
     if snapshot
         .pending
@@ -716,6 +728,62 @@ mod tests {
         assert!(validate_snapshot(&conn, false, VIEW)
             .unwrap_err()
             .contains("not already applied"));
+    }
+
+    fn consumed_snapshot() -> Snapshot {
+        let conn = fixture(false);
+        validate_snapshot(&conn, false, VIEW).unwrap()
+    }
+
+    #[test]
+    fn stage_holds_exactly_the_last_applied_batch_after_refresh() {
+        let conn = fixture(true);
+        let created = validate_snapshot(&conn, true, VIEW).unwrap();
+        assert_eq!(created.retained_stage_rows, 0);
+        conn.execute_batch(
+            "INSERT INTO lhs VALUES (5,8,20);
+             INSERT INTO rhs VALUES (5,8,11);
+             UPDATE lhs SET g=21 WHERE id=3;",
+        )
+        .unwrap();
+        refresh(&conn);
+        let after = validate_snapshot(&conn, true, VIEW).unwrap();
+        assert!(after
+            .pending
+            .iter()
+            .all(|pending| pending.delta_rows == 0 && pending.replace_candidate_rows == 0));
+        assert_eq!(after.stage_operation_counts["apply"], 1);
+        assert!(after.retained_stage_rows > 0);
+        assert_eq!(after.retained_stage_rows, after.stage_rows);
+        refresh(&conn);
+        let idle = validate_snapshot(&conn, true, VIEW).unwrap();
+        assert_eq!(idle.retained_stage_rows, after.retained_stage_rows);
+    }
+
+    #[test]
+    fn validate_consumed_rejects_a_stage_without_an_apply_sentinel() {
+        let snapshot = Snapshot {
+            stage_rows: 2,
+            retained_stage_rows: 2,
+            stage_operation_counts: BTreeMap::from([("state".to_owned(), 2)]),
+            ..consumed_snapshot()
+        };
+        let error = validate_consumed(&snapshot).unwrap_err();
+        assert!(error.contains("not already applied"), "{error}");
+    }
+
+    #[test]
+    fn validate_consumed_rejects_pending_deltas() {
+        let snapshot = Snapshot {
+            pending: vec![PendingMetrics {
+                base_table: "events".to_owned(),
+                delta_rows: 1,
+                replace_candidate_rows: 0,
+            }],
+            ..consumed_snapshot()
+        };
+        let error = validate_consumed(&snapshot).unwrap_err();
+        assert!(error.contains("pending deltas"), "{error}");
     }
 
     #[test]

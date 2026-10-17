@@ -1,6 +1,7 @@
 # M2a — bounded non-uniform workload validation
 
 Status: proposed implementation contract; no M2a measurements yet.
+Amendment 2026-10-17: stage rows after refresh (see §5).
 Prerequisite: alpha.5 release preparation and M1b correctness/performance/write-cost
 acceptance. M2a validates the current engine; it does not add SQL operators,
 change shadow-table format 5, or promise production readiness.
@@ -180,9 +181,13 @@ second idle refresh, record:
 - same-checkpoint base-only and covering-recompute allocations, and ivmlite /
   base-only allocated-byte ratio. Page allocation is not RSS or peak memory.
 
-One view has consumed every delta after refresh: pending deltas and stage rows
-must be empty; verify persisted state agrees with independently counted live
-base keys/multiplicities. No repeated idle refresh may add retained rows.
+One view has consumed every delta after refresh: pending deltas must be empty.
+The stage table may hold exactly the last applied batch, marked by one `apply`
+sentinel: format 5 empties the stage at the start of the next apply (Phase 5
+§4), and M2a does not change the format. Its row count is reported as retained
+space beside the other state, never as a pending delta. Verify persisted state
+agrees with independently counted live base keys/multiplicities. No repeated
+idle refresh may add retained rows.
 
 Run a separate bounded churn probe: uniform and Zipf+hot at join f=64, seed 42,
 batch 1,000, 100 balanced batches with fixed live cardinalities. Check the oracle
