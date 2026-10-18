@@ -1,6 +1,7 @@
 # Real-world demo roadmap
 
-Research snapshot: 2026-10-15.
+Research snapshot: 2026-10-18. Earlier candidate measurements below remain
+at their original dates; the CPA and jot gates were checked on 2026-10-18.
 
 This document ranks public workload reports that could become ivmlite demos.
 They are demand evidence, not customer interviews, endorsements, adoption, or
@@ -23,6 +24,33 @@ Use these labels consistently:
 
 Synthetic data can validate behavior and scaling. It cannot be presented as a
 reproduction of a production deployment.
+
+## October 18: staged full-statistics gates
+
+The [CPA Manager Plus #647](https://github.com/seakee/CPA-Manager-Plus/issues/647)
+and [StoneHub/jot #209](https://github.com/StoneHub/jot/issues/209) issues
+remain open. Their complete queries are beyond today's ivmlite SQL subset.
+The [CPA](cpa-manager-plus.md) and [jot](jot.md) demos each include a runnable
+green slice plus source-shaped **red** acceptance tests. The red tests are
+marked `#[ignore]` in
+[`capability_red.rs`](../../crates/ivmlite-test/tests/capability_red.rs):
+normal CI compiles them and stays green; explicitly running them with
+`--ignored` fails until the named capability and correctness transitions
+are implemented. A passing parser alone is not enough: each gate also checks
+the refreshed result against SQLite after writes.
+
+| Phase | CPA Manager Plus #647 | StoneHub/jot #209 |
+|---|---|---|
+| 0, executable now | Fixed-hour `COUNT` and integer `SUM` over a synthetic `STRICT` projection, checked against source-style conditional counts. This is part of the core totals; upstream already has a fast hourly path. | Ambient rows per session `COUNT(*)` with insert, delete, session move and mode change; duplicate ID and rollback checks. |
+| 1, aggregate operators | Direct conditional aggregates and nullable average, or proven equivalent projections, plus exact `MIN/MAX` maintenance under retractions and rekeys. | `MIN(start)` and `MAX(end)` beside count, including removal of the current extrema. The minimal typed-projection gate is red. |
+| 2, complete shapes | Exact nearest-rank P95/TTFT over ordered samples; task grouping with `MIN/MAX`, `AVG`, `GROUP_CONCAT(DISTINCT)` and deterministic top 500. Both source-shaped gates are red. Approximate percentile sketches would change the API result. | Source time expression and `REAL` values, title `LEFT JOIN`, `ORDER BY MAX(end)` and `LIMIT` with correct reordering after changes. The full-session gate is red. |
+| 3, application parity | Arbitrary `[from,to)` windows with exact partial-hour edges, rolling 30-minute totals, requested-timezone active days, zero-token models, retention coverage, and unchanged JSON/error behavior under the 30-second timeout. | `addCommitted` snapshots and duplicate writes, split/regroup, deletion, title changes, rollback, concurrency and native recovery. |
+
+These phases describe capabilities or application composition, not a promise
+to add every SQL operator to the extension. The source's full-summary API
+contract is still awaiting maintainer triage. Its 13–32 s production timing
+is **not** a benchmark of the synthetic demo; jot's 100k-row ~10 ms figure
+is an in-memory synthetic SQLite measurement, not production latency.
 
 ## Priority
 

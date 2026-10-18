@@ -1,0 +1,11 @@
+# command: target/release/examples/demand_case_bench cpa_hourly_core 100000 200 3
+# commit: 7fe0910c2979636ee054348cec56a434418f66f8; uncommitted changes under crates/, Cargo.toml or Cargo.lock: yes
+# sqlite: 3.53.2 (bundled by rusqlite in this harness, which hosts the extension)
+# ivmlite extension: crates/ivmlite-sqlite/target/release/libivmlite_sqlite.dylib; built from ivmlite-sqlite 0.1.0-alpha.5; staleness check passed
+# workload: cpa_hourly_core, 100000 base rows, 200-operation batches, 3 repeats; rows report the median and min-max over the repeats
+# rounds: one warm-up batch, then 10 measured batches per run; apply_ms, maintain_ms and read_ms are each a run's median over its measured batches, and apply_plus_maintain_ms and end_to_end_ms the median of each batch's own sum
+case,mode,base_rows,batch_size,repeats,bootstrap_ms,bootstrap_min_ms,bootstrap_max_ms,first_refresh_ms,first_refresh_min_ms,first_refresh_max_ms,apply_ms,apply_min_ms,apply_max_ms,maintain_ms,maintain_min_ms,maintain_max_ms,read_ms,read_min_ms,read_max_ms,apply_plus_maintain_ms,apply_plus_maintain_min_ms,apply_plus_maintain_max_ms,end_to_end_ms,end_to_end_min_ms,end_to_end_max_ms,database_kib,database_kib_min,database_kib_max
+cpa_hourly_core,no_maintenance,100000,200,3,0.000,0.000,0.000,0.000,0.000,0.000,0.090,0.087,0.090,0.000,0.000,0.000,0.000,0.000,0.000,0.090,0.087,0.090,0.090,0.087,0.090,3024.0,3024.0,3024.0
+cpa_hourly_core,unindexed_recompute,100000,200,3,0.000,0.000,0.000,41.860,41.432,46.774,0.099,0.093,0.107,41.928,41.844,43.211,0.000,0.000,0.000,42.022,41.943,43.322,42.022,41.943,43.322,3024.0,3024.0,3024.0
+cpa_hourly_core,indexed_recompute,100000,200,3,57.059,55.412,58.250,9.622,9.551,9.723,0.292,0.285,0.344,9.727,9.598,9.835,0.000,0.000,0.000,10.068,9.930,10.230,10.068,9.930,10.230,6468.0,6468.0,6468.0
+cpa_hourly_core,ivmlite,100000,200,3,103.085,100.758,122.033,2.356,2.318,2.449,1.664,1.662,1.678,1.897,1.894,1.908,0.133,0.133,0.133,3.563,3.561,3.595,3.695,3.695,3.732,3348.0,3348.0,3348.0
