@@ -1,0 +1,12 @@
+# command: target/release/examples/demand_case_bench dark_xray_period_usage 9524296 200 1
+# commit: 66f38ef09bd0121edb356652bd3a5698add6796a; uncommitted changes under crates/, Cargo.toml or Cargo.lock: yes
+# sqlite: 3.53.2 (bundled by rusqlite in this harness, which hosts the extension)
+# ivmlite extension: crates/ivmlite-sqlite/target/release/libivmlite_sqlite.dylib; built from ivmlite-sqlite 0.1.0-alpha.5; staleness check passed
+# workload: dark_xray_period_usage, 9524296 base rows, 200-operation batches, 1 repeats; rows report the median and min-max over the repeats
+# rounds: one warm-up batch, then 10 measured batches per run; apply_ms, maintain_ms and read_ms are each a run's median over its measured batches, and apply_plus_maintain_ms and end_to_end_ms the median of each batch's own sum
+case,mode,base_rows,batch_size,repeats,bootstrap_ms,bootstrap_min_ms,bootstrap_max_ms,first_refresh_ms,first_refresh_min_ms,first_refresh_max_ms,apply_ms,apply_min_ms,apply_max_ms,maintain_ms,maintain_min_ms,maintain_max_ms,read_ms,read_min_ms,read_max_ms,apply_plus_maintain_ms,apply_plus_maintain_min_ms,apply_plus_maintain_max_ms,end_to_end_ms,end_to_end_min_ms,end_to_end_max_ms,database_kib,database_kib_min,database_kib_max
+dark_xray_period_usage,no_maintenance,9524296,200,1,0.000,0.000,0.000,0.000,0.000,0.000,0.266,0.266,0.266,0.000,0.000,0.000,0.000,0.000,0.000,0.266,0.266,0.266,0.266,0.266,0.266,509540.0,509540.0,509540.0
+dark_xray_period_usage,unindexed_recompute,9524296,200,1,0.000,0.000,0.000,4245.814,4245.814,4245.814,0.458,0.458,0.458,4284.891,4284.891,4284.891,0.000,0.000,0.000,4285.311,4285.311,4285.311,4285.311,4285.311,4285.311,509540.0,509540.0,509540.0
+dark_xray_period_usage,indexed_recompute,9524296,200,1,5727.278,5727.278,5727.278,455.234,455.234,455.234,1.998,1.998,1.998,457.012,457.012,457.012,0.000,0.000,0.000,459.149,459.149,459.149,459.149,459.149,459.149,743764.0,743764.0,743764.0
+dark_xray_period_usage,handwritten_trigger,9524296,200,1,4302.859,4302.859,4302.859,0.000,0.000,0.000,0.586,0.586,0.586,0.000,0.000,0.000,0.005,0.005,0.005,0.586,0.586,0.586,0.591,0.591,0.591,509548.0,509548.0,509548.0
+dark_xray_period_usage,ivmlite,9524296,200,1,9273.767,9273.767,9273.767,2.667,2.667,2.667,1.904,1.904,1.904,0.930,0.930,0.930,0.032,0.032,0.032,2.843,2.843,2.843,2.879,2.879,2.879,509680.0,509680.0,509680.0

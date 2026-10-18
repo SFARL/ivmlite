@@ -8,8 +8,10 @@ use rusqlite::{params, Connection, Statement};
 
 use crate::demo_bench::{ApplyFn, Handwritten, Workload};
 
+mod dark_xray;
 mod openwhispr;
 mod rollups;
+pub use dark_xray::{DARK_XRAY_LIFETIME, DARK_XRAY_PERIOD};
 pub use openwhispr::OPENWHISPR;
 pub use rollups::{NICTI, PHOENIX, POCKETBASE, POSTIO, ZENOD};
 
@@ -204,7 +206,7 @@ const KENER_STATUS: usize = 1;
 const KENER_LATENCY: usize = 2;
 const KENER_DELETE: usize = 3;
 
-pub const ALL: [&DemandCase; 9] = [
+pub const ALL: [&DemandCase; 11] = [
     &NOOP,
     &ZCASH,
     &KENER,
@@ -214,6 +216,8 @@ pub const ALL: [&DemandCase; 9] = [
     &PHOENIX,
     &POCKETBASE,
     &OPENWHISPR,
+    &DARK_XRAY_PERIOD,
+    &DARK_XRAY_LIFETIME,
 ];
 
 pub fn by_name(name: &str) -> Option<&'static DemandCase> {

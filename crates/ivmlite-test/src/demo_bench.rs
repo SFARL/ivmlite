@@ -52,7 +52,7 @@ pub const WARM_UP_ROUND: usize = 0;
 /// as the median over these rounds, because one refresh is too noisy to
 /// resolve a ~10% change.
 pub const MEASURED_ROUNDS: usize = 10;
-/// How many mixed batches one run applies; workloads validate against it.
+/// How many batches one run applies; workloads validate against it.
 pub const ROUNDS: usize = 1 + MEASURED_ROUNDS;
 
 const _: () = assert!(MEASURED_ROUNDS > 0, "a run must time at least one round");
@@ -375,12 +375,12 @@ pub fn rotated(modes: &[Mode], repeat: usize) -> Vec<Mode> {
     order
 }
 
-/// Applies one round of a workload's mixed batch with its prepared
+/// Applies one round of a workload's batch with its prepared
 /// statements: `(statements, base_rows, batch, round)`. Different rounds
 /// touch different rows, so no round repeats the warm-up or another round.
 pub type ApplyFn = fn(&mut [Statement<'_>], usize, usize, usize) -> rusqlite::Result<()>;
 
-/// A mixed batch's statements, prepared before any timer (Phase 4 spec §3.2
+/// A batch's statements, prepared before any timer (Phase 4 spec §3.2
 /// step 4), with its transaction's `BEGIN` and `COMMIT`.
 pub struct PreparedBatch<'c> {
     begin: Statement<'c>,
@@ -424,7 +424,7 @@ pub struct Handwritten {
     pub read_sql: &'static str,
 }
 
-/// One demo: its schema, data, maintained view and mixed batch.
+/// One demo: its schema, data, maintained view and batch.
 pub trait Workload {
     fn name(&self) -> &'static str;
     fn ddl(&self) -> &'static str;
@@ -446,11 +446,11 @@ pub trait Workload {
     fn validate(&self, rows: usize, batch: usize, rounds: usize)
         -> std::result::Result<(), String>;
     fn seed(&self, c: &Connection, rows: usize) -> rusqlite::Result<()>;
-    /// The statements of the mixed batch, in the order `apply_fn` indexes them.
+    /// The statements of the batch, in the order `apply_fn` indexes them.
     fn batch_sql(&self) -> &'static [&'static str];
     fn apply_fn(&self) -> ApplyFn;
 
-    /// Prepares and applies one round of the mixed batch, for untimed use.
+    /// Prepares and applies one round of the batch, for untimed use.
     fn apply_mixed_batch(
         &self,
         c: &Connection,
@@ -781,7 +781,7 @@ fn print_provenance(workload: &dyn Workload, config: &RunConfig, extension: &Ext
     );
     println!("# ivmlite extension: {}", extension.describe());
     println!(
-        "# workload: {}, {} base rows, {}-operation mixed batches, {} repeats; \
+        "# workload: {}, {} base rows, {}-operation batches, {} repeats; \
          rows report the median and min-max over the repeats",
         workload.name(),
         config.rows,
