@@ -1617,9 +1617,9 @@ mod tests {
             operations: 10,
             target_selections: 8,
             hot_anchor_selections: 6,
-            distinct_primary_keys: 10,
-            repeated_primary_key_touches: 0,
-            repeated_existing_targets: 0,
+            distinct_primary_keys: 9,
+            repeated_primary_key_touches: 2,
+            repeated_existing_targets: 1,
             target_groups: BTreeMap::from([(0, 5), (3, 2)]),
             rhs_matched_lhs_rows: 40,
             rhs_matched_hot_lhs_rows: 30,
@@ -2489,9 +2489,9 @@ mod tests {
         // The section 3 metrics and the selection label come with every row.
         assert_eq!(rows[0]["target_selection"], "group_then_row");
         for (column, expected) in [
-            ("distinct_primary_keys", "10"),
-            ("repeated_primary_key_touches", "0"),
-            ("repeated_existing_targets", "0"),
+            ("distinct_primary_keys", "9"),
+            ("repeated_primary_key_touches", "2"),
+            ("repeated_existing_targets", "1"),
             ("matched_partners_min", "1"),
             ("matched_partners_max", "8"),
             ("matched_partners_total", "50"),
