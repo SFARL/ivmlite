@@ -182,10 +182,10 @@ fn column_list(schema: &Schema, prefix: &str) -> String {
 }
 
 /// Everything the capture triggers depend on (Phase 3b spec §3): the
-/// columns' names and types in order, whether the table is WITHOUT ROWID,
-/// and every unique index — its key columns with collation, `NOT NULL` and
-/// default, and its partial and expression flags — in a canonical order,
-/// so an index's name never matters. Stored in `__ivm_tracked` when the
+/// columns' names, declared types and affinities in order (M2c spec §3),
+/// whether the table is WITHOUT ROWID, and every unique index — its key
+/// columns with collation, `NOT NULL` and default, and its partial and
+/// expression flags — in a canonical order, so an index's name never matters. Stored in `__ivm_tracked` when the
 /// table is first tracked and compared on every later create over it, every
 /// connect and every refresh that runs the catalog checks (Phase 5 spec §3:
 /// those after a schema change). A table dropped and recreated with other
@@ -195,7 +195,15 @@ fn shape(schema: &Schema, capture: &CaptureInfo) -> String {
     let columns: Vec<String> = schema
         .columns
         .iter()
-        .map(|c| format!("{} {}", quote(&c.name), c.ty.name()))
+        .enumerate()
+        .map(|(i, c)| {
+            format!(
+                "{} {} {}",
+                quote(&c.name),
+                capture.declared_types[i],
+                c.ty.name()
+            )
+        })
         .collect();
     let mut keys: Vec<String> = capture
         .unique_keys

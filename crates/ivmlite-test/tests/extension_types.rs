@@ -4,9 +4,11 @@
 mod common;
 use common::*;
 
+use ivmlite_core::Value;
 use ivmlite_test::open_with_extension;
 use rusqlite::types::Value as Sql;
 use rusqlite::Connection;
+use std::collections::BTreeMap;
 
 /// `pragma_table_info(<table>)`'s `(name, type)` rows, in column order.
 fn declared(c: &Connection, table: &str) -> Vec<(String, String)> {
@@ -181,5 +183,165 @@ fn a_sum_overflow_in_one_group_rolls_back_every_group() {
                 Sql::Integer(1)
             ],
         ]
+    );
+}
+
+/// A SQLite value as ivmlite's value, exactly (REAL bit for bit).
+fn exact(v: Sql) -> Value {
+    match v {
+        Sql::Null => Value::Null,
+        Sql::Integer(n) => Value::Int(n),
+        Sql::Real(x) => Value::Real(x),
+        Sql::Text(s) => Value::Text(s),
+        Sql::Blob(b) => Value::Blob(b),
+    }
+}
+
+/// `sql`'s rows, its first column a weight, summed by exact identity of the rest.
+fn weighted(c: &Connection, sql: &str) -> BTreeMap<Vec<Value>, i64> {
+    let mut s = c.prepare(sql).unwrap();
+    let n = s.column_count();
+    let mut out: BTreeMap<Vec<Value>, i64> = BTreeMap::new();
+    let rows: Vec<(i64, Vec<Value>)> = s
+        .query_map([], |r| {
+            Ok((
+                r.get(0)?,
+                (1..n)
+                    .map(|i| r.get::<_, Sql>(i).map(exact))
+                    .collect::<rusqlite::Result<_>>()?,
+            ))
+        })
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    for (w, row) in rows {
+        *out.entry(row).or_insert(0) += w;
+    }
+    out.retain(|_, w| *w != 0);
+    out
+}
+
+#[test]
+fn non_strict_capture_keeps_every_storage_class() {
+    // Spec §6: a value of each storage class, written through INSERT, UPDATE
+    // and REPLACE into a column of each affinity, is captured exactly as SQLite
+    // stored it; a DELETE then cancels it by row identity.
+    let c = open_with_extension(None).unwrap();
+    c.execute_batch(
+        "CREATE TABLE t(id INTEGER PRIMARY KEY, i INTEGER, r REAL, n NUMERIC, x TEXT, b)",
+    )
+    .unwrap();
+    create(&c, "v", "SELECT id, COUNT(*) FROM t GROUP BY id").unwrap();
+    let values = [
+        Sql::Null,
+        Sql::Integer(1),
+        Sql::Integer(i64::MAX),
+        Sql::Real(1.0),
+        Sql::Real(1.5),
+        Sql::Real(-0.0),
+        Sql::Real(f64::INFINITY),
+        Sql::Text("12".into()),
+        Sql::Text(" 3.0 ".into()),
+        Sql::Text("abc".into()),
+        Sql::Blob(vec![0, 0xff]),
+    ];
+    for (id, v) in values.iter().enumerate() {
+        c.execute(
+            "INSERT INTO t VALUES (?1, ?2, ?2, ?2, ?2, ?2)",
+            rusqlite::params![id as i64, v],
+        )
+        .unwrap();
+    }
+    for (id, v) in values.iter().rev().enumerate() {
+        c.execute(
+            "UPDATE t SET i = ?2, r = ?2, n = ?2, x = ?2, b = ?2 WHERE id = ?1",
+            rusqlite::params![id as i64, v],
+        )
+        .unwrap();
+    }
+    for (id, v) in values.iter().enumerate().step_by(2) {
+        c.execute(
+            "REPLACE INTO t VALUES (?1, ?2, ?2, ?2, ?2, ?2)",
+            rusqlite::params![id as i64, v],
+        )
+        .unwrap();
+    }
+    let delta = "SELECT __ivm_w, id, i, r, n, x, b FROM __ivm_delta_t";
+    assert_eq!(
+        weighted(&c, delta),
+        weighted(&c, "SELECT 1, id, i, r, n, x, b FROM t")
+    );
+    // Row 7 ends with REAL 1.0 (the reversed UPDATE loop); pinned as SQLite
+    // 3.53 stores it in each affinity (measured).
+    assert_eq!(
+        one_row(
+            &c,
+            "SELECT typeof(i), typeof(r), typeof(n), typeof(x), x, typeof(b) FROM t WHERE id = 7"
+        ),
+        vec![
+            Sql::Text("integer".into()),
+            Sql::Text("real".into()),
+            Sql::Text("integer".into()),
+            Sql::Text("text".into()),
+            Sql::Text("1.0".into()),
+            Sql::Text("real".into()),
+        ]
+    );
+    c.execute_batch("DELETE FROM t").unwrap();
+    assert!(
+        weighted(&c, delta).is_empty(),
+        "every captured DELETE cancels its INSERT"
+    );
+}
+
+#[test]
+fn every_declared_type_is_accepted_and_one_and_one_point_zero_are_one_group() {
+    let c = open_with_extension(None).unwrap();
+    c.execute_batch(
+        "CREATE TABLE t(k, v VARCHAR(255), d DATETIME, f FLOAT(8,2), z BOOLEAN);
+         CREATE TABLE s(k ANY, v INT) STRICT;
+         INSERT INTO t VALUES (1, 'a', 1, 1.5, 1), (1.0, 'b', 2, 2.5, 0), ('1', 'c', 3, 3.5, 1);",
+    )
+    .unwrap();
+    let sql = "SELECT k, COUNT(*), SUM(f) FROM t GROUP BY k";
+    create(&c, "g", sql).unwrap();
+    create(&c, "h", "SELECT k, COUNT(*) FROM s GROUP BY k").unwrap();
+    // Two groups, as in SQLite: 1 with 1.0, and '1'. A group with a REAL key row is REAL.
+    assert_eq!(
+        rows(&c, "SELECT typeof(k), k, \"COUNT(*)\", \"SUM(f)\" FROM g"),
+        rows(
+            &c,
+            "SELECT 'real', 1.0, 2, 4.0 UNION ALL SELECT 'text', '1', 1, 3.5"
+        )
+    );
+    assert_eq!(
+        count(&c, "SELECT count(*) FROM (SELECT k FROM t GROUP BY k)"),
+        2
+    );
+}
+
+#[test]
+fn changing_a_declared_type_with_the_same_affinity_breaks_the_view() {
+    let c = open_with_extension(None).unwrap();
+    c.execute_batch("CREATE TABLE t(k VARCHAR(10), v INTEGER)")
+        .unwrap();
+    create(&c, "g", "SELECT k, COUNT(*) FROM t GROUP BY k").unwrap();
+    c.execute_batch("DROP TABLE t; CREATE TABLE t(k TEXT, v INTEGER)")
+        .unwrap();
+    let e = refresh(&c, "g").expect_err("the shape records the declared type");
+    assert!(e.to_string().contains("changed shape"), "{e}");
+}
+
+#[test]
+fn a_sum_over_a_real_column_is_the_exact_sum_rounded_once() {
+    let c = open_with_extension(None).unwrap();
+    c.execute_batch(
+        "CREATE TABLE t(k TEXT, x REAL); INSERT INTO t VALUES ('a', 0.1), ('a', 0.2), ('a', 0.3)",
+    )
+    .unwrap();
+    create(&c, "v", "SELECT k, SUM(x), AVG(x) FROM t GROUP BY k").unwrap();
+    assert_eq!(
+        one_row(&c, "SELECT * FROM v"),
+        vec![Sql::Text("a".into()), Sql::Real(0.6), Sql::Real(0.2)]
     );
 }

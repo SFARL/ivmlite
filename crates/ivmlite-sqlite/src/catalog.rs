@@ -38,10 +38,15 @@ pub struct UniqueKey {
 pub struct CaptureInfo {
     pub without_rowid: bool,
     pub unique_keys: Vec<UniqueKey>,
+    /// Each column's declared type text, in column order (`pragma_table_info.type`;
+    /// empty for a column declared without one). The table shape records it so
+    /// a table recreated with another declared type breaks the view even
+    /// within one affinity (M2c spec §3).
+    pub declared_types: Vec<String>,
 }
 
 /// Reads a table's shape from `pragma_table_list`, `pragma_table_info` and its
-/// `CREATE` statement, and refuses what v0 cannot represent.
+/// `CREATE` statement, and refuses what ivmlite cannot represent.
 ///
 /// Every `pragma_*` table-valued function is named `"main".pragma_…`, as
 /// every table the extension reads is `"main"`-qualified (Phase 3a spec §4):
@@ -49,6 +54,26 @@ pub struct CaptureInfo {
 /// or view named `pragma_table_list` would otherwise be read instead.
 pub struct SqliteCatalog<'a> {
     pub conn: &'a Connection,
+}
+
+/// M2c spec §3: a declared type's affinity, by SQLite's rules in order
+/// (datatype3.html §3.1). A STRICT table's `ANY` stores values unchanged.
+pub fn affinity(declared: &str, strict: bool) -> ColumnType {
+    let upper = declared.to_ascii_uppercase();
+    let has = |part: &str| upper.contains(part);
+    if strict && upper == "ANY" {
+        ColumnType::Blob
+    } else if has("INT") {
+        ColumnType::Integer
+    } else if has("CHAR") || has("CLOB") || has("TEXT") {
+        ColumnType::Text
+    } else if has("BLOB") || upper.is_empty() {
+        ColumnType::Blob
+    } else if has("REAL") || has("FLOA") || has("DOUB") {
+        ColumnType::Real
+    } else {
+        ColumnType::Numeric
+    }
 }
 
 impl Catalog for SqliteCatalog<'_> {
@@ -78,11 +103,6 @@ impl Catalog for SqliteCatalog<'_> {
         }
         if kind != "table" {
             return refuse(&format!("is a {kind}, not an ordinary table"));
-        }
-        if !strict {
-            return refuse(
-                "is not STRICT; v0 needs STRICT tables so a column's values have one type (spec §7.1)",
-            );
         }
         let sql: String = self
             .conn
@@ -146,20 +166,13 @@ impl Catalog for SqliteCatalog<'_> {
         let mut columns = Vec::new();
         for row in rows {
             let (column, ty, not_null, pk) = row.map_err(err)?;
-            let ty = match ty.to_ascii_uppercase().as_str() {
-                "INTEGER" | "INT" => ColumnType::Integer,
-                "TEXT" => ColumnType::Text,
-                other => {
-                    return refuse(&format!(
-                    "column {column} has type {other}; v0 supports INTEGER and TEXT columns only"
-                ))
-                }
-            };
-            // An INTEGER PRIMARY KEY is the rowid and can never be NULL.
-            let rowid = pk == 1 && ty == ColumnType::Integer;
+            let ty_affinity = affinity(&ty, strict);
+            // An INTEGER PRIMARY KEY is the rowid and can never be NULL; it is
+            // an alias only when the declared type is exactly `INTEGER`.
+            let rowid = pk == 1 && ty.eq_ignore_ascii_case("INTEGER");
             columns.push(Column {
                 name: column,
-                ty,
+                ty: ty_affinity,
                 nullable: !not_null && !rowid,
             });
         }
@@ -284,9 +297,15 @@ impl SqliteCatalog<'_> {
                 columns,
             });
         }
+        let declared_types: Vec<String> = self
+            .conn
+            .prepare("SELECT type FROM \"main\".pragma_table_info(?1, 'main') ORDER BY cid")
+            .and_then(|mut s| s.query_map([table], |r| r.get(0))?.collect())
+            .map_err(err)?;
         Ok(CaptureInfo {
             without_rowid,
             unique_keys,
+            declared_types,
         })
     }
 }
@@ -404,6 +423,39 @@ pub fn require_utf8(conn: &Connection) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn affinity_follows_sqlites_rules_in_order() {
+        use ColumnType::{Blob, Integer, Numeric, Real, Text};
+        for (declared, want) in [
+            ("INTEGER", Integer),
+            ("INT", Integer),
+            ("TINYINT", Integer),
+            ("BIGINT UNSIGNED", Integer),
+            ("FLOATING POINT", Integer), // rule 1 wins: "POINT" contains INT
+            ("CHARINT", Integer),
+            ("VARCHAR(255)", Text),
+            ("NCHAR(55)", Text),
+            ("CLOB", Text),
+            ("text", Text),
+            ("BLOB", Blob),
+            ("", Blob),
+            ("REAL", Real),
+            ("DOUBLE", Real),
+            ("DOUBLE PRECISION", Real),
+            ("FLOAT(8,2)", Real),
+            ("NUMERIC", Numeric),
+            ("DECIMAL(10,5)", Numeric),
+            ("BOOLEAN", Numeric),
+            ("DATE", Numeric),
+            ("DATETIME", Numeric),
+            ("STRING", Numeric),
+        ] {
+            assert_eq!(affinity(declared, false), want, "{declared}");
+        }
+        assert_eq!(affinity("ANY", true), Blob);
+        assert_eq!(affinity("ANY", false), Numeric);
+    }
 
     #[test]
     fn collate_is_matched_as_a_token_not_a_substring() {

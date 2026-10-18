@@ -241,10 +241,7 @@ fn a_failing_stage_cleanup_fails_the_create_and_leaves_nothing() {
 fn what_v0_cannot_maintain_is_rejected_by_name() {
     let q = "SELECT k, COUNT(*) FROM t GROUP BY k";
     let cases = [
-        ("CREATE TABLE t(k TEXT, v INTEGER)", q, "not STRICT"),
-        ("CREATE TABLE t(k ANY, v INTEGER) STRICT", q, "type ANY"),
         ("CREATE TABLE t(k TEXT COLLATE NOCASE, v INTEGER) STRICT", q, "COLLATE"),
-        ("CREATE TABLE t(k TEXT, v REAL) STRICT", q, "type REAL"),
         ("PRAGMA encoding = 'UTF-16le'; CREATE TABLE t(k TEXT) STRICT", q, "UTF-8"),
         ("CREATE TABLE t(k TEXT) STRICT", "SELECT k, COUNT(*) FROM nope GROUP BY k", "no such table: nope"),
         ("CREATE TABLE t(k TEXT) STRICT; CREATE VIEW vv AS SELECT * FROM t", "SELECT k, COUNT(*) FROM vv GROUP BY k", "view"),
