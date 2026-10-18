@@ -199,3 +199,15 @@ The predicate is then evaluated with §2's order. Every operator v0 accepts keep
 **Reporting.** A new section in `docs/bench/README.md`, and an update to the census. The census lists which candidates now fit.
 
 **Release:** `v0.1.0-alpha.6`, with a CHANGELOG entry, release notes and format 6. The README's limitations list and the parent spec §13 are amended. They must state the REAL-result difference from SQLite and the overflow rule plainly.
+
+## Amendments 2026-10-17 (from implementation planning)
+
+Planning found seven places where this spec is incomplete or cannot be implemented as worded. Each is resolved in `docs/superpowers/plans/2026-10-17-m2c-types-and-aggregates.md` ("Plan decisions"); this section makes those resolutions binding.
+
+1. **§4, MIN/MAX encoding.** A fixed 8-byte "marker for a Real" cannot order every pair exactly (`Int(i64::MAX)` against `Real(2^63)`, or `Real(2^60)` between `Int(2^60)` and `Int(2^60 + 1)`), and `-0.0` needs its own entry. Numeric entries are instead: class byte, 8-byte order-preserving `f64`, 8-byte order-preserving `i64` tie (a Real's tie is its value truncated toward zero and saturated), then one byte: `0x00` Int, `0x01` Real, `0x02` Real `-0.0`. TEXT and BLOB escape each `0x00` payload byte as `0x00 0xFF` and end with `0x00 0x00`. MAX in a numeric tie outputs the entry that sorts last. (Plan decisions 1–3.)
+2. **§4, versions.** The tests run on the bundled SQLite 3.53.2; the supported behaviour remains "3.45 and later".
+3. **§4, the MIN/MAX read** steps `ORDER BY val` lazily and stops at the first live entry instead of `LIMIT 1`, because a refresh's buffered writes may already retract the stored extremum (Phase 3a §5). (Plan decision 11.)
+4. **§5, literals against a TEXT-affinity column.** An INTEGER literal becomes its decimal text; a REAL literal is refused at compile time, because SQLite's REAL-to-TEXT rendering differs between versions. (Plan decision 7.)
+5. **§4, infinities.** SQLite stores ±Inf in REAL columns. SUM, TOTAL and AVG count +Inf and −Inf inputs by weight outside the fixed point: both signs present gives NULL (SQLite's NaN), one sign gives that infinity. (Plan decision 5.)
+6. **§6, integer results near 2^63.** "INTEGER results equal SQLite's exactly" applies when SQLite completes. When SQLite reports an intermediate (prefix) overflow, the case is checked against the independent reference only; when the reference's final exact sum overflows, ivmlite must fail with `integer overflow in SUM`. (Plan decision 14.)
+7. **§6, the AVG bound.** For AVG the KBN check is `4ε·Σ|xᵢ|/n + 2ε·|avg|`, with ε = 2^-53. (Plan decision 12.)
