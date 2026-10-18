@@ -1211,6 +1211,12 @@ fn summary_md(out: &Path, derived: &Derived, cells: &[CellRatios]) -> Result<Str
     let field = |f: &dyn Fn(&Manifest) -> String| -> BTreeSet<String> {
         manifests.iter().map(|m| f(m)).collect()
     };
+    // Only a full `run` records the gate; churn and confirm manifests are always `not_applicable`.
+    let smoke_gates: BTreeSet<String> = derived
+        .runs
+        .iter()
+        .map(|c| smoke_gate_label(c.manifest.provenance.smoke_gate).to_owned())
+        .collect();
     for (name, values, alarm) in [
         (
             "source revision",
@@ -1235,11 +1241,7 @@ fn summary_md(out: &Path, derived: &Derived, cells: &[CellRatios]) -> Result<Str
             field(&|m| m.hardware.logical_cpus.to_string()),
             None,
         ),
-        (
-            "smoke gate",
-            field(&|m| smoke_gate_label(m.provenance.smoke_gate).to_owned()),
-            Some(("skipped", "SKIPPED")),
-        ),
+        ("smoke gate", smoke_gates, Some(("skipped", "SKIPPED"))),
         (
             "tracked source changes",
             field(&|m| {
@@ -2431,6 +2433,24 @@ mod tests {
             text.contains("- tracked source changes (MIXED, DIRTY): no; yes\n"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn the_smoke_gate_is_reported_from_run_manifests_only() {
+        let out = temp();
+        let dest = out.join("report");
+        let cell = cell(Profile::ZipfUniform, 8, 10);
+        confirmed_out(&out, &cell, 1);
+        // Only a full run records the gate; churn and confirm manifests stay `not_applicable`.
+        for seed in [1, 42, 2026] {
+            rewrite_manifest(&out, "run", &key("run", &cell, seed), &RUN_ARTIFACTS, |m| {
+                m.provenance.smoke_gate = SmokeGate::Passed;
+            });
+        }
+        report(&out, &dest).unwrap();
+        let text = summary_text(&dest);
+        assert!(text.contains("- smoke gate: passed\n"), "{text}");
+        assert!(!text.contains("smoke gate (MIXED"), "{text}");
     }
 
     #[test]
