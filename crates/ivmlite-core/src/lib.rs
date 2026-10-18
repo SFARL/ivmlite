@@ -2,6 +2,7 @@ mod agg;
 mod arrangement;
 mod database;
 mod engine;
+mod exact;
 mod join;
 mod node;
 mod plan;
@@ -19,6 +20,7 @@ pub use arrangement::{
 };
 pub use database::Database;
 pub use engine::{EngineError, IncrementalEngine};
+pub use exact::{ExactSum, EXACT_BYTES, EXACT_LIMBS};
 pub use join::JoinState;
 pub use node::{ArrangementProvider, Node};
 pub use plan::{lower, lower_query, Plan, PlanError, ResolvedJoin, ResolvedView};
