@@ -476,6 +476,72 @@ struct Manifest {
     /// 1-minute load average just after its last timed mode.
     #[serde(default)]
     load_after: Option<f64>,
+    /// The `--max-load` that a confirmation repeat was admitted under.
+    #[serde(default)]
+    max_load: Option<f64>,
+    /// Build and host of the initial `run` that a confirmation repeats.
+    #[serde(default)]
+    initial_run: Option<BuildIdentity>,
+}
+/// What built and ran a case. A confirmation records its initial run's identity next to its own.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct BuildIdentity {
+    source_sha256: String,
+    runner_sha256: String,
+    extension_sha256: Option<String>,
+    sqlite_version: String,
+    runner_rustc: String,
+    hardware: Hardware,
+}
+/// Differences that make a confirmation meaningless: another code base, runner, extension or
+/// SQLite. A confirmation is refused for these.
+const REFUSED_DIFFERENCES: [&str; 4] = [
+    "source_sha256",
+    "runner_sha256",
+    "extension_sha256",
+    "sqlite_version",
+];
+impl BuildIdentity {
+    fn current(ctx: &Context) -> Self {
+        Self {
+            source_sha256: ctx.source_sha256.clone(),
+            runner_sha256: ctx.runner_sha256.clone(),
+            extension_sha256: ctx.extension_sha256.clone(),
+            sqlite_version: rusqlite::version().into(),
+            runner_rustc: env!("M2A_RUSTC_VV").into(),
+            hardware: ctx.provenance.hardware.clone(),
+        }
+    }
+    /// Names of the fields in which `self` differs from `other`.
+    fn differences(&self, other: &Self) -> Vec<&'static str> {
+        [
+            ("source_sha256", self.source_sha256 != other.source_sha256),
+            ("runner_sha256", self.runner_sha256 != other.runner_sha256),
+            (
+                "extension_sha256",
+                self.extension_sha256 != other.extension_sha256,
+            ),
+            (
+                "sqlite_version",
+                self.sqlite_version != other.sqlite_version,
+            ),
+            ("runner_rustc", self.runner_rustc != other.runner_rustc),
+            ("hardware", self.hardware != other.hardware),
+        ]
+        .into_iter()
+        .filter_map(|(name, differs)| differs.then_some(name))
+        .collect()
+    }
+    fn of(m: &Manifest) -> Self {
+        Self {
+            source_sha256: m.source_sha256.clone(),
+            runner_sha256: m.runner_sha256.clone(),
+            extension_sha256: m.extension_sha256.clone(),
+            sqlite_version: m.sqlite_version.clone(),
+            runner_rustc: m.runner_rustc.clone(),
+            hardware: m.hardware.clone(),
+        }
+    }
 }
 impl Manifest {
     fn compatible(&self, other: &Self) -> bool {
@@ -483,6 +549,7 @@ impl Manifest {
         other.provenance = self.provenance.clone();
         other.load_before = self.load_before;
         other.load_after = self.load_after;
+        other.max_load = self.max_load;
         *self == other
     }
 }
@@ -698,7 +765,7 @@ fn manifest(f: &Fixture, a: &Args, repeat: usize, ctx: &Context) -> Result<Manif
     started.started_utc = command("date", &["-u", "+%Y-%m-%dT%H:%M:%SZ"]);
     started.start_load = command("uptime", &[]);
     Ok(Manifest {
-        schema_version: 4,
+        schema_version: 5,
         kind: a.action.clone(),
         cell: f.cell.clone(),
         seed: f.seed,
@@ -730,6 +797,8 @@ fn manifest(f: &Fixture, a: &Args, repeat: usize, ctx: &Context) -> Result<Manif
         provenance: started,
         load_before: None,
         load_after: None,
+        max_load: None,
+        initial_run: None,
     })
 }
 fn save_fixture(path: &Path, f: &Fixture) -> Result<()> {
@@ -1039,6 +1108,8 @@ const RUN_ARTIFACTS: [&str; 5] = [
     "space.json",
     "timing.json",
 ];
+/// Artifacts of a completed `churn` or `verify` case: replay evidence without timing.
+const INVERSE_ARTIFACTS: [&str; 3] = ["fixture.json", "correctness.json", "targets.json"];
 /// Once per confirmed cell: the replay that the timing-only repeats rely on.
 const EVIDENCE_ARTIFACTS: [&str; 3] = ["correctness.json", "targets.json", "space.json"];
 const EVIDENCE_MARKER: &str = "evidence-completed.json";
@@ -1110,7 +1181,7 @@ fn execute_case(
     } else if timing {
         &RUN_ARTIFACTS
     } else {
-        &["fixture.json", "correctness.json", "targets.json"]
+        &INVERSE_ARTIFACTS
     };
     if dir.join(marker).exists() {
         if !a.resume {
@@ -1233,10 +1304,9 @@ fn execute_confirmation(
     let dir = case_dir(a, key);
     fs::create_dir_all(&dir)?;
     *phase = "manifest".into();
-    let mut m = install_manifest(
-        &dir.join("manifest.json"),
-        &manifest(f, a, key.repeat, ctx)?,
-    )?;
+    let mut wanted = manifest(f, a, key.repeat, ctx)?;
+    wanted.initial_run = Some(BuildIdentity::of(&initial_manifest(&a.out, key)?));
+    let mut m = install_manifest(&dir.join("manifest.json"), &wanted)?;
     if dir.join("completed.json").exists() {
         if !a.resume {
             return Err(format!(
@@ -1264,6 +1334,7 @@ fn execute_confirmation(
     *phase = "plan".into();
     m2a_runner::assert_plans(&m.plans, f.cell.shape)?;
     *phase = "host_not_idle".into();
+    m.max_load = Some(a.max_load);
     m.load_before = Some(wait_for_idle(
         &mut system_load_average,
         a.max_load,
@@ -1474,18 +1545,33 @@ fn run_cases(
 }
 /// Confirmation cells repeat the seed-42 cells of the matrix.
 const CONFIRM_SEED: u64 = 42;
-/// The fixture of the initial `run` of a confirmed cell, bound to that run's manifest and to the
-/// workload of this invocation. The confirmation times exactly the data the candidate was found on.
-fn initial_fixture(a: &Args, cfg: &M2aConfig, key: &ExpectedCase) -> Result<Fixture> {
+/// Manifest of the initial `run` (repeat 0) that a confirmation of `key`'s cell repeats.
+fn initial_manifest(out: &Path, key: &ExpectedCase) -> Result<Manifest> {
+    read_json(&initial_dir(out, key).join("manifest.json"))
+}
+fn initial_dir(out: &Path, key: &ExpectedCase) -> PathBuf {
     let initial = ExpectedCase {
         kind: "run".into(),
         repeat: 0,
         ..key.clone()
     };
-    let dir = case_path(&a.out, "run", &initial);
+    case_path(out, "run", &initial)
+}
+/// The fixture of the initial `run` of a confirmed cell, bound to that run's manifest, to the
+/// workload and to the build of this invocation. The confirmation times exactly the data the
+/// candidate was found on, with the code that found it. A different source, runner, extension or
+/// SQLite is refused; a different compiler or host is allowed and recorded in the repeat's
+/// manifest (`Manifest::initial_run`).
+fn initial_fixture(
+    a: &Args,
+    cfg: &M2aConfig,
+    ctx: &Context,
+    key: &ExpectedCase,
+) -> Result<Fixture> {
+    let dir = initial_dir(&a.out, key);
     validate_completion(&dir, "manifest.json", "completed.json", &RUN_ARTIFACTS)
         .map_err(|e| format!("initial run of {} is not complete: {e}", key.cell))?;
-    let recorded: Manifest = read_json(&dir.join("manifest.json"))?;
+    let recorded = initial_manifest(&a.out, key)?;
     let f: Fixture = read_json(&dir.join("fixture.json"))?;
     f.validate()?;
     if f.cell.id() != key.cell
@@ -1497,6 +1583,19 @@ fn initial_fixture(a: &Args, cfg: &M2aConfig, key: &ExpectedCase) -> Result<Fixt
         return Err(format!(
             "fixture of the initial run of {} differs from its manifest or the workload",
             key.cell
+        )
+        .into());
+    }
+    let refused: Vec<_> = BuildIdentity::of(&recorded)
+        .differences(&BuildIdentity::current(ctx))
+        .into_iter()
+        .filter(|name| REFUSED_DIFFERENCES.contains(name))
+        .collect();
+    if !refused.is_empty() {
+        return Err(format!(
+            "initial run of {} was made by another build ({}); confirm with the build that made it, or rerun the matrix",
+            key.cell,
+            refused.join(", ")
         )
         .into());
     }
@@ -1636,7 +1735,7 @@ fn run_inner(a: &Args, ctx: &Context) -> Result<()> {
             "churn" => cfg.generate_rounds(cell, key.seed, key.rounds)?,
             "confirm" => {
                 *phase = "fixture".into();
-                initial_fixture(a, &cfg, key)?
+                initial_fixture(a, &cfg, ctx, key)?
             }
             _ => cfg.generate(cell, key.seed)?,
         };
@@ -2726,6 +2825,8 @@ mod tests {
                 assert_eq!((m.kind.as_str(), m.seed, m.repeat), ("confirm", 42, repeat));
                 assert_eq!((m.load_before, m.load_after), (Some(0.5), Some(0.5)));
                 assert_eq!(m.fixture_sha256, initial.fixture_sha256);
+                assert_eq!(m.initial_run, Some(BuildIdentity::of(&initial)));
+                assert_eq!(m.max_load, Some(a.max_load));
                 let timing: TimingFile = read_json(&repeat_dir.join("timing.json")).unwrap();
                 assert_eq!(timing.manifest, m);
                 assert_eq!(timing.measurements.len(), MODES.len());
@@ -2767,8 +2868,18 @@ mod tests {
         set_injected_load(Some(0.5));
         a.resume = true;
         a.retry_failed = true;
+        a.max_load = 1.0;
         run_inner(&a, &ctx).unwrap();
         set_injected_load(None);
+        for repeat in 0..2 {
+            let repeat_dir = case_dir(&a, &confirm_key(&cells[0], repeat, rounds));
+            let m: Manifest = read_json(&repeat_dir.join("manifest.json")).unwrap();
+            assert_eq!(
+                m.max_load,
+                Some(1.0),
+                "the retry records the limit it ran under"
+            );
+        }
         let summary = stored_summary(&a);
         assert_eq!((summary.planned, summary.complete), (2, 2));
         assert!(summary.failed.is_empty());
@@ -2895,6 +3006,97 @@ mod tests {
             failed.error
         );
         assert_eq!(files_named(&dir.join("confirm"), "timing.json"), 0);
+        fs::remove_dir_all(dir).unwrap();
+    }
+    /// Rewrites the initial run's manifest and binds its completion marker to the edit.
+    fn edit_initial_manifest(dir: &Path, key: &ExpectedCase, edit: impl FnOnce(&mut Manifest)) {
+        let run_dir = case_path(dir, "run", key);
+        let mut manifest: Manifest = read_json(&run_dir.join("manifest.json")).unwrap();
+        edit(&mut manifest);
+        write_json(&run_dir.join("manifest.json"), &manifest).unwrap();
+        complete(&run_dir, "manifest.json", "completed.json", &RUN_ARTIFACTS).unwrap();
+    }
+    fn initial_key(cell: &str, a: &Args) -> ExpectedCase {
+        ExpectedCase {
+            kind: "run".into(),
+            ..confirm_key(cell, 0, load_config(a).unwrap().total_rounds().unwrap())
+        }
+    }
+    #[test]
+    fn confirm_refuses_a_build_that_differs_from_the_initial_run() {
+        let dir = temp();
+        let cells = finished_initial_runs(&dir, &extension_context());
+        let a = confirm_args(&dir, &cells[..1], 1);
+        set_injected_load(Some(0.5));
+        type Edit = Box<dyn Fn(&mut Context)>;
+        let other_builds: [(&str, Edit); 3] = [
+            (
+                "source_sha256",
+                Box::new(|c| c.source_sha256 = "other".into()),
+            ),
+            (
+                "runner_sha256",
+                Box::new(|c| c.runner_sha256 = "other".into()),
+            ),
+            (
+                "extension_sha256",
+                Box::new(|c| c.extension_sha256 = Some("other".into())),
+            ),
+        ];
+        let refused = |field: &str, ctx: &Context| {
+            let _ = fs::remove_file(selection_path(&a));
+            assert!(
+                run_inner(&a, ctx).unwrap_err().is::<CasesFailed>(),
+                "{field}"
+            );
+            let failed = stored_summary(&a).failed.remove(0);
+            assert_eq!(failed.phase, "fixture", "{field}");
+            assert!(failed.error.contains(field), "{field}: {}", failed.error);
+            assert_eq!(
+                files_named(&dir.join("confirm"), "timing.json"),
+                0,
+                "{field}"
+            );
+        };
+        for (field, edit) in other_builds {
+            let mut ctx = extension_context();
+            edit(&mut ctx);
+            refused(field, &ctx);
+        }
+        // SQLite is not part of the context: the initial run says it used another version.
+        edit_initial_manifest(&dir, &initial_key(&cells[0], &a), |m| {
+            m.sqlite_version = "0.0.0".into();
+        });
+        refused("sqlite_version", &extension_context());
+        set_injected_load(None);
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn confirm_flags_another_compiler_or_host_and_records_the_initial_run() {
+        let dir = temp();
+        let ctx = extension_context();
+        let cells = finished_initial_runs(&dir, &ctx);
+        let a = confirm_args(&dir, &cells[..1], 1);
+        let key = initial_key(&cells[0], &a);
+        edit_initial_manifest(&dir, &key, |m| {
+            m.runner_rustc = "another rustc".into();
+            m.hardware.cpu = "another cpu".into();
+        });
+        set_injected_load(Some(0.5));
+        run_inner(&a, &ctx).unwrap();
+        set_injected_load(None);
+        let initial: Manifest =
+            read_json(&case_path(&dir, "run", &key).join("manifest.json")).unwrap();
+        let rounds = key.rounds;
+        let repeat: Manifest =
+            read_json(&case_dir(&a, &confirm_key(&cells[0], 0, rounds)).join("manifest.json"))
+                .unwrap();
+        let recorded = repeat.initial_run.expect("the initial run is recorded");
+        assert_eq!(recorded.runner_rustc, "another rustc");
+        assert_eq!(recorded.hardware.cpu, "another cpu");
+        assert_eq!(recorded.source_sha256, initial.source_sha256);
+        assert_eq!(recorded.extension_sha256, initial.extension_sha256);
+        assert_ne!(recorded.runner_rustc, repeat.runner_rustc);
         fs::remove_dir_all(dir).unwrap();
     }
     #[test]

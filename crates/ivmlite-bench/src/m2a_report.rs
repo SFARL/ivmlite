@@ -33,8 +33,9 @@ use crate::m2a_runner::{Checkpoint, Measurement, Mode, Result, RoundTiming, Targ
 use crate::m2a_space::SpaceCheckpoint;
 use crate::m2a_state::{PageMetrics, Snapshot};
 use crate::{
-    case_path, read_json, selection_file, write_json, ExpectedCase, Manifest, Selection,
-    TimingFile, CONFIRM_SEED,
+    case_path, read_json, selection_file, validate_completion, write_json, BuildIdentity,
+    ExpectedCase, Manifest, Selection, SmokeGate, TimingFile, CONFIRM_REPEAT_ARTIFACTS,
+    CONFIRM_SEED, INVERSE_ARTIFACTS, RUN_ARTIFACTS,
 };
 
 /// Which cases of each action a report covers, in the order they are listed.
@@ -110,6 +111,15 @@ struct ConfirmCase {
     ratio: RunRatio,
     load_before: f64,
     load_after: f64,
+    max_load: f64,
+    /// Names of the build or host fields in which the initial run differs from this repeat.
+    build_differs: BTreeSet<&'static str>,
+}
+impl ConfirmCase {
+    /// The host was busier after the repeat than the limit that admitted it (spec section 4).
+    fn busy_after(&self) -> bool {
+        self.load_after > self.max_load
+    }
 }
 
 struct ChurnCase {
@@ -372,9 +382,19 @@ fn load_confirmation(
     measured_rounds: &mut BTreeMap<String, usize>,
 ) -> Result<ConfirmCase> {
     let manifest = read_manifest(dir, key)?;
-    let (Some(load_before), Some(load_after)) = (manifest.load_before, manifest.load_after) else {
-        return Err("confirmation manifest lacks its load averages".into());
+    let (Some(load_before), Some(load_after), Some(max_load)) =
+        (manifest.load_before, manifest.load_after, manifest.max_load)
+    else {
+        return Err("confirmation manifest lacks its load averages or its load limit".into());
     };
+    let initial = manifest
+        .initial_run
+        .as_ref()
+        .ok_or("confirmation manifest lacks the identity of its initial run")?;
+    let build_differs = initial
+        .differences(&BuildIdentity::of(&manifest))
+        .into_iter()
+        .collect();
     let rounds = match measured_rounds.get(&key.cell) {
         Some(&rounds) => rounds,
         None => {
@@ -390,6 +410,8 @@ fn load_confirmation(
         manifest,
         load_before,
         load_after,
+        max_load,
+        build_differs,
     })
 }
 
@@ -416,7 +438,15 @@ fn missing_marker(selection: &Selection, dir: &Path, key: &ExpectedCase) -> (Str
             return (phase.to_owned(), error.to_owned());
         }
     }
-    ("not_run".into(), format!("no {COMPLETION_MARKER}"))
+    // A case directory exists only once the runner started the case; a started case with neither
+    // marker nor failure record was killed or interrupted, which is not the same as never run.
+    if dir.is_dir() {
+        return (
+            "interrupted".into(),
+            format!("started, but neither {COMPLETION_MARKER} nor failure.json was written"),
+        );
+    }
+    ("not_run".into(), "case never started".into())
 }
 
 fn derive(out: &Path) -> Result<Derived> {
@@ -464,13 +494,22 @@ fn derive(out: &Path) -> Result<Derived> {
                 });
                 continue;
             } else {
-                match action {
-                    "run" => load_run(&dir, key).map(|case| derived.runs.push(case)),
-                    "churn" => load_churn(&dir, key).map(|case| derived.churns.push(case)),
-                    "confirm" => load_confirmation(out, &dir, key, &mut measured_rounds)
-                        .map(|case| derived.confirmations.push(case)),
-                    _ => Ok(()),
-                }
+                // The tables are derived from hash-bound artifacts only: an artifact edited or
+                // damaged after completion is a loss, never a silently used input.
+                let artifacts: &[&str] = match action {
+                    "run" => &RUN_ARTIFACTS,
+                    "confirm" => &CONFIRM_REPEAT_ARTIFACTS,
+                    _ => &INVERSE_ARTIFACTS,
+                };
+                validate_completion(&dir, "manifest.json", COMPLETION_MARKER, artifacts).and_then(
+                    |()| match action {
+                        "run" => load_run(&dir, key).map(|case| derived.runs.push(case)),
+                        "churn" => load_churn(&dir, key).map(|case| derived.churns.push(case)),
+                        "confirm" => load_confirmation(out, &dir, key, &mut measured_rounds)
+                            .map(|case| derived.confirmations.push(case)),
+                        _ => Ok(()),
+                    },
+                )
             };
             match loaded {
                 Ok(()) => derived.complete += 1,
@@ -729,6 +768,14 @@ fn ratios_csv(derived: &Derived, cells: &[CellRatios]) -> Csv {
     csv
 }
 
+/// Union of the build or host fields in which the initial run differs from these repeats.
+fn build_differs<'a>(cases: impl Iterator<Item = &'a ConfirmCase>) -> String {
+    let names: BTreeSet<_> = cases
+        .flat_map(|c| c.build_differs.iter().copied())
+        .collect();
+    names.into_iter().collect::<Vec<_>>().join(";")
+}
+
 /// Repeat rows and one range row per confirmed cell. The seed tables stay as they are; the initial
 /// range is repeated here only to read the two side by side.
 fn confirmations_csv(derived: &Derived, cells: &[CellRatios]) -> Csv {
@@ -749,9 +796,13 @@ fn confirmations_csv(derived: &Derived, cells: &[CellRatios]) -> Csv {
             "ratio",
             "load_before",
             "load_after",
+            "max_load",
+            "busy_after",
+            "initial_build_differs",
             "repeats",
             "expected_repeats",
             "partial",
+            "busy_after_repeats",
             "ratio_min",
             "ratio_median",
             "ratio_max",
@@ -790,8 +841,11 @@ fn confirmations_csv(derived: &Derived, cells: &[CellRatios]) -> Csv {
                         num(r.ratio),
                         num(case.load_before),
                         num(case.load_after),
+                        num(case.max_load),
+                        case.busy_after().to_string(),
+                        build_differs(std::iter::once(*case)),
                     ])
-                    .chain(blank(11)),
+                    .chain(blank(12)),
             );
         }
         let ratios: Vec<f64> = repeats.iter().map(|c| c.ratio.ratio).collect();
@@ -806,11 +860,17 @@ fn confirmations_csv(derived: &Derived, cells: &[CellRatios]) -> Csv {
         csv.line(
             joined(vec!["cell".to_owned()], dims)
                 .into_iter()
-                .chain(blank(9))
+                .chain(blank(11))
                 .chain([
+                    build_differs(repeats.iter().copied()),
                     repeats.len().to_string(),
                     expected.to_string(),
                     (repeats.len() < expected).to_string(),
+                    repeats
+                        .iter()
+                        .filter(|c| c.busy_after())
+                        .count()
+                        .to_string(),
                     opt(stats.as_ref().map(|s| s.min)),
                     opt(stats.as_ref().map(|s| s.median)),
                     opt(stats.as_ref().map(|s| s.max)),
@@ -920,10 +980,19 @@ fn targets_csv(derived: &Derived) -> Csv {
             "seed",
             "repeat",
             "round",
+            "target_selection",
             "operations",
             "target_selections",
             "hot_anchor_selections",
             "hot_target_share",
+            "target_groups",
+            "max_target_group_selections",
+            "distinct_primary_keys",
+            "repeated_primary_key_touches",
+            "repeated_existing_targets",
+            "matched_partners_min",
+            "matched_partners_max",
+            "matched_partners_total",
             "rhs_matched_lhs_rows",
             "rhs_matched_hot_lhs_rows",
             "matched_hot_row_share",
@@ -943,10 +1012,19 @@ fn targets_csv(derived: &Derived) -> Csv {
                     case.key.seed.to_string(),
                     case.key.repeat.to_string(),
                     t.round.to_string(),
+                    case.manifest.target_selection.clone(),
                     t.operations.to_string(),
                     t.target_selections.to_string(),
                     t.hot_anchor_selections.to_string(),
                     share(t.hot_anchor_selections, t.target_selections),
+                    t.target_groups.len().to_string(),
+                    t.target_groups.values().max().unwrap_or(&0).to_string(),
+                    t.distinct_primary_keys.to_string(),
+                    t.repeated_primary_key_touches.to_string(),
+                    t.repeated_existing_targets.to_string(),
+                    t.matched_partners_min.to_string(),
+                    t.matched_partners_max.to_string(),
+                    t.matched_partners_total.to_string(),
                     t.rhs_matched_lhs_rows.to_string(),
                     t.rhs_matched_hot_lhs_rows.to_string(),
                     share(t.rhs_matched_hot_lhs_rows, t.rhs_matched_lhs_rows),
@@ -1038,23 +1116,63 @@ is within 10% of 1.0 or 2.0.
 same checkpoint key (base-only is the `no_maintenance` database), live-page proxies, logical state \
 rows and `retained_stage_rows`. Page allocation is not RSS or peak memory.
 - Targets: top-10% group row share of the initial fixture, realized hot target share, and the \
-hot share of the groups matched by each batch.
+hot share of the groups matched by each batch, plus distinct primary keys, repeated touches, \
+matched partners per batch and target-group counts.
+- Target selection (`target_selection` = `group_then_row`): existing-row targets are chosen \
+group-first (group by profile, then a uniform live row in it); uniform group selection is not \
+uniform row selection.
 - Churn: page_count, freelist_count and logical state rows per round, per profile.
-- A case without `completed.json` (or whose artifacts cannot be read) is listed in `losses.csv` \
-with its phase and error and contributes to no ratio.
-- Confirmation (`confirmations.csv`): five timing-only paired repeats of each candidate cell at \
-seed 42 on an idle host (1-minute load average recorded before and after each repeat). Ratios use \
-the same definition as above. They are reported separately and never enter `timing.csv` or \
+- A case without `completed.json`, or whose completed artifacts cannot be read or no longer match \
+their completion hashes, is listed in `losses.csv` with its phase and error and contributes to no \
+ratio. Phase `interrupted` is a started case that left neither a completion marker nor a failure \
+record; `not_run` is a planned case that never started.
+- Confirmation (`confirmations.csv`): timing-only paired repeats of each candidate cell at seed 42 \
+on an idle host (1-minute load average recorded before and after each repeat; the planned repeat \
+count is `expected_repeats`). A repeat whose load after the run exceeds the `--max-load` that \
+admitted it is `busy after`: it stays in the table, is flagged, and is counted per cell. \
+`initial_build_differs` / `other build` names the fields (compiler, host) in which the initial \
+run was made differently; a different source, runner, extension or SQLite is refused at run \
+time. Ratios use the same definition as above. They are reported separately and never enter `timing.csv` or \
 `ratios.csv`; the cell row gives the full range of the repeats and whether it still contains 1.0 or \
 2.0, next to the initial seed range for comparison.
 - Smoke selections are reported on one line and are never mixed into the matrix tables.
 ";
 
-/// Distinct values of one provenance field over the run cases, flagged when they differ.
-fn provenance_line(name: &str, values: BTreeSet<String>) -> String {
-    let flag = if values.len() > 1 { " (MIXED)" } else { "" };
+/// Distinct values of one provenance field over all cases, flagged when they differ and, when
+/// `alarm` is `(value, label)`, when any case has that value.
+fn provenance_line(name: &str, values: BTreeSet<String>, alarm: Option<(&str, &str)>) -> String {
+    let mut flags = Vec::new();
+    if values.len() > 1 {
+        flags.push("MIXED");
+    }
+    if let Some((value, label)) = alarm {
+        if values.contains(value) {
+            flags.push(label);
+        }
+    }
+    let flag = if flags.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", flags.join(", "))
+    };
     let list: Vec<_> = values.into_iter().collect();
     format!("- {name}{flag}: {}\n", list.join("; "))
+}
+
+fn smoke_gate_label(gate: SmokeGate) -> &'static str {
+    match gate {
+        SmokeGate::NotApplicable => "not_applicable",
+        SmokeGate::Passed => "passed",
+        SmokeGate::Skipped => "skipped",
+    }
+}
+
+/// Whether `git status --porcelain` lists a change to a tracked file; untracked files (`??`) do
+/// not change the source that ran.
+fn has_tracked_changes(status: &str) -> bool {
+    status
+        .lines()
+        .any(|line| !line.trim().is_empty() && !line.starts_with("??"))
 }
 
 fn smoke_line(out: &Path) -> Result<String> {
@@ -1082,24 +1200,60 @@ fn summary_md(out: &Path, derived: &Derived, cells: &[CellRatios]) -> Result<Str
         derived.losses.len(),
         smoke_line(out)?
     );
-    md.push_str("\n## Provenance of the run cases\n\n");
+    md.push_str("\n## Provenance of the run, churn and confirm cases\n\n");
+    let manifests: Vec<&Manifest> = derived
+        .runs
+        .iter()
+        .map(|c| &c.manifest)
+        .chain(derived.churns.iter().map(|c| &c.manifest))
+        .chain(derived.confirmations.iter().map(|c| &c.manifest))
+        .collect();
     let field = |f: &dyn Fn(&Manifest) -> String| -> BTreeSet<String> {
-        derived.runs.iter().map(|c| f(&c.manifest)).collect()
+        manifests.iter().map(|m| f(m)).collect()
     };
-    for (name, values) in [
-        ("source revision", field(&|m| m.source_revision.clone())),
-        ("source sha256", field(&|m| m.source_sha256.clone())),
-        ("runner sha256", field(&|m| m.runner_sha256.clone())),
+    for (name, values, alarm) in [
+        (
+            "source revision",
+            field(&|m| m.source_revision.clone()),
+            None,
+        ),
+        ("source sha256", field(&|m| m.source_sha256.clone()), None),
+        ("runner sha256", field(&|m| m.runner_sha256.clone()), None),
         (
             "extension sha256",
             field(&|m| m.extension_sha256.clone().unwrap_or_default()),
+            None,
         ),
-        ("config sha256", field(&|m| m.config_sha256.clone())),
-        ("SQLite", field(&|m| m.sqlite_version.clone())),
-        ("rustc", field(&|m| m.runner_rustc.clone())),
-        ("cpu", field(&|m| m.hardware.cpu.clone())),
+        ("config sha256", field(&|m| m.config_sha256.clone()), None),
+        ("SQLite", field(&|m| m.sqlite_version.clone()), None),
+        ("rustc", field(&|m| m.runner_rustc.clone()), None),
+        ("host", field(&|m| m.hardware.host.clone()), None),
+        ("cpu", field(&|m| m.hardware.cpu.clone()), None),
+        ("memory", field(&|m| m.hardware.memory.clone()), None),
+        (
+            "logical cpus",
+            field(&|m| m.hardware.logical_cpus.to_string()),
+            None,
+        ),
+        (
+            "smoke gate",
+            field(&|m| smoke_gate_label(m.provenance.smoke_gate).to_owned()),
+            Some(("skipped", "SKIPPED")),
+        ),
+        (
+            "tracked source changes",
+            field(&|m| {
+                if has_tracked_changes(&m.provenance.worktree_status) {
+                    "yes"
+                } else {
+                    "no"
+                }
+                .to_owned()
+            }),
+            Some(("yes", "DIRTY")),
+        ),
     ] {
-        md.push_str(&provenance_line(name, values));
+        md.push_str(&provenance_line(name, values, alarm));
     }
     md.push_str(
         "\n## Ratio against the fastest complete recompute\n\n\
@@ -1157,17 +1311,17 @@ fn confirmation_md(derived: &Derived, cells: &[CellRatios]) -> String {
         return md;
     }
     md.push_str(
-        "| cell | repeats | min | median | max | straddles 1x | straddles 2x | initial min | initial max |\n\
-         |---|---|---|---|---|---|---|---|---|\n",
+        "| cell | repeats | min | median | max | straddles 1x | straddles 2x | initial min | initial max | busy after | other build |\n\
+         |---|---|---|---|---|---|---|---|---|---|---|\n",
     );
     let n = |value: Option<f64>| value.map_or_else(|| "n/a".to_owned(), |v| format!("{v:.3}"));
     for (id, &expected) in &derived.confirm_expected {
-        let ratios: Vec<f64> = derived
+        let repeats: Vec<&ConfirmCase> = derived
             .confirmations
             .iter()
             .filter(|c| &c.key.cell == id)
-            .map(|c| c.ratio.ratio)
             .collect();
+        let ratios: Vec<f64> = repeats.iter().map(|c| c.ratio.ratio).collect();
         let stats = Summary::of(&ratios);
         let straddles = |threshold: f64| {
             stats.as_ref().map_or("n/a", |s| {
@@ -1184,7 +1338,7 @@ fn confirmation_md(derived: &Derived, cells: &[CellRatios]) -> String {
             .and_then(|c| c.stats.as_ref());
         let _ = writeln!(
             md,
-            "| {id} | {}/{expected} | {} | {} | {} | {} | {} | {} | {} |",
+            "| {id} | {}/{expected} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
             ratios.len(),
             n(stats.as_ref().map(|s| s.min)),
             n(stats.as_ref().map(|s| s.median)),
@@ -1193,6 +1347,8 @@ fn confirmation_md(derived: &Derived, cells: &[CellRatios]) -> String {
             straddles(2.0),
             n(initial.map(|s| s.min)),
             n(initial.map(|s| s.max)),
+            repeats.iter().filter(|c| c.busy_after()).count(),
+            build_differs(repeats.iter().copied()),
         );
     }
     md
@@ -1258,9 +1414,9 @@ mod tests {
     use crate::m2a_space::SpaceCheckpoint;
     use crate::m2a_state::PageMetrics;
     use crate::{
-        case_path, complete, selection_file, write_json, ExpectedCase, FailedCase, Hardware,
-        Manifest, ModeProvenance, Provenance, Selection, SelectionIdentity, SmokeGate, Summary,
-        TimingFile,
+        case_path, complete, selection_file, write_json, BuildIdentity, ExpectedCase, FailedCase,
+        Hardware, Manifest, ModeProvenance, Provenance, Selection, SelectionIdentity, SmokeGate,
+        Summary, TimingFile, CONFIRM_REPEAT_ARTIFACTS, INVERSE_ARTIFACTS, RUN_ARTIFACTS,
     };
 
     const ROUNDS: usize = 5;
@@ -1366,7 +1522,7 @@ mod tests {
     }
     fn manifest(kind: &str, cell: &Cell, seed: u64, rounds: usize, order: &[Mode]) -> Manifest {
         Manifest {
-            schema_version: 4,
+            schema_version: 5,
             kind: kind.into(),
             cell: cell.clone(),
             seed,
@@ -1401,6 +1557,8 @@ mod tests {
             provenance: provenance(),
             load_before: None,
             load_after: None,
+            max_load: None,
+            initial_run: None,
         }
     }
     fn snapshot(joined_rows: u64, histogram: &[(i64, u64)], pages: &PageMetrics) -> Checkpoint {
@@ -1462,7 +1620,7 @@ mod tests {
             distinct_primary_keys: 10,
             repeated_primary_key_touches: 0,
             repeated_existing_targets: 0,
-            target_groups: BTreeMap::new(),
+            target_groups: BTreeMap::from([(0, 5), (3, 2)]),
             rhs_matched_lhs_rows: 40,
             rhs_matched_hot_lhs_rows: 30,
             rhs_affected_group_visits: 20,
@@ -1589,18 +1747,7 @@ mod tests {
         .unwrap();
         write_json(&dir.join("correctness.json"), &correctness(1)).unwrap();
         if finished {
-            complete(
-                &dir,
-                "manifest.json",
-                "completed.json",
-                &[
-                    "timing.json",
-                    "space.json",
-                    "targets.json",
-                    "correctness.json",
-                ],
-            )
-            .unwrap();
+            complete(&dir, "manifest.json", "completed.json", &RUN_ARTIFACTS).unwrap();
         }
     }
     fn confirm_key(cell: &Cell, repeat: usize) -> ExpectedCase {
@@ -1618,10 +1765,18 @@ mod tests {
         manifest.repeat = repeat;
         manifest.load_before = Some(0.25);
         manifest.load_after = Some(0.5);
+        manifest.max_load = Some(2.0);
+        manifest.initial_run = Some(BuildIdentity::of(&manifest));
         write_json(&dir.join("manifest.json"), &manifest).unwrap();
         write_json(&dir.join("timing.json"), &timing_file(&manifest, run)).unwrap();
         if finished {
-            complete(&dir, "manifest.json", "completed.json", &["timing.json"]).unwrap();
+            complete(
+                &dir,
+                "manifest.json",
+                "completed.json",
+                &CONFIRM_REPEAT_ARTIFACTS,
+            )
+            .unwrap();
         }
     }
     fn write_churn_case(out: &Path, cell: &Cell, rounds: usize) {
@@ -1636,14 +1791,24 @@ mod tests {
             &manifest("churn", cell, 42, rounds, &[]),
         )
         .unwrap();
+        write_json(&dir.join("fixture.json"), &json!({ "config": config() })).unwrap();
         write_json(&dir.join("correctness.json"), &correctness(rounds)).unwrap();
-        complete(
-            &dir,
-            "manifest.json",
-            "completed.json",
-            &["correctness.json"],
-        )
-        .unwrap();
+        write_json(&dir.join("targets.json"), &[target_stats(0)]).unwrap();
+        complete(&dir, "manifest.json", "completed.json", &INVERSE_ARTIFACTS).unwrap();
+    }
+    /// Edits a finished case's manifest and binds the completion marker to the edit.
+    fn rewrite_manifest(
+        out: &Path,
+        action: &str,
+        key: &ExpectedCase,
+        artifacts: &[&str],
+        edit: impl FnOnce(&mut Manifest),
+    ) {
+        let dir = case_path(out, action, key);
+        let mut manifest: Manifest = crate::read_json(&dir.join("manifest.json")).unwrap();
+        edit(&mut manifest);
+        write_json(&dir.join("manifest.json"), &manifest).unwrap();
+        complete(&dir, "manifest.json", "completed.json", artifacts).unwrap();
     }
     fn write_selection(
         out: &Path,
@@ -2000,6 +2165,274 @@ mod tests {
         assert!(timing.iter().all(|row| row["seed"] != "2026"));
     }
 
+    /// A matrix cell with a finished run per seed, `repeats` finished confirmation repeats at
+    /// seed 42, and one finished churn case, with their selections.
+    fn confirmed_out(out: &Path, cell: &Cell, repeats: usize) {
+        let at = |ratio: f64| run_of(10.0, 20.0, 10.0 / ratio);
+        matrix(
+            out,
+            &[
+                (cell, 1, at(1.8), true),
+                (cell, 42, at(2.2), true),
+                (cell, 2026, at(2.0), true),
+            ],
+        );
+        for repeat in 0..repeats {
+            write_confirm_case(out, cell, repeat, &at(2.0), true);
+        }
+        write_selection(
+            out,
+            "confirm",
+            false,
+            (0..repeats).map(|r| confirm_key(cell, r)).collect(),
+            Vec::new(),
+        );
+        write_churn_case(out, cell, 3);
+        write_selection(
+            out,
+            "churn",
+            false,
+            BTreeSet::from([ExpectedCase {
+                rounds: 3,
+                ..key("churn", cell, 42)
+            }]),
+            Vec::new(),
+        );
+    }
+    fn summary_text(dest: &Path) -> String {
+        fs::read_to_string(dest.join("summary.md")).unwrap()
+    }
+    fn appended_space(path: &Path) {
+        fs::write(path, format!("{} ", fs::read_to_string(path).unwrap())).unwrap();
+    }
+
+    #[test]
+    fn a_completed_artifact_edited_after_completion_is_a_loss() {
+        let out = temp();
+        let dest = out.join("report");
+        let cell = cell(Profile::ZipfHot, 8, 10);
+        confirmed_out(&out, &cell, 2);
+        let summary = report(&out, &dest).unwrap();
+        assert_eq!((summary.complete, summary.incomplete), (3 + 2 + 1, 0));
+        // Each edit keeps the file valid JSON, so only the completion hash can notice it.
+        let churn_key = ExpectedCase {
+            rounds: 3,
+            ..key("churn", &cell, 42)
+        };
+        appended_space(&case_path(&out, "run", &key("run", &cell, 1)).join("timing.json"));
+        appended_space(&case_path(&out, "confirm", &confirm_key(&cell, 0)).join("timing.json"));
+        appended_space(&case_path(&out, "churn", &churn_key).join("correctness.json"));
+        let summary = report(&out, &dest).unwrap();
+        assert_eq!((summary.complete, summary.incomplete), (3, 3));
+        let losses = fs::read_to_string(dest.join("losses.csv")).unwrap();
+        for kind in ["run", "confirm", "churn"] {
+            let line = losses
+                .lines()
+                .find(|l| l.starts_with(&format!("{kind},")))
+                .unwrap_or_else(|| panic!("{kind}: {losses}"));
+            assert!(line.contains("artifact_read"), "{line}");
+            assert!(line.contains("hash differs"), "{line}");
+        }
+        assert!(run_rows(&dest).iter().all(|row| row["seed"] != "1"));
+        let repeats = table(&dest.join("confirmations.csv"));
+        assert_eq!(repeats.iter().filter(|r| r["scope"] == "repeat").count(), 1);
+    }
+
+    #[test]
+    fn a_case_started_but_never_finished_is_interrupted_not_unstarted() {
+        let out = temp();
+        let dest = out.join("report");
+        let cell = cell(Profile::ZipfHot, 8, 10);
+        matrix(
+            &out,
+            &[
+                (&cell, 1, run_of(10.0, 12.0, 5.0), true),
+                // Killed after its manifest and artifacts were written: no marker, no failure.
+                (&cell, 42, run_of(10.0, 12.0, 5.0), false),
+            ],
+        );
+        write_selection(
+            &out,
+            "run",
+            false,
+            [1, 42, 2026].map(|seed| key("run", &cell, seed)).into(),
+            Vec::new(),
+        );
+        let summary = report(&out, &dest).unwrap();
+        assert_eq!((summary.complete, summary.incomplete), (1, 2));
+        let phases: BTreeMap<String, String> = fs::read_to_string(dest.join("losses.csv"))
+            .unwrap()
+            .lines()
+            .skip(1)
+            .map(|line| {
+                let f: Vec<_> = line.split(',').collect();
+                (f[2].to_owned(), f[4].to_owned())
+            })
+            .collect();
+        assert_eq!(phases["42"], "interrupted");
+        assert_eq!(phases["2026"], "not_run");
+    }
+
+    #[test]
+    fn a_repeat_on_a_busy_host_is_published_and_flagged() {
+        let out = temp();
+        let dest = out.join("report");
+        let cell = cell(Profile::ZipfUniform, 8, 10);
+        confirmed_out(&out, &cell, 3);
+        // The host got busy after the second repeat (limit 2.0, closing load 3.5).
+        rewrite_manifest(
+            &out,
+            "confirm",
+            &confirm_key(&cell, 1),
+            &CONFIRM_REPEAT_ARTIFACTS,
+            |m| m.load_after = Some(3.5),
+        );
+        let summary = report(&out, &dest).unwrap();
+        assert_eq!(
+            summary.incomplete, 0,
+            "a busy repeat is flagged, not dropped"
+        );
+        let rows = table(&dest.join("confirmations.csv"));
+        let repeats: Vec<_> = rows.iter().filter(|r| r["scope"] == "repeat").collect();
+        assert_eq!(repeats.len(), 3);
+        let busy: Vec<_> = repeats.iter().map(|r| r["busy_after"].as_str()).collect();
+        assert_eq!(busy, ["false", "true", "false"]);
+        assert!(repeats.iter().all(|r| r["max_load"] == "2"));
+        let range = rows.iter().find(|r| r["scope"] == "cell").unwrap();
+        assert_eq!(range["busy_after_repeats"], "1");
+        assert_eq!(range["repeats"], "3");
+        let text = summary_text(&dest);
+        let confirmation = text
+            .split("## Confirmation of candidate cells")
+            .nth(1)
+            .unwrap();
+        let line = confirmation
+            .lines()
+            .find(|l| l.starts_with(&format!("| {} | 3/3 |", cell.id())))
+            .unwrap();
+        let cells: Vec<_> = line.split('|').map(str::trim).collect();
+        assert_eq!(cells[10], "1", "busy-after count of the cell: {line}");
+        assert!(text.contains("`busy after`"), "defined in the summary");
+    }
+
+    #[test]
+    fn a_repeat_made_by_another_compiler_or_host_is_flagged() {
+        let out = temp();
+        let dest = out.join("report");
+        let cell = cell(Profile::ZipfUniform, 8, 10);
+        confirmed_out(&out, &cell, 2);
+        rewrite_manifest(
+            &out,
+            "confirm",
+            &confirm_key(&cell, 0),
+            &CONFIRM_REPEAT_ARTIFACTS,
+            |m| {
+                let initial = m.initial_run.as_mut().unwrap();
+                initial.runner_rustc = "other rustc".into();
+                initial.hardware.cpu = "other cpu".into();
+            },
+        );
+        report(&out, &dest).unwrap();
+        let rows = table(&dest.join("confirmations.csv"));
+        let repeats: Vec<_> = rows.iter().filter(|r| r["scope"] == "repeat").collect();
+        assert_eq!(repeats[0]["initial_build_differs"], "hardware;runner_rustc");
+        assert_eq!(repeats[1]["initial_build_differs"], "");
+        let range = rows.iter().find(|r| r["scope"] == "cell").unwrap();
+        assert_eq!(range["initial_build_differs"], "hardware;runner_rustc");
+        let text = summary_text(&dest);
+        let line = text
+            .lines()
+            .find(|l| l.starts_with(&format!("| {} | 2/2 |", cell.id())))
+            .unwrap();
+        assert!(line.contains("hardware;runner_rustc"), "{line}");
+    }
+
+    #[test]
+    fn provenance_covers_churn_and_confirm_manifests() {
+        let out = temp();
+        let dest = out.join("report");
+        let cell = cell(Profile::ZipfUniform, 8, 10);
+        confirmed_out(&out, &cell, 1);
+        assert!(summary_text(&{
+            report(&out, &dest).unwrap();
+            dest.clone()
+        })
+        .contains("- extension sha256: extension\n"));
+        rewrite_manifest(
+            &out,
+            "confirm",
+            &confirm_key(&cell, 0),
+            &CONFIRM_REPEAT_ARTIFACTS,
+            |m| m.extension_sha256 = Some("other extension".into()),
+        );
+        let churn_key = ExpectedCase {
+            rounds: 3,
+            ..key("churn", &cell, 42)
+        };
+        rewrite_manifest(&out, "churn", &churn_key, &INVERSE_ARTIFACTS, |m| {
+            m.source_sha256 = "other source".into();
+            m.hardware.host = "other host".into();
+            m.hardware.memory = "other memory".into();
+        });
+        report(&out, &dest).unwrap();
+        let text = summary_text(&dest);
+        assert!(
+            text.contains("- extension sha256 (MIXED): extension; other extension\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("- source sha256 (MIXED): other source; source\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("- host (MIXED): host; other host\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("- memory (MIXED): memory; other memory\n"),
+            "{text}"
+        );
+        assert!(text.contains("- cpu: cpu\n"), "{text}");
+    }
+
+    #[test]
+    fn provenance_reports_the_smoke_gate_and_a_dirty_worktree() {
+        let out = temp();
+        let dest = out.join("report");
+        let cell = cell(Profile::ZipfHot, 8, 10);
+        matrix(
+            &out,
+            &[
+                (&cell, 1, run_of(10.0, 12.0, 5.0), true),
+                (&cell, 42, run_of(10.0, 12.0, 5.0), true),
+            ],
+        );
+        report(&out, &dest).unwrap();
+        let text = summary_text(&dest);
+        assert!(text.contains("- smoke gate: not_applicable\n"), "{text}");
+        assert!(text.contains("- tracked source changes: no\n"), "{text}");
+        // Untracked files (for example this tooling's own notes) are not source changes.
+        rewrite_manifest(&out, "run", &key("run", &cell, 1), &RUN_ARTIFACTS, |m| {
+            m.provenance.worktree_status = "?? notes/\n".into();
+        });
+        report(&out, &dest).unwrap();
+        assert!(summary_text(&dest).contains("- tracked source changes: no\n"));
+        rewrite_manifest(&out, "run", &key("run", &cell, 42), &RUN_ARTIFACTS, |m| {
+            m.provenance.smoke_gate = SmokeGate::Skipped;
+            m.provenance.worktree_status = " M crates/x.rs\n?? notes/\n".into();
+        });
+        report(&out, &dest).unwrap();
+        let text = summary_text(&dest);
+        assert!(
+            text.contains("- smoke gate (MIXED, SKIPPED): not_applicable; skipped\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("- tracked source changes (MIXED, DIRTY): no; yes\n"),
+            "{text}"
+        );
+    }
+
     #[test]
     fn space_ratio_pairs_same_checkpoint_keys() {
         let out = temp();
@@ -2053,6 +2486,20 @@ mod tests {
         near(number(&rows[0], "matched_hot_row_share"), 30.0 / 40.0);
         assert_eq!(rows[1]["round"], "1");
         assert_eq!(rows[0]["rows_changed"], "1");
+        // The section 3 metrics and the selection label come with every row.
+        assert_eq!(rows[0]["target_selection"], "group_then_row");
+        for (column, expected) in [
+            ("distinct_primary_keys", "10"),
+            ("repeated_primary_key_touches", "0"),
+            ("repeated_existing_targets", "0"),
+            ("matched_partners_min", "1"),
+            ("matched_partners_max", "8"),
+            ("matched_partners_total", "50"),
+            ("target_groups", "2"),
+            ("max_target_group_selections", "5"),
+        ] {
+            assert_eq!(rows[0][column], expected, "{column}");
+        }
     }
 
     #[test]
@@ -2247,10 +2694,9 @@ mod tests {
         report(&out, &dest).unwrap();
         let text = fs::read_to_string(dest.join("summary.md")).unwrap();
         assert!(text.contains("- config sha256: config\n"));
-        let path = case_path(&out, "run", &key("run", &cell, 42)).join("manifest.json");
-        let mut manifest: Manifest = crate::read_json(&path).unwrap();
-        manifest.config_sha256 = "other".into();
-        write_json(&path, &manifest).unwrap();
+        rewrite_manifest(&out, "run", &key("run", &cell, 42), &RUN_ARTIFACTS, |m| {
+            m.config_sha256 = "other".into();
+        });
         report(&out, &dest).unwrap();
         let text = fs::read_to_string(dest.join("summary.md")).unwrap();
         assert!(text.contains("- config sha256 (MIXED): config; other\n"));
@@ -2270,6 +2716,7 @@ mod tests {
             "Fastest complete recompute",
             "Confirmation candidate",
             "no_maintenance",
+            "existing-row targets are chosen group-first (group by profile, then a uniform live row in it); uniform group selection is not uniform row selection",
         ] {
             assert!(text.contains(phrase), "{phrase}");
         }
