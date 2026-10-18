@@ -1,6 +1,6 @@
 //! Untimed, independent diagnostics for the two fixed M2a query shapes.
 //!
-//! The extension's format-5 codec is deliberately private. This reader pins its
+//! The extension's format-6 codec is deliberately private. This reader pins its
 //! documented layout and the exact persisted plan, then compares decoded rows
 //! against SQL projections of the live bases. It shares no incremental code.
 
@@ -269,7 +269,7 @@ fn verify_layout(conn: &Connection, join: bool, view: &str) -> Result<Vec<String
     } else {
         "aggregate([0],[count,sum(1)],project([1,2],scan(6:events,[0,1,2])))"
     };
-    if format != 5 || plan != expected_plan {
+    if format != 6 || plan != expected_plan {
         return Err(format!(
             "M2a unsupported persisted diagnostic layout: format={format}, plan={plan}"
         ));
@@ -492,7 +492,7 @@ fn expected_arrangements(
 
 /// Spec §5 (amended 2026-10-17): pending deltas and replacement candidates
 /// must be empty. The stage table may hold exactly the last applied batch,
-/// marked by one `apply` sentinel, because format 5 empties it at the start of
+/// marked by one `apply` sentinel, because format 6 empties it at the start of
 /// the next apply. Its rows are retained space, not pending work.
 fn validate_consumed(snapshot: &Snapshot) -> Result<()> {
     if snapshot

@@ -150,29 +150,29 @@ fn a_tracked_table_whose_capture_is_broken_refuses_a_new_view() {
     );
 }
 
-/// Phase 6 spec §5: format 5 adds the progress index. A database in format 4
-/// (the format Phase 5 wrote) is refused like any other older format, with no
-/// migration since this is an alpha, and its broken view can still be
-/// dropped.
+/// M2c spec §3: format 6 declares every value column with no type. A database
+/// in format 5 (the format alpha.5 wrote) is refused like any other older
+/// format, with no migration since this is an alpha, and its broken view can
+/// still be dropped.
 #[test]
 fn a_database_in_an_older_format_is_refused_by_create_and_by_connect() {
-    let file = TempFile::new("format4");
+    let file = TempFile::new("format5");
     {
         let c = open_with_extension(Some(file.path())).unwrap();
         setup(&c);
         create(&c, "sums", SUMS).unwrap();
-        c.execute_batch("UPDATE __ivm_meta SET value = 4; UPDATE __ivm_view SET format = 4;")
+        c.execute_batch("UPDATE __ivm_meta SET value = 5; UPDATE __ivm_view SET format = 5;")
             .unwrap();
-        let err = create(&c, "counts", COUNTS).expect_err("format 4");
+        let err = create(&c, "counts", COUNTS).expect_err("format 5");
         assert!(
-            err.to_string().contains("format 4") && err.to_string().contains("reads format 5"),
+            err.to_string().contains("format 5") && err.to_string().contains("reads format 6"),
             "{err}"
         );
     }
     let c = open_with_extension(Some(file.path())).unwrap();
-    let err = c.execute_batch("SELECT * FROM sums").expect_err("format 4");
+    let err = c.execute_batch("SELECT * FROM sums").expect_err("format 5");
     assert!(
-        err.to_string().contains("format 4") && err.to_string().contains("reads format 5"),
+        err.to_string().contains("format 5") && err.to_string().contains("reads format 6"),
         "{err}"
     );
     c.execute_batch("DROP TABLE sums").unwrap();

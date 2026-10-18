@@ -40,7 +40,14 @@ use crate::state::{BufferedArrangement, Pending};
 /// Format 5 (Phase 6 spec §5) adds the index on `__ivm_progress`'s `tbl`, so
 /// the apply's garbage collection stops reading every view's watermark. A
 /// format-4 database has no such index, and is refused, not migrated.
-pub const FORMAT: i64 = 5;
+///
+/// Format 6 (M2c spec §3) declares every value column of the delta, pend,
+/// stage, state and output tables, and the virtual table's output columns,
+/// with no type, so SQLite stores each value with its storage class
+/// unchanged; the row encoding gains the REAL and BLOB tags, and the
+/// aggregate state its M2c layout. A format-5 database is refused, not
+/// migrated.
+pub const FORMAT: i64 = 6;
 
 /// The column of the view's output table that holds each row's weight.
 const WEIGHT: &str = "__w";
@@ -174,13 +181,6 @@ fn column_list(schema: &Schema, prefix: &str) -> String {
         .join(", ")
 }
 
-fn sql_type(column: &ivmlite_core::Column) -> &'static str {
-    match column.ty {
-        ivmlite_core::ColumnType::Integer => "INTEGER",
-        ivmlite_core::ColumnType::Text => "TEXT",
-    }
-}
-
 /// Everything the capture triggers depend on (Phase 3b spec §3): the
 /// columns' names and types in order, whether the table is WITHOUT ROWID,
 /// and every unique index — its key columns with collation, `NOT NULL` and
@@ -192,10 +192,14 @@ fn sql_type(column: &ivmlite_core::Column) -> &'static str {
 /// column types can compile to the same plan, since the plan names columns
 /// by position only.
 fn shape(schema: &Schema, capture: &CaptureInfo) -> String {
+    let ty = |c: &ivmlite_core::Column| match c.ty {
+        ivmlite_core::ColumnType::Integer => "INTEGER",
+        ivmlite_core::ColumnType::Text => "TEXT",
+    };
     let columns: Vec<String> = schema
         .columns
         .iter()
-        .map(|c| format!("{} {}", quote(&c.name), sql_type(c)))
+        .map(|c| format!("{} {}", quote(&c.name), ty(c)))
         .collect();
     let mut keys: Vec<String> = capture
         .unique_keys
@@ -255,11 +259,7 @@ pub fn declaration(name: &str, view: &CompiledView) -> Result<String> {
             c.name
         ));
     }
-    let columns: Vec<String> = view
-        .columns
-        .iter()
-        .map(|c| format!("{} {}", quote(&c.name), sql_type(c)))
-        .collect();
+    let columns: Vec<String> = view.columns.iter().map(|c| quote(&c.name)).collect();
     Ok(format!(
         "CREATE TABLE x({}, {} HIDDEN)",
         columns.join(", "),
@@ -687,11 +687,7 @@ fn capture_triggers(schema: &Schema, capture: &CaptureInfo, fingerprint: &Finger
 fn track(conn: &Connection, schema: &Schema) -> Result<()> {
     let t = &schema.table;
     let capture = SqliteCatalog { conn }.capture(t)?;
-    let defs: Vec<String> = schema
-        .columns
-        .iter()
-        .map(|c| format!("{} {}", quote(&c.name), sql_type(c)))
-        .collect();
+    let defs: Vec<String> = schema.columns.iter().map(|c| quote(&c.name)).collect();
     let defs = defs.join(", ");
     // AUTOINCREMENT: once Phase 3b's GC deletes consumed deltas, a reused
     // `seq` would fall below a watermark. The delta table's own columns are
@@ -910,11 +906,7 @@ fn create_out_table(conn: &Connection, name: &str, view: &CompiledView) -> Resul
             "a result column is named {WEIGHT}, which ivmlite reserves"
         ));
     }
-    let defs: Vec<String> = view
-        .columns
-        .iter()
-        .map(|c| format!("{} {}", quote(&c.name), sql_type(c)))
-        .collect();
+    let defs: Vec<String> = view.columns.iter().map(|c| quote(&c.name)).collect();
     let cols: Vec<String> = view.columns.iter().map(|c| quote(&c.name)).collect();
     // Non-unique (spec §4): v0's root aggregate makes output rows distinct,
     // but the apply trigger's semantics are per-copy — one `out-` removes
@@ -1060,12 +1052,7 @@ fn create_stage(
     let out = quote(&out_table(name));
     let progress = quote(PROGRESS);
     let n = view.columns.len();
-    let defs: Vec<String> = view
-        .columns
-        .iter()
-        .enumerate()
-        .map(|(i, c)| format!("c{i} {}", sql_type(c)))
-        .collect();
+    let defs: Vec<String> = (0..n).map(|i| format!("c{i}")).collect();
     let cols: Vec<String> = view.columns.iter().map(|c| quote(&c.name)).collect();
     // Phase 5 spec §4: the trigger fires once, when the arming `UPDATE` turns
     // the sentinel into `apply`, and each statement of its body applies every
@@ -1146,7 +1133,7 @@ fn create_stage(
     exec(
         conn,
         &format!(
-            "CREATE TABLE {}(op TEXT NOT NULL, arr INTEGER, key BLOB, val BLOB, w INTEGER,
+            "CREATE TABLE {}(op TEXT NOT NULL, arr INTEGER, key, val, w INTEGER,
                  tbl TEXT, seq INTEGER, {});
              CREATE TRIGGER {} AFTER UPDATE OF op ON {stage}
                  WHEN NEW.op = 'apply'
@@ -1474,7 +1461,7 @@ pub fn create(conn: &Rc<Connection>, name: &str, sql: &str) -> Result<(CompiledV
         exec(
             conn,
             &format!(
-                "CREATE TABLE {}(key BLOB NOT NULL, val BLOB NOT NULL, w INTEGER NOT NULL,
+                "CREATE TABLE {}(key NOT NULL, val NOT NULL, w INTEGER NOT NULL,
                      PRIMARY KEY(key, val)) WITHOUT ROWID",
                 main_qualified(&state_table(name, *id))
             ),
