@@ -163,20 +163,29 @@ impl Catalog for SqliteCatalog<'_> {
                 ))
             })
             .map_err(err)?;
-        let mut columns = Vec::new();
-        for row in rows {
-            let (column, ty, not_null, pk) = row.map_err(err)?;
-            let ty_affinity = affinity(&ty, strict);
-            // An INTEGER PRIMARY KEY is the rowid and can never be NULL; it is
-            // an alias only when the declared type is exactly `INTEGER`.
-            let rowid = pk == 1 && ty.eq_ignore_ascii_case("INTEGER");
-            columns.push(Column {
-                name: column,
-                ty: ty_affinity,
-                nullable: !not_null && !rowid,
-            });
-        }
+        let rows: Vec<(String, String, bool, i64)> =
+            rows.collect::<rusqlite::Result<_>>().map_err(err)?;
         let capture = self.capture(&declared).map_err(CatalogError)?;
+        // `nullable` is informational (it is not what the capture triggers
+        // rely on). A rowid table's `INTEGER PRIMARY KEY` is the rowid, and
+        // never NULL, only when it is the sole key column and not `DESC`;
+        // SQLite then creates no `pk` index for it. A composite or `DESC`
+        // key, or one declared `INT`, accepts NULL in a rowid table (measured),
+        // and the primary key columns of a STRICT or `WITHOUT ROWID` table are
+        // reported `NOT NULL`.
+        let has_pk_index = capture.unique_keys.iter().any(|k| k.primary);
+        let columns: Vec<Column> = rows
+            .into_iter()
+            .map(|(name, declared_type, not_null, pk)| {
+                let rowid =
+                    pk == 1 && declared_type.eq_ignore_ascii_case("INTEGER") && !has_pk_index;
+                Column {
+                    name,
+                    ty: affinity(&declared_type, strict),
+                    nullable: !not_null && !rowid,
+                }
+            })
+            .collect();
         for key in &capture.unique_keys {
             let index = &key.index;
             if key.partial {

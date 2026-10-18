@@ -191,19 +191,21 @@ fn column_list(schema: &Schema, prefix: &str) -> String {
 /// those after a schema change). A table dropped and recreated with other
 /// column types can compile to the same plan, since the plan names columns
 /// by position only.
-fn shape(schema: &Schema, capture: &CaptureInfo) -> String {
+fn shape(schema: &Schema, capture: &CaptureInfo) -> Result<String> {
+    // The columns and the declared types come from two catalog reads; if the
+    // table changed between them, the table has changed shape.
+    if capture.declared_types.len() != schema.columns.len() {
+        return Err(format!(
+            "base table {} changed shape since it was first tracked \
+             (its columns changed while the catalog was being read)",
+            schema.table
+        ));
+    }
     let columns: Vec<String> = schema
         .columns
         .iter()
-        .enumerate()
-        .map(|(i, c)| {
-            format!(
-                "{} {} {}",
-                quote(&c.name),
-                capture.declared_types[i],
-                c.ty.name()
-            )
-        })
+        .zip(&capture.declared_types)
+        .map(|(c, declared)| format!("{} {} {}", quote(&c.name), declared, c.ty.name()))
         .collect();
     let mut keys: Vec<String> = capture
         .unique_keys
@@ -232,12 +234,12 @@ fn shape(schema: &Schema, capture: &CaptureInfo) -> String {
         })
         .collect();
     keys.sort();
-    format!(
+    Ok(format!(
         "{}; without rowid: {}; unique: [{}]",
         columns.join(", "),
         capture.without_rowid,
         keys.join("; ")
-    )
+    ))
 }
 
 /// The `CREATE TABLE` statement SQLite is given for the virtual table: the
@@ -712,7 +714,7 @@ fn track(conn: &Connection, schema: &Schema) -> Result<()> {
             "INSERT INTO {}(tbl, shape) VALUES (?1, ?2)",
             main_qualified(TRACKED)
         ),
-        params![t, shape(schema, &capture)],
+        params![t, shape(schema, &capture)?],
     )
     .map_err(sql_error)?;
     Ok(())
@@ -847,7 +849,7 @@ fn judge_capture(
     schema: &Schema,
     capture: &CaptureInfo,
 ) -> Result<()> {
-    let now = shape(schema, capture);
+    let now = shape(schema, capture)?;
     if now != recorded {
         return Err(format!(
             "base table {table} changed shape since it was first tracked \

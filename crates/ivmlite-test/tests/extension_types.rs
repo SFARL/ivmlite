@@ -318,6 +318,22 @@ fn every_declared_type_is_accepted_and_one_and_one_point_zero_are_one_group() {
         count(&c, "SELECT count(*) FROM (SELECT k FROM t GROUP BY k)"),
         2
     );
+    // A STRICT `ANY` column keeps every value's own storage class, and its
+    // groups keep them too.
+    c.execute_batch(
+        "INSERT INTO s VALUES (1, 1), (1.0, 2), ('1', 3), (x'01', 4), (NULL, 5), (2.5, 6), (2.5, 7)",
+    )
+    .unwrap();
+    refresh(&c, "h").unwrap();
+    assert_eq!(
+        rows(&c, "SELECT typeof(k), k, \"COUNT(*)\" FROM h"),
+        rows(
+            &c,
+            "SELECT 'real', 1.0, 2 UNION ALL SELECT 'text', '1', 1 UNION ALL \
+             SELECT 'blob', x'01', 1 UNION ALL SELECT 'null', NULL, 1 UNION ALL \
+             SELECT 'real', 2.5, 2"
+        )
+    );
 }
 
 #[test]

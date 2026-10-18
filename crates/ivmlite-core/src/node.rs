@@ -751,6 +751,45 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_real_group_key_from_the_right_side_of_a_join_is_real_while_a_real_row_is_live() {
+        // M2c spec §2 through Join → Project → Aggregate: grouping by a right
+        // table's column, `Int(5)` and `Real(5.0)` are one group whose key
+        // outputs as REAL exactly while a REAL row is live.
+        let plan = Plan::Aggregate {
+            input: Box::new(Plan::Project {
+                input: Box::new(join_plan()),
+                columns: vec![3],
+            }),
+            group_by: vec![0],
+            aggs: vec![count_agg()],
+        };
+        let mut n = Node::build(&plan, &mut crate::fresh_mem_arrangement).unwrap();
+        let right = |g: Value| row(vec![Value::Text("a".into()), g]);
+        let out = |key: Value, count: i64, w: i64| (row(vec![key, int(count)]), w);
+
+        n.delta("t0", &ZSet::from_rows([(right(int(1)), 1)]))
+            .unwrap();
+        assert_eq!(
+            n.delta("t1", &ZSet::from_rows([(right(int(5)), 1)]))
+                .unwrap(),
+            ZSet::from_rows([out(int(5), 1, 1)]),
+            "an INTEGER row alone gives an INTEGER key"
+        );
+        assert_eq!(
+            n.delta("t1", &ZSet::from_rows([(right(Value::Real(5.0)), 1)]))
+                .unwrap(),
+            ZSet::from_rows([out(int(5), 1, -1), out(Value::Real(5.0), 2, 1)]),
+            "Real(5.0) joins the group of Int(5), and the key becomes REAL"
+        );
+        assert_eq!(
+            n.delta("t1", &ZSet::from_rows([(right(Value::Real(5.0)), -1)]))
+                .unwrap(),
+            ZSet::from_rows([out(Value::Real(5.0), 2, -1), out(int(5), 1, 1)]),
+            "the key turns back to INTEGER once its last REAL row is retracted"
+        );
+    }
+
     fn scan(table: &str) -> Plan {
         Plan::Scan {
             table: table.into(),
