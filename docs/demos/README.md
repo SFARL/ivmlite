@@ -8,9 +8,9 @@ The [real-world demo roadmap](real-world-demo-roadmap.md) records the next
 source-backed candidates, their evidence levels, current ivmlite boundaries,
 and the order in which they were implemented.
 
-Twelve executable workloads now use the real extension,
+Fourteen executable workloads now use the real extension,
 deterministic large fixtures and SQLite recomputation oracles. Most exercise
-mixed mutations; the dark-xray ledger cases model append-only events:
+mixed mutations; the dark-xray and CPA ledger cases model append-only events:
 
 - [FluxFlow grouped-flow rollup](fluxflow.md), including a hand-written trigger
   baseline;
@@ -23,7 +23,9 @@ mixed mutations; the dark-xray ledger cases model append-only events:
 - [Phoenix project token rollup](phoenix.md);
 - [PocketBase author counts](pocketbase.md);
 - [OpenWhispr speaker counts and word sums](openwhispr.md);
-- [dark-xray period and lifetime traffic totals](dark-xray.md).
+- [dark-xray period and lifetime traffic totals](dark-xray.md);
+- [CPA Manager Plus hourly core and red full-summary gates](cpa-manager-plus.md);
+- [StoneHub/jot session counts and red complete-session gates](jot.md).
 
 All except FluxFlow share one selectable benchmark executable:
 
@@ -45,6 +47,8 @@ cargo run --release --locked -p ivmlite-test --example demand_case_bench -- pock
 cargo run --release --locked -p ivmlite-test --example demand_case_bench -- openwhispr_speaker_words
 cargo run --release --locked -p ivmlite-test --example demand_case_bench -- dark_xray_period_usage
 cargo run --release --locked -p ivmlite-test --example demand_case_bench -- dark_xray_lifetime_usage
+cargo run --release --locked -p ivmlite-test --example demand_case_bench -- cpa_hourly_core
+cargo run --release --locked -p ivmlite-test --example demand_case_bench -- jot_session_counts
 ```
 
 For the five new cases, `rows` means ledger events (Zenod), assets (Nicti),
@@ -58,6 +62,10 @@ The OpenWhispr case has 100 synthetic segments per note and checks a stored
 word count against the source's text expression after mixed edits.
 The dark-xray cases use the issue's 9,524,296-event scale by default and check
 the stored total against the source's `up_bytes + down_bytes` expression.
+CPA uses a fixed-hour, stored-column slice of its core totals; jot maintains
+only ambient-session counts. Their complete source-shaped queries are kept as
+opt-in red acceptance tests in
+[`capability_red.rs`](../../crates/ivmlite-test/tests/capability_red.rs).
 
 Each case records its public evidence, exact adaptation, unsupported behavior,
 run command and any raw output. These are synthetic development
@@ -92,8 +100,8 @@ Phase 4 benchmark protocol
   7. verify the final state, and record `database_kib`.
 
   Every batch follows the same operation schedule, so one run applies eleven.
-  Mixed-mutation cases touch disjoint row ranges; dark-xray only appends new
-  event IDs. The state is verified after the warm-up and after
+  Mixed-mutation cases touch disjoint row ranges; dark-xray and CPA only append
+  new event IDs. The state is verified after the warm-up and after
   the last measured batch, outside the timers, but not between measured
   batches. Verification compares multisets of rows: duplicates count, and the
   integer 5 differs from the real 5.0. A mismatch aborts the run.
