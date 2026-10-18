@@ -9,7 +9,8 @@ mod common;
 use common::*;
 
 use ivmlite_test::demand_cases::{
-    DemandCase, KENER, NICTI, NOOP, OPENWHISPR, PHOENIX, POCKETBASE, POSTIO, ZCASH, ZENOD,
+    DemandCase, DARK_XRAY_LIFETIME, DARK_XRAY_PERIOD, KENER, NICTI, NOOP, OPENWHISPR, PHOENIX,
+    POCKETBASE, POSTIO, ZCASH, ZENOD,
 };
 use ivmlite_test::demo_bench::{measured_rounds, Workload, ROUNDS};
 use ivmlite_test::fluxflow::{
@@ -293,6 +294,51 @@ fn pocketbase_counts_retract_the_last_book_of_an_author() {
 #[test]
 fn openwhispr_speaker_rollup_tracks_segment_and_note_changes() {
     assert_demand_case_tracks_mixed_changes(&OPENWHISPR, 1);
+}
+
+#[test]
+fn dark_xray_period_and_lifetime_totals_track_immutable_arrivals() {
+    for (case, keys) in [(&DARK_XRAY_PERIOD, 2), (&DARK_XRAY_LIFETIME, 1)] {
+        assert_demand_case_tracks_mixed_changes(case, keys);
+    }
+}
+
+#[test]
+fn dark_xray_views_match_the_original_byte_expression() {
+    let c = open_with_extension(None).unwrap();
+    c.execute_batch(DARK_XRAY_PERIOD.ddl).unwrap();
+    DARK_XRAY_PERIOD.seed(&c, 1_200).unwrap();
+    for case in [&DARK_XRAY_PERIOD, &DARK_XRAY_LIFETIME] {
+        create(&c, case.view_name, case.view_sql).unwrap();
+    }
+
+    for round in 0..=ROUNDS {
+        if round > 0 {
+            DARK_XRAY_PERIOD
+                .apply_mixed_batch(&c, 1_200, 40, round - 1)
+                .unwrap();
+            refresh(&c, DARK_XRAY_PERIOD.view_name).unwrap();
+            refresh(&c, DARK_XRAY_LIFETIME.view_name).unwrap();
+        }
+        assert_eq!(
+            rows(&c, "SELECT * FROM dark_xray_period_totals"),
+            rows(
+                &c,
+                "SELECT owner, period, SUM(up_bytes + down_bytes)
+                      FROM traffic_ledger GROUP BY owner, period"
+            ),
+            "period round {round}"
+        );
+        assert_eq!(
+            rows(&c, "SELECT * FROM dark_xray_lifetime_totals"),
+            rows(
+                &c,
+                "SELECT owner, SUM(up_bytes + down_bytes)
+                      FROM traffic_ledger GROUP BY owner"
+            ),
+            "lifetime round {round}"
+        );
+    }
 }
 
 #[test]
