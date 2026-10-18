@@ -7,8 +7,9 @@ use common::*;
 use ivmlite_core::Value;
 use ivmlite_test::open_with_extension;
 use rusqlite::types::Value as Sql;
-use rusqlite::Connection;
+use rusqlite::{ffi, Connection};
 use std::collections::BTreeMap;
+use std::ffi::CStr;
 
 /// `pragma_table_info(<table>)`'s `(name, type)` rows, in column order.
 fn declared(c: &Connection, table: &str) -> Vec<(String, String)> {
@@ -360,4 +361,180 @@ fn a_sum_over_a_real_column_is_the_exact_sum_rounded_once() {
         one_row(&c, "SELECT * FROM v"),
         vec![Sql::Text("a".into()), Sql::Real(0.6), Sql::Real(0.2)]
     );
+}
+
+#[test]
+fn min_and_max_survive_retracting_the_current_extreme() {
+    let c = open_with_extension(None).unwrap();
+    c.execute_batch(
+        "CREATE TABLE t(k TEXT, v); INSERT INTO t VALUES ('a', 5), ('a', 3), ('a', 9), ('b', 'x');",
+    )
+    .unwrap();
+    let sql = "SELECT k, MIN(v), MAX(v), COUNT(*) FROM t GROUP BY k";
+    create(&c, "m", sql).unwrap();
+    assert_matches_oracle(&c, "m", sql);
+    c.execute_batch("DELETE FROM t WHERE v = 3; DELETE FROM t WHERE v = 9;")
+        .unwrap();
+    refresh(&c, "m").unwrap();
+    assert_matches_oracle(&c, "m", sql);
+    // Retract the current minimum and add smaller ones in the same refresh:
+    // the read must see the refresh's own pending writes.
+    c.execute_batch("DELETE FROM t WHERE v = 5; INSERT INTO t VALUES ('a', 1), ('a', 2);")
+        .unwrap();
+    refresh(&c, "m").unwrap();
+    assert_matches_oracle(&c, "m", sql);
+    c.execute_batch("INSERT INTO t VALUES ('c', NULL)").unwrap();
+    refresh(&c, "m").unwrap();
+    assert_matches_oracle(&c, "m", sql);
+}
+
+#[test]
+fn min_and_max_order_across_storage_classes() {
+    let c = open_with_extension(None).unwrap();
+    c.execute_batch(
+        "CREATE TABLE t(k TEXT, v);
+         INSERT INTO t VALUES ('a', X'00'), ('a', 'text'), ('a', 2.5), ('a', 2), ('a', NULL);",
+    )
+    .unwrap();
+    let sql = "SELECT k, MIN(v), MAX(v) FROM t GROUP BY k";
+    create(&c, "m", sql).unwrap();
+    for delete in ["v = 2", "v = 2.5", "v = 'text'"] {
+        assert_matches_oracle(&c, "m", sql);
+        c.execute_batch(&format!("DELETE FROM t WHERE {delete}"))
+            .unwrap();
+        refresh(&c, "m").unwrap();
+    }
+    assert_matches_oracle(&c, "m", sql);
+}
+
+#[test]
+fn a_numeric_tie_gives_min_the_integer_and_max_the_real() {
+    // M2c spec §4 "Ties" for MIN; amendment 1 for MAX.
+    let c = open_with_extension(None).unwrap();
+    c.execute_batch("CREATE TABLE t(k TEXT, v); INSERT INTO t VALUES ('a', 1.0), ('a', 1);")
+        .unwrap();
+    create(&c, "m", "SELECT k, MIN(v), MAX(v) FROM t GROUP BY k").unwrap();
+    assert_eq!(
+        one_row(&c, "SELECT typeof(\"MIN(v)\"), typeof(\"MAX(v)\") FROM m"),
+        vec![Sql::Text("integer".into()), Sql::Text("real".into())]
+    );
+}
+
+/// The SQL text of every statement currently prepared on `c`'s handle that
+/// contains `needle`. The extension prepares and caches its statements on the
+/// same handle (Phase 6 spec §3), so this reads the engine's own text.
+fn prepared_statements(c: &Connection, needle: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    // SAFETY: `c`'s own live handle, used from this thread only;
+    // `sqlite3_next_stmt` walks its statement list without changing it, and
+    // `sqlite3_sql` returns the text of a statement that stays prepared here.
+    unsafe {
+        let mut stmt = ffi::sqlite3_next_stmt(c.handle(), std::ptr::null_mut());
+        while !stmt.is_null() {
+            let sql = CStr::from_ptr(ffi::sqlite3_sql(stmt))
+                .to_string_lossy()
+                .into_owned();
+            if sql.contains(needle) {
+                out.push(sql);
+            }
+            stmt = ffi::sqlite3_next_stmt(c.handle(), stmt);
+        }
+    }
+    out.sort();
+    out
+}
+
+#[test]
+fn the_extreme_is_read_through_the_state_tables_primary_key() {
+    // M2c spec §6: the plan of the exact statement the engine prepared for
+    // the read (its text is pinned by `state::first_sql`'s own test).
+    let c = open_with_extension(None).unwrap();
+    c.execute_batch("CREATE TABLE t(k TEXT, v); INSERT INTO t VALUES ('a', 1)")
+        .unwrap();
+    create(&c, "m", "SELECT k, MIN(v), MAX(v) FROM t GROUP BY k").unwrap();
+    c.execute_batch("INSERT INTO t VALUES ('a', 2)").unwrap();
+    refresh(&c, "m").unwrap();
+    let tables: Vec<String> = rows(
+        &c,
+        "SELECT name FROM sqlite_schema WHERE name LIKE '__ivm_state_m_%_agg_extremum_%' ORDER BY name",
+    )
+    .into_iter()
+    .map(|r| match &r[0] {
+        Sql::Text(t) => t.clone(),
+        other => panic!("{other:?}"),
+    })
+    .collect();
+    assert_eq!(
+        tables,
+        [
+            "__ivm_state_m_0_agg_extremum_0",
+            "__ivm_state_m_0_agg_extremum_1"
+        ]
+    );
+    let reads = prepared_statements(&c, "_agg_extremum_");
+    // MIN (aggregate 0) reads ascending, MAX (aggregate 1) descending.
+    assert_eq!(reads.len(), 2, "{reads:?}");
+    assert!(
+        reads[0].contains(&tables[0]) && reads[0].ends_with("ORDER BY val"),
+        "{reads:?}"
+    );
+    assert!(
+        reads[1].contains(&tables[1]) && reads[1].ends_with("ORDER BY val DESC"),
+        "{reads:?}"
+    );
+    for sql in reads {
+        let plan: Vec<String> = c
+            .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+            .unwrap()
+            .query_map([Sql::Blob(vec![])], |r| r.get::<_, String>(3))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert!(
+            plan.iter().any(|d| d.contains("USING PRIMARY KEY (key=?)")),
+            "{sql}: {plan:?}"
+        );
+        assert!(
+            !plan.iter().any(|d| d.contains("TEMP B-TREE")),
+            "{sql}: {plan:?}"
+        );
+    }
+}
+
+#[test]
+fn min_over_a_join_sees_both_tables_changes_in_one_refresh() {
+    let c = open_with_extension(None).unwrap();
+    c.execute_batch(
+        "CREATE TABLE a(k TEXT, x); CREATE TABLE b(k TEXT, y);
+         INSERT INTO a VALUES ('p', 5), ('q', 1); INSERT INTO b VALUES ('p', 1), ('q', 2);",
+    )
+    .unwrap();
+    let sql = "SELECT a.k, MIN(a.x), MAX(b.y), MIN(b.y) FROM a JOIN b ON a.k = b.k GROUP BY a.k";
+    create(&c, "j", sql).unwrap();
+    c.execute_batch(
+        "INSERT INTO a VALUES ('p', 3); DELETE FROM a WHERE x = 5;
+         INSERT INTO b VALUES ('p', 7); DELETE FROM b WHERE y = 2;",
+    )
+    .unwrap();
+    refresh(&c, "j").unwrap();
+    assert_matches_oracle(&c, "j", sql);
+    // Both tables retract their current minimum of group `p` and add a
+    // smaller one, in the same refresh.
+    c.execute_batch(
+        "DELETE FROM a WHERE x = 3; INSERT INTO a VALUES ('p', 2);
+         DELETE FROM b WHERE y = 1; INSERT INTO b VALUES ('p', 0);",
+    )
+    .unwrap();
+    refresh(&c, "j").unwrap();
+    assert_matches_oracle(&c, "j", sql);
+}
+
+#[test]
+fn dropping_a_min_view_removes_its_extremum_tables() {
+    let c = open_with_extension(None).unwrap();
+    c.execute_batch("CREATE TABLE t(k TEXT, v)").unwrap();
+    let before = objects(&c);
+    create(&c, "m", "SELECT k, MIN(v) FROM t GROUP BY k").unwrap();
+    c.execute_batch("DROP TABLE m").unwrap();
+    assert_eq!(objects(&c), before);
 }

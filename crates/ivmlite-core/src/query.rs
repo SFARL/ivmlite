@@ -7,6 +7,8 @@ pub enum AggFn {
     Sum,
     Total,
     Avg,
+    Min,
+    Max,
 }
 
 impl AggFn {
@@ -17,6 +19,8 @@ impl AggFn {
             AggFn::Sum => "SUM",
             AggFn::Total => "TOTAL",
             AggFn::Avg => "AVG",
+            AggFn::Min => "MIN",
+            AggFn::Max => "MAX",
         }
     }
 }

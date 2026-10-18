@@ -146,6 +146,8 @@ pub fn view_query_to_sql(query: &ViewQuery, db: &Database) -> String {
             (AggFn::Sum, Some(i)) => format!("SUM({})", name(i)),
             (AggFn::Total, Some(i)) => format!("TOTAL({})", name(i)),
             (AggFn::Avg, Some(i)) => format!("AVG({})", name(i)),
+            (AggFn::Min, Some(i)) => format!("MIN({})", name(i)),
+            (AggFn::Max, Some(i)) => format!("MAX({})", name(i)),
             (func, None) => panic!("{func:?} must name a column"),
         });
     }

@@ -480,17 +480,23 @@ impl Named {
                 ..scope.column_at(i).clone()
             },
             // An aggregate's type is informational: what SQLite's function
-            // returns (M2c spec §4). SUM is INTEGER or REAL, so NUMERIC.
+            // returns (M2c spec §4). SUM is INTEGER or REAL, so NUMERIC; MIN
+            // and MAX return one of the argument's values, so its affinity.
             Output::Agg(agg) => Column {
                 name: self.name.clone(),
-                ty: match agg.func {
-                    AggFn::Count => ColumnType::Integer,
-                    AggFn::Sum => ColumnType::Numeric,
-                    AggFn::Total | AggFn::Avg => ColumnType::Real,
+                ty: match (agg.func, agg.column) {
+                    (AggFn::Count, _) => ColumnType::Integer,
+                    (AggFn::Sum, _) => ColumnType::Numeric,
+                    (AggFn::Total | AggFn::Avg, _) => ColumnType::Real,
+                    (AggFn::Min | AggFn::Max, Some(c)) => scope.column_at(c).ty,
+                    (AggFn::Min | AggFn::Max, None) => {
+                        unreachable!("`aggregate` gives MIN and MAX a column")
+                    }
                 },
-                // SUM and AVG over no non-NULL value are NULL (spec §6.1, M2c
-                // spec §4), and SUM, TOTAL and AVG over both infinities are
-                // NULL (M2c spec amendment 5); only COUNT is never NULL.
+                // SUM, AVG, MIN and MAX over no non-NULL value are NULL (spec
+                // §6.1, M2c spec §4), and SUM, TOTAL and AVG over both
+                // infinities are NULL (M2c spec amendment 5); only COUNT is
+                // never NULL.
                 nullable: agg.func != AggFn::Count,
             },
         }
@@ -591,10 +597,12 @@ fn aggregate(scope: &Scope, call: &Function) -> Result<Agg, SqlError> {
         "sum" => AggFn::Sum,
         "total" => AggFn::Total,
         "avg" => AggFn::Avg,
+        "min" => AggFn::Min,
+        "max" => AggFn::Max,
         _ => {
             return Err(unsupported(&format!(
-                "the function `{func_name}` (v0's aggregates are COUNT, SUM, TOTAL and AVG)"
-            )))
+            "the function `{func_name}` (v0's aggregates are COUNT, SUM, TOTAL, AVG, MIN and MAX)"
+        )))
         }
     };
     match (func, args.as_slice()) {
@@ -1112,8 +1120,8 @@ mod tests {
     #[test]
     fn the_new_aggregates_compile_with_sqlites_names_and_types() {
         let v = ok(
-            "SELECT region, COUNT(amount), SUM(region), TOTAL(amount), avg(amount) FROM orders \
-             GROUP BY region",
+            "SELECT region, COUNT(amount), SUM(region), TOTAL(amount), avg(amount), MIN(amount), \
+             max(region) FROM orders GROUP BY region",
         );
         let got: Vec<(String, ColumnType, bool)> = v
             .columns
@@ -1128,6 +1136,8 @@ mod tests {
                 ("SUM(region)".to_string(), ColumnType::Numeric, true),
                 ("TOTAL(amount)".to_string(), ColumnType::Real, true),
                 ("avg(amount)".to_string(), ColumnType::Real, true),
+                ("MIN(amount)".to_string(), ColumnType::Integer, true),
+                ("max(region)".to_string(), ColumnType::Text, true),
             ]
         );
     }
@@ -1164,7 +1174,6 @@ mod tests {
             ("SELECT region, amount + 1, COUNT(*) FROM orders GROUP BY region", "SELECT expression"),
             ("SELECT region, COUNT(DISTINCT amount) FROM orders GROUP BY region", "DISTINCT"),
             ("SELECT region, SUM(amount + 1) FROM orders GROUP BY region", "SUM over"),
-            ("SELECT region, MIN(amount) FROM orders GROUP BY region", "MIN"),
             ("SELECT region, SUM(amount) OVER () FROM orders GROUP BY region", "window"),
             ("SELECT COUNT(*), region FROM orders GROUP BY region", "after an aggregate"),
             ("SELECT region, region, COUNT(*) FROM orders GROUP BY region", "twice in the SELECT list"),

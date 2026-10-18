@@ -10,6 +10,7 @@ mod plan;
 mod query;
 mod row;
 mod schema;
+mod sortkey;
 #[cfg(test)]
 mod test_support;
 mod value;
@@ -29,5 +30,6 @@ pub use plan::{lower, lower_query, Plan, PlanError, ResolvedJoin, ResolvedView};
 pub use query::{Agg, AggFn, CmpOp, Join, Predicate, ViewQuery};
 pub use row::Row;
 pub use schema::{Column, ColumnType, Schema};
+pub use sortkey::{from_sort_key, sort_key};
 pub use value::Value;
 pub use zset::ZSet;

@@ -18,6 +18,22 @@ pub trait Arrangement {
     fn get(&self, key: &Row) -> Result<Vec<(Row, i64)>, StateError>;
     fn update(&mut self, key: &Row, val: &Row, weight_delta: i64) -> Result<(), StateError>;
     fn scan(&self) -> Result<Vec<(Row, Row, i64)>, StateError>;
+
+    /// The smallest live value under `key` in `Row` order, the largest when
+    /// `descending`; `None` when `key` has no value of positive weight.
+    ///
+    /// A MIN/MAX arrangement's values are `[Value::Blob(sort_key)]` rows,
+    /// whose `Row` order is byte order, which is `memcmp` (M2c spec §4). An
+    /// implementation over an indexed table overrides this to read through
+    /// the index instead of loading every value.
+    fn first(&self, key: &Row, descending: bool) -> Result<Option<Row>, StateError> {
+        let live = self
+            .get(key)?
+            .into_iter()
+            .filter(|(_, w)| *w > 0)
+            .map(|(v, _)| v);
+        Ok(if descending { live.max() } else { live.min() })
+    }
 }
 
 /// Operator state could not be read or written, or what was read is corrupt.
@@ -54,6 +70,9 @@ pub enum ArrangementRole {
     JoinRight,
     /// An aggregate's per-group state, keyed by the group key; see `AggState`.
     AggregateGroups,
+    /// A MIN or MAX's live values, keyed by the group key; the `usize` is the
+    /// aggregate's index in `aggs` (M2c spec §4).
+    AggregateExtremum(usize),
 }
 
 /// The provider `IncrementalEngine` passes to `Node::build`: every

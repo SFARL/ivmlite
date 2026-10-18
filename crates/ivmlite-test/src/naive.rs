@@ -173,7 +173,8 @@ impl Engine for NaiveRecompute {
             for (slot, agg) in acc.iter_mut().zip(&query.aggs) {
                 match (agg.func, agg.column) {
                     (AggFn::Count, None) => slot.0 += weight,
-                    (AggFn::Count, Some(_)) | (AggFn::Total | AggFn::Avg, _) => {
+                    (AggFn::Count, Some(_))
+                    | (AggFn::Total | AggFn::Avg | AggFn::Min | AggFn::Max, _) => {
                         unreachable!("not enumerated before M2c Task 11")
                     }
                     (AggFn::Sum, Some(col)) => {
@@ -198,7 +199,9 @@ impl Engine for NaiveRecompute {
                     AggFn::Count => Value::Int(total),
                     AggFn::Sum if non_null == 0 => Value::Null,
                     AggFn::Sum => Value::Int(total),
-                    AggFn::Total | AggFn::Avg => unreachable!("not enumerated before M2c Task 11"),
+                    AggFn::Total | AggFn::Avg | AggFn::Min | AggFn::Max => {
+                        unreachable!("not enumerated before M2c Task 11")
+                    }
                 });
             }
             out.update(Row::new(values), 1);

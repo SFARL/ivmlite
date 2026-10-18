@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    numeric_term, Agg, AggFn, Arrangement, ExactSum, NumericTerm, Row, StateError, Value, ZSet,
-    EXACT_BYTES,
+    from_sort_key, numeric_term, sort_key, Agg, AggFn, Arrangement, ExactSum, NumericTerm, Row,
+    StateError, Value, ZSet, EXACT_BYTES,
 };
 
 /// M2c spec §4: the refresh fails with this when a SUM over integers only
@@ -180,10 +180,11 @@ impl Acc {
 
 /// How many values `agg`'s accumulator stores (M2c spec §4): none for
 /// `COUNT(*)`, `[non_null]` for `COUNT(x)`, `[non_null, int_sum, approx]`
-/// for SUM, TOTAL and AVG.
+/// for SUM, TOTAL and AVG, and none for MIN and MAX, whose live values are in
+/// their own arrangement.
 fn width(agg: &Agg) -> usize {
     match (agg.func, agg.column) {
-        (AggFn::Count, None) => 0,
+        (AggFn::Count, None) | (AggFn::Min | AggFn::Max, _) => 0,
         (AggFn::Count, Some(_)) => 1,
         (AggFn::Sum | AggFn::Total | AggFn::Avg, _) => 3,
     }
@@ -359,11 +360,18 @@ impl GroupState {
     }
 
     /// The row the group emits in this state, or `None` when it has no rows.
+    /// `extremes` holds each MIN/MAX's current value, indexed like `aggs`
+    /// (`AggState::extreme_values`).
     ///
     /// # Errors
     /// `SUM_OVERFLOW` when a SUM over integers only ends outside `i64` (M2c
     /// spec §4).
-    fn output(&self, key: &Row, aggs: &[Agg]) -> Result<Option<Row>, StateError> {
+    fn output(
+        &self,
+        key: &Row,
+        aggs: &[Agg],
+        extremes: &[Option<Value>],
+    ) -> Result<Option<Row>, StateError> {
         if self.rows <= 0 {
             return Ok(None);
         }
@@ -378,8 +386,10 @@ impl GroupState {
                 other => other.clone(),
             })
             .collect();
-        for (acc, agg) in self.accs.iter().zip(aggs) {
+        for (i, (acc, agg)) in self.accs.iter().zip(aggs).enumerate() {
             values.push(match agg.func {
+                // M2c spec §4: NULL when the group has no non-NULL value.
+                AggFn::Min | AggFn::Max => extremes[i].clone().unwrap_or(Value::Null),
                 AggFn::Count => match agg.column {
                     None => Value::Int(self.rows),
                     Some(_) => Value::Int(acc.non_null),
@@ -459,10 +469,20 @@ fn decode_real_keys(value: &Value, keys: usize) -> Result<Vec<i64>, StateError> 
 /// are still in `state`. Pinned by
 /// `aggregate_retracts_across_two_batches_through_the_same_node` in `node.rs`
 /// and by `a_state_rebuilt_from_its_arrangement_retracts_what_the_old_one_emitted`.
+///
+/// Each MIN or MAX keeps its own arrangement in `extremes`, from the canonical
+/// group key to the multiset of its live non-NULL values as
+/// `[Value::Blob(sort_key)]` rows (M2c spec §4), and stores nothing in the
+/// group's row: MIN and MAX cannot be undone from a running value, so the
+/// extreme is read back with `Arrangement::first`.
 pub struct AggState {
     group_by: Vec<usize>,
     aggs: Vec<Agg>,
     state: Box<dyn Arrangement>,
+    /// One arrangement per MIN or MAX, in `aggs` order.
+    extremes: Vec<Box<dyn Arrangement>>,
+    /// For each entry of `aggs`, its index in `extremes`, if it is a MIN or MAX.
+    slots: Vec<Option<usize>>,
 }
 
 impl std::fmt::Debug for AggState {
@@ -476,11 +496,37 @@ impl std::fmt::Debug for AggState {
 }
 
 impl AggState {
-    pub fn new(group_by: Vec<usize>, aggs: Vec<Agg>, state: Box<dyn Arrangement>) -> AggState {
+    /// `extremes` holds one arrangement per MIN or MAX in `aggs`, in order.
+    ///
+    /// # Panics
+    /// If `extremes` does not hold exactly one arrangement per MIN or MAX.
+    pub fn new(
+        group_by: Vec<usize>,
+        aggs: Vec<Agg>,
+        state: Box<dyn Arrangement>,
+        extremes: Vec<Box<dyn Arrangement>>,
+    ) -> AggState {
+        let mut next = 0;
+        let slots: Vec<Option<usize>> = aggs
+            .iter()
+            .map(|a| {
+                matches!(a.func, AggFn::Min | AggFn::Max).then(|| {
+                    next += 1;
+                    next - 1
+                })
+            })
+            .collect();
+        assert_eq!(
+            next,
+            extremes.len(),
+            "AggState needs one arrangement per MIN or MAX"
+        );
         AggState {
             group_by,
             aggs,
             state,
+            extremes,
+            slots,
         }
     }
 
@@ -493,6 +539,8 @@ impl AggState {
         // a batch touching N groups at O(N log N) (external review P2-2), and
         // yields the groups in key order for the emit loop.
         let mut deltas: BTreeMap<Row, GroupState> = BTreeMap::new();
+        // Each MIN/MAX's value changes per touched group, indexed like `extremes`.
+        let mut extreme_deltas: BTreeMap<Row, Vec<BTreeMap<Row, i64>>> = BTreeMap::new();
         for (row, &w) in input.iter() {
             let key = Row::new(
                 self.group_by
@@ -500,6 +548,9 @@ impl AggState {
                     .map(|&c| row.get(c).canonical())
                     .collect(),
             );
+            if !self.extremes.is_empty() {
+                self.absorb_extremes(&mut extreme_deltas, &key, row, w);
+            }
             let d = deltas
                 .entry(key)
                 .or_insert_with(|| GroupState::empty(self.group_by.len(), self.aggs.len()));
@@ -520,6 +571,8 @@ impl AggState {
                         }
                     }
                     AggFn::Sum | AggFn::Total | AggFn::Avg => d.accs[i].absorb_term(value, w)?,
+                    // In `extreme_deltas`, by `absorb_extremes`.
+                    AggFn::Min | AggFn::Max => {}
                 }
             }
         }
@@ -533,8 +586,17 @@ impl AggState {
         for (key, delta) in deltas {
             let old = self.load(&key)?;
             let new = old.plus(&delta)?;
-            let old_out = old.output(&key, &self.aggs)?;
-            let new_out = new.output(&key, &self.aggs)?;
+            let old_extremes = self.extreme_values(&key)?;
+            if let Some(changes) = extreme_deltas.remove(&key) {
+                for (slot, values) in changes.into_iter().enumerate() {
+                    for (value, w) in values {
+                        self.extremes[slot].update(&key, &value, w)?;
+                    }
+                }
+            }
+            let new_extremes = self.extreme_values(&key)?;
+            let old_out = old.output(&key, &self.aggs, &old_extremes)?;
+            let new_out = new.output(&key, &self.aggs, &new_extremes)?;
             if new_out != old_out {
                 if let Some(row) = old_out {
                     out.update(row, -1);
@@ -546,6 +608,59 @@ impl AggState {
             self.store(&key, &old, &new)?;
         }
         Ok(out)
+    }
+
+    /// Fold one input row's MIN/MAX values into `extreme_deltas`. NULL is
+    /// skipped, as MIN and MAX skip it (M2c spec §4).
+    fn absorb_extremes(
+        &self,
+        extreme_deltas: &mut BTreeMap<Row, Vec<BTreeMap<Row, i64>>>,
+        key: &Row,
+        row: &Row,
+        w: i64,
+    ) {
+        for (agg, slot) in self.aggs.iter().zip(&self.slots) {
+            // `lower` gives every MIN and MAX a column.
+            let (Some(slot), Some(col)) = (slot, agg.column) else {
+                continue;
+            };
+            let Some(k) = sort_key(row.get(col)) else {
+                continue;
+            };
+            let changes = extreme_deltas
+                .entry(key.clone())
+                .or_insert_with(|| vec![BTreeMap::new(); self.extremes.len()]);
+            *changes[*slot]
+                .entry(Row::new(vec![Value::Blob(k)]))
+                .or_insert(0) += w;
+        }
+    }
+
+    /// Each MIN/MAX's current value for `key`, indexed like `aggs` (`None`
+    /// elsewhere, and for a MIN/MAX with no live value). Empty when the view
+    /// has no MIN or MAX, which `output` then never indexes.
+    fn extreme_values(&self, key: &Row) -> Result<Vec<Option<Value>>, StateError> {
+        if self.extremes.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.aggs
+            .iter()
+            .zip(&self.slots)
+            .map(|(agg, slot)| {
+                let Some(slot) = slot else { return Ok(None) };
+                // MAX reads the same order descending (M2c spec §4): in a
+                // numeric tie it outputs the entry that sorts last (amendment 1).
+                match self.extremes[*slot].first(key, agg.func == AggFn::Max)? {
+                    None => Ok(None),
+                    Some(row) => match row.0.as_slice() {
+                        [Value::Blob(k)] => from_sort_key(k).map(Some),
+                        other => Err(StateError(format!(
+                            "corrupted MIN/MAX state for group {key:?}: {other:?}"
+                        ))),
+                    },
+                }
+            })
+            .collect()
     }
 
     /// The group's stored state, or the empty state if it has none.
@@ -608,6 +723,7 @@ mod tests {
                 column: Some(1),
             }],
             Box::new(MemArrangement::new()),
+            vec![],
         )
     }
 
@@ -619,6 +735,7 @@ mod tests {
                 column: None,
             }],
             Box::new(MemArrangement::new()),
+            vec![],
         )
     }
 
@@ -826,6 +943,7 @@ mod tests {
                 },
             ],
             Box::new(MemArrangement::new()),
+            vec![],
         );
         let d = s
             .absorb(&ZSet::from_rows([
@@ -904,6 +1022,7 @@ mod tests {
                 column: Some(1),
             }],
             state,
+            vec![],
         )
     }
 
@@ -1191,6 +1310,7 @@ mod tests {
                 column: None,
             }],
             mirrors.arrangement(groups_id()).unwrap(),
+            vec![],
         );
         let d = s
             .absorb(&ZSet::from_rows([
@@ -1217,7 +1337,7 @@ mod tests {
     }
 
     fn state_with(aggs: Vec<Agg>) -> AggState {
-        AggState::new(vec![0], aggs, Box::new(MemArrangement::new()))
+        AggState::new(vec![0], aggs, Box::new(MemArrangement::new()), vec![])
     }
 
     #[test]
@@ -1454,6 +1574,7 @@ mod tests {
             vec![0],
             vec![agg(AggFn::Sum, 1)],
             mirrors.arrangement(groups_id()).unwrap(),
+            vec![],
         );
         s.absorb(&ZSet::from_rows([
             (row(vec![txt("a"), int(1)]), 1),
@@ -1484,6 +1605,7 @@ mod tests {
                 vec![0],
                 vec![agg(AggFn::Sum, 1)],
                 mirrors.arrangement(groups_id()).unwrap(),
+                vec![],
             );
             for &i in order {
                 s.absorb(&ZSet::from_rows([(
@@ -1504,6 +1626,7 @@ mod tests {
             vec![0],
             vec![agg(AggFn::Total, 1)],
             mirrors.arrangement(groups_id()).unwrap(),
+            vec![],
         );
         s.absorb(&ZSet::from_rows([(row(vec![txt("a"), int(i64::MAX)]), 2)]))
             .unwrap();
@@ -1570,5 +1693,121 @@ mod tests {
             ]))
             .expect_err("AVG over a negative count");
         assert!(e.0.contains("corrupted aggregate state"), "{e}");
+    }
+
+    fn extremes_state(aggs: Vec<Agg>) -> AggState {
+        let n = aggs
+            .iter()
+            .filter(|a| matches!(a.func, AggFn::Min | AggFn::Max))
+            .count();
+        AggState::new(
+            vec![0],
+            aggs,
+            Box::new(MemArrangement::new()),
+            (0..n)
+                .map(|_| Box::new(MemArrangement::new()) as Box<dyn Arrangement>)
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn min_and_max_retract_the_current_extreme() {
+        let mut s = extremes_state(vec![agg(AggFn::Min, 1), agg(AggFn::Max, 1)]);
+        s.absorb(&ZSet::from_rows([
+            (row(vec![txt("a"), int(5)]), 1),
+            (row(vec![txt("a"), int(3)]), 1),
+            (row(vec![txt("a"), int(9)]), 1),
+        ]))
+        .unwrap();
+        let d = s
+            .absorb(&ZSet::from_rows([
+                (row(vec![txt("a"), int(3)]), -1),
+                (row(vec![txt("a"), int(9)]), -1),
+            ]))
+            .unwrap();
+        assert_eq!(
+            d,
+            ZSet::from_rows([
+                (row(vec![txt("a"), int(3), int(9)]), -1),
+                (row(vec![txt("a"), int(5), int(5)]), 1)
+            ])
+        );
+    }
+
+    #[test]
+    fn a_duplicated_minimum_survives_one_retraction() {
+        let mut s = extremes_state(vec![agg(AggFn::Min, 1)]);
+        s.absorb(&ZSet::from_rows([
+            (row(vec![txt("a"), int(2)]), 2),
+            (row(vec![txt("a"), int(7)]), 1),
+        ]))
+        .unwrap();
+        let d = s
+            .absorb(&ZSet::from_rows([(row(vec![txt("a"), int(2)]), -1)]))
+            .unwrap();
+        assert!(d.is_empty(), "MIN is still 2: {d:?}");
+    }
+
+    #[test]
+    fn min_of_only_nulls_is_null_and_classes_order_numeric_text_blob() {
+        let mut s = extremes_state(vec![agg(AggFn::Min, 1), agg(AggFn::Max, 1)]);
+        let d = s
+            .absorb(&ZSet::from_rows([(row(vec![txt("a"), Value::Null]), 1)]))
+            .unwrap();
+        assert_eq!(
+            d,
+            ZSet::from_rows([(row(vec![txt("a"), Value::Null, Value::Null]), 1)])
+        );
+        let d = s
+            .absorb(&ZSet::from_rows([
+                (row(vec![txt("a"), Value::Blob(vec![0])]), 1),
+                (row(vec![txt("a"), txt("z")]), 1),
+                (row(vec![txt("a"), real(2.5)]), 1),
+            ]))
+            .unwrap();
+        assert_eq!(
+            d,
+            ZSet::from_rows([
+                (row(vec![txt("a"), Value::Null, Value::Null]), -1),
+                (row(vec![txt("a"), real(2.5), Value::Blob(vec![0])]), 1),
+            ])
+        );
+    }
+
+    #[test]
+    fn a_numeric_tie_gives_min_the_int_and_max_the_real() {
+        // M2c spec §4 "Ties" for MIN; amendment 1 for MAX (the entry that
+        // sorts last).
+        let mut s = extremes_state(vec![agg(AggFn::Min, 1), agg(AggFn::Max, 1)]);
+        let d = s
+            .absorb(&ZSet::from_rows([
+                (row(vec![txt("a"), real(1.0)]), 1),
+                (row(vec![txt("a"), int(1)]), 1),
+            ]))
+            .unwrap();
+        assert_eq!(
+            d,
+            ZSet::from_rows([(row(vec![txt("a"), int(1), real(1.0)]), 1)])
+        );
+    }
+
+    #[test]
+    fn a_min_value_that_is_not_a_sort_key_is_reported_as_corrupted() {
+        // A MIN/MAX arrangement holds only `[Value::Blob(sort_key)]` rows; a
+        // state table read back with anything else is corrupted state.
+        for bad in [row(vec![int(1)]), row(vec![Value::Blob(vec![0x09])])] {
+            let mut extremes = MemArrangement::new();
+            extremes.update(&row(vec![txt("a")]), &bad, 1).unwrap();
+            let mut s = AggState::new(
+                vec![0],
+                vec![agg(AggFn::Min, 1)],
+                Box::new(MemArrangement::new()),
+                vec![Box::new(extremes)],
+            );
+            let e = s
+                .absorb(&ZSet::from_rows([(row(vec![txt("a"), int(2)]), 1)]))
+                .expect_err("corrupted MIN state");
+            assert!(e.0.contains("corrupted MIN/MAX state"), "{bad:?}: {e}");
+        }
     }
 }

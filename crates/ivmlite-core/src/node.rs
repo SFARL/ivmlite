@@ -1,6 +1,6 @@
 use crate::{
-    Arrangement, ArrangementId, ArrangementRole, JoinState, Plan, Predicate, Row, StateError,
-    Value, ZSet,
+    AggFn, Arrangement, ArrangementId, ArrangementRole, JoinState, Plan, Predicate, Row,
+    StateError, Value, ZSet,
 };
 
 /// Supplies an operator's arrangements by id: fresh in memory for
@@ -104,16 +104,25 @@ impl Node {
                 aggs,
             } => {
                 let input = Node::build_at(input, next, arrangements)?;
-                Node::Aggregate {
-                    input: Box::new(input),
-                    state: crate::AggState::new(
-                        group_by.clone(),
-                        aggs.clone(),
+                let groups = arrangements(ArrangementId {
+                    node,
+                    role: ArrangementRole::AggregateGroups,
+                })?;
+                // M2c spec §4: one state table per MIN or MAX, in `aggs` order.
+                let extremes = aggs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, a)| matches!(a.func, AggFn::Min | AggFn::Max))
+                    .map(|(i, _)| {
                         arrangements(ArrangementId {
                             node,
-                            role: ArrangementRole::AggregateGroups,
-                        })?,
-                    ),
+                            role: ArrangementRole::AggregateExtremum(i),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Node::Aggregate {
+                    input: Box::new(input),
+                    state: crate::AggState::new(group_by.clone(), aggs.clone(), groups, extremes),
                 }
             }
         })

@@ -17,7 +17,7 @@ use crate::names::{
     META, PREFIX, PROBE, PROBE_STEP, PROGRESS, PROGRESS_INDEX, TRACKED, VIEWS,
 };
 use crate::snapshot::{self, Snapshot};
-use crate::state::{BufferedArrangement, Pending};
+use crate::state::{codec, BufferedArrangement, Pending, ValueCodec};
 
 /// The shadow-table layout's version, stored in `__ivm_meta` and with each view.
 ///
@@ -103,12 +103,18 @@ pub fn statement_capacity(view: &CompiledView) -> usize {
     const STAGING_SHAPES_PER_KIND: usize = 7; // the full chunk, then 32, 16, 8, 4, 2, 1
     const MARGIN: usize = 4;
     let tables = view.tables.len();
-    let arrangements = arrangement_ids(&view.plan).len();
+    let ids = arrangement_ids(&view.plan);
+    let arrangements = ids.len();
+    let extremes = ids
+        .iter()
+        .filter(|id| codec(**id) == ValueCodec::SortKey)
+        .count();
     let fixed = 1 // schema_version
         + 1 // latch (one text, bound per table)
         + 1 // watermark read
         + tables // delta reads
         + 2 * arrangements // BufferedArrangement get and scan
+        + extremes // BufferedArrangement first, one direction per MIN or MAX
         + 3 // stage delete, sentinel insert, progress insert
         + 2 * STAGING_SHAPES_PER_KIND
         + 1; // arming UPDATE
@@ -1158,6 +1164,8 @@ fn create_stage(
 struct Changes {
     /// Each arrangement's pending weight changes, indexed like `ids`.
     state: Vec<Pending>,
+    /// Each arrangement's value codec, indexed like `ids`.
+    codecs: Vec<ValueCodec>,
     output: ZSet,
     /// `(table, seq)`: the table's deltas through `seq` are consumed.
     progress: Vec<(String, i64)>,
@@ -1182,6 +1190,7 @@ fn compute(
             conn.clone(),
             &state_table(name, id),
             pending[i].clone(),
+            codec(id),
         )))
     })
     .map_err(|e| e.0)?;
@@ -1373,7 +1382,7 @@ fn apply(conn: &Connection, name: &str, view: &CompiledView, changes: &Changes) 
                 state.push([
                     SqlValue::Integer(i as i64),
                     SqlValue::Blob(crate::encode::encode(key)),
-                    SqlValue::Blob(crate::encode::encode(val)),
+                    SqlValue::Blob(changes.codecs[i].encode_val(val).map_err(|e| e.0)?),
                     SqlValue::Integer(*w),
                 ])?;
             }
@@ -1523,6 +1532,7 @@ pub fn create(conn: &Rc<Connection>, name: &str, sql: &str) -> Result<(CompiledV
         &view,
         &Changes {
             state,
+            codecs: ids.iter().map(|id| codec(*id)).collect(),
             output,
             progress: Vec::new(),
         },
@@ -1817,6 +1827,7 @@ pub fn refresh(
         view,
         &Changes {
             state,
+            codecs: ids.iter().map(|id| codec(*id)).collect(),
             output,
             progress,
         },
@@ -1833,9 +1844,13 @@ fn is_state_table_of(table: &str, view: &str) -> bool {
     let Some((node, role)) = rest.split_once('_') else {
         return false;
     };
+    let is_extremum = |role: &str| {
+        role.strip_prefix("agg_extremum_")
+            .is_some_and(|agg| !agg.is_empty() && agg.bytes().all(|b| b.is_ascii_digit()))
+    };
     !node.is_empty()
         && node.bytes().all(|b| b.is_ascii_digit())
-        && ["join_left", "join_right", "agg_groups"].contains(&role)
+        && (["join_left", "join_right", "agg_groups"].contains(&role) || is_extremum(role))
 }
 
 /// `DROP TABLE v`: the view's own shadow tables and metadata first, then —
@@ -1973,6 +1988,9 @@ mod tests {
         assert!(!is_state_table_of("__ivm_state_v_x_agg_groups", "v"));
         assert!(!is_state_table_of("__ivm_state_v__agg_groups", "v"));
         assert!(!is_state_table_of("__ivm_out_v", "v"));
+        assert!(is_state_table_of("__ivm_state_v_0_agg_extremum_3", "v"));
+        assert!(!is_state_table_of("__ivm_state_v_0_agg_extremum_", "v"));
+        assert!(!is_state_table_of("__ivm_state_v_0_agg_extremum_x", "v"));
     }
 
     #[test]

@@ -132,6 +132,8 @@ impl Plan {
                             AggFn::Sum => "sum",
                             AggFn::Total => "total",
                             AggFn::Avg => "avg",
+                            AggFn::Min => "min",
+                            AggFn::Max => "max",
                         };
                         match a.column {
                             None => name.to_string(),
