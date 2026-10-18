@@ -25,25 +25,39 @@ struct Acc {
 struct GroupState {
     /// The total weight of the group's rows; `COUNT(*)` outputs exactly this.
     rows: i64,
+    /// One count per group-by column, in order: the total weight of the
+    /// group's rows whose key value in that column was a `Real` (M2c spec §2,
+    /// "The type a group key is output as"). Kept for every column, since core
+    /// knows no affinity; a TEXT column's count simply stays 0.
+    real_keys: Vec<i64>,
     /// One accumulator per entry of `aggs`, in order.
     accs: Vec<Acc>,
 }
 
 impl GroupState {
-    fn empty(aggs: usize) -> Self {
+    fn empty(keys: usize, aggs: usize) -> Self {
         GroupState {
             rows: 0,
+            real_keys: vec![0; keys],
             accs: vec![Acc::default(); aggs],
         }
     }
 
     fn is_empty(&self) -> bool {
-        self.rows == 0 && self.accs.iter().all(|a| *a == Acc::default())
+        self.rows == 0
+            && self.real_keys.iter().all(|&c| c == 0)
+            && self.accs.iter().all(|a| *a == Acc::default())
     }
 
     fn plus(&self, delta: &GroupState) -> GroupState {
         GroupState {
             rows: self.rows + delta.rows,
+            real_keys: self
+                .real_keys
+                .iter()
+                .zip(&delta.real_keys)
+                .map(|(a, d)| a + d)
+                .collect(),
             accs: self
                 .accs
                 .iter()
@@ -56,12 +70,14 @@ impl GroupState {
         }
     }
 
-    /// The stored form: `[rows, sum_0, non_null_0, sum_1, non_null_1, …]`, all
-    /// `Value::Int`. The layout is fixed, so the encoding is canonical — the
-    /// same state always encodes to the same row (spec §7).
+    /// The stored form: `[rows, real_keys, sum_0, non_null_0, sum_1,
+    /// non_null_1, …]`, where `real_keys` is `real_keys_value`'s and every
+    /// other value is a `Value::Int`. The layout is fixed, so the encoding is
+    /// canonical — the same state always encodes to the same row (spec §7).
     fn encode(&self) -> Row {
-        let mut values = Vec::with_capacity(1 + 2 * self.accs.len());
+        let mut values = Vec::with_capacity(2 + 2 * self.accs.len());
         values.push(Value::Int(self.rows));
+        values.push(real_keys_value(&self.real_keys));
         for acc in &self.accs {
             values.push(Value::Int(acc.sum));
             values.push(Value::Int(acc.non_null));
@@ -69,18 +85,20 @@ impl GroupState {
         Row::new(values)
     }
 
-    /// The inverse of `encode`.
+    /// The inverse of `encode`, for `keys` group-by columns and `aggs`
+    /// accumulators.
     ///
-    /// # Panics
-    /// If `row` does not have `encode`'s layout for `aggs` accumulators. The
+    /// # Errors
+    /// If `row` is not a row `encode` can produce for that shape. The
     /// in-memory engine only ever stores rows `encode` produced; a state loaded
-    /// from a persisted table may not be, and M1b Phase 3 turns this panic into
-    /// an error (the plan's Ruling 3).
-    fn decode(row: &Row, aggs: usize) -> Result<GroupState, StateError> {
-        if row.len() != 1 + 2 * aggs {
+    /// from a persisted table may not be (M1b Phase 3a). That includes a
+    /// `real_keys` BLOB of all-zero counts: `encode` writes NULL for it, so
+    /// accepting it would let two encodings stand for one state.
+    fn decode(row: &Row, keys: usize, aggs: usize) -> Result<GroupState, StateError> {
+        if row.len() != 2 + 2 * aggs {
             return Err(StateError(format!(
                 "corrupted aggregate state: expected {} values, found {row:?}",
-                1 + 2 * aggs
+                2 + 2 * aggs
             )));
         }
         let int = |i: usize| match row.get(i) {
@@ -92,12 +110,13 @@ impl GroupState {
         let mut accs = Vec::with_capacity(aggs);
         for i in 0..aggs {
             accs.push(Acc {
-                sum: int(1 + 2 * i)?,
-                non_null: int(2 + 2 * i)?,
+                sum: int(2 + 2 * i)?,
+                non_null: int(3 + 2 * i)?,
             });
         }
         Ok(GroupState {
             rows: int(0)?,
+            real_keys: decode_real_keys(row.get(1), keys)?,
             accs,
         })
     }
@@ -107,7 +126,17 @@ impl GroupState {
         if self.rows <= 0 {
             return None;
         }
-        let mut values: Vec<Value> = key.0.clone();
+        let mut values: Vec<Value> = key
+            .0
+            .iter()
+            .zip(&self.real_keys)
+            .map(|(value, &reals)| match value {
+                // M2c spec §2: SQLite outputs an arbitrary row's key; a group
+                // with any REAL key row outputs REAL.
+                Value::Int(i) if reals > 0 => Value::Real(*i as f64),
+                other => other.clone(),
+            })
+            .collect();
         for (acc, agg) in self.accs.iter().zip(aggs) {
             values.push(match agg.func {
                 AggFn::Count => Value::Int(self.rows),
@@ -119,9 +148,47 @@ impl GroupState {
     }
 }
 
+/// The stored form of `GroupState::real_keys`: NULL when no key row was REAL,
+/// so integer workloads pay one byte, else one big-endian `i64` per group-by
+/// column (M2c spec §2, "The type a group key is output as").
+fn real_keys_value(counts: &[i64]) -> Value {
+    if counts.iter().all(|&c| c == 0) {
+        Value::Null
+    } else {
+        Value::Blob(counts.iter().flat_map(|c| c.to_be_bytes()).collect())
+    }
+}
+
+/// The inverse of `real_keys_value` for `keys` group-by columns. Only the two
+/// forms it writes are accepted, so the stored state stays canonical.
+fn decode_real_keys(value: &Value, keys: usize) -> Result<Vec<i64>, StateError> {
+    let corrupted = || {
+        StateError(format!(
+            "corrupted aggregate state: the REAL key counts are {value:?}"
+        ))
+    };
+    match value {
+        Value::Null => Ok(vec![0; keys]),
+        Value::Blob(bytes) if bytes.len() == 8 * keys => {
+            let counts: Vec<i64> = bytes
+                .chunks_exact(8)
+                .map(|chunk| i64::from_be_bytes(chunk.try_into().expect("an 8-byte chunk")))
+                .collect();
+            if counts.iter().all(|&c| c == 0) {
+                Err(corrupted())
+            } else {
+                Ok(counts)
+            }
+        }
+        _ => Err(corrupted()),
+    }
+}
+
 /// Spec §6.2's aggregate operator.
 ///
-/// Its whole state lives in `state`, an `Arrangement` keyed by group key, whose
+/// Its whole state lives in `state`, an `Arrangement` keyed by the
+/// **canonical** group key (`Value::canonical`, M2c spec §2: SQLite's GROUP BY
+/// equality, so `1` and `1.0` are one group), whose
 /// value for a group is that group's `GroupState::encode` with weight 1 — the
 /// arrangement a SQLite provider will back with `__ivm_state_<view>_<op>`
 /// (spec §7). The arrangement is passed in rather than created here, so a tree
@@ -167,11 +234,21 @@ impl AggState {
         // yields the groups in key order for the emit loop.
         let mut deltas: BTreeMap<Row, GroupState> = BTreeMap::new();
         for (row, &w) in input.iter() {
-            let key = Row::new(self.group_by.iter().map(|&c| row.get(c).clone()).collect());
+            let key = Row::new(
+                self.group_by
+                    .iter()
+                    .map(|&c| row.get(c).canonical())
+                    .collect(),
+            );
             let d = deltas
                 .entry(key)
-                .or_insert_with(|| GroupState::empty(self.aggs.len()));
+                .or_insert_with(|| GroupState::empty(self.group_by.len(), self.aggs.len()));
             d.rows += w;
+            for (j, &c) in self.group_by.iter().enumerate() {
+                if matches!(row.get(c), Value::Real(_)) {
+                    d.real_keys[j] += w;
+                }
+            }
             for (i, agg) in self.aggs.iter().enumerate() {
                 if agg.func != AggFn::Sum {
                     continue;
@@ -218,8 +295,8 @@ impl AggState {
     /// The group's stored state, or the empty state if it has none.
     fn load(&self, key: &Row) -> Result<GroupState, StateError> {
         match self.state.get(key)?.as_slice() {
-            [] => Ok(GroupState::empty(self.aggs.len())),
-            [(value, 1)] => GroupState::decode(value, self.aggs.len()),
+            [] => Ok(GroupState::empty(self.group_by.len(), self.aggs.len())),
+            [(value, 1)] => GroupState::decode(value, self.group_by.len(), self.aggs.len()),
             values => Err(StateError(format!(
                 "corrupted aggregate state for group {key:?}: expected at most one value \
                  of weight 1, found {values:?}"
@@ -635,10 +712,10 @@ mod tests {
         let mut state = MemArrangement::new();
         let key = row(vec![txt("a")]);
         state
-            .update(&key, &row(vec![int(1), int(5), int(1)]), 1)
+            .update(&key, &row(vec![int(1), Value::Null, int(5), int(1)]), 1)
             .unwrap();
         state
-            .update(&key, &row(vec![int(1), int(6), int(1)]), 1)
+            .update(&key, &row(vec![int(1), Value::Null, int(6), int(1)]), 1)
             .unwrap();
         let mut s = sum_state_on(Box::new(state));
         let err = s
@@ -654,7 +731,11 @@ mod tests {
         // it has two values, and `load` rejects it for that alone.
         let mut state = MemArrangement::new();
         state
-            .update(&row(vec![txt("a")]), &row(vec![int(1), int(5), int(1)]), 2)
+            .update(
+                &row(vec![txt("a")]),
+                &row(vec![int(1), Value::Null, int(5), int(1)]),
+                2,
+            )
             .unwrap();
         let mut s = sum_state_on(Box::new(state));
         let err = s
@@ -665,10 +746,16 @@ mod tests {
     #[test]
     fn a_stored_value_of_the_wrong_shape_is_reported_as_corrupted() {
         // What a shadow table written by another plan, or damaged, could hold:
-        // too few values, or a TEXT where an accumulator should be.
+        // too few values, a TEXT where an accumulator should be, or REAL key
+        // counts that are not one big-endian i64 per group-by column. All-zero
+        // counts are stored as NULL, so a BLOB of zeros or an Int(0) in their
+        // place is not a second encoding of the same state but corruption.
         for bad in [
-            row(vec![int(1), int(5)]),
-            row(vec![int(1), txt("x"), int(1)]),
+            row(vec![int(1), Value::Null, int(5)]),
+            row(vec![int(1), Value::Null, txt("x"), int(1)]),
+            row(vec![int(1), Value::Blob(vec![1, 2, 3]), int(5), int(1)]),
+            row(vec![int(1), Value::Blob(vec![0; 8]), int(5), int(1)]),
+            row(vec![int(1), int(0), int(5), int(1)]),
         ] {
             let mut state = MemArrangement::new();
             state.update(&row(vec![txt("a")]), &bad, 1).unwrap();
@@ -678,5 +765,151 @@ mod tests {
                 .expect_err("a malformed stored value is corrupted state");
             assert!(err.0.contains("corrupted aggregate state"), "{err}");
         }
+    }
+
+    fn real(x: f64) -> Value {
+        Value::Real(x)
+    }
+
+    #[test]
+    fn integral_reals_and_ints_share_a_group() {
+        // Spec §2: 1 and 1.0 are one group; -0.0 and 0 are one group; a group
+        // with a REAL key row outputs its key as REAL.
+        let mut s = count_state();
+        let d = s
+            .absorb(&ZSet::from_rows([
+                (row(vec![int(1), int(0)]), 1),
+                (row(vec![real(1.0), int(0)]), 1),
+                (row(vec![real(-0.0), int(0)]), 1),
+                (row(vec![int(0), int(0)]), 1),
+                (row(vec![real(1.5), int(0)]), 1),
+                (row(vec![txt("1"), int(0)]), 1),
+            ]))
+            .unwrap();
+        assert_eq!(
+            d,
+            ZSet::from_rows([
+                (row(vec![real(1.0), int(2)]), 1),
+                (row(vec![real(0.0), int(2)]), 1),
+                (row(vec![real(1.5), int(1)]), 1),
+                (row(vec![txt("1"), int(1)]), 1),
+            ])
+        );
+    }
+
+    #[test]
+    fn a_group_without_real_key_rows_outputs_an_int_key() {
+        let mut s = count_state();
+        let d = s
+            .absorb(&ZSet::from_rows([(row(vec![int(1), int(0)]), 2)]))
+            .unwrap();
+        assert_eq!(d, ZSet::from_rows([(row(vec![int(1), int(2)]), 1)]));
+    }
+
+    #[test]
+    fn the_key_turns_back_to_int_when_its_last_real_row_leaves() {
+        // The count follows weights: two REAL rows in, one out, still REAL.
+        let mut s = count_state();
+        s.absorb(&ZSet::from_rows([
+            (row(vec![int(1), int(0)]), 1),
+            (row(vec![real(1.0), int(0)]), 2),
+        ]))
+        .unwrap();
+        let d = s
+            .absorb(&ZSet::from_rows([(row(vec![real(1.0), int(0)]), -1)]))
+            .unwrap();
+        assert_eq!(
+            d,
+            ZSet::from_rows([
+                (row(vec![real(1.0), int(3)]), -1),
+                (row(vec![real(1.0), int(2)]), 1),
+            ])
+        );
+        let d = s
+            .absorb(&ZSet::from_rows([(row(vec![real(1.0), int(0)]), -1)]))
+            .unwrap();
+        assert_eq!(
+            d,
+            ZSet::from_rows([
+                (row(vec![real(1.0), int(2)]), -1),
+                (row(vec![int(1), int(1)]), 1),
+            ])
+        );
+    }
+
+    #[test]
+    fn the_stored_state_counts_real_keys_and_omits_them_when_zero() {
+        let mirrors = Mirrors::default();
+        let mut s = sum_state_on(mirrors.arrangement(groups_id()).unwrap());
+        s.absorb(&ZSet::from_rows([(row(vec![int(1), int(5)]), 1)]))
+            .unwrap();
+        let stored = mirrors.snapshot(groups_id()).scan().unwrap();
+        assert_eq!(stored[0].1, row(vec![int(1), Value::Null, int(5), int(1)]));
+        s.absorb(&ZSet::from_rows([(row(vec![real(1.0), int(5)]), 1)]))
+            .unwrap();
+        let stored = mirrors.snapshot(groups_id()).scan().unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].0, row(vec![int(1)]), "keyed by the canonical key");
+        assert_eq!(
+            stored[0].1,
+            row(vec![
+                int(2),
+                Value::Blob(1i64.to_be_bytes().to_vec()),
+                int(10),
+                int(2)
+            ])
+        );
+    }
+
+    #[test]
+    fn a_state_rebuilt_from_its_arrangement_keeps_its_real_keys() {
+        let mirrors = Mirrors::default();
+        let mut old = sum_state_on(mirrors.arrangement(groups_id()).unwrap());
+        old.absorb(&ZSet::from_rows([(row(vec![real(2.0), int(1)]), 1)]))
+            .unwrap();
+        let mut rebuilt = sum_state_on(Box::new(mirrors.snapshot(groups_id())));
+        let d = rebuilt
+            .absorb(&ZSet::from_rows([(row(vec![int(2), int(1)]), 1)]))
+            .unwrap();
+        assert_eq!(
+            d,
+            ZSet::from_rows([
+                (row(vec![real(2.0), int(1)]), -1),
+                (row(vec![real(2.0), int(2)]), 1),
+            ])
+        );
+    }
+
+    #[test]
+    fn real_key_counts_are_kept_per_group_by_column() {
+        // Two group-by columns, only the second ever REAL: the first is output
+        // as Int and the second as Real, and the stored counts are [0, 1] in
+        // column order.
+        let mirrors = Mirrors::default();
+        let mut s = AggState::new(
+            vec![0, 1],
+            vec![Agg {
+                func: AggFn::Count,
+                column: None,
+            }],
+            mirrors.arrangement(groups_id()).unwrap(),
+        );
+        let d = s
+            .absorb(&ZSet::from_rows([
+                (row(vec![int(1), real(2.0)]), 1),
+                (row(vec![int(1), int(2)]), 1),
+            ]))
+            .unwrap();
+        assert_eq!(
+            d,
+            ZSet::from_rows([(row(vec![int(1), real(2.0), int(2)]), 1)])
+        );
+        let stored = mirrors.snapshot(groups_id()).scan().unwrap();
+        assert_eq!(stored[0].0, row(vec![int(1), int(2)]));
+        let counts: Vec<u8> = [0i64, 1].iter().flat_map(|c| c.to_be_bytes()).collect();
+        assert_eq!(
+            stored[0].1,
+            row(vec![int(2), Value::Blob(counts), int(0), int(0)])
+        );
     }
 }
