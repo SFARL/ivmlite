@@ -7,10 +7,15 @@
 
 use ivmlite_core::{AggFn, CmpOp, ColumnType, Database, Predicate, Schema, Value, ViewQuery};
 
-fn sql_type(ty: ColumnType) -> &'static str {
+/// A declared type that gives a column the affinity `ty` (datatype3.html
+/// §3.1); BLOB affinity is the empty declared type.
+fn declared_type(ty: ColumnType) -> &'static str {
     match ty {
         ColumnType::Integer => "INTEGER",
+        ColumnType::Real => "REAL",
+        ColumnType::Numeric => "NUMERIC",
         ColumnType::Text => "TEXT",
+        ColumnType::Blob => "",
     }
 }
 
@@ -73,7 +78,7 @@ pub fn create_table_sql(schema: &Schema) -> String {
         .iter()
         .map(|c| {
             let null = if c.nullable { "" } else { " NOT NULL" };
-            format!("\"{}\" {}{}", c.name, sql_type(c.ty), null)
+            format!("\"{}\" {}{}", c.name, declared_type(c.ty), null)
         })
         .collect();
     format!(
@@ -134,9 +139,14 @@ pub fn view_query_to_sql(query: &ViewQuery, db: &Database) -> String {
     }
     for agg in &query.aggs {
         select.push(match (agg.func, agg.column) {
-            (AggFn::Count, _) => "COUNT(*)".to_string(),
+            (AggFn::Count, None) => "COUNT(*)".to_string(),
+            (AggFn::Count, Some(_)) => {
+                unreachable!("COUNT(column) is not enumerated before M2c Task 11")
+            }
             (AggFn::Sum, Some(i)) => format!("SUM({})", name(i)),
-            (AggFn::Sum, None) => panic!("SUM must name a column"),
+            (AggFn::Total, Some(i)) => format!("TOTAL({})", name(i)),
+            (AggFn::Avg, Some(i)) => format!("AVG({})", name(i)),
+            (func, None) => panic!("{func:?} must name a column"),
         });
     }
 

@@ -15,7 +15,7 @@ mod test_support;
 mod value;
 mod zset;
 
-pub use agg::AggState;
+pub use agg::{AggState, SUM_OVERFLOW};
 pub use arrangement::{
     fresh_mem_arrangement, Arrangement, ArrangementId, ArrangementRole, MemArrangement, StateError,
 };

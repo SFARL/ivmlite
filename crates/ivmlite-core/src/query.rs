@@ -5,13 +5,29 @@ use crate::Value;
 pub enum AggFn {
     Count,
     Sum,
+    Total,
+    Avg,
+}
+
+impl AggFn {
+    /// The function's SQL name, upper case.
+    pub fn sql_name(self) -> &'static str {
+        match self {
+            AggFn::Count => "COUNT",
+            AggFn::Sum => "SUM",
+            AggFn::Total => "TOTAL",
+            AggFn::Avg => "AVG",
+        }
+    }
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Agg {
     pub func: AggFn,
-    /// `None` for COUNT(*); for SUM it must be `Some`, pointing at an INTEGER column.
+    /// `None` only for `COUNT(*)`; `Agg { func: Count, column: Some(c) }` is
+    /// `COUNT(c)`, and every other function must be `Some`. Any column type is
+    /// accepted (M2c spec §4).
     pub column: Option<usize>,
 }
 

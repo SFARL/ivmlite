@@ -78,7 +78,8 @@ fn reject_if(present: bool, what: &str) -> Result<(), SqlError> {
 /// ```
 ///
 /// where the SELECT list's bare columns are exactly the GROUP BY columns and
-/// come before the aggregates, an aggregate is `COUNT(*)` or `SUM(<column>)`,
+/// come before the aggregates, an aggregate is `COUNT(*)`, `COUNT(<column>)`,
+/// or `SUM`, `TOTAL` or `AVG` of a column (M2c spec §4),
 /// `<op>` is one of `>` `>=` `<` `<=` `=` `!=` `<>`, and a literal is an
 /// integer or a single-quoted string. Anything else is an error.
 pub fn compile(sql: &str, catalog: &dyn Catalog) -> Result<CompiledView, SqlError> {
@@ -478,11 +479,18 @@ impl Named {
                 name: self.name.clone(),
                 ..scope.column_at(i).clone()
             },
+            // An aggregate's type is informational: what SQLite's function
+            // returns (M2c spec §4). SUM is INTEGER or REAL, so NUMERIC.
             Output::Agg(agg) => Column {
                 name: self.name.clone(),
-                ty: ColumnType::Integer,
-                // SUM over only NULLs is NULL (spec §6.1); COUNT(*) is never NULL.
-                nullable: agg.func == AggFn::Sum,
+                ty: match agg.func {
+                    AggFn::Count => ColumnType::Integer,
+                    AggFn::Sum => ColumnType::Numeric,
+                    AggFn::Total | AggFn::Avg => ColumnType::Real,
+                },
+                // SUM and AVG over no non-NULL value are NULL (spec §6.1, M2c
+                // spec §4); COUNT is 0 and TOTAL 0.0 there.
+                nullable: matches!(agg.func, AggFn::Sum | AggFn::Avg),
             },
         }
     }
@@ -539,7 +547,7 @@ fn projection(sql: &str, scope: &Scope, items: &[SelectItem]) -> Result<Vec<Name
     Ok(out)
 }
 
-/// `COUNT(*)` or `SUM(<column>)`.
+/// `COUNT(*)`, or `COUNT`, `SUM`, `TOTAL` or `AVG` of a column.
 fn aggregate(scope: &Scope, call: &Function) -> Result<Agg, SqlError> {
     let Function {
         name,
@@ -577,29 +585,26 @@ fn aggregate(scope: &Scope, call: &Function) -> Result<Agg, SqlError> {
         !clauses.is_empty(),
         "ORDER BY or other clauses inside an aggregate",
     )?;
-    if func_name.eq_ignore_ascii_case("count") {
-        match args.as_slice() {
-            [FunctionArg::Unnamed(FunctionArgExpr::Wildcard)] => Ok(Agg {
-                func: AggFn::Count,
-                column: None,
-            }),
-            _ => Err(unsupported(&format!(
-                "`{call}` (v0 supports COUNT(*) only; COUNT(column) skips NULLs)"
-            ))),
+    let func = match func_name.to_ascii_lowercase().as_str() {
+        "count" => AggFn::Count,
+        "sum" => AggFn::Sum,
+        "total" => AggFn::Total,
+        "avg" => AggFn::Avg,
+        _ => {
+            return Err(unsupported(&format!(
+                "the function `{func_name}` (v0's aggregates are COUNT, SUM, TOTAL and AVG)"
+            )))
         }
-    } else if func_name.eq_ignore_ascii_case("sum") {
-        match args.as_slice() {
-            [FunctionArg::Unnamed(FunctionArgExpr::Expr(e))] => Ok(Agg {
-                func: AggFn::Sum,
-                column: Some(scope.require_column(e, "SUM over")?),
-            }),
-            _ => Err(unsupported(&format!("`{call}`"))),
+    };
+    match (func, args.as_slice()) {
+        (AggFn::Count, [FunctionArg::Unnamed(FunctionArgExpr::Wildcard)]) => {
+            Ok(Agg { func, column: None })
         }
-    } else {
-        Err(unsupported(&format!(
-            "the function `{func_name}` (v0's aggregates are COUNT(*) and SUM; MIN, MAX, AVG \
-             and the rest are not)"
-        )))
+        (_, [FunctionArg::Unnamed(FunctionArgExpr::Expr(e))]) => Ok(Agg {
+            func,
+            column: Some(scope.require_column(e, &format!("{} over", func.sql_name()))?),
+        }),
+        _ => Err(unsupported(&format!("`{call}`"))),
     }
 }
 
@@ -877,7 +882,8 @@ mod tests {
             vec![
                 (ColumnType::Text, true),
                 // SUM over only NULLs is NULL (spec §6.1); COUNT(*) never is.
-                (ColumnType::Integer, true),
+                // SUM is INTEGER or REAL (M2c spec §4), so its type is NUMERIC.
+                (ColumnType::Numeric, true),
                 (ColumnType::Integer, false),
             ]
         );
@@ -1083,7 +1089,6 @@ mod tests {
         // `lower` holds the legality rules; the front end only resolves names.
         assert!(err("SELECT SUM(amount) FROM orders").contains("GROUP BY"));
         assert!(err("SELECT region FROM orders GROUP BY region").contains("aggs"));
-        assert!(err("SELECT region, SUM(region) FROM orders GROUP BY region").contains("SUM"));
         assert!(
             err("SELECT region, COUNT(*) FROM orders WHERE amount > 'x' GROUP BY region")
                 .contains("comparison")
@@ -1101,6 +1106,29 @@ mod tests {
             "SELECT region, COUNT(*) FROM orders JOIN regions ON amount = name GROUP BY region"
         )
         .contains("same type"));
+    }
+
+    #[test]
+    fn the_new_aggregates_compile_with_sqlites_names_and_types() {
+        let v = ok(
+            "SELECT region, COUNT(amount), SUM(region), TOTAL(amount), avg(amount) FROM orders \
+             GROUP BY region",
+        );
+        let got: Vec<(String, ColumnType, bool)> = v
+            .columns
+            .iter()
+            .map(|c| (c.name.clone(), c.ty, c.nullable))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("region".to_string(), ColumnType::Text, true),
+                ("COUNT(amount)".to_string(), ColumnType::Integer, false),
+                ("SUM(region)".to_string(), ColumnType::Numeric, true),
+                ("TOTAL(amount)".to_string(), ColumnType::Real, false),
+                ("avg(amount)".to_string(), ColumnType::Real, true),
+            ]
+        );
     }
 
     /// Spec §12.5: everything outside the subset is a hard error that names
@@ -1133,11 +1161,9 @@ mod tests {
             ("SELECT region, COUNT(*) FROM orders JOIN regions ON region = name JOIN regions r2 ON region = r2.name GROUP BY region", "more than two tables"),
             ("SELECT * FROM orders GROUP BY region", "SELECT *"),
             ("SELECT region, amount + 1, COUNT(*) FROM orders GROUP BY region", "SELECT expression"),
-            ("SELECT region, COUNT(amount) FROM orders GROUP BY region", "COUNT(*) only"),
             ("SELECT region, COUNT(DISTINCT amount) FROM orders GROUP BY region", "DISTINCT"),
             ("SELECT region, SUM(amount + 1) FROM orders GROUP BY region", "SUM over"),
             ("SELECT region, MIN(amount) FROM orders GROUP BY region", "MIN"),
-            ("SELECT region, AVG(amount) FROM orders GROUP BY region", "AVG"),
             ("SELECT region, SUM(amount) OVER () FROM orders GROUP BY region", "window"),
             ("SELECT COUNT(*), region FROM orders GROUP BY region", "after an aggregate"),
             ("SELECT region, region, COUNT(*) FROM orders GROUP BY region", "twice in the SELECT list"),

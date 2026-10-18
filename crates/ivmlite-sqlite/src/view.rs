@@ -192,14 +192,10 @@ fn column_list(schema: &Schema, prefix: &str) -> String {
 /// column types can compile to the same plan, since the plan names columns
 /// by position only.
 fn shape(schema: &Schema, capture: &CaptureInfo) -> String {
-    let ty = |c: &ivmlite_core::Column| match c.ty {
-        ivmlite_core::ColumnType::Integer => "INTEGER",
-        ivmlite_core::ColumnType::Text => "TEXT",
-    };
     let columns: Vec<String> = schema
         .columns
         .iter()
-        .map(|c| format!("{} {}", quote(&c.name), ty(c)))
+        .map(|c| format!("{} {}", quote(&c.name), c.ty.name()))
         .collect();
     let mut keys: Vec<String> = capture
         .unique_keys

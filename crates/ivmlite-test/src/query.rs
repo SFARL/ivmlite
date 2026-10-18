@@ -147,6 +147,9 @@ fn literal(ty: ColumnType) -> Value {
     match ty {
         ColumnType::Integer => Value::Int(4),
         ColumnType::Text => Value::Text("v4".into()),
+        ty @ (ColumnType::Real | ColumnType::Numeric | ColumnType::Blob) => {
+            unreachable!("no generated database declares {ty:?} affinity before M2c Task 11")
+        }
     }
 }
 

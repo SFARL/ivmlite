@@ -126,11 +126,17 @@ impl Plan {
             } => {
                 let aggs: Vec<String> = aggs
                     .iter()
-                    .map(|a| match (a.func, a.column) {
-                        (AggFn::Count, None) => "count".to_string(),
-                        (AggFn::Count, Some(c)) => format!("count({c})"),
-                        (AggFn::Sum, None) => "sum".to_string(),
-                        (AggFn::Sum, Some(c)) => format!("sum({c})"),
+                    .map(|a| {
+                        let name = match a.func {
+                            AggFn::Count => "count",
+                            AggFn::Sum => "sum",
+                            AggFn::Total => "total",
+                            AggFn::Avg => "avg",
+                        };
+                        match a.column {
+                            None => name.to_string(),
+                            Some(c) => format!("{name}({c})"),
+                        }
                     })
                     .collect();
                 out.push_str(&format!(
@@ -300,18 +306,19 @@ pub fn lower(view: &ResolvedView) -> Result<Plan, PlanError> {
         ));
     }
 
-    // `SUM` must carry a column. This check is **not** redundant: `Agg::column`
-    // is an `Option<usize>` (`None` for `COUNT(*)`), so the type system cannot
-    // stop `Agg { func: Sum, column: None }`, and `AggState::absorb` can only
-    // `expect` SUM's column — without this gate a legally constructed
-    // `ViewQuery` would pass through `lower` and `Node::build` and panic only on
-    // the first batch of deltas. The reasoning of `out_of_range_column_is_rejected`
-    // applies unchanged: the engine should have no foreseeable panic path after
-    // create_view.
+    // Every aggregate but `COUNT` must carry a column. This check is **not**
+    // redundant: `Agg::column` is an `Option<usize>` (`None` for `COUNT(*)`),
+    // so the type system cannot stop `Agg { func: Sum, column: None }`, and
+    // `AggState::absorb` skips an aggregate without a column — without this
+    // gate a legally constructed `ViewQuery` would pass through `lower` and
+    // `Node::build` and output a SUM, TOTAL or AVG over no input at all. The
+    // reasoning of `out_of_range_column_is_rejected` applies unchanged: every
+    // shape the engine cannot answer is refused at create_view.
     for (i, agg) in view.aggs.iter().enumerate() {
-        if agg.func == AggFn::Sum && agg.column.is_none() {
+        if agg.func != AggFn::Count && agg.column.is_none() {
             return Err(PlanError(format!(
-                "spec §5.2: agg {i} is SUM but names no column; only COUNT(*) may omit one"
+                "spec §5.2: agg {i} is {} but names no column; only COUNT(*) may omit one",
+                agg.func.sql_name()
             )));
         }
     }
@@ -340,40 +347,15 @@ pub fn lower(view: &ResolvedView) -> Result<Plan, PlanError> {
         | Predicate::IsNotNull { column } => check(*column, "predicate")?,
     }
 
-    // Type checks. These run after the bounds checks because they index
-    // `schema.columns`, which is only safe once every index is known valid.
-    //
-    // v0 cannot agree with SQLite on either of these over a TEXT column, so
-    // they are rejected here instead of producing a silent divergence
-    // (external review P2-1). Measured against SQLite, `STRICT` table
-    // `t(g INTEGER, v TEXT)`:
-    // - `SUM(v)` coerces numeric-looking text and returns `7.0` — a REAL — for
-    //   rows `('7')` and `('abc')`. v0's `Value` has no `Real` variant at all
-    //   (floating-point addition is not associative), and its accumulator only
-    //   sees `Value::Int`, so it would report NULL.
-    // - Every comparison operator has the same problem, not just `>`: SQLite
-    //   converts a mismatched literal by the column's affinity (so
-    //   `v > 3` is true for every TEXT value, since SQLite orders storage
-    //   classes as NULL < INTEGER/REAL < TEXT < BLOB), while v0 compares a
-    //   column only with a literal of its own type.
+    // The literal's type check runs after the bounds checks because it
+    // indexes `schema.columns`, which is only safe once every index is known
+    // valid. (SUM, TOTAL and AVG accept every column, M2c spec §4.) SQLite
+    // converts a mismatched literal by the column's affinity (so `v > 3` is
+    // true for every TEXT value, since SQLite orders storage classes as
+    // NULL < INTEGER/REAL < TEXT < BLOB), while v0 compares a column only
+    // with a literal of its own type, so any other literal is rejected here
+    // instead of producing a silent divergence (external review P2-1).
     // `IS NULL` and `IS NOT NULL` are type-agnostic and stay allowed on any column.
-    let require_integer = |c: usize, what: &str| -> Result<(), PlanError> {
-        let col = columns[c];
-        if col.ty == ColumnType::Integer {
-            Ok(())
-        } else {
-            Err(PlanError(format!(
-                "{what} over column {c} (`{}`) of type {:?} is not supported: \
-                 v0 allows it over INTEGER columns only",
-                col.name, col.ty
-            )))
-        }
-    };
-    for agg in &view.aggs {
-        if let (AggFn::Sum, Some(c)) = (agg.func, agg.column) {
-            require_integer(c, "SUM")?;
-        }
-    }
     if let Predicate::Compare { column, op, value } = &view.predicate {
         let col = columns[*column];
         let matches = match (col.ty, value) {
@@ -909,21 +891,60 @@ mod tests {
         );
     }
 
+    fn of(func: AggFn, column: usize) -> Agg {
+        Agg {
+            func,
+            column: Some(column),
+        }
+    }
+
     #[test]
-    fn sum_over_a_text_column_is_rejected_at_the_boundary() {
-        // SQLite coerces numeric-looking text inside SUM and can return a REAL
-        // (measured: SUM over ('7'), ('abc') is 7.0). v0 has no Real value and
-        // its accumulator only sees Value::Int, so it would report NULL. The
-        // query must be refused at create_view, not answered differently.
-        let err = lower_query(
-            &q(vec![0], vec![sum(1)], Predicate::None),
-            &Database::single(int_then_text()),
+    fn sum_total_and_avg_accept_any_column() {
+        // M2c spec §4: SUM, TOTAL and AVG classify each value the way SQLite's
+        // sum does, so a TEXT column is summed rather than refused; COUNT(c)
+        // counts its non-NULL values.
+        for func in [AggFn::Sum, AggFn::Total, AggFn::Avg, AggFn::Count] {
+            lower_query(
+                &q(vec![0], vec![of(func, 1)], Predicate::None),
+                &Database::single(int_then_text()),
+            )
+            .unwrap_or_else(|e| panic!("{func:?} over a TEXT column must lower: {e}"));
+        }
+    }
+
+    #[test]
+    fn every_aggregate_but_count_needs_a_column() {
+        for func in [AggFn::Total, AggFn::Avg] {
+            let err = lower_query(
+                &q(vec![0], vec![Agg { func, column: None }], Predicate::None),
+                &Database::single(ints(2)),
+            )
+            .expect_err("only COUNT(*) may omit its column");
+            assert!(err.0.contains("names no column"), "{func:?}: {}", err.0);
+        }
+    }
+
+    #[test]
+    fn the_canonical_text_names_each_aggregate() {
+        let plan = lower_query(
+            &q(
+                vec![0],
+                vec![
+                    count(),
+                    of(AggFn::Count, 1),
+                    sum(1),
+                    of(AggFn::Total, 1),
+                    of(AggFn::Avg, 1),
+                ],
+                Predicate::None,
+            ),
+            &Database::single(ints(2)),
         )
-        .expect_err("SUM over a TEXT column must be rejected");
+        .unwrap();
+        let text = plan.canonical();
         assert!(
-            err.0.contains("SUM") && err.0.contains("Text"),
-            "the error must name SUM and the offending column type: {}",
-            err.0
+            text.starts_with("aggregate([0],[count,count(1),sum(1),total(1),avg(1)],"),
+            "{text}"
         );
     }
 

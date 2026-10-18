@@ -1,8 +1,25 @@
+/// A column's affinity (M2c spec §3), from SQLite's rules (datatype3.html §3.1).
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColumnType {
     Integer,
+    Real,
+    Numeric,
     Text,
+    Blob,
+}
+
+impl ColumnType {
+    /// The affinity's name, as SQLite spells it.
+    pub fn name(self) -> &'static str {
+        match self {
+            ColumnType::Integer => "INTEGER",
+            ColumnType::Real => "REAL",
+            ColumnType::Numeric => "NUMERIC",
+            ColumnType::Text => "TEXT",
+            ColumnType::Blob => "BLOB",
+        }
+    }
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

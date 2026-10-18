@@ -44,6 +44,11 @@ pub fn gen_row(rng: &mut StdRng, schema: &Schema, domain: &Domain) -> Row {
             match col.ty {
                 ColumnType::Integer => Value::Int(n),
                 ColumnType::Text => Value::Text(format!("v{n}")),
+                ty @ (ColumnType::Real | ColumnType::Numeric | ColumnType::Blob) => {
+                    unreachable!(
+                        "no generated database declares {ty:?} affinity before M2c Task 11"
+                    )
+                }
             }
         })
         .collect();

@@ -100,7 +100,8 @@ fn result_column_names_match_sqlite() {
 /// Final review recommendation: an output column's type and nullability
 /// (Ruling 4) for a join query, not just its plan — a group key's are its
 /// table column's, `COUNT(*)` is a non-null INTEGER, `SUM` is a nullable
-/// INTEGER (SUM over only NULLs is NULL, spec §6.1). `gen_database`'s
+/// NUMERIC (SUM over only NULLs is NULL, spec §6.1, and it is INTEGER or
+/// REAL, M2c spec §4). `gen_database`'s
 /// columns are both nullable (`k TEXT`, `v INTEGER`), so the group key here
 /// is expected nullable too — it is not `COUNT(*)`'s non-null INTEGER that
 /// would pass by accident.
@@ -118,7 +119,7 @@ fn join_output_column_types_and_nullability_match_ruling_4() {
         types,
         vec![
             (ColumnType::Text, true),     // t1.k: the group key's own column
-            (ColumnType::Integer, true),  // SUM(t0.v): nullable
+            (ColumnType::Numeric, true),  // SUM(t0.v): nullable
             (ColumnType::Integer, false), // COUNT(*): never NULL
         ],
         "{sql}"

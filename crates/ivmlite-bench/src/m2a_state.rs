@@ -445,24 +445,25 @@ fn expected_arrangements(
     let aggregates = query_values(conn, live_aggregate_sql(join), 4)?;
     let mut groups = Vec::new();
     for row in aggregates {
-        // GroupState's REAL key counts are NULL, because both shapes group by
-        // a STRICT INTEGER column, which never holds a REAL (M2c spec §2);
-        // COUNT(*)'s accumulator has a
-        // zero pair; SUM carries both sum and non-null count, retaining a
-        // positive-count zero sum.
+        // GroupState's layout is [rows, real_keys, COUNT(*)'s values, SUM's
+        // values] (M2c spec §4). The REAL key counts are NULL, because both
+        // shapes group by a STRICT INTEGER column, which never holds a REAL
+        // (M2c spec §2); COUNT(*) stores nothing of its own; SUM stores
+        // [non_null, int_sum, approx], retaining a positive-count zero sum,
+        // with `approx` NULL because a STRICT INTEGER column holds no
+        // non-integer input.
         groups.push(StateEntry {
             key: vec![row[0].clone()],
             value: vec![
                 row[1].clone(),
                 Datum::Null,
-                Datum::Int(0),
-                Datum::Int(0),
+                row[3].clone(),
                 if row[2] == Datum::Null {
                     Datum::Int(0)
                 } else {
                     row[2].clone()
                 },
-                row[3].clone(),
+                Datum::Null,
             ],
             weight: 1,
         });

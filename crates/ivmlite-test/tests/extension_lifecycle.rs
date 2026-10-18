@@ -846,12 +846,11 @@ fn temp_tables_named_like_the_capture_tables_are_never_touched_by_replace_captur
     );
 }
 
-/// A SUM past `i64::MAX` panics in the core engine in a debug build
-/// (`agg.rs` adds with overflow checks on). Every extension callback runs
-/// inside `guard`, so create and refresh fail with an SQLite error rather
-/// than unwinding across the FFI boundary and aborting the host process
-/// (final review, Important 4). A release build wraps instead — within the
-/// parent spec's "overflow is undefined" (§6.1).
+/// A SUM past `i64::MAX` fails create and refresh with an SQLite error,
+/// never a crash. Before M2c it panicked in the core engine in a debug build
+/// and `guard` turned the panic into the error (final review, Important 4);
+/// since M2c the engine reports `integer overflow in SUM` itself (M2c spec
+/// §4), so the error no longer depends on `guard`.
 #[test]
 fn an_overflowing_sum_is_an_sqlite_error_not_a_crash() {
     let c = open_with_extension(None).unwrap();
