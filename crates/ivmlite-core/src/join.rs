@@ -94,11 +94,12 @@ impl std::fmt::Debug for JoinState {
 }
 
 /// The arrangement key for `row`'s join column, or `None` when that column is
-/// NULL — a NULL key never matches (SQL three-valued equality).
+/// NULL — a NULL key never matches (SQL three-valued equality). The key is
+/// canonical (M2c spec §5), so `1` matches `1.0` as in SQLite.
 fn join_key(row: &Row, column: usize) -> Option<Row> {
     match row.get(column) {
         Value::Null => None,
-        value => Some(Row::new(vec![value.clone()])),
+        value => Some(Row::new(vec![value.canonical()])),
     }
 }
 
@@ -139,6 +140,24 @@ mod tests {
             Box::new(MemArrangement::new()),
             Box::new(MemArrangement::new()),
         )
+    }
+
+    #[test]
+    fn canonical_keys_match_one_with_one_point_zero_but_not_text() {
+        let mut j = empty_join();
+        let r = |k: Value| Row::new(vec![k, Value::Int(0)]);
+        j.absorb(&z(&[(r(Value::Int(1)), 1)]), &ZSet::new())
+            .unwrap();
+        let out = j
+            .absorb(
+                &ZSet::new(),
+                &z(&[(r(Value::Real(1.0)), 1), (r(Value::Text("1".into())), 1)]),
+            )
+            .unwrap();
+        assert_eq!(
+            out,
+            z(&[(joined(&r(Value::Int(1)), &r(Value::Real(1.0))), 1)])
+        );
     }
 
     #[test]

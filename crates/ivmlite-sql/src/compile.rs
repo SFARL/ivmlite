@@ -79,9 +79,9 @@ fn reject_if(present: bool, what: &str) -> Result<(), SqlError> {
 ///
 /// where the SELECT list's bare columns are exactly the GROUP BY columns and
 /// come before the aggregates, an aggregate is `COUNT(*)`, `COUNT(<column>)`,
-/// or `SUM`, `TOTAL` or `AVG` of a column (M2c spec §4),
-/// `<op>` is one of `>` `>=` `<` `<=` `=` `!=` `<>`, and a literal is an
-/// integer or a single-quoted string. Anything else is an error.
+/// or `SUM`, `TOTAL`, `AVG`, `MIN` or `MAX` of a column (M2c spec §4),
+/// `<op>` is one of `>` `>=` `<` `<=` `=` `!=` `<>`, and a literal is a
+/// number, a single-quoted string or `X'…'`. Anything else is an error.
 pub fn compile(sql: &str, catalog: &dyn Catalog) -> Result<CompiledView, SqlError> {
     let statements = Parser::parse_sql(&SQLiteDialect {}, sql)
         .map_err(|e| SqlError(format!("cannot parse the view's SQL: {e}")))?;
@@ -537,7 +537,7 @@ fn projection(sql: &str, scope: &Scope, items: &[SelectItem]) -> Result<Vec<Name
             None => {
                 let Expr::Function(call) = strip_parens(expr) else {
                     return Err(unsupported(&format!(
-                        "the SELECT expression `{expr}` (v0 selects bare columns, COUNT(*) and SUM(column))"
+                        "the SELECT expression `{expr}` (ivmlite selects bare group-by columns and COUNT(*), COUNT(column), SUM, TOTAL, AVG, MIN and MAX of a column)"
                     )));
                 };
                 (Output::Agg(aggregate(scope, call)?), piece)
@@ -770,21 +770,44 @@ fn long_literal(text: &str) -> SqlError {
     ))
 }
 
-/// An integer, a single-quoted string, or NULL (which `lower` rejects with a
-/// pointer to IS NULL).
+/// A numeric token as SQLite reads it: INTEGER when it has no `.` or
+/// exponent and fits `i64`, else REAL (M2c spec §5).
+fn number(text: &str) -> Result<Value, SqlError> {
+    let integral = !text.contains(['.', 'e', 'E']);
+    if integral {
+        if let Ok(n) = text.parse::<i64>() {
+            return Ok(Value::Int(n));
+        }
+    }
+    text.parse::<f64>()
+        .map(Value::Real)
+        .map_err(|_| unsupported(&format!("the literal {text}")))
+}
+
+/// A BLOB literal `X'…'`: an even number of hex digits.
+fn blob(hex: &str) -> Result<Value, SqlError> {
+    if !hex.len().is_multiple_of(2) || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(SqlError(format!(
+            "the BLOB literal X'{hex}' is not an even number of hex digits"
+        )));
+    }
+    Ok(Value::Blob(
+        (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("two hex digits"))
+            .collect(),
+    ))
+}
+
+/// A number, a single-quoted string, a BLOB literal `X'…'`, or NULL (which
+/// `lower` rejects with a pointer to IS NULL).
 fn literal(expr: &Expr) -> Result<Value, SqlError> {
-    let integer = |text: &str| {
-        text.parse::<i64>().map(Value::Int).map_err(|_| {
-            unsupported(&format!(
-                "the literal {text} (v0's numeric literals are 64-bit integers)"
-            ))
-        })
-    };
     match strip_parens(expr) {
         Expr::Value(v) => match &v.value {
-            SqlValue::Number(text, false) => integer(text),
+            SqlValue::Number(text, false) => number(text),
             SqlValue::Number(text, true) => Err(long_literal(text)),
             SqlValue::SingleQuotedString(s) => Ok(Value::Text(s.clone())),
+            SqlValue::HexStringLiteral(hex) => blob(hex),
             SqlValue::Null => Ok(Value::Null),
             _ => Err(unsupported(&format!("the literal `{expr}`"))),
         },
@@ -793,7 +816,7 @@ fn literal(expr: &Expr) -> Result<Value, SqlError> {
             expr: inner,
         } => match strip_parens(inner) {
             Expr::Value(v) => match &v.value {
-                SqlValue::Number(text, false) => integer(&format!("-{text}")),
+                SqlValue::Number(text, false) => number(&format!("-{text}")),
                 SqlValue::Number(text, true) => Err(long_literal(text)),
                 _ => Err(unsupported(&format!("the literal `{expr}`"))),
             },
@@ -1011,6 +1034,48 @@ mod tests {
     }
 
     #[test]
+    fn real_and_blob_literals_compile_as_sqlite_reads_them() {
+        let lit = |sql: &str| match ok(sql).plan {
+            Plan::Aggregate { input, .. } => match *input {
+                Plan::Project { input, .. } => match *input {
+                    Plan::Filter {
+                        predicate: Predicate::Compare { value, .. },
+                        ..
+                    } => value,
+                    other => panic!("{other:?}"),
+                },
+                other => panic!("{other:?}"),
+            },
+            other => panic!("{other:?}"),
+        };
+        let w = |cond: &str| {
+            format!("SELECT region, COUNT(*) FROM orders WHERE {cond} GROUP BY region")
+        };
+        assert_eq!(lit(&w("amount > 1.5")), Value::Real(1.5));
+        assert_eq!(lit(&w("amount > -2.5e1")), Value::Real(-25.0));
+        assert_eq!(
+            lit(&w("amount > 9223372036854775808")),
+            Value::Real(9_223_372_036_854_775_808.0)
+        );
+        assert_eq!(
+            lit(&w("amount > -9223372036854775808")),
+            Value::Int(i64::MIN)
+        );
+        assert_eq!(
+            lit(&w("amount > '7'")),
+            Value::Int(7),
+            "numeric affinity for an INTEGER column"
+        );
+        assert_eq!(
+            lit(&w("region = 7")),
+            Value::Text("7".into()),
+            "TEXT affinity for a TEXT column"
+        );
+        assert_eq!(lit(&w("region = X'00ff'")), Value::Blob(vec![0, 0xff]));
+        assert!(err(&w("region = X'0'")).contains("hex"));
+    }
+
+    #[test]
     fn is_null_parentheses_and_is_not_null_compile() {
         let v = ok("SELECT region, COUNT(*) FROM orders WHERE (region IS NULL) GROUP BY region");
         assert_eq!(
@@ -1098,9 +1163,10 @@ mod tests {
         // `lower` holds the legality rules; the front end only resolves names.
         assert!(err("SELECT SUM(amount) FROM orders").contains("GROUP BY"));
         assert!(err("SELECT region FROM orders GROUP BY region").contains("aggs"));
+        ok("SELECT region, COUNT(*) FROM orders WHERE amount > 'x' GROUP BY region");
         assert!(
-            err("SELECT region, COUNT(*) FROM orders WHERE amount > 'x' GROUP BY region")
-                .contains("comparison")
+            err("SELECT region, COUNT(*) FROM orders WHERE region > 2.5 GROUP BY region")
+                .contains("REAL literal cannot be compared with the TEXT-affinity column region")
         );
         assert!(
             err("SELECT region, COUNT(*) FROM orders WHERE amount = NULL GROUP BY region")
@@ -1114,7 +1180,7 @@ mod tests {
         assert!(err(
             "SELECT region, COUNT(*) FROM orders JOIN regions ON amount = name GROUP BY region"
         )
-        .contains("same type"));
+        .contains("amount has INTEGER affinity and regions.name has TEXT affinity"));
     }
 
     #[test]
@@ -1191,10 +1257,8 @@ mod tests {
             ("SELECT region, COUNT(*) FROM orders WHERE amount BETWEEN 1 AND 2 GROUP BY region", "WHERE clause"),
             ("SELECT region, COUNT(*) FROM orders WHERE amount > (SELECT 1) GROUP BY region", "operand"),
             ("SELECT region, COUNT(*) FROM orders WHERE amount > amount GROUP BY region", "two columns"),
-            ("SELECT region, COUNT(*) FROM orders WHERE amount > 1.5 GROUP BY region", "64-bit integers"),
             ("SELECT region, COUNT(*) FROM orders WHERE amount > 1L GROUP BY region", "L suffix"),
             ("SELECT region, COUNT(*) FROM orders WHERE amount > -1L GROUP BY region", "L suffix"),
-            ("SELECT region, COUNT(*) FROM orders WHERE amount > 9223372036854775808 GROUP BY region", "64-bit integers"),
             ("SELECT region, COUNT(*) FROM orders WHERE amount + 1 > 2 GROUP BY region", "WHERE clause"),
             ("SELECT region, COUNT(*) FROM orders WHERE nope > 1 GROUP BY region", "no such column"),
             ("SELECT region, COUNT(*) FROM orders JOIN regions ON region = name WHERE x.region > 'a' GROUP BY region", "no such table"),

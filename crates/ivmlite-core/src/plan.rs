@@ -1,5 +1,6 @@
 use crate::{
-    Agg, AggFn, CmpOp, Column, ColumnType, Database, Join, Predicate, Schema, Value, ViewQuery,
+    parse_numeric_text, Agg, AggFn, CmpOp, Column, ColumnType, Database, Join, NumericTerm,
+    Predicate, Schema, Value, ViewQuery,
 };
 
 /// Spec §5.2's plan IR.
@@ -270,9 +271,9 @@ fn resolve_join<'a>(join: &Join, db: &'a Database) -> Result<ResolvedJoin<'a>, P
 ///
 /// Column indices are checked against the row the operators above the scans
 /// see — the anchor's columns, then (for a join) the right table's — and
-/// their types drive the type checks: v0 supports `SUM` over INTEGER columns
-/// only, comparisons only against a literal of the column's own type, and
-/// join keys of one type only.
+/// their affinities drive the checks: a comparison's literal is converted by
+/// the column's affinity exactly as SQLite does before comparing (M2c spec
+/// §5), and join keys must share one affinity.
 pub fn lower(view: &ResolvedView) -> Result<Plan, PlanError> {
     let anchor = view.anchor;
     if let Some(join) = &view.join {
@@ -349,38 +350,25 @@ pub fn lower(view: &ResolvedView) -> Result<Plan, PlanError> {
         | Predicate::IsNotNull { column } => check(*column, "predicate")?,
     }
 
-    // The literal's type check runs after the bounds checks because it
+    // The literal's conversion runs after the bounds checks because it
     // indexes `schema.columns`, which is only safe once every index is known
     // valid. (SUM, TOTAL and AVG accept every column, M2c spec §4.) SQLite
-    // converts a mismatched literal by the column's affinity (so `v > 3` is
-    // true for every TEXT value, since SQLite orders storage classes as
-    // NULL < INTEGER/REAL < TEXT < BLOB), while v0 compares a column only
-    // with a literal of its own type, so any other literal is rejected here
-    // instead of producing a silent divergence (external review P2-1).
-    // `IS NULL` and `IS NOT NULL` are type-agnostic and stay allowed on any column.
-    if let Predicate::Compare { column, op, value } = &view.predicate {
+    // converts the literal by the column's affinity before it compares (M2c
+    // spec §5), so the plan stores the converted literal and the comparison
+    // agrees with SQLite. `IS NULL` and `IS NOT NULL` are type-agnostic and
+    // stay allowed on any column.
+    let mut predicate = view.predicate.clone();
+    if let Predicate::Compare { column, op, value } = &mut predicate {
         let col = columns[*column];
-        let matches = match (col.ty, value) {
-            (_, Value::Null) => {
-                return Err(PlanError(format!(
-                    "the comparison {op:?} on column {column} (`{}`) has a NULL literal, \
-                     which makes it UNKNOWN for every row (spec §6.1); use IS NULL or \
-                     IS NOT NULL instead",
-                    col.name
-                )))
-            }
-            (ColumnType::Integer, Value::Int(_)) | (ColumnType::Text, Value::Text(_)) => true,
-            _ => false,
-        };
-        if !matches {
+        if *value == Value::Null {
             return Err(PlanError(format!(
-                "the comparison {op:?} between column {column} (`{}`) of type {:?} and the \
-                 literal {value:?} is not supported: v0 compares a column only with a literal \
-                 of its own type, while SQLite would convert the literal by the column's \
-                 affinity (spec §6.1)",
-                col.name, col.ty
+                "the comparison {op:?} on column {column} (`{}`) has a NULL literal, \
+                 which makes it UNKNOWN for every row (spec §6.1); use IS NULL or \
+                 IS NOT NULL instead",
+                col.name
             )));
         }
+        *value = convert_literal(col, value)?;
     }
 
     // The columns the projection keeps: group keys first (in their original
@@ -430,10 +418,10 @@ pub fn lower(view: &ResolvedView) -> Result<Plan, PlanError> {
         },
         None => scan(anchor),
     };
-    if view.predicate != Predicate::None {
+    if predicate != Predicate::None {
         node = Plan::Filter {
             input: Box::new(node),
-            predicate: view.predicate.clone(),
+            predicate,
         };
     }
     node = Plan::Project {
@@ -451,6 +439,31 @@ pub fn lower(view: &ResolvedView) -> Result<Plan, PlanError> {
                 column: a.column.map(remap),
             })
             .collect(),
+    })
+}
+
+/// M2c spec §5: SQLite's comparison affinity, applied to the literal at
+/// compile time (datatype3.html §4.2). A text that reads as a number becomes
+/// that number in its canonical (comparison) form, so `'3.0'` is `3`.
+fn convert_literal(column: &Column, literal: &Value) -> Result<Value, PlanError> {
+    Ok(match (column.ty, literal) {
+        (ColumnType::Integer | ColumnType::Real | ColumnType::Numeric, Value::Text(t)) => {
+            match parse_numeric_text(t) {
+                Some(NumericTerm::Integer(n)) => Value::Int(n),
+                Some(NumericTerm::Approx(x)) => Value::Real(x).canonical(),
+                None => literal.clone(),
+            }
+        }
+        (ColumnType::Text, Value::Int(n)) => Value::Text(n.to_string()),
+        (ColumnType::Text, Value::Real(_)) => {
+            return Err(PlanError(format!(
+                "a REAL literal cannot be compared with the TEXT-affinity column {}: SQLite's \
+                 REAL-to-TEXT rendering differs between versions (M2c spec §5); compare with a \
+                 quoted string",
+                column.name
+            )))
+        }
+        _ => literal.clone(),
     })
 }
 
@@ -487,10 +500,14 @@ fn check_join(join: &ResolvedJoin, anchor: &Schema) -> Result<(), PlanError> {
     );
     if l.ty != r.ty {
         return Err(PlanError(format!(
-            "join: the key columns must have the same type, but {}.{} is {:?} and {}.{} is {:?} \
-             — SQLite compares an INTEGER column with a TEXT column under numeric affinity, \
-             so '7' = 7 is true there, while v0 compares values exactly",
-            anchor.table, l.name, l.ty, right.table, r.name, r.ty
+            "join: the key columns must have the same affinity, but {}.{} has {} affinity and \
+             {}.{} has {} affinity (M2c spec §5)",
+            anchor.table,
+            l.name,
+            l.ty.name(),
+            right.table,
+            r.name,
+            r.ty.name()
         )));
     }
     Ok(())
@@ -954,39 +971,97 @@ mod tests {
         Predicate::Compare { column, op, value }
     }
 
+    fn schema_of(types: &[ColumnType]) -> Schema {
+        Schema {
+            table: "t".into(),
+            columns: types
+                .iter()
+                .enumerate()
+                .map(|(i, &ty)| Column {
+                    name: format!("c{i}"),
+                    ty,
+                    nullable: true,
+                })
+                .collect(),
+        }
+    }
+
+    /// The literal `lower` stored for `column <op> literal` over `ty`.
+    fn converted(ty: ColumnType, literal: Value) -> Result<Value, PlanError> {
+        let db = Database::single(schema_of(&[ty]));
+        let plan = lower_query(&q(vec![0], vec![count()], cmp(0, CmpOp::Eq, literal)), &db)?;
+        let Plan::Aggregate { input, .. } = plan else {
+            panic!()
+        };
+        let Plan::Project { input, .. } = *input else {
+            panic!()
+        };
+        let Plan::Filter {
+            predicate: Predicate::Compare { value, .. },
+            ..
+        } = *input
+        else {
+            panic!()
+        };
+        Ok(value)
+    }
+
     #[test]
-    fn an_integer_literal_compared_with_a_text_column_is_rejected() {
-        // SQLite applies the TEXT column's affinity to the literal and
-        // compares it as text; v0 compares values exactly (spec §6.1,
-        // "Operand types must match").
-        let err = lower_query(
-            &q(vec![0], vec![count()], cmp(1, CmpOp::Gt, Value::Int(3))),
-            &Database::single(int_then_text()),
-        )
-        .expect_err("an INTEGER literal against a TEXT column must be rejected");
-        assert!(
-            err.0.contains("comparison") && err.0.contains("Text") && err.0.contains("Int"),
-            "the error must name the comparison and both types: {}",
-            err.0
+    fn a_text_literal_gets_numeric_affinity_for_a_numeric_column() {
+        for ty in [ColumnType::Integer, ColumnType::Real, ColumnType::Numeric] {
+            let text = |s: &str| converted(ty, Value::Text(s.into())).unwrap();
+            assert_eq!(text(" 3 "), Value::Int(3), "{ty:?}");
+            assert_eq!(text("2.5"), Value::Real(2.5), "{ty:?}");
+            assert_eq!(text("abc"), Value::Text("abc".into()), "{ty:?}");
+            assert_eq!(text("3.0"), Value::Int(3), "{ty:?}: canonical form");
+            assert_eq!(text("2.5e1"), Value::Int(25), "{ty:?}: canonical form");
+            assert_eq!(text("-0.0"), Value::Int(0), "{ty:?}: canonical form");
+            assert_eq!(
+                converted(ty, Value::Int(3)).unwrap(),
+                Value::Int(3),
+                "{ty:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_integer_literal_becomes_text_for_a_text_column() {
+        assert_eq!(
+            converted(ColumnType::Text, Value::Int(-12)).unwrap(),
+            Value::Text("-12".into())
+        );
+        assert_eq!(
+            converted(ColumnType::Text, Value::Blob(vec![1])).unwrap(),
+            Value::Blob(vec![1])
+        );
+        assert_eq!(
+            converted(ColumnType::Text, Value::Text("x".into())).unwrap(),
+            Value::Text("x".into())
         );
     }
 
     #[test]
-    fn a_text_literal_compared_with_an_integer_column_is_rejected() {
-        let err = lower_query(
-            &q(
-                vec![0],
-                vec![count()],
-                cmp(0, CmpOp::Eq, Value::Text("3".into())),
-            ),
-            &Database::single(int_then_text()),
-        )
-        .expect_err("a TEXT literal against an INTEGER column must be rejected");
+    fn a_real_literal_against_a_text_column_is_refused() {
+        let e = converted(ColumnType::Text, Value::Real(2.5)).unwrap_err();
         assert!(
-            err.0.contains("comparison") && err.0.contains("Integer") && err.0.contains("Text"),
-            "the error must name the comparison and both types: {}",
-            err.0
+            e.0.contains("REAL literal cannot be compared with the TEXT-affinity column c0"),
+            "{e}"
         );
+    }
+
+    #[test]
+    fn a_blob_affinity_column_converts_nothing() {
+        for literal in [
+            Value::Text("3".into()),
+            Value::Int(3),
+            Value::Real(1.5),
+            Value::Blob(vec![]),
+        ] {
+            assert_eq!(
+                converted(ColumnType::Blob, literal.clone()).unwrap(),
+                literal
+            );
+        }
     }
 
     #[test]
@@ -1213,35 +1288,64 @@ mod tests {
     }
 
     #[test]
-    fn join_keys_of_different_types_are_rejected() {
-        // Measured in SQLite: an INTEGER column compared with a TEXT column
-        // uses numeric affinity, so '7' = 7 is true there, while v0 compares
-        // values exactly (the plan's Ruling 4).
-        let err = lower_query(
-            &jq(vec![0], vec![count()], Predicate::None, join("t1", 0, 1)),
-            &two_kv(),
-        )
-        .expect_err("t0.k is TEXT and t1.v is INTEGER");
-        assert!(err.0.contains("same type"), "{}", err.0);
+    fn join_keys_of_different_affinity_are_rejected_naming_both() {
+        let left = schema_of(&[ColumnType::Integer]);
+        let mut right = schema_of(&[ColumnType::Real]);
+        right.table = "u".into();
+        let e = lower(&ResolvedView {
+            anchor: &left,
+            join: Some(ResolvedJoin {
+                right: &right,
+                left_column: 0,
+                right_column: 0,
+            }),
+            group_by: vec![0],
+            aggs: vec![count()],
+            predicate: Predicate::None,
+        })
+        .unwrap_err();
+        assert!(
+            e.0.contains("t.c0 has INTEGER affinity and u.c0 has REAL affinity"),
+            "{e}"
+        );
     }
 
     #[test]
-    fn a_comparison_on_the_right_tables_text_column_checks_its_type() {
-        // The type checks must use the joined row's columns: joined column 2 is t1.k, a TEXT column.
-        let err = lower_query(
+    fn join_keys_of_one_affinity_are_accepted() {
+        lower_query(
+            &jq(vec![0], vec![count()], Predicate::None, join("t1", 0, 0)),
+            &two_kv(),
+        )
+        .expect("t0.k and t1.k are both TEXT");
+    }
+
+    #[test]
+    fn a_comparison_on_the_right_tables_column_converts_by_that_columns_affinity() {
+        // The conversion must use the joined row's columns: joined column 2 is
+        // t1.k, a TEXT column, so the INTEGER literal becomes its decimal text.
+        let plan = lower_query(
             &jq(
                 vec![0],
                 vec![count()],
-                cmp(2, CmpOp::Gt, Value::Int(3)),
+                cmp(2, CmpOp::Eq, Value::Int(3)),
                 join("t1", 0, 0),
             ),
             &two_kv(),
         )
-        .expect_err("a comparison against TEXT with an INTEGER literal is rejected");
-        assert!(
-            err.0.contains("comparison") && err.0.contains("Text"),
-            "{}",
-            err.0
+        .expect("an INTEGER literal against a TEXT column is converted");
+        let Plan::Aggregate { input, .. } = plan else {
+            panic!()
+        };
+        let Plan::Project { input, .. } = *input else {
+            panic!()
+        };
+        let Plan::Filter { predicate, .. } = *input else {
+            panic!()
+        };
+        assert_eq!(
+            predicate,
+            cmp(2, CmpOp::Eq, Value::Text("3".into())),
+            "joined column 2 is t1.k"
         );
     }
 

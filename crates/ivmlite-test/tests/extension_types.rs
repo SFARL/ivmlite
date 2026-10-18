@@ -538,3 +538,90 @@ fn dropping_a_min_view_removes_its_extremum_tables() {
     c.execute_batch("DROP TABLE m").unwrap();
     assert_eq!(objects(&c), before);
 }
+
+#[test]
+fn filters_follow_sqlites_comparison_affinity() {
+    let c = open_with_extension(None).unwrap();
+    c.execute_batch(
+        "CREATE TABLE t(k TEXT, i INTEGER, x TEXT, b);
+         INSERT INTO t VALUES ('a', 3, '3', 3), ('a', 1, 'abc', '3'), ('b', 2, '2', X'00'), ('b', NULL, NULL, 2.5);",
+    )
+    .unwrap();
+    let views: Vec<(String, String)> = [
+        "i > '2'",
+        "i = 2.5",
+        "i < 9223372036854775808",
+        "x = 3",
+        "x > 2",
+        "x != 'abc'",
+        "b = 3",
+        "b = '3'",
+        "b > X'00'",
+        "b < 'a'",
+        "b >= 2.5",
+        "i IS NULL",
+        "i = '3.0'",
+        "i = '2.5e1'",
+        "i = '-0.0'",
+    ]
+    .iter()
+    .enumerate()
+    .map(|(n, cond)| {
+        (
+            format!("f{n}"),
+            format!("SELECT k, COUNT(*) FROM t WHERE {cond} GROUP BY k"),
+        )
+    })
+    .collect();
+    for (name, sql) in &views {
+        create(&c, name, sql).unwrap();
+        assert_matches_oracle(&c, name, sql);
+    }
+    c.execute_batch(
+        "INSERT INTO t VALUES ('a', 7, '7', 'z'), ('c', 2, '1e1', 3.0), ('c', 25, '25', 0.0), ('d', 0, '0', -0.0);
+         DELETE FROM t WHERE i = 1;",
+    )
+    .unwrap();
+    for (name, sql) in &views {
+        refresh(&c, name).unwrap();
+        assert_matches_oracle(&c, name, sql);
+    }
+    let e = create(
+        &c,
+        "bad",
+        "SELECT k, COUNT(*) FROM t WHERE x > 2.5 GROUP BY k",
+    )
+    .unwrap_err();
+    assert!(
+        e.to_string().contains("REAL literal cannot be compared"),
+        "{e}"
+    );
+}
+
+#[test]
+fn joins_match_canonical_keys_and_refuse_mixed_affinity() {
+    let c = open_with_extension(None).unwrap();
+    c.execute_batch(
+        "CREATE TABLE a(k, v TEXT); CREATE TABLE b(k, w TEXT);
+         CREATE TABLE ai(k INTEGER, v TEXT); CREATE TABLE br(k REAL, w TEXT);
+         INSERT INTO a VALUES (1, 'x'), (2.5, 'y'); INSERT INTO b VALUES (1.0, 'p'), ('1', 'q'), (2.5, 'r');",
+    )
+    .unwrap();
+    let sql = "SELECT a.v, COUNT(*) FROM a JOIN b ON a.k = b.k GROUP BY a.v";
+    create(&c, "j", sql).unwrap();
+    assert_matches_oracle(&c, "j", sql);
+    c.execute_batch("INSERT INTO a VALUES (1.0, 'x'); DELETE FROM b WHERE w = 'r';")
+        .unwrap();
+    refresh(&c, "j").unwrap();
+    assert_matches_oracle(&c, "j", sql);
+    let e = create(
+        &c,
+        "bad",
+        "SELECT ai.v, COUNT(*) FROM ai JOIN br ON ai.k = br.k GROUP BY ai.v",
+    )
+    .unwrap_err();
+    assert!(
+        e.to_string().contains("INTEGER affinity") && e.to_string().contains("REAL affinity"),
+        "{e}"
+    );
+}
