@@ -195,16 +195,12 @@ impl Node {
 fn passes(predicate: &Predicate, row: &Row) -> bool {
     match predicate {
         Predicate::None => true,
-        Predicate::Compare { column, op, value } => match (row.get(*column), value) {
+        Predicate::Compare { column, op, value } => match row.get(*column) {
             // UNKNOWN for every operator, `!=` included: `NULL != 4` is not true.
-            (Value::Null, _) => false,
-            (Value::Int(a), Value::Int(b)) => op.holds(a.cmp(b)),
-            // Byte order, which is SQLite's BINARY collation (§7.1).
-            (Value::Text(a), Value::Text(b)) => op.holds(a.as_bytes().cmp(b.as_bytes())),
-            (a, b) => unreachable!(
-                "`lower` accepts a comparison only with a literal of the column's type, \
-                 and a STRICT table stores only that type: compared {a:?} with {b:?}"
-            ),
+            Value::Null => false,
+            // M2c spec §2, §5: SQLite's cross-class order; TEXT and BLOB by
+            // bytes (BINARY).
+            cell => op.holds(cell.sql_cmp(value)),
         },
         Predicate::IsNull { column } => matches!(row.get(*column), Value::Null),
         Predicate::IsNotNull { column } => !matches!(row.get(*column), Value::Null),
@@ -258,6 +254,25 @@ mod tests {
 
     fn int(i: i64) -> Value {
         Value::Int(i)
+    }
+
+    #[test]
+    fn comparisons_use_sqlites_cross_class_order() {
+        // Spec §2, §5: numerics compare exactly across Int and Real; TEXT sorts above numbers.
+        let gt_2 = Predicate::Compare {
+            column: 0,
+            op: CmpOp::Gt,
+            value: Value::Int(2),
+        };
+        assert!(passes(&gt_2, &row(vec![Value::Real(2.5)])));
+        assert!(!passes(&gt_2, &row(vec![Value::Real(2.0)])));
+        assert!(passes(&gt_2, &row(vec![Value::Text("1".into())])));
+        let eq_1 = Predicate::Compare {
+            column: 0,
+            op: CmpOp::Eq,
+            value: Value::Int(1),
+        };
+        assert!(passes(&eq_1, &row(vec![Value::Real(1.0)])));
     }
 
     /// Spec §6.1: each whitelisted operator keeps exactly the rows SQL keeps.

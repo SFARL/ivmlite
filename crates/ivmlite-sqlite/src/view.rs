@@ -943,10 +943,11 @@ fn value_of(v: ValueRef<'_>) -> std::result::Result<Value, String> {
         ValueRef::Text(t) => std::str::from_utf8(t)
             .map(|s| Value::Text(s.to_string()))
             .map_err(|_| "a TEXT value is not UTF-8".to_string()),
-        other => Err(format!(
-            "a {:?} value in a column v0 declares INTEGER or TEXT",
-            other.data_type()
-        )),
+        ValueRef::Real(x) if x.is_nan() => {
+            Err("a NaN REAL value, which SQLite never stores".into())
+        }
+        ValueRef::Real(x) => Ok(Value::Real(x)),
+        ValueRef::Blob(b) => Ok(Value::Blob(b.to_vec())),
     }
 }
 
@@ -1204,7 +1205,9 @@ fn sql_value(v: &Value) -> rusqlite::types::Value {
     match v {
         Value::Null => rusqlite::types::Value::Null,
         Value::Int(n) => rusqlite::types::Value::Integer(*n),
+        Value::Real(x) => rusqlite::types::Value::Real(*x),
         Value::Text(s) => rusqlite::types::Value::Text(s.clone()),
+        Value::Blob(b) => rusqlite::types::Value::Blob(b.clone()),
     }
 }
 

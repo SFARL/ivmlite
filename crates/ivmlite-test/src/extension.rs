@@ -178,7 +178,9 @@ fn sql_value(v: &Value) -> SqlValue {
     match v {
         Value::Null => SqlValue::Null,
         Value::Int(n) => SqlValue::Integer(*n),
+        Value::Real(x) => SqlValue::Real(*x),
         Value::Text(s) => SqlValue::Text(s.clone()),
+        Value::Blob(b) => SqlValue::Blob(b.clone()),
     }
 }
 

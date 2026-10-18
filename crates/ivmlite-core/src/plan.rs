@@ -160,7 +160,15 @@ fn canonical_predicate(predicate: &Predicate) -> String {
             let value = match value {
                 Value::Null => "null".to_string(),
                 Value::Int(n) => format!("int:{n}"),
+                Value::Real(x) => format!("real:{:016x}", x.to_bits()),
                 Value::Text(t) => format!("text:{}:{t}", t.len()),
+                Value::Blob(b) => format!(
+                    "blob:{}:{}",
+                    b.len(),
+                    b.iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<String>()
+                ),
             };
             format!("{op}({column},{value})")
         }
@@ -1255,5 +1263,19 @@ mod tests {
         unique.sort();
         unique.dedup();
         assert_eq!(unique.len(), texts.len(), "{texts:#?}");
+    }
+
+    #[test]
+    fn real_and_blob_literals_have_exact_canonical_texts() {
+        let p = |value: Value| {
+            canonical_predicate(&Predicate::Compare {
+                column: 0,
+                op: CmpOp::Eq,
+                value,
+            })
+        };
+        assert_eq!(p(Value::Real(1.5)), "eq(0,real:3ff8000000000000)");
+        assert_eq!(p(Value::Real(-0.0)), "eq(0,real:8000000000000000)");
+        assert_eq!(p(Value::Blob(vec![0xab, 0x01])), "eq(0,blob:2:ab01)");
     }
 }

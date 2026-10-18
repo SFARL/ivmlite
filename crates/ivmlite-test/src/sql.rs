@@ -25,15 +25,42 @@ fn sql_op(op: CmpOp) -> &'static str {
     }
 }
 
-/// A literal as SQL. A TEXT literal is single-quoted, with each `'` doubled.
+/// A literal as SQL. A TEXT literal is single-quoted, with each `'` doubled;
+/// a BLOB is `X'…'` in upper-case hex.
 ///
 /// # Panics
 /// On `Value::Null`, which `lower` rejects as a comparison literal.
 fn sql_literal(value: &Value) -> String {
     match value {
         Value::Int(n) => n.to_string(),
+        Value::Real(x) => real_literal(*x),
         Value::Text(s) => format!("'{}'", s.replace('\'', "''")),
+        Value::Blob(b) => format!(
+            "X'{}'",
+            b.iter()
+                .map(|byte| format!("{byte:02X}"))
+                .collect::<String>()
+        ),
         Value::Null => panic!("a comparison literal is never NULL; lower rejects it"),
+    }
+}
+
+/// A REAL as SQL text that reads back to the same bits: Rust's shortest
+/// round-trip form, with `.0` for an integral value so SQLite parses a
+/// REAL, and `1e999` for an infinity (SQLite's own spelling of overflow).
+fn real_literal(x: f64) -> String {
+    if x.is_infinite() {
+        return if x > 0.0 {
+            "1e999".into()
+        } else {
+            "-1e999".into()
+        };
+    }
+    let text = format!("{x:?}");
+    if text.contains(['.', 'e', 'E']) {
+        text
+    } else {
+        format!("{text}.0")
     }
 }
 
@@ -334,5 +361,28 @@ mod tests {
             sql.ends_with("GROUP BY \"t0\".\"k\", \"t1\".\"k\""),
             "the GROUP BY clause names the column, not the alias: {sql}"
         );
+    }
+
+    /// Literals are built as `Value`s directly and rendered here; no test
+    /// relies on how SQLite constant-folds a literal such as `-0.0`.
+    #[test]
+    fn real_and_blob_literals_render_and_read_back_exactly() {
+        assert_eq!(sql_literal(&Value::Real(1.0)), "1.0");
+        assert_eq!(sql_literal(&Value::Real(0.1)), "0.1");
+        assert_eq!(sql_literal(&Value::Real(1e300)), "1e300");
+        assert_eq!(sql_literal(&Value::Real(f64::INFINITY)), "1e999");
+        assert_eq!(sql_literal(&Value::Real(f64::NEG_INFINITY)), "-1e999");
+        assert_eq!(sql_literal(&Value::Blob(vec![0x0a, 0xff])), "X'0AFF'");
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        for x in [1.0, 0.1, -2.5, 1e300, 5e-324, f64::MAX, f64::INFINITY] {
+            let back: f64 = conn
+                .query_row(
+                    &format!("SELECT {}", sql_literal(&Value::Real(x))),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(back.to_bits(), x.to_bits(), "{x:?}");
+        }
     }
 }

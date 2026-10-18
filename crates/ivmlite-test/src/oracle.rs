@@ -13,7 +13,9 @@ impl ToSql for Bound<'_> {
         Ok(match self.0 {
             Value::Null => ToSqlOutput::Owned(rusqlite::types::Value::Null),
             Value::Int(n) => ToSqlOutput::Owned(rusqlite::types::Value::Integer(*n)),
+            Value::Real(x) => ToSqlOutput::Owned(rusqlite::types::Value::Real(*x)),
             Value::Text(s) => ToSqlOutput::Owned(rusqlite::types::Value::Text(s.clone())),
+            Value::Blob(b) => ToSqlOutput::Owned(rusqlite::types::Value::Blob(b.clone())),
         })
     }
 }
@@ -25,8 +27,9 @@ fn from_sqlite(v: ValueRef<'_>) -> Result<Value, EngineError> {
         ValueRef::Text(bytes) => std::str::from_utf8(bytes)
             .map(|s| Value::Text(s.to_string()))
             .map_err(|e| EngineError(format!("text is not valid UTF-8: {e}"))),
-        ValueRef::Real(_) => Err(EngineError("v0 does not support REAL".into())),
-        ValueRef::Blob(_) => Err(EngineError("v0 does not support BLOB".into())),
+        ValueRef::Real(x) if x.is_nan() => Err(EngineError("SQLite returned a NaN".into())),
+        ValueRef::Real(x) => Ok(Value::Real(x)),
+        ValueRef::Blob(b) => Ok(Value::Blob(b.to_vec())),
     }
 }
 
