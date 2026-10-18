@@ -1,7 +1,7 @@
 //! M2c spec §4: `numeric_term` classifies a value exactly as SQLite's `sum`
 //! does, on the SQLite the tests link (M2c spec §4, "How a value counts").
 
-use ivmlite_core::{numeric_affinity, numeric_term, NumericTerm, Value};
+use ivmlite_core::{numeric_term, parse_numeric_text, NumericTerm, Value};
 use rusqlite::types::Value as Sql;
 use rusqlite::Connection;
 
@@ -55,10 +55,27 @@ const CORPUS: &[&str] = &[
     "-.",
     ".e5",
     "00012.50",
+    "-0.0",
+    "-0e0",
+    "-1e-400",
+    "1\0",
+    "1\0x",
+    "\x001",
+    "12 \0",
+    "1.5\0x",
 ];
 
 fn sqlite_sum(c: &Connection, v: &Sql) -> Sql {
     c.query_row("SELECT sum(?1)", [v], |r| r.get(0)).unwrap()
+}
+
+/// The byte length SQLite sees in the bound text, embedded NULs included:
+/// `length()` of a TEXT stops at the first NUL, that of a BLOB does not.
+fn bound_length(c: &Connection, s: &str) -> usize {
+    let length: i64 = c
+        .query_row("SELECT length(CAST(?1 AS BLOB))", [s], |r| r.get(0))
+        .unwrap();
+    usize::try_from(length).unwrap()
 }
 
 /// `CAST(?1 AS REAL)`: the same `sqlite3AtoF` reading as `sum`, but without
@@ -72,6 +89,7 @@ fn sqlite_cast_real(c: &Connection, v: &Sql) -> f64 {
 fn text_and_blob_terms_match_sqlite_sum() {
     let c = Connection::open_in_memory().unwrap();
     for &s in CORPUS {
+        assert_eq!(bound_length(&c, s), s.len(), "SQLite received {s:?} whole");
         for (value, sql) in [
             (Value::Text(s.into()), Sql::Text(s.into())),
             (
@@ -99,22 +117,26 @@ fn text_and_blob_terms_match_sqlite_sum() {
 }
 
 /// M2c spec §5: a TEXT stored into a REAL-affinity column converts exactly
-/// when `numeric_affinity` says it is well formed, and to the same number.
-/// (A REAL column turns an integer into a real, which keeps this comparison
-/// to the number itself; NUMERIC's integral-real rule is the caller's.)
+/// when `parse_numeric_text` says it is well formed, and to the same number.
+/// The sign of a zero is not compared: SQLite stores `-0.0` in a REAL column
+/// as `+0.0` (the `+ 0.0` below), while `CAST` in the test above pins the
+/// sign `numeric_term` reads. Everything else, including a text that ends at
+/// a NUL, must agree bit for bit.
 #[test]
-fn numeric_affinity_matches_a_real_affinity_column() {
+fn parse_numeric_text_matches_a_real_affinity_column() {
     let c = Connection::open_in_memory().unwrap();
     c.execute("CREATE TABLE t(x REAL)", []).unwrap();
     for &s in CORPUS {
         c.execute("DELETE FROM t", []).unwrap();
         c.execute("INSERT INTO t VALUES (?1)", [s]).unwrap();
         let stored: Sql = c.query_row("SELECT x FROM t", [], |r| r.get(0)).unwrap();
-        match (numeric_affinity(s), &stored) {
-            (Some(Value::Int(n)), Sql::Real(y)) => {
-                assert_eq!((n as f64).to_bits(), y.to_bits(), "{s:?}")
+        match (parse_numeric_text(s), &stored) {
+            (Some(NumericTerm::Integer(n)), Sql::Real(y)) => {
+                assert_eq!((n as f64).to_bits(), y.to_bits(), "{s:?}");
             }
-            (Some(Value::Real(x)), Sql::Real(y)) => assert_eq!(x.to_bits(), y.to_bits(), "{s:?}"),
+            (Some(NumericTerm::Approx(x)), Sql::Real(y)) => {
+                assert_eq!((x + 0.0).to_bits(), y.to_bits(), "{s:?}");
+            }
             (None, Sql::Text(t)) => assert_eq!(t, s),
             other => panic!("{s:?}: ivmlite {:?}, SQLite {stored:?}", other.0),
         }

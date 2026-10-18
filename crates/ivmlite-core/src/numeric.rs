@@ -116,6 +116,20 @@ fn scan(bytes: &[u8]) -> Scan {
     }
 }
 
+/// `scan` of a TEXT value. SQLite reads a TEXT up to its first NUL byte
+/// (M2c spec §4), so `"1\0x"` is `"1"`; a BLOB is read whole.
+fn scan_text(text: &str) -> Scan {
+    let bytes = text.as_bytes();
+    let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+    scan(&bytes[..end])
+}
+
+fn term_of(scanned: &Scan) -> NumericTerm {
+    scanned
+        .integer
+        .map_or(NumericTerm::Approx(scanned.value), NumericTerm::Integer)
+}
+
 /// How SUM/TOTAL/AVG count `value`; `None` for NULL. A BLOB counts as its
 /// bytes read as text and is never an integer.
 pub fn numeric_term(value: &Value) -> Option<NumericTerm> {
@@ -123,29 +137,21 @@ pub fn numeric_term(value: &Value) -> Option<NumericTerm> {
         Value::Null => return None,
         Value::Int(n) => NumericTerm::Integer(*n),
         Value::Real(x) => NumericTerm::Approx(*x),
-        Value::Text(s) => {
-            let scanned = scan(s.as_bytes());
-            scanned
-                .integer
-                .map_or(NumericTerm::Approx(scanned.value), NumericTerm::Integer)
-        }
+        Value::Text(s) => term_of(&scan_text(s)),
         Value::Blob(b) => NumericTerm::Approx(scan(b).value),
     })
 }
 
-/// SQLite's numeric affinity applied to a TEXT value (M2c spec §5):
-/// `Some(Int | Real)` for a well-formed number, `None` otherwise. A pure
-/// integer that overflows `i64` becomes a `Real`.
-pub fn numeric_affinity(text: &str) -> Option<Value> {
-    let scanned = scan(text.as_bytes());
-    if !scanned.well_formed {
-        return None;
-    }
-    Some(
-        scanned
-            .integer
-            .map_or(Value::Real(scanned.value), Value::Int),
-    )
+/// SQLite's reading of a TEXT as a number, as `sum` takes it (M2c spec §4,
+/// §5): `Some` when the whole text is a well-formed number, `None`
+/// otherwise. An integer text that fits `i64` is `Integer`; any other
+/// well-formed number, including `"3.0"`, `"2.5e1"` and an integer that
+/// overflows `i64`, is `Approx`. This is a pure parse: it does not apply
+/// column affinity, which also turns an integral `Approx` into an integer
+/// and `-0.0` into `0`.
+pub fn parse_numeric_text(text: &str) -> Option<NumericTerm> {
+    let scanned = scan_text(text);
+    scanned.well_formed.then(|| term_of(&scanned))
 }
 
 #[cfg(test)]
@@ -200,11 +206,25 @@ mod tests {
     }
 
     #[test]
-    fn numeric_affinity_converts_only_well_formed_numbers() {
-        assert_eq!(numeric_affinity(" 3 "), Some(Value::Int(3)));
-        assert_eq!(numeric_affinity("3.0"), Some(Value::Real(3.0)));
-        assert_eq!(numeric_affinity("2.5e1"), Some(Value::Real(25.0)));
-        assert_eq!(numeric_affinity("3x"), None);
-        assert_eq!(numeric_affinity("abc"), None);
+    fn parse_numeric_text_reads_only_well_formed_numbers_as_sum_does() {
+        assert_eq!(parse_numeric_text(" 3 "), Some(Integer(3)));
+        assert_eq!(parse_numeric_text("3.0"), Some(Approx(3.0)));
+        assert_eq!(parse_numeric_text("2.5e1"), Some(Approx(25.0)));
+        assert_eq!(parse_numeric_text("3x"), None);
+        assert_eq!(parse_numeric_text("abc"), None);
+    }
+
+    #[test]
+    fn a_text_ends_at_its_first_nul_but_a_blob_does_not() {
+        assert_eq!(text("1\0"), Some(Integer(1)));
+        assert_eq!(text("1\0x"), Some(Integer(1)));
+        assert_eq!(text("\x001"), Some(Approx(0.0)));
+        assert_eq!(text("12 \0"), Some(Integer(12)));
+        assert_eq!(text("1.5\0x"), Some(Approx(1.5)));
+        assert_eq!(parse_numeric_text("1\0x"), Some(Integer(1)));
+        assert_eq!(
+            numeric_term(&Value::Blob(b"1\0".to_vec())),
+            Some(Approx(1.0))
+        );
     }
 }

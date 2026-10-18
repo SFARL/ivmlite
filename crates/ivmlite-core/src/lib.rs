@@ -24,7 +24,7 @@ pub use engine::{EngineError, IncrementalEngine};
 pub use exact::{ExactSum, EXACT_BYTES, EXACT_LIMBS};
 pub use join::JoinState;
 pub use node::{ArrangementProvider, Node};
-pub use numeric::{numeric_affinity, numeric_term, NumericTerm};
+pub use numeric::{numeric_term, parse_numeric_text, NumericTerm};
 pub use plan::{lower, lower_query, Plan, PlanError, ResolvedJoin, ResolvedView};
 pub use query::{Agg, AggFn, CmpOp, Join, Predicate, ViewQuery};
 pub use row::Row;
