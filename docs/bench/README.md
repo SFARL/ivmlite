@@ -1656,3 +1656,7 @@ Raw data:
 - [`m1b-phase7-refresh-all.csv`](m1b-phase7-refresh-all.csv): one row per timed refresh of every view: two builds × six cases × their shapes × three rounds × six batches (batch 0 is the warm-up), with the function's return value and the 1-minute load average at the case's start.
 - [`m1b-phase7-refresh-all-builds.csv`](m1b-phase7-refresh-all-builds.csv): the commit, the library's SHA-256 and the SQLite version behind each label.
 - [`phase7_tables.py`](phase7_tables.py): derives every table and figure in this section from the CSVs above.
+
+## M2a: non-uniform workload validation
+
+The 32-cell Zipf, hot-update and join-fanout matrix has its own page, [`m2a.md`](m2a.md). In short, ivmlite wins every batch-10 cell by 10× to 57×; at batch 1,000 it loses on the single table and at join fanout 1 and 8 (0.36× to 0.71×), and holds 1.12× to 1.24× at fanout 64. Skew and hot updates flip no verdict.

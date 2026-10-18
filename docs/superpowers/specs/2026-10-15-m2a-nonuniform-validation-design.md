@@ -1,6 +1,6 @@
 # M2a — bounded non-uniform workload validation
 
-Status: proposed implementation contract; no M2a measurements yet.
+Status: implemented and measured 2026-10-18; results in `docs/bench/m2a.md`.
 Amendment 2026-10-17: stage rows after refresh (see §5).
 Prerequisite: alpha.5 release preparation and M1b correctness/performance/write-cost
 acceptance. M2a validates the current engine; it does not add SQL operators,
