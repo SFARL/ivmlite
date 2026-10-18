@@ -876,6 +876,34 @@ fn an_overflowing_sum_is_an_sqlite_error_not_a_crash() {
     c.execute_batch("DROP TABLE big_sums").unwrap();
 }
 
+/// Spec §5: every callback runs inside `guard`, so a panic in the engine is
+/// an SQLite error, never an unwind across the FFI boundary. Corrupted
+/// persisted state still reaches one: a group whose stored row count is
+/// `i64::MAX` overflows on the next insert into it (`agg.rs` adds with
+/// overflow checks on in a debug build), and the refresh must fail with
+/// `ivmlite internal error` rather than abort the host process.
+#[test]
+fn a_panic_on_corrupted_state_is_an_sqlite_error_not_a_crash() {
+    let c = open_with_extension(None).unwrap();
+    c.execute_batch(
+        "CREATE TABLE t(k TEXT, x INTEGER) STRICT;
+         INSERT INTO t VALUES ('a', 1);",
+    )
+    .unwrap();
+    create(&c, "v", "SELECT k, COUNT(*) FROM t GROUP BY k").unwrap();
+    // The stored state's first value is `rows`: the INTEGER tag 0x01, then 8
+    // big-endian bytes (Phase 3a spec §4). `||` yields TEXT, so cast back.
+    c.execute_batch(
+        "UPDATE __ivm_state_v_0_agg_groups \
+         SET val = CAST(X'017FFFFFFFFFFFFFFF' || substr(val, 10) AS BLOB)",
+    )
+    .unwrap();
+    c.execute_batch("INSERT INTO t VALUES ('a', 2)").unwrap();
+    let err = refresh(&c, "v").expect_err("the corrupted row count overflows");
+    assert!(err.to_string().contains("ivmlite internal error"), "{err}");
+    c.execute_batch("DROP TABLE v").unwrap();
+}
+
 /// Spec §6 scenario 6 (M-1 scenario 9).
 #[test]
 fn drop_removes_every_shadow_object_and_the_base_tables_stay_writable() {

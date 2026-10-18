@@ -211,7 +211,7 @@ fn decode_int_sum(value: &Value) -> Option<i128> {
 }
 
 /// The stored form of `approx`: NULL while no non-integer input is live.
-fn approx_value(approx: Option<&Approx>) -> Value {
+fn encode_approx(approx: Option<&Approx>) -> Value {
     approx.map_or(Value::Null, |a| Value::Blob(a.to_bytes()))
 }
 
@@ -281,7 +281,7 @@ impl GroupState {
     /// The stored form: `[rows, real_keys, …]`, then each aggregate's values
     /// in order (`width`): nothing for `COUNT(*)`, `[non_null]` for
     /// `COUNT(x)`, `[non_null, int_sum, approx]` for SUM, TOTAL and AVG, with
-    /// `int_sum` as `int_sum_value` and `approx` as `approx_value` write them.
+    /// `int_sum` as `int_sum_value` and `approx` as `encode_approx` write them.
     /// The layout is fixed and every value has one form, so the encoding is
     /// canonical — the same state always encodes to the same row (spec §7).
     fn encode(&self, aggs: &[Agg]) -> Row {
@@ -295,7 +295,7 @@ impl GroupState {
                 _ => {
                     values.push(Value::Int(acc.non_null));
                     values.push(int_sum_value(acc.int_sum));
-                    values.push(approx_value(acc.approx.as_deref()));
+                    values.push(encode_approx(acc.approx.as_deref()));
                 }
             }
         }
@@ -1387,8 +1387,13 @@ mod tests {
 
     #[test]
     fn opposite_infinities_sum_to_null() {
-        // M2c spec amendment 5: +Inf + -Inf is NaN, which SQLite returns as NULL.
-        let mut s = state_with(vec![agg(AggFn::Sum, 1), agg(AggFn::Avg, 1)]);
+        // M2c spec amendment 5: +Inf + -Inf is NaN, which SQLite returns as
+        // NULL — for TOTAL too (measured: total(1e999, -1e999) is NULL).
+        let mut s = state_with(vec![
+            agg(AggFn::Sum, 1),
+            agg(AggFn::Total, 1),
+            agg(AggFn::Avg, 1),
+        ]);
         s.absorb(&ZSet::from_rows([
             (row(vec![txt("a"), real(f64::INFINITY)]), 1),
             (row(vec![txt("a"), real(1.0)]), 1),
@@ -1404,10 +1409,18 @@ mod tests {
             d,
             ZSet::from_rows([
                 (
-                    row(vec![txt("a"), real(f64::INFINITY), real(f64::INFINITY)]),
+                    row(vec![
+                        txt("a"),
+                        real(f64::INFINITY),
+                        real(f64::INFINITY),
+                        real(f64::INFINITY)
+                    ]),
                     -1
                 ),
-                (row(vec![txt("a"), Value::Null, Value::Null]), 1),
+                (
+                    row(vec![txt("a"), Value::Null, Value::Null, Value::Null]),
+                    1
+                ),
             ])
         );
     }

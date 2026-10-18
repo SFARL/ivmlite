@@ -489,8 +489,9 @@ impl Named {
                     AggFn::Total | AggFn::Avg => ColumnType::Real,
                 },
                 // SUM and AVG over no non-NULL value are NULL (spec §6.1, M2c
-                // spec §4); COUNT is 0 and TOTAL 0.0 there.
-                nullable: matches!(agg.func, AggFn::Sum | AggFn::Avg),
+                // spec §4), and SUM, TOTAL and AVG over both infinities are
+                // NULL (M2c spec amendment 5); only COUNT is never NULL.
+                nullable: agg.func != AggFn::Count,
             },
         }
     }
@@ -1125,7 +1126,7 @@ mod tests {
                 ("region".to_string(), ColumnType::Text, true),
                 ("COUNT(amount)".to_string(), ColumnType::Integer, false),
                 ("SUM(region)".to_string(), ColumnType::Numeric, true),
-                ("TOTAL(amount)".to_string(), ColumnType::Real, false),
+                ("TOTAL(amount)".to_string(), ColumnType::Real, true),
                 ("avg(amount)".to_string(), ColumnType::Real, true),
             ]
         );

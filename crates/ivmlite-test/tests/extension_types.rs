@@ -150,3 +150,36 @@ fn sum_overflow_fails_the_refresh_with_its_message_and_changes_nothing() {
         ]
     );
 }
+
+#[test]
+fn a_sum_overflow_in_one_group_rolls_back_every_group() {
+    // Group `a` changes fine in the same refresh in which `b` overflows; the
+    // refresh fails as a whole, so neither group's state nor output changes.
+    let c = open_with_extension(None).unwrap();
+    c.execute_batch(
+        "CREATE TABLE t(k TEXT, i INTEGER) STRICT;
+         INSERT INTO t VALUES ('a', 1), ('b', 9223372036854775807);",
+    )
+    .unwrap();
+    let sql = "SELECT k, SUM(i), COUNT(*) FROM t GROUP BY k";
+    create(&c, "v", sql).unwrap();
+    let before = durable_state(&c, "v");
+    let output = rows(&c, "SELECT * FROM v");
+    c.execute_batch("INSERT INTO t VALUES ('a', 2), ('b', 1)")
+        .unwrap();
+    let e = refresh(&c, "v").expect_err("group b's final exact sum is outside i64");
+    assert!(e.to_string().contains("integer overflow in SUM"), "{e}");
+    assert_eq!(durable_state(&c, "v"), before);
+    assert_eq!(rows(&c, "SELECT * FROM v"), output);
+    assert_eq!(
+        output,
+        vec![
+            vec![Sql::Text("a".into()), Sql::Integer(1), Sql::Integer(1)],
+            vec![
+                Sql::Text("b".into()),
+                Sql::Integer(i64::MAX),
+                Sql::Integer(1)
+            ],
+        ]
+    );
+}
