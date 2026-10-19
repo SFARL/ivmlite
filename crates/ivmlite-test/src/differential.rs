@@ -403,9 +403,9 @@ where
 mod tests {
     use super::*;
     use crate::{
-        enumerate, enumerate_join, gen_database, gen_database_with_swapped_right_table, Agg, AggFn,
-        Column, ColumnType, Domain, EngineError, IncrementalEngine, NaiveRecompute, Predicate,
-        Schema,
+        enumerate, enumerate_join, gen_database, gen_database_with_swapped_right_table,
+        gen_real_numeric_database, Agg, AggFn, Column, ColumnType, Domain, EngineError,
+        IncrementalEngine, NaiveRecompute, Predicate, Schema,
     };
     use ivmlite_core::Value;
 
@@ -858,12 +858,12 @@ mod tests {
         check_batch_invariance(&case, IncrementalEngine::new).unwrap();
     }
 
-    #[test]
-    fn naive_engine_passes_every_enumerated_query() {
-        let schema = schema();
+    /// Every single-table query over `schema`, one case each, seeded by its
+    /// index, run against `NaiveRecompute`.
+    fn naive_engine_passes_every_query_over(schema: &Schema) {
         let db = Database::single(schema.clone());
         let domain = Domain::default();
-        for (i, query) in crate::enumerate(&schema).into_iter().enumerate() {
+        for (i, query) in crate::enumerate(schema).into_iter().enumerate() {
             let mut case = gen_case(i as u64, &db, &domain, 30, 200, Batching::Chunks(7));
             case.query = query;
             let mut engine = NaiveRecompute::new();
@@ -874,28 +874,29 @@ mod tests {
     }
 
     #[test]
+    fn naive_engine_passes_every_enumerated_query() {
+        naive_engine_passes_every_query_over(&gen_database(1).tables()[0]);
+    }
+
+    /// The same sweep over REAL, NUMERIC and TEXT columns (M2c spec §6).
+    #[test]
+    fn naive_engine_passes_every_enumerated_query_over_real_and_numeric_columns() {
+        naive_engine_passes_every_query_over(&gen_real_numeric_database().tables()[0]);
+    }
+
+    #[test]
     fn batch_invariance_holds_for_naive_engine() {
         let db = Database::single(schema());
         let domain = Domain::default();
-        // An explicit stride into `enumerate`'s space, not `gen_case`'s plain
-        // `seed % len` (M1b Phase 2a final review, Important 2): taken
-        // straight, seed 4242 now lands on a COUNT-only, one-column-group-by
-        // query, silently dropping this test's SUM / two-column-group-by
-        // coverage. The assertions below keep that from happening quietly
-        // again.
-        const BATCH_INVARIANCE_QUERY_STRIDE: usize = 11;
+        // Selected by property, not by position (M1b Phase 2a final review,
+        // Important 2: a position into the enumeration silently changes
+        // meaning whenever the enumeration does): a SUM over a two-column
+        // group-by.
         let seed = 4242u64;
-        let queries = enumerate(&schema());
-        let query =
-            queries[(seed as usize * BATCH_INVARIANCE_QUERY_STRIDE) % queries.len()].clone();
-        assert!(
-            query.aggs.iter().any(|a| a.func == AggFn::Sum),
-            "this case must exercise SUM: {query:?}"
-        );
-        assert!(
-            query.group_by.len() == 2,
-            "this case must exercise a two-column group-by: {query:?}"
-        );
+        let query = enumerate(&schema())
+            .into_iter()
+            .find(|q| q.group_by.len() == 2 && q.aggs.iter().any(|a| a.func == AggFn::Sum))
+            .expect("the enumeration has a SUM over a two-column group-by");
         let case = gen_case_with_query(seed, &db, &domain, query, 30, 200, Batching::All);
         check_batch_invariance(&case, NaiveRecompute::new).unwrap();
     }
@@ -1066,7 +1067,7 @@ mod tests {
     }
 
     /// The same sweep with the right table's columns swapped, so the join keys
-    /// sit at different positions — `(0, 1)` and `(1, 0)` — in the two tables.
+    /// sit at different positions — `(0, 2)` and `(2, 0)` — in the two tables.
     /// This catches a key-index mistake in `NaiveRecompute`'s own join, or in
     /// the oracle's `ON` clause, when the mistake sits in only one of the two.
     /// A mistake **shared** by both — they then compute the same wrong join —
@@ -1076,6 +1077,13 @@ mod tests {
     #[test]
     fn naive_engine_passes_every_join_query_with_keys_at_different_positions() {
         naive_engine_passes_every_join_query_over(&gen_database_with_swapped_right_table());
+    }
+
+    /// The same sweep over REAL, NUMERIC and TEXT join keys, every pair at
+    /// different positions (M2c spec §6).
+    #[test]
+    fn naive_engine_passes_every_join_query_over_real_and_numeric_keys() {
+        naive_engine_passes_every_join_query_over(&gen_real_numeric_database());
     }
 
     #[test]

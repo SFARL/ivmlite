@@ -4,7 +4,8 @@ use ivmlite_core::{lower_query, ColumnType};
 use ivmlite_sql::compile;
 use ivmlite_test::{
     create_table_sql, enumerate, enumerate_join, gen_database,
-    gen_database_with_swapped_right_table, view_query_to_sql, Database, ViewQuery,
+    gen_database_with_swapped_right_table, gen_real_numeric_database, view_query_to_sql, Database,
+    ViewQuery,
 };
 
 fn every_query(db: &Database) -> Vec<ViewQuery> {
@@ -13,8 +14,12 @@ fn every_query(db: &Database) -> Vec<ViewQuery> {
     qs
 }
 
-fn databases() -> [Database; 2] {
-    [gen_database(2), gen_database_with_swapped_right_table()]
+fn databases() -> [Database; 3] {
+    [
+        gen_database(2),
+        gen_database_with_swapped_right_table(),
+        gen_real_numeric_database(),
+    ]
 }
 
 /// The SQL a `ViewQuery` renders to compiles to the very `Plan` `lower_query`
@@ -24,7 +29,7 @@ fn databases() -> [Database; 2] {
 fn every_enumerated_query_compiles_to_the_plan_lower_query_builds() {
     for db in databases() {
         let queries = every_query(&db);
-        assert_eq!(queries.len(), 153 + 900);
+        assert_eq!(queries.len(), 510 + 1197);
         for q in queries {
             let sql = view_query_to_sql(&q, &db);
             let compiled = compile(&sql, &db).unwrap_or_else(|e| panic!("{sql}: {e}"));

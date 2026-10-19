@@ -19,9 +19,9 @@ use crate::ViewQuery;
 ///   are one key (M2c spec §2), anything else is not.
 /// - Each aggregate must be identical, or, for MIN/MAX, a numeric tie
 ///   (equal by `sql_cmp`), or, for a finite REAL SUM/TOTAL/AVG, within KBN's
-///   bound `4ε·Σ|xᵢ|` (AVG: `4ε·Σ|xᵢ|/n + 2ε·|sqlite|`; amendment 7). A
-///   SQLite ±Inf over a finite exact result is a documented difference
-///   (SQLite's running sum overflowed), judged by the reference alone.
+///   bound `4ε·Σ|xᵢ|` (AVG: `4ε·Σ|xᵢ|/n + 2ε·|sqlite|`; amendment 7).
+///   For explicit intermediate REAL overflow, SQLite ±Inf or NULL may match
+///   a finite REAL reference only when Σ|xᵢ| ≥ MAX/4 (spec §6 amendment).
 pub fn compare_with_oracles(
     got: &ZSet,
     reference: &Evaluated,
@@ -48,6 +48,13 @@ pub fn compare_with_oracles(
         ));
     }
     for (key, row) in &ours {
+        for column in 0..keys {
+            if matches!(theirs[key].get(column), Value::Real(_))
+                && !matches!(row.get(column), Value::Real(_))
+            {
+                return Err(format!("group {key:?}, column {column}: SQLite's REAL group key requires a REAL reference key"));
+            }
+        }
         for (i, agg) in query.aggs.iter().enumerate() {
             agree(
                 agg.func,
@@ -91,8 +98,16 @@ fn agree(
         // M2c spec §4 "Ties": SQLite's pick among equal numerics follows scan
         // order. Values of two classes never compare equal.
         (AggFn::Min | AggFn::Max, a, b) if a.sql_cmp(b).is_eq() => Ok(()),
-        (AggFn::Sum | AggFn::Total | AggFn::Avg, Value::Real(a), Value::Real(b))
-            if a.is_finite() && b.is_infinite() =>
+        // M2c spec §6, intermediate REAL overflow amendment: SQLite's
+        // running KBN sum can produce ±Inf or NULL over finite inputs even
+        // when the exact result is finite. Only near the finite range limit
+        // is that difference exempt from the KBN comparison. Explicit
+        // overflow cases are separate named tests: they cannot use evaluate,
+        // whose fsum partials must remain finite.
+        (AggFn::Sum | AggFn::Total | AggFn::Avg, Value::Real(a), b)
+            if a.is_finite()
+                && (matches!(b, Value::Real(x) if x.is_infinite()) || matches!(b, Value::Null))
+                && magnitude.is_some_and(|(abs, _)| abs >= f64::MAX / 4.0) =>
         {
             Ok(())
         }
@@ -237,16 +252,86 @@ mod tests {
     }
 
     #[test]
-    fn a_sqlite_infinity_over_a_finite_exact_sum_is_a_documented_difference() {
-        // M2c spec §4: SQLite's running KBN sum can overflow (MAX + MAX − MAX)
-        // where the exact sum is finite; only the reference judges that value.
-        let r = reference(0.6);
-        let inf = z(vec![vec![
-            Value::Int(1),
-            Value::Real(f64::INFINITY),
+    fn a_sqlite_real_group_key_requires_a_real_reference_key() {
+        let mut r = reference(0.6);
+        r.rows = z(vec![vec![Value::Int(1), Value::Real(0.6), Value::Int(1)]]);
+        let real_key = z(vec![vec![
+            Value::Real(1.0),
+            Value::Real(0.6),
             Value::Int(1),
         ]]);
-        assert!(compare_with_oracles(&r.rows, &r, Some(&inf), &q()).is_ok());
+        assert!(compare_with_oracles(&r.rows, &r, Some(&real_key), &q()).is_err());
+    }
+
+    #[test]
+    fn sqlite_intermediate_real_overflow_requires_a_large_magnitude() {
+        for func in [AggFn::Sum, AggFn::Total, AggFn::Avg] {
+            let mut query = q();
+            query.aggs[0].func = func;
+            let mut r = reference(0.6);
+            for magnitude in [f64::MAX / 4.0, f64::MAX, f64::INFINITY] {
+                r.magnitudes
+                    .insert((Row::new(vec![Value::Int(1)]), 0), (magnitude, 3));
+                for value in [
+                    Value::Real(f64::INFINITY),
+                    Value::Real(f64::NEG_INFINITY),
+                    Value::Null,
+                ] {
+                    let sqlite = z(vec![vec![Value::Int(1), value, Value::Int(1)]]);
+                    assert!(
+                        compare_with_oracles(&r.rows, &r, Some(&sqlite), &query).is_ok(),
+                        "{func:?}, magnitude {magnitude}"
+                    );
+                }
+            }
+            for magnitude in [0.6, (f64::MAX / 4.0).next_down()] {
+                r.magnitudes
+                    .insert((Row::new(vec![Value::Int(1)]), 0), (magnitude, 3));
+                for value in [
+                    Value::Real(f64::INFINITY),
+                    Value::Real(f64::NEG_INFINITY),
+                    Value::Null,
+                ] {
+                    let sqlite = z(vec![vec![Value::Int(1), value, Value::Int(1)]]);
+                    assert!(compare_with_oracles(&r.rows, &r, Some(&sqlite), &query).is_err());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sqlite_infinity_cannot_match_a_finite_exact_aggregate() {
+        // Spec §6 gives no infinity exemption from the KBN comparison.
+        for func in [AggFn::Sum, AggFn::Total, AggFn::Avg] {
+            let mut query = q();
+            query.aggs[0].func = func;
+            let r = reference(0.6);
+            for infinity in [f64::INFINITY, f64::NEG_INFINITY] {
+                let inf = z(vec![vec![
+                    Value::Int(1),
+                    Value::Real(infinity),
+                    Value::Int(1),
+                ]]);
+                assert!(
+                    compare_with_oracles(&r.rows, &r, Some(&inf), &query).is_err(),
+                    "{func:?}: {infinity}"
+                );
+                let inf_ref = reference(infinity);
+                assert!(compare_with_oracles(&inf_ref.rows, &inf_ref, Some(&inf), &query).is_ok());
+                assert!(
+                    compare_with_oracles(&inf_ref.rows, &inf_ref, Some(&r.rows), &query).is_err()
+                );
+                let opposite = reference(-infinity);
+                assert!(compare_with_oracles(
+                    &inf_ref.rows,
+                    &inf_ref,
+                    Some(&opposite.rows),
+                    &query
+                )
+                .is_err());
+            }
+        }
+        let r = reference(0.6);
         // An infinite reference is never excused.
         let inf_ref = Evaluated {
             rows: z(vec![vec![

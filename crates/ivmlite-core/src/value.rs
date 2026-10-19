@@ -17,9 +17,76 @@ use std::hash::{Hash, Hasher};
 pub enum Value {
     Null,
     Int(i64),
-    Real(f64),
+    Real(#[cfg_attr(feature = "serde", serde(with = "real_serde"))] f64),
     Text(String),
     Blob(Vec<u8>),
+}
+
+/// M2c spec §2: JSON has no infinities; preserve them explicitly while
+/// retaining the existing numeric representation for finite REAL values.
+#[cfg(feature = "serde")]
+mod real_serde {
+    use serde::{de, Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(value: &f64, serializer: S) -> Result<S::Ok, S::Error> {
+        if value.is_nan() {
+            Err(serde::ser::Error::custom("a REAL cannot be NaN"))
+        } else if value.is_infinite() && serializer.is_human_readable() {
+            serializer.serialize_str(if value.is_sign_negative() {
+                "-Infinity"
+            } else {
+                "+Infinity"
+            })
+        } else {
+            serializer.serialize_f64(*value)
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<f64, D::Error> {
+        if !deserializer.is_human_readable() {
+            let value = f64::deserialize(deserializer)?;
+            return if value.is_nan() {
+                Err(de::Error::custom("a REAL cannot be NaN"))
+            } else {
+                Ok(value)
+            };
+        }
+        struct RealVisitor;
+        impl<'de> de::Visitor<'de> for RealVisitor {
+            type Value = f64;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a finite REAL number or an explicit signed Infinity")
+            }
+
+            fn visit_f64<E: de::Error>(self, value: f64) -> Result<f64, E> {
+                if value.is_finite() {
+                    Ok(value)
+                } else {
+                    Err(E::custom(
+                        "non-finite REAL values require an explicit signed Infinity",
+                    ))
+                }
+            }
+
+            fn visit_i64<E: de::Error>(self, value: i64) -> Result<f64, E> {
+                Ok(value as f64)
+            }
+
+            fn visit_u64<E: de::Error>(self, value: u64) -> Result<f64, E> {
+                Ok(value as f64)
+            }
+
+            fn visit_str<E: de::Error>(self, value: &str) -> Result<f64, E> {
+                match value {
+                    "+Infinity" => Ok(f64::INFINITY),
+                    "-Infinity" => Ok(f64::NEG_INFINITY),
+                    _ => Err(E::custom("a REAL string must be +Infinity or -Infinity")),
+                }
+            }
+        }
+        deserializer.deserialize_any(RealVisitor)
+    }
 }
 
 /// 2^63 as an `f64`: the first value above the `i64` range.
@@ -134,6 +201,52 @@ impl Hash for Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn binary_real_decoding_uses_f64_and_rejects_nan() {
+        // A binary format need not support deserialize_any. Keep its f64
+        // representation while still enforcing M2c spec §2's NaN refusal.
+        struct BinaryReal(f64);
+        impl<'de> serde::Deserializer<'de> for BinaryReal {
+            type Error = serde::de::value::Error;
+
+            fn deserialize_any<V: serde::de::Visitor<'de>>(
+                self,
+                _: V,
+            ) -> Result<V::Value, Self::Error> {
+                Err(serde::de::Error::custom(
+                    "binary REAL must be decoded as f64",
+                ))
+            }
+
+            fn deserialize_f64<V: serde::de::Visitor<'de>>(
+                self,
+                visitor: V,
+            ) -> Result<V::Value, Self::Error> {
+                visitor.visit_f64(self.0)
+            }
+
+            fn is_human_readable(&self) -> bool {
+                false
+            }
+
+            serde::forward_to_deserialize_any! {
+                bool i8 i16 i32 i64 u8 u16 u32 u64 f32 char str string bytes byte_buf
+                option unit unit_struct newtype_struct seq tuple tuple_struct map struct enum
+                identifier ignored_any
+            }
+        }
+        for value in [f64::INFINITY, f64::NEG_INFINITY, -0.0, 0.1 + 0.2] {
+            assert_eq!(
+                real_serde::deserialize(BinaryReal(value))
+                    .unwrap()
+                    .to_bits(),
+                value.to_bits()
+            );
+        }
+        assert!(real_serde::deserialize(BinaryReal(f64::NAN)).is_err());
+    }
     use std::cmp::Ordering;
     use std::collections::BTreeSet;
 

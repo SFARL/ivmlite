@@ -15,8 +15,8 @@ use rusqlite::types::Value as SqlValue;
 use rusqlite::Connection;
 
 use crate::{
-    create_table_sql, enumerate, recompute_via_sqlite, view_query_to_sql, Engine, EngineError,
-    ViewQuery,
+    compare_with_oracles, create_table_sql, enumerate, evaluate, recompute_via_sqlite,
+    view_query_to_sql, AggFn, Engine, EngineError, SqliteTerms, ViewQuery,
 };
 
 /// The view every engine instance creates.
@@ -174,6 +174,18 @@ fn err(e: rusqlite::Error) -> EngineError {
     EngineError(e.to_string())
 }
 
+/// SQLite's value as ours, storage class for storage class (M2c spec §2).
+/// SQLite never stores a NaN, so a REAL is never one.
+fn value_of(v: SqlValue) -> Value {
+    match v {
+        SqlValue::Null => Value::Null,
+        SqlValue::Integer(n) => Value::Int(n),
+        SqlValue::Real(x) => Value::Real(x),
+        SqlValue::Text(s) => Value::Text(s),
+        SqlValue::Blob(b) => Value::Blob(b),
+    }
+}
+
 fn sql_value(v: &Value) -> SqlValue {
     match v {
         Value::Null => SqlValue::Null,
@@ -278,7 +290,18 @@ impl SqliteExtensionEngine {
             query: query.clone(),
         }];
         for (i, schema) in db.tables().iter().enumerate() {
-            let queries = enumerate(schema);
+            // Auxiliary views test lagging capture and watermarks. COUNT(*)
+            // keeps an unrelated SUM overflow from aborting the main case,
+            // including at bootstrap; the same-SQL sibling retains every
+            // aggregate of the view under test.
+            let queries: Vec<_> = enumerate(schema)
+                .into_iter()
+                .filter(|q| {
+                    q.aggs.len() == 1
+                        && q.aggs[0].func == AggFn::Count
+                        && q.aggs[0].column.is_none()
+                })
+                .collect();
             siblings.push(Sibling {
                 name: format!("ivm_sib_{i}"),
                 db: Database::new(vec![schema.clone()]),
@@ -316,12 +339,7 @@ impl SqliteExtensionEngine {
             .query_map([], |r| {
                 let mut values = Vec::with_capacity(n);
                 for i in 0..n {
-                    values.push(match r.get::<_, SqlValue>(i)? {
-                        SqlValue::Null => Value::Null,
-                        SqlValue::Integer(v) => Value::Int(v),
-                        SqlValue::Text(s) => Value::Text(s),
-                        other => Value::Text(format!("unexpected {other:?}")),
-                    });
+                    values.push(value_of(r.get::<_, SqlValue>(i)?));
                 }
                 Ok(Row::new(values))
             })
@@ -333,9 +351,10 @@ impl SqliteExtensionEngine {
         Ok(z)
     }
 
-    /// Refresh every remaining sibling and check it against SQLite evaluating
-    /// its SQL directly over the base tables' current contents.
+    /// Refresh every remaining sibling and check it against the exact
+    /// reference and SQLite, using the main case's comparison contract.
     fn refresh_siblings(&mut self) -> Result<(), EngineError> {
+        let terms = SqliteTerms::new()?;
         for s in &self.siblings {
             self.conn()?
                 .execute_batch(&format!("INSERT INTO {0}({0}) VALUES ('refresh')", s.name))
@@ -344,15 +363,20 @@ impl SqliteExtensionEngine {
             for schema in s.db.tables() {
                 bases.insert(schema.table.clone(), self.read_table(schema)?);
             }
-            let want = recompute_via_sqlite(&s.db, &s.query, &bases)?;
+            let reference = evaluate(&s.db, &s.query, &bases, &terms)?;
+            let sqlite = match recompute_via_sqlite(&s.db, &s.query, &bases) {
+                Ok(rows) => Some(rows),
+                Err(e) if e.0.contains("integer overflow") => None,
+                Err(e) => return Err(e),
+            };
             let got = self.read_view(&s.name)?;
-            if got != want {
-                return Err(EngineError(format!(
-                    "sibling view {} disagrees with the oracle\n  query: {}\n  view: {got:?}\n  oracle: {want:?}",
+            compare_with_oracles(&got, &reference, sqlite.as_ref(), &s.query).map_err(|why| {
+                EngineError(format!(
+                    "sibling view {} disagrees with the oracle\n  query: {}\n  {why}",
                     s.name,
                     view_query_to_sql(&s.query, &s.db)
-                )));
-            }
+                ))
+            })?;
         }
         Ok(())
     }
@@ -376,12 +400,7 @@ impl SqliteExtensionEngine {
             .query_map([], |r| {
                 let mut values = Vec::with_capacity(n);
                 for i in 0..n {
-                    values.push(match r.get::<_, SqlValue>(i)? {
-                        SqlValue::Null => Value::Null,
-                        SqlValue::Integer(v) => Value::Int(v),
-                        SqlValue::Text(s) => Value::Text(s),
-                        other => Value::Text(format!("unexpected {other:?}")),
-                    });
+                    values.push(value_of(r.get::<_, SqlValue>(i)?));
                 }
                 Ok(Row::new(values))
             })
@@ -425,10 +444,14 @@ impl SqliteExtensionEngine {
 
     fn delete_one(&self, table: &str, row: &Row) -> Result<(), EngineError> {
         let cols = self.columns(table)?;
+        // Row identity is exact by storage class (M2c spec §2): `IS` alone
+        // would match `1` to a stored `1.0`, so the class must match too.
+        // (A stored `0.0` and `-0.0` would still match each other; no
+        // generated column holds both, `value_pool`.)
         let same: Vec<String> = cols
             .iter()
             .enumerate()
-            .map(|(i, c)| format!("{c} IS ?{}", i + 1))
+            .map(|(i, c)| format!("{c} IS ?{0} AND typeof({c}) = typeof(?{0})", i + 1))
             .collect();
         let values: Vec<SqlValue> = row.0.iter().map(sql_value).collect();
         let changed = self
@@ -533,7 +556,96 @@ impl Engine for SqliteExtensionEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Agg, AggFn, Column, ColumnType, Predicate};
     use std::time::Duration;
+
+    fn engine_with_sum_sibling() -> SqliteExtensionEngine {
+        let db = Database::single(Schema {
+            table: "t".into(),
+            columns: ["k", "v"]
+                .into_iter()
+                .map(|name| Column {
+                    name: name.into(),
+                    ty: ColumnType::Blob,
+                    nullable: true,
+                })
+                .collect(),
+        });
+        let mut query = ViewQuery {
+            group_by: vec![0],
+            aggs: vec![Agg {
+                func: AggFn::Count,
+                column: None,
+            }],
+            predicate: Predicate::None,
+            join: None,
+        };
+        let mut engine = SqliteExtensionEngine::new();
+        engine
+            .create_view(&db, &query, &BTreeMap::from([("t".into(), ZSet::new())]))
+            .unwrap();
+        query.aggs = vec![Agg {
+            func: AggFn::Sum,
+            column: Some(1),
+        }];
+        let sql = view_query_to_sql(&query, &db).replace('\'', "''");
+        engine
+            .conn()
+            .unwrap()
+            .execute_batch(&format!("CREATE VIRTUAL TABLE sibling USING ivm('{sql}')"))
+            .unwrap();
+        engine.siblings.push(Sibling {
+            name: "sibling".into(),
+            db,
+            query,
+        });
+        engine
+    }
+
+    #[test]
+    fn sibling_checks_use_the_exact_reference_and_canonical_sqlite_keys() {
+        let mut engine = engine_with_sum_sibling();
+        engine
+            .insert("t", &Row::new(vec![Value::Int(1), Value::Real(0.1)]))
+            .unwrap();
+        engine
+            .insert("t", &Row::new(vec![Value::Real(1.0), Value::Real(0.2)]))
+            .unwrap();
+        engine.refresh_siblings().unwrap();
+        assert_eq!(
+            engine.read_view("sibling").unwrap(),
+            ZSet::from_rows([(Row::new(vec![Value::Real(1.0), Value::Real(0.1 + 0.2)]), 1,)])
+        );
+    }
+
+    #[test]
+    fn auxiliary_siblings_count_rows_without_unrelated_sum_overflow() {
+        let db = crate::gen_database(1);
+        // An unrelated SUM(v) would overflow even during bootstrap.
+        let row = Row::new(vec![
+            Value::Text("a".into()),
+            Value::Int(i64::MAX),
+            Value::Int(0),
+        ]);
+        let initial = BTreeMap::from([("t0".into(), ZSet::from_rows([(row, 2)]))]);
+        let count = vec![Agg {
+            func: AggFn::Count,
+            column: None,
+        }];
+        for query in enumerate(&db.tables()[0])
+            .into_iter()
+            .filter(|q| q.aggs == count)
+            .take(20)
+        {
+            let mut engine = SqliteExtensionEngine::with_siblings();
+            engine.create_view(&db, &query, &initial).unwrap();
+            for sibling in engine.siblings.iter().filter(|s| s.name != "ivm_sib_same") {
+                assert_eq!(sibling.query.aggs, count);
+            }
+            engine.refresh().unwrap();
+            engine.refresh().unwrap();
+        }
+    }
 
     /// A fake crate directory — `Cargo.toml`, `Cargo.lock`, `src/lib.rs` —
     /// and a fake library next to it, each with a chosen modification time

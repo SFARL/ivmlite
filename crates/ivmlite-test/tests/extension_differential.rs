@@ -2,15 +2,29 @@
 //! the real loaded extension, with and without reopening the database before
 //! every refresh — and, Phase 3b, with sibling views sharing the capture.
 //!
-//! Strides are set from measured cost (debug build, 2026-09-26): about 9 ms a
-//! single-table case and 14 ms a join case in memory, about 60 ms a case when
-//! reopening a database file before every refresh. Every join query was run
-//! in full once while the plan was prototyped (1800 cases, all green).
+//! Every sweep runs over the databases of every M2c type (M2c spec §6):
+//! single-table sweeps over `gen_database(2)` and
+//! `gen_real_numeric_database()`, join sweeps over those two and
+//! `gen_database_with_swapped_right_table()`. The spaces are 510 single-table
+//! and 1,197 join queries per database, so each sweep runs every `stride`-th
+//! query. Cases per sweep (single over both databases + join over all three):
+//! - in memory: stride 4 and 7, 2 × 128 + 3 × 171 = 769 cases;
+//! - reopening before every refresh: stride 12 and 35, 2 × 43 + 3 × 35 = 191;
+//! - with siblings: stride 8 and 15, 2 × 64 + 3 × 80 = 368;
+//! - reopening with siblings: stride 24 and 70 (twice the reopening strides,
+//!   as before M2c), 2 × 22 + 3 × 18 = 98.
+//!
+//! Before M2c (153 single-table and 900 join queries per database, over two
+//! join databases) the
+//! strides were 1/5, 3/25, 2/10 and 6/50, set from measured cost (debug
+//! build, 2026-09-26): about 9 ms a single-table case and 14 ms a join case
+//! in memory, about 60 ms a case when reopening a database file before every
+//! refresh.
 
 use ivmlite_test::{
     enumerate, enumerate_join, gen_case_with_query, gen_database,
-    gen_database_with_swapped_right_table, run, seed_range, Batching, Database, Domain,
-    SqliteExtensionEngine, ViewQuery,
+    gen_database_with_swapped_right_table, gen_real_numeric_database, run, seed_range, Batching,
+    Database, Domain, SqliteExtensionEngine, ViewQuery,
 };
 
 /// Run every `stride`-th query of `queries`, one case each, seeded by its
@@ -34,22 +48,51 @@ fn sweep(db: &Database, queries: &[ViewQuery], stride: usize, make: fn() -> Sqli
     }
 }
 
+/// The single-table sweeps' databases: INTEGER, TEXT and no type; REAL,
+/// NUMERIC and TEXT.
+fn single_table_databases() -> [Database; 2] {
+    [gen_database(2), gen_real_numeric_database()]
+}
+
+/// The join sweeps' databases: their same-affinity key pairs cover TEXT,
+/// INTEGER, no type, REAL and NUMERIC keys, at equal and at different
+/// positions.
+fn join_databases() -> [Database; 3] {
+    [
+        gen_database(2),
+        gen_database_with_swapped_right_table(),
+        gen_real_numeric_database(),
+    ]
+}
+
+/// The single-table sweep, then the join sweep, with `make`'s engine.
+fn sweep_both(single_stride: usize, join_stride: usize, make: fn() -> SqliteExtensionEngine) {
+    for db in single_table_databases() {
+        sweep(&db, &enumerate(&db.tables()[0]), single_stride, make);
+    }
+    for db in join_databases() {
+        let joins = enumerate_join(&db.tables()[0], &db.tables()[1]);
+        sweep(&db, &joins, join_stride, make);
+    }
+}
+
 #[test]
 fn the_extension_is_green_across_the_single_table_space() {
-    let db = gen_database(2);
-    sweep(
-        &db,
-        &enumerate(&db.tables()[0]),
-        1,
-        SqliteExtensionEngine::new,
-    );
+    for db in single_table_databases() {
+        sweep(
+            &db,
+            &enumerate(&db.tables()[0]),
+            4,
+            SqliteExtensionEngine::new,
+        );
+    }
 }
 
 #[test]
 fn the_extension_is_green_across_the_join_space() {
-    for db in [gen_database(2), gen_database_with_swapped_right_table()] {
+    for db in join_databases() {
         let joins = enumerate_join(&db.tables()[0], &db.tables()[1]);
-        sweep(&db, &joins, 5, SqliteExtensionEngine::new);
+        sweep(&db, &joins, 7, SqliteExtensionEngine::new);
     }
 }
 
@@ -57,56 +100,32 @@ fn the_extension_is_green_across_the_join_space() {
 /// knows it knows from its shadow tables alone.
 #[test]
 fn the_extension_resumes_from_persisted_state_on_every_refresh() {
-    let db = gen_database(2);
-    sweep(
-        &db,
-        &enumerate(&db.tables()[0]),
-        3,
-        SqliteExtensionEngine::reopening,
-    );
-    for db in [gen_database(2), gen_database_with_swapped_right_table()] {
-        let joins = enumerate_join(&db.tables()[0], &db.tables()[1]);
-        sweep(&db, &joins, 25, SqliteExtensionEngine::reopening);
-    }
+    sweep_both(12, 35, SqliteExtensionEngine::reopening);
 }
 
 /// Phase 3b spec §8 scenario 1: sibling views share each base table's
 /// capture, lag behind the view under test, and one is dropped mid-case.
 #[test]
 fn sibling_views_share_capture_across_the_single_table_space() {
-    let db = gen_database(2);
-    sweep(
-        &db,
-        &enumerate(&db.tables()[0]),
-        2,
-        SqliteExtensionEngine::with_siblings,
-    );
+    for db in single_table_databases() {
+        sweep(
+            &db,
+            &enumerate(&db.tables()[0]),
+            8,
+            SqliteExtensionEngine::with_siblings,
+        );
+    }
 }
 
 #[test]
 fn sibling_views_share_capture_across_the_join_space() {
-    for db in [gen_database(2), gen_database_with_swapped_right_table()] {
+    for db in join_databases() {
         let joins = enumerate_join(&db.tables()[0], &db.tables()[1]);
-        sweep(&db, &joins, 10, SqliteExtensionEngine::with_siblings);
+        sweep(&db, &joins, 15, SqliteExtensionEngine::with_siblings);
     }
 }
 
 #[test]
 fn sibling_views_resume_from_persisted_state() {
-    let db = gen_database(2);
-    sweep(
-        &db,
-        &enumerate(&db.tables()[0]),
-        6,
-        SqliteExtensionEngine::reopening_with_siblings,
-    );
-    for db in [gen_database(2), gen_database_with_swapped_right_table()] {
-        let joins = enumerate_join(&db.tables()[0], &db.tables()[1]);
-        sweep(
-            &db,
-            &joins,
-            50,
-            SqliteExtensionEngine::reopening_with_siblings,
-        );
-    }
+    sweep_both(24, 70, SqliteExtensionEngine::reopening_with_siblings);
 }

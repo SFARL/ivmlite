@@ -69,23 +69,28 @@ fn real_literal(x: f64) -> String {
     }
 }
 
-/// Generate a STRICT CREATE TABLE statement (spec §7.1: STRICT pins column
-/// types; otherwise type affinity lets a column store a different type in each
-/// row, splitting one logical group key in two).
+/// Generate a CREATE TABLE statement: each column with a declared type
+/// giving it its affinity (none for BLOB affinity), ` NOT NULL` when it is
+/// not nullable, and no `STRICT`.
+///
+/// M2c spec §3: base tables need not be STRICT, so the harness's tables are
+/// not, and SQLite's affinity applies to every value written into them. The
+/// generator draws only fixed points of each affinity (`value_pool`), so
+/// SQLite stores exactly the values the in-memory engines see.
 pub fn create_table_sql(schema: &Schema) -> String {
     let cols: Vec<String> = schema
         .columns
         .iter()
         .map(|c| {
+            let ty = match declared_type(c.ty) {
+                "" => String::new(),
+                ty => format!(" {ty}"),
+            };
             let null = if c.nullable { "" } else { " NOT NULL" };
-            format!("\"{}\" {}{}", c.name, declared_type(c.ty), null)
+            format!("\"{}\"{ty}{null}", c.name)
         })
         .collect();
-    format!(
-        "CREATE TABLE \"{}\" ({}) STRICT",
-        schema.table,
-        cols.join(", ")
-    )
+    format!("CREATE TABLE \"{}\" ({})", schema.table, cols.join(", "))
 }
 
 /// Render a ViewQuery as SQL against `db`.
@@ -216,14 +221,17 @@ mod tests {
     }
 
     #[test]
-    fn create_table_sql_is_strict() {
-        let sql = create_table_sql(&orders());
-        assert!(
-            sql.contains("STRICT"),
-            "spec §7.1 requires a STRICT table: {sql}"
+    fn create_table_sql_declares_each_affinity_without_strict() {
+        let sql = create_table_sql(&crate::gen_real_numeric_database().tables()[0]);
+        assert_eq!(
+            sql,
+            "CREATE TABLE \"t0\" (\"r\" REAL, \"n\" NUMERIC, \"k\" TEXT)"
         );
-        assert!(sql.contains("\"region\" TEXT"));
-        assert!(sql.contains("\"amount\" INTEGER NOT NULL"));
+        assert_eq!(
+            create_table_sql(&crate::gen_database(1).tables()[0]),
+            "CREATE TABLE \"t0\" (\"k\" TEXT, \"v\" INTEGER, \"x\")"
+        );
+        assert!(create_table_sql(&orders()).contains("\"amount\" INTEGER NOT NULL"));
     }
 
     #[test]

@@ -202,6 +202,21 @@ The predicate is then evaluated with §2's order. Every operator v0 accepts keep
 
 ## Amendments 2026-10-17 (from implementation planning)
 
+**Amended 2026-10-18 (intermediate REAL overflow):** SQLite's running KBN
+accumulator can produce ±Inf, or NULL after intermediate infinity cancellation,
+from finite inputs whose exact final SUM, TOTAL or AVG is finite. These explicit
+overflow cases are checked against the exact reference alone when SQLite returns
+±Inf or NULL, the reference result is a finite REAL, and the reference magnitude
+Σ|xᵢ| is at least `f64::MAX / 4`. This narrowly bounded exception implements the
+pre-flight controller's R26, R33 and R34; it does not change the finite KBN error
+bound or permit an ordinary-magnitude finite result to match SQLite infinity or
+NULL. Named overflow tests construct the exact expected result separately because
+`evaluate`'s `fsum` partials must remain finite. Normal generated REAL values stay
+within |x| ≤ 2^1000 (the current pools are below 2^64).
+The named finite-input overflow cases return ±Inf on bundled SQLite 3.53.2;
+NULL handling is covered by synthetic comparator tests for compatibility, without
+claiming a finite-input NULL reproducer on that version.
+
 Planning found seven places where this spec is incomplete or cannot be implemented as worded. Each is resolved in `docs/superpowers/plans/2026-10-17-m2c-types-and-aggregates.md` ("Plan decisions"); this section makes those resolutions binding.
 
 1. **§4, MIN/MAX encoding.** A fixed 8-byte "marker for a Real" cannot order every pair exactly (`Int(i64::MAX)` against `Real(2^63)`, or `Real(2^60)` between `Int(2^60)` and `Int(2^60 + 1)`), and `-0.0` needs its own entry. Numeric entries are instead: class byte, 8-byte order-preserving `f64`, 8-byte order-preserving `i64` tie (a Real's tie is its value truncated toward zero and saturated), then one byte: `0x00` Int, `0x01` Real, `0x02` Real `-0.0`. TEXT and BLOB escape each `0x00` payload byte as `0x00 0xFF` and end with `0x00 0x00`. MAX in a numeric tie outputs the entry that sorts last. (Plan decisions 1–3.)
