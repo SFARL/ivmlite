@@ -12,11 +12,12 @@ pub const FLOW_TABLE_DDL: &str = "CREATE TABLE flow_facts(
     day_bucket INTEGER NOT NULL,
     counterparty_kind TEXT NOT NULL,
     exchange_key TEXT NOT NULL,
-    sat INTEGER NOT NULL
-) STRICT";
+    amount REAL NOT NULL,
+    confidence REAL
+)";
 
 pub const VIEW_SQL: &str = "SELECT flow_type, day_bucket, counterparty_kind, exchange_key, \
-    SUM(sat) AS sat, COUNT(*) AS count FROM flow_facts \
+    SUM(amount) AS amount, COUNT(*) AS count FROM flow_facts \
     GROUP BY flow_type, day_bucket, counterparty_kind, exchange_key";
 
 pub const ROLLUP_TABLE: &str = "fluxflow_rollup";
@@ -27,14 +28,15 @@ const EXCHANGES: [&str; 7] = [
 const KINDS: [&str; 3] = ["unknown", "node_operator", "foundation"];
 const FLOWS_PER_DAY: i64 = 10_000;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Flow {
     pub id: i64,
     pub flow_type: &'static str,
     pub day_bucket: i64,
     pub counterparty_kind: &'static str,
     pub exchange_key: &'static str,
-    pub sat: i64,
+    pub amount: f64,
+    pub confidence: f64,
 }
 
 /// A stable integer mixer keeps benchmark databases identical between modes
@@ -51,6 +53,9 @@ fn mix(mut value: u64) -> u64 {
 /// 10,000 flows per day bucket (150 buckets at 1.5M rows). A p2p flow has no
 /// exchange; the empty `exchange_key` stands in for upstream's NULL, because
 /// the grouping key is `NOT NULL` here (`docs/demos/fluxflow.md`).
+/// Amounts are dyadic fractions below 2^24. Even the source-scale run's total
+/// in units of 1/256 stays below 2^53, so every group's sum is exact in any
+/// order and the demo can retain its exact SQLite multiset oracle.
 pub fn generated_flow(id: usize) -> Flow {
     let hash = mix(id as u64 + 42);
     let percentile = hash % 100;
@@ -71,7 +76,8 @@ pub fn generated_flow(id: usize) -> Flow {
         } else {
             EXCHANGES[((hash >> 16) as usize) % EXCHANGES.len()]
         },
-        sat: ((hash >> 24) % 500_000_000_000) as i64,
+        amount: ((hash >> 24) % (1_u64 << 32)) as f64 / 256.0,
+        confidence: (hash % 1000) as f64 / 1000.0,
     }
 }
 
@@ -82,7 +88,8 @@ fn insert_flow(statement: &mut Statement<'_>, flow: &Flow) -> rusqlite::Result<(
         flow.day_bucket,
         flow.counterparty_kind,
         flow.exchange_key,
-        flow.sat,
+        flow.amount,
+        flow.confidence,
     ])?;
     Ok(())
 }
@@ -98,13 +105,13 @@ pub fn seed(c: &Connection, rows: usize) -> rusqlite::Result<()> {
     tx.commit()
 }
 
-const INSERT_SQL: &str = "INSERT INTO flow_facts VALUES (?1, ?2, ?3, ?4, ?5, ?6)";
+const INSERT_SQL: &str = "INSERT INTO flow_facts VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)";
 
 /// The mixed batch's statements, indexed by `INSERT`, `UPDATE` and `DELETE`.
 const BATCH_SQL: &[&str] = &[
     INSERT_SQL,
     "UPDATE flow_facts SET flow_type = ?2, day_bucket = ?3, \
-     counterparty_kind = ?4, exchange_key = ?5, sat = ?6 WHERE id = ?1",
+     counterparty_kind = ?4, exchange_key = ?5, amount = ?6 WHERE id = ?1",
     "DELETE FROM flow_facts WHERE id = ?1",
 ];
 const INSERT: usize = 0;
@@ -157,7 +164,7 @@ fn apply_round(
                     source.day_bucket + 1,
                     "foundation",
                     exchange_key,
-                    source.sat + 7,
+                    source.amount + 1.0,
                 ])?;
             }
             4 => {
@@ -186,7 +193,7 @@ pub fn install_handwritten_rollup(c: &Connection) -> rusqlite::Result<()> {
              day_bucket INTEGER NOT NULL,
              counterparty_kind TEXT NOT NULL,
              exchange_key TEXT NOT NULL,
-             sat INTEGER NOT NULL,
+             amount REAL NOT NULL,
              count INTEGER NOT NULL,
              PRIMARY KEY(flow_type, day_bucket, counterparty_kind, exchange_key)
          ) WITHOUT ROWID;
@@ -195,15 +202,15 @@ pub fn install_handwritten_rollup(c: &Connection) -> rusqlite::Result<()> {
 
          CREATE TRIGGER flow_facts_rollup_insert AFTER INSERT ON flow_facts BEGIN
            INSERT INTO {ROLLUP_TABLE} VALUES(
-             NEW.flow_type, NEW.day_bucket, NEW.counterparty_kind, NEW.exchange_key, NEW.sat, 1
+             NEW.flow_type, NEW.day_bucket, NEW.counterparty_kind, NEW.exchange_key, NEW.amount, 1
            ) ON CONFLICT(flow_type, day_bucket, counterparty_kind, exchange_key)
-             DO UPDATE SET sat = {ROLLUP_TABLE}.sat + excluded.sat,
+             DO UPDATE SET amount = {ROLLUP_TABLE}.amount + excluded.amount,
                            count = {ROLLUP_TABLE}.count + 1;
          END;
 
          CREATE TRIGGER flow_facts_rollup_delete AFTER DELETE ON flow_facts BEGIN
            UPDATE {ROLLUP_TABLE}
-             SET sat = sat - OLD.sat, count = count - 1
+             SET amount = amount - OLD.amount, count = count - 1
              WHERE flow_type = OLD.flow_type AND day_bucket = OLD.day_bucket
                AND counterparty_kind = OLD.counterparty_kind
                AND exchange_key = OLD.exchange_key;
@@ -215,7 +222,7 @@ pub fn install_handwritten_rollup(c: &Connection) -> rusqlite::Result<()> {
 
          CREATE TRIGGER flow_facts_rollup_update AFTER UPDATE ON flow_facts BEGIN
            UPDATE {ROLLUP_TABLE}
-             SET sat = sat - OLD.sat, count = count - 1
+             SET amount = amount - OLD.amount, count = count - 1
              WHERE flow_type = OLD.flow_type AND day_bucket = OLD.day_bucket
                AND counterparty_kind = OLD.counterparty_kind
                AND exchange_key = OLD.exchange_key;
@@ -224,9 +231,9 @@ pub fn install_handwritten_rollup(c: &Connection) -> rusqlite::Result<()> {
                AND counterparty_kind = OLD.counterparty_kind
                AND exchange_key = OLD.exchange_key AND count <= 0;
            INSERT INTO {ROLLUP_TABLE} VALUES(
-             NEW.flow_type, NEW.day_bucket, NEW.counterparty_kind, NEW.exchange_key, NEW.sat, 1
+             NEW.flow_type, NEW.day_bucket, NEW.counterparty_kind, NEW.exchange_key, NEW.amount, 1
            ) ON CONFLICT(flow_type, day_bucket, counterparty_kind, exchange_key)
-             DO UPDATE SET sat = {ROLLUP_TABLE}.sat + excluded.sat,
+             DO UPDATE SET amount = {ROLLUP_TABLE}.amount + excluded.amount,
                            count = {ROLLUP_TABLE}.count + 1;
          END;"
     ))
@@ -234,7 +241,7 @@ pub fn install_handwritten_rollup(c: &Connection) -> rusqlite::Result<()> {
 
 /// Reads the hand-written rollup in the view's column order.
 const ROLLUP_READ_SQL: &str = "SELECT flow_type, day_bucket, counterparty_kind, exchange_key, \
-    sat, count FROM fluxflow_rollup";
+    amount, count FROM fluxflow_rollup";
 
 /// The FluxFlow demo as a `demo_bench` workload.
 pub struct FluxFlow;
@@ -256,7 +263,7 @@ impl Workload for FluxFlow {
     }
     fn covering_index_sql(&self) -> &'static str {
         "CREATE INDEX flow_facts_covering ON flow_facts(\
-         flow_type, day_bucket, counterparty_kind, exchange_key, sat)"
+         flow_type, day_bucket, counterparty_kind, exchange_key, amount)"
     }
     fn handwritten(&self) -> Option<Handwritten> {
         Some(Handwritten {
@@ -286,25 +293,81 @@ mod tests {
     #[test]
     fn generator_is_deterministic_and_has_all_flow_types() {
         assert_eq!(generated_flow(123), generated_flow(123));
+        let sample = generated_flow(123);
+        assert_eq!(sample.amount.to_bits(), 14_988_326.183_593_75_f64.to_bits());
+        assert_eq!(sample.confidence.to_bits(), 0.535_f64.to_bits());
         let types: std::collections::BTreeSet<_> =
             (0..100).map(|id| generated_flow(id).flow_type).collect();
         assert_eq!(types, ["buying", "p2p", "selling"].into_iter().collect());
     }
 
     #[test]
+    fn every_generated_amount_is_a_dyadic_rational_below_two_pow_24() {
+        let mut fractional = 0;
+        for id in 0..10_000 {
+            let flow = generated_flow(id);
+            assert!((0.0..16_777_216.0).contains(&flow.amount), "id {id}");
+            assert_eq!((flow.amount * 256.0).fract().to_bits(), 0.0_f64.to_bits());
+            assert!((0.0..1.0).contains(&flow.confidence), "id {id}");
+            fractional += usize::from(flow.amount.fract() != 0.0);
+        }
+        assert!(
+            fractional > 9_000,
+            "the fixture must exercise fractional REALs"
+        );
+    }
+
+    #[test]
     fn handwritten_rollup_tracks_both_rounds_of_mixed_changes() {
         let c = Connection::open_in_memory().unwrap();
         c.execute_batch(FLOW_TABLE_DDL).unwrap();
+        let strict: i64 = c
+            .query_row(
+                "SELECT strict FROM pragma_table_list WHERE name = 'flow_facts'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(strict, 0);
         seed(&c, 100).unwrap();
         install_handwritten_rollup(&c).unwrap();
+        let non_real: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM flow_facts \
+                 WHERE typeof(amount) <> 'real' OR typeof(confidence) <> 'real'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(non_real, 0);
+        assert_eq!(check_same_multiset(&c, ROLLUP_READ_SQL, VIEW_SQL), Ok(()));
         validate(100, 25, 2).unwrap();
         for round in 0..2 {
             apply_mixed_batch(&c, 100, 25, round).unwrap();
+            let updated_id = 100 - 1 - (round * 25 + 3);
+            let (amount, confidence): (f64, f64) = c
+                .query_row(
+                    "SELECT amount, confidence FROM flow_facts WHERE id = ?1",
+                    [updated_id as i64],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            let source = generated_flow(updated_id);
+            assert_eq!(amount.to_bits(), (source.amount + 1.0).to_bits());
+            assert_eq!(confidence.to_bits(), source.confidence.to_bits());
             assert_eq!(
                 check_same_multiset(&c, ROLLUP_READ_SQL, VIEW_SQL),
                 Ok(()),
                 "round {round}"
             );
+            let non_real: i64 = c
+                .query_row(
+                    "SELECT COUNT(*) FROM fluxflow_rollup WHERE typeof(amount) <> 'real'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(non_real, 0, "round {round}");
         }
         let rows: i64 = c
             .query_row("SELECT COUNT(*) FROM flow_facts", [], |row| row.get(0))

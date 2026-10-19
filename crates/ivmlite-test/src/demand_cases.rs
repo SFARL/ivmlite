@@ -177,10 +177,11 @@ pub static KENER: DemandCase = DemandCase {
               monitor_id INTEGER NOT NULL,
               bucket_ts INTEGER NOT NULL,
               status TEXT NOT NULL,
-              latency_ms INTEGER NOT NULL
-          ) STRICT",
+              latency_ms REAL NOT NULL
+          )",
     view_name: "kener_bucket_rollup",
-    view_sql: "SELECT monitor_id, bucket_ts, status, SUM(latency_ms), COUNT(*) \
+    view_sql: "SELECT monitor_id, bucket_ts, status, \
+               AVG(latency_ms), MIN(latency_ms), MAX(latency_ms), COUNT(*) \
                FROM monitoring_facts GROUP BY monitor_id, bucket_ts, status",
     covering_index_sql: "CREATE INDEX monitoring_facts_covering \
                          ON monitoring_facts(monitor_id, bucket_ts, status, latency_ms)",
@@ -193,7 +194,7 @@ pub static KENER: DemandCase = DemandCase {
          VALUES (?1, ?2, ?3, ?4, ?5)",
         "UPDATE monitoring_facts SET status = ?2, monitor_id = (monitor_id + 1) % 215 \
          WHERE id = ?1",
-        "UPDATE monitoring_facts SET latency_ms = latency_ms + 25 WHERE id = ?1",
+        "UPDATE monitoring_facts SET latency_ms = latency_ms + 25.0 WHERE id = ?1",
         "DELETE FROM monitoring_facts WHERE id = ?1",
     ],
     apply_fn: apply_kener,
@@ -463,7 +464,7 @@ fn seed_kener(connection: &Connection, rows: usize) -> rusqlite::Result<()> {
                 (group % 215) as i64,
                 ((group / 215) * 900) as i64,
                 kener_status(group),
-                (20 + id % 980) as i64
+                (20 + id % 980) as f64 + 0.25 * (id % 4) as f64
             ])?;
         }
     }
@@ -521,7 +522,7 @@ fn apply_kener(
             (group % 215) as i64,
             ((group / 215) * 900) as i64,
             kener_status(group),
-            (30 + k % 700) as i64
+            (30 + k % 700) as f64 + 0.25 * (k % 4) as f64
         ])?;
     }
     for offset in 0..status_changes {
@@ -582,6 +583,100 @@ mod tests {
             )
             .unwrap();
         assert_eq!(eligible, 90);
+    }
+
+    #[test]
+    fn kener_generator_stores_fractional_real_quarter_milliseconds() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(KENER.ddl).unwrap();
+        let strict: i64 = connection
+            .query_row(
+                "SELECT strict FROM pragma_table_list WHERE name = 'monitoring_facts'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(strict, 0);
+        KENER.seed(&connection, 10_000).unwrap();
+        let (real, quarters, fractional): (i64, i64, i64) = connection
+            .query_row(
+                "SELECT SUM(typeof(latency_ms) = 'real'), \
+                 SUM(latency_ms * 4 = CAST(latency_ms * 4 AS INTEGER)), \
+                 SUM(latency_ms <> CAST(latency_ms AS INTEGER)) FROM monitoring_facts",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!((real, quarters, fractional), (10_000, 10_000, 7_500));
+        assert_eq!(
+            crate::demo_bench::check_same_multiset(
+                &connection,
+                "SELECT id, latency_ms FROM monitoring_facts WHERE id IN (0, 1, 2, 3, 979, 980)",
+                "SELECT 0, 20.0 UNION ALL SELECT 1, 21.25 UNION ALL SELECT 2, 22.5 \
+                 UNION ALL SELECT 3, 23.75 UNION ALL SELECT 979, 999.75 \
+                 UNION ALL SELECT 980, 20.0",
+            ),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn kener_real_aggregates_match_independent_mixed_batch_results() {
+        use crate::demo_bench::check_same_multiset;
+
+        let connection = crate::open_with_extension(None).unwrap();
+        connection.execute_batch(KENER.ddl).unwrap();
+        KENER.validate(20, 20, 1).unwrap();
+        KENER.seed(&connection, 20).unwrap();
+        connection
+            .execute_batch(&format!(
+                "CREATE VIRTUAL TABLE kener_test USING ivm('{}')",
+                KENER.view_sql
+            ))
+            .unwrap();
+        // Two ten-sample groups: these independent totals also bind the public
+        // aggregate order, so omitting AVG/MIN/MAX cannot pass the oracle.
+        let seeded = "SELECT 0, 0, 'UP', 248.25 / 10, 20.0, 29.25, 10 \
+                      UNION ALL SELECT 1, 0, 'DOWN', 349.25 / 10, 30.5, 39.75, 10";
+        assert_eq!(
+            check_same_multiset(&connection, KENER.view_sql, seeded),
+            Ok(())
+        );
+        assert_eq!(
+            check_same_multiset(&connection, "SELECT * FROM kener_test", seeded),
+            Ok(())
+        );
+
+        KENER.apply_mixed_batch(&connection, 20, 20, 0).unwrap();
+        connection
+            .execute_batch("INSERT INTO kener_test(kener_test) VALUES ('refresh')")
+            .unwrap();
+        // The batch inserts eight fractional samples, moves six samples into
+        // other status groups, corrects three latencies, and deletes three.
+        let changed = "SELECT 0, 0, 'UP', 111.5 / 4, 26.5, 29.25, 4 \
+            UNION ALL SELECT 1, 0, 'DOWN', 352.75 / 9, 20.0, 57.0, 9 \
+            UNION ALL SELECT 1, 0, 'DEGRADED', 23.25, 21.25, 25.25, 2 \
+            UNION ALL SELECT 1, 0, 'MAINTENANCE', 22.5, 22.5, 22.5, 1 \
+            UNION ALL SELECT 1, 0, 'UP', 23.75, 23.75, 23.75, 1 \
+            UNION ALL SELECT 2, 0, 'DEGRADED', 33.875, 30.0, 37.75, 8";
+        assert_eq!(
+            check_same_multiset(&connection, KENER.view_sql, changed),
+            Ok(())
+        );
+        assert_eq!(
+            check_same_multiset(&connection, "SELECT * FROM kener_test", changed),
+            Ok(())
+        );
+        assert_eq!(
+            check_same_multiset(
+                &connection,
+                "SELECT id, latency_ms, typeof(latency_ms) FROM monitoring_facts \
+                 WHERE id IN (10, 21, 22, 23)",
+                "SELECT 10, 55.5, 'real' UNION ALL SELECT 21, 31.25, 'real' \
+                 UNION ALL SELECT 22, 32.5, 'real' UNION ALL SELECT 23, 33.75, 'real'",
+            ),
+            Ok(())
+        );
     }
 
     #[test]
