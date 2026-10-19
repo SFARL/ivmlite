@@ -7,6 +7,40 @@ SQL subset and persisted shadow-table format without migration.
 
 ## [Unreleased]
 
+## [0.1.0-alpha.6] - 2026-10-19
+
+### Breaking
+
+- Shadow-table format 6 refuses alpha.5 format-5 state. Old views open as
+  broken views that can be dropped. Drop every old view and recreate it from
+  its SELECT query; there is no automatic state migration.
+
+### Added
+
+- Non-STRICT base tables, every declared type by SQLite affinity, STRICT ANY,
+  and all five storage classes through capture, persisted state and output.
+- `COUNT(column)`, `TOTAL`, `AVG`, `MIN` and `MAX`; exact REAL `SUM`, with
+  retraction-safe indexed extremum state and order-independent aggregation.
+- REAL and BLOB literals with comparison affinity, and same-affinity joins
+  with canonical numeric equality (`1` matches `1.0`).
+- Mixed-type differential tests with an independent exact reference, REAL
+  order-independence and persisted-extremum checks, and artifact smoke coverage
+  for new aggregates, storage classes, retractions, rollback and reopen.
+- An [After M2c census](docs/census/2026-10-17/README.md#after-m2c)
+  compatibility projection: ten adapted application candidates, including
+  low-confidence fits; this is not upstream execution or adoption.
+
+### Changed
+
+- SUM accepts any column. Integer SUM overflow is judged on the final exact
+  result. REAL SUM/TOTAL/AVG round once and may differ from SQLite's scan-order
+  results, including finite exact results after SQLite intermediate overflow.
+- Group keys use SQLite numeric equality while preserving REAL output when
+  a live REAL key exists. MIN prefers INTEGER and MAX REAL in numeric ties.
+- FluxFlow uses native REAL amounts; Kener uses REAL latency with AVG/MIN/MAX.
+  The supported SQL boundaries and numerical differences are documented in the
+  [release notes](docs/releases/v0.1.0-alpha.6.md).
+
 ## [0.1.0-alpha.5] - 2026-10-15
 
 ### Fixed
@@ -323,7 +357,8 @@ First public technical preview.
 - The Org-roam join/count case is slower than full recomputation at both
   measured configurations.
 
-[Unreleased]: https://github.com/SFARL/ivmlite/compare/v0.1.0-alpha.5...HEAD
+[Unreleased]: https://github.com/SFARL/ivmlite/compare/v0.1.0-alpha.6...HEAD
+[0.1.0-alpha.6]: https://github.com/SFARL/ivmlite/releases/tag/v0.1.0-alpha.6
 [0.1.0-alpha.5]: https://github.com/SFARL/ivmlite/releases/tag/v0.1.0-alpha.5
 [0.1.0-alpha.4]: https://github.com/SFARL/ivmlite/releases/tag/v0.1.0-alpha.4
 [0.1.0-alpha.3]: https://github.com/SFARL/ivmlite/releases/tag/v0.1.0-alpha.3

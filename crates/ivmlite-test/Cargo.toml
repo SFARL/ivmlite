@@ -15,3 +15,7 @@ serde_json = { version = "1", features = ["float_roundtrip"] }
 
 [dev-dependencies]
 ivmlite-sql.workspace = true
+
+[[example]]
+name = "release_smoke"
+test = true

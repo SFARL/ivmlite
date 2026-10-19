@@ -97,3 +97,52 @@ Nothing runs on v0 as written.
 - Whether Python or Bun can load the extension depends on how the host built SQLite.
 - Q21 (`REGEXP_EXTRACT`), Q22 (`SPLIT_INDEX`) and Q14 (`count_char`) use Flink-only functions. They were counted as unlockable because SQLite built-ins reproduce them; under a strict reading they are out of scope.
 - Flink's `AVG` over BIGINT returns BIGINT, while SQLite's returns REAL (Q4, Q17).
+
+## After M2c
+
+**Compatibility projection, recomputed 2026-10-19.** The original alpha.5 census
+above and its pinned JSON metadata remain historical. M2c implements F3a,
+F3b, F3c, F3e, F10a and F10b. Recompute the counts from those snapshots with:
+
+```sh
+python3 docs/census/2026-10-17/after_m2c.py
+```
+
+The script checks each application's `in_place_unlock` set, excluding
+`not_ivm_shaped` items and blockers F13/F14/F15; it does not mistake the full
+unadapted `features` set for the documented in-place adaptation. **10 of 28
+candidates fit after adaptation: four high-confidence and six low-confidence.**
+Seventeen remain blocked for the original non-SQL reasons; among the eleven
+SQL-eligible candidates, org_roam alone still requires `group_concat` (F3f).
+These are workload compatibility projections, not newly executed upstream
+queries, adoption or measured performance.
+
+Native types remove the need for a STRICT copy or integer scaling. The remaining
+application work still matters:
+
+| Candidate | Confidence | Remaining rewrites and boundary |
+|---|---|---|
+| better_ccflare | low | Reader account CASE/fallback and small accounts join, window sums, percentages, ordering, LIMIT and NULL-model filtering; use a 0/1 success field for SUM. COUNT(id)=COUNT(*) is schema-specific. The stall's bottleneck is unattributed. |
+| datasette | low | Flatten the subquery, retain one state predicate, discard NULL county and sort/top31 in the reader. Only predeclared facets/filter pairs fit; arbitrary request facets do not. |
+| fluxflow | high | Stored day bucket and reader flow total; a constant key is still needed for global counts (or sum group counts). Height MIN/MAX may remain an index seek. Retention-enabled PR #45 needs F13 and remains blocked. Native REAL amount removes x1e8 scaling. |
+| kener | high | Stored 15-minute bucket, status group key, reader monitor/window filter and viewer-timezone daily composition of 96 buckets. Native AVG/MIN/MAX remove scaled latency and SUM/COUNT adaptation; original CASE/time expressions remain outside the subset. |
+| nicti | high | Drop COALESCE and merge NULL/empty model groups in the reader. Census volume/model/rating grain differs from the ADR demo model/rating/keyword grain; upstream's store direction may leave SQLite. |
+| openwhispr | low | Store per-segment word_count, one deleted predicate, reader NULL-speaker removal/topN and stored day for date grouping. Native Electron packaging remains unverified. |
+| phoenix | low | Store minute bucket; project selection, COALESCE and totals in the reader. Selected buckets are exact only for minute-aligned starts. Upstream removed the feature; extension availability remains conditional. |
+| unscreen | low | Maintain closed sessions with stored day/duration; merge live open sessions and exclude system apps/topN in the reader. No slow query was reported; Android Python extension loading is unverified. |
+| zcash | low | Maintain eligibility flags on receives, spends, rewinds and each block; re-evaluate unconfirmed outputs, use two views, map account_id to UUID in reader. The original multi-join/NOT IN/confirmation logic remains application work. |
+| zenod | high | Lift tenant into group key; since=0 hot path only. Moving since needs buckets/F6t. Reader COALESCE/totals and explicit-refresh versus transactional quota semantics remain. Upstream already fixed it with counters. |
+
+For Nexmark, M2c features alone unlock **0 queries as written**. Recomputed
+hypothetical bundles preserve the original counts:
+
+| Bundle | Queries unlocked as written |
+|---|---|
+| F1 | 2: Q0, Q20 |
+| F1 + F4b | 4: Q0, Q10, Q20, Q22 |
+| F1 + F4b + F6 | 7: Q0, Q2, Q3, Q10, Q20, Q21, Q22 |
+| + F10b REAL | 9: adds Q1, Q14 |
+
+After M2c, F1/F4b/F6 are still missing; the nine-query row is a hypothetical
+bundle, not nine completed query implementations. The Flink-function rewrite
+caveats for Q14/Q21/Q22 and BIGINT AVG caveat for Q4/Q17 above remain.

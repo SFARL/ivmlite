@@ -989,15 +989,15 @@ TanStack DB is a browser-side JS library, with a different runtime and audience 
 ## 13. Known limitations (v0)
 
 1. **The root operator must be an Aggregate with a non-empty GROUP BY**; views without aggregation and global aggregates are not supported (§5.2)
-2. STRICT tables only, with **`ANY` columns rejected** (STRICT alone does not exclude `ANY`; see §7.1); the column-type whitelist is `INTEGER` / `TEXT`
+2. STRICT tables only, with **`ANY` columns rejected** (STRICT alone does not exclude `ANY`; see §7.1); the column-type whitelist is `INTEGER` / `TEXT` **Amended 2026-10-19 (M2c):** Non-STRICT tables and every declared type are accepted by SQLite affinity, including STRICT ANY. The BINARY collation restriction and conservative COLLATE refusal in item 3 remain.
 3. BINARY collation only; detected by fetching the table's CREATE statement from `sqlite_master` and matching `COLLATE`, a conservative over-rejection (see §7.1)
 4. Group-by keys are bare columns only, not expressions
-5. No floating-point aggregation
-6. **Integer overflow is undefined behaviour**; the absolute value of a group's sum must be < 2^62 (§6.1)
+5. No floating-point aggregation **Amended 2026-10-19 (M2c):** SUM, TOTAL and AVG use an exact accumulator and round the final result once. REAL results can differ from SQLite scan-order KBN in their last bits; finite inputs can also overflow SQLite intermediate state to infinity or NULL while the exact final result is finite. Actual mixed-sign infinities give NULL.
+6. **Integer overflow is undefined behaviour**; the absolute value of a group's sum must be < 2^62 (§6.1) **Amended 2026-10-19 (M2c):** SUM fails refresh with `integer overflow in SUM` only when the final exact integer sum is outside i64. A scan prefix may overflow in SQLite while ivmlite succeeds.
 7. Comparison operators are limited to `>` `>=` `<` `<=` `=` `!=` `IS NULL` `IS NOT NULL`; no `NOT` / `OR` / `LIKE` / `IN` / `BETWEEN` / subqueries (§6.1); a view has at most one predicate — no `AND` (M1b Phase 2a)
-8. `SUM` only over INTEGER columns, and a column may be compared only with a non-NULL literal of its own type; both are rejected at `ivm_create_view` (§6.1)
-9. Joins are limited to a two-table inner equi-join on one pair of columns of the same type (M1a Phase 3). No outer joins, no self-joins, no more than two tables, no multi-column keys. A NULL key matches nothing. Filters are evaluated after the join. Written `FROM a [AS x] [INNER] JOIN b [AS y] ON <column> = <column>`; table aliases are supported, but a self-join is rejected even with aliases (M1b Phase 2b)
-10. No MIN / MAX / DISTINCT
+8. `SUM` only over INTEGER columns, and a column may be compared only with a non-NULL literal of its own type; both are rejected at `ivm_create_view` (§6.1) **Amended 2026-10-19 (M2c):** COUNT(column), SUM, TOTAL, AVG, MIN and MAX accept any column. INTEGER, REAL, TEXT and BLOB literals use comparison affinity, except REAL literals against TEXT-affinity columns are refused because rendering varies by SQLite version.
+9. Joins are limited to a two-table inner equi-join on one pair of columns of the same type (M1a Phase 3). No outer joins, no self-joins, no more than two tables, no multi-column keys. A NULL key matches nothing. Filters are evaluated after the join. Written `FROM a [AS x] [INNER] JOIN b [AS y] ON <column> = <column>`; table aliases are supported, but a self-join is rejected even with aliases (M1b Phase 2b) **Amended 2026-10-19 (M2c):** Join columns must have the same affinity, rather than the same declared type. Canonical numeric equality makes INTEGER 1 match REAL 1.0; NULL still matches nothing. All other join restrictions remain.
+10. No MIN / MAX / DISTINCT **Amended 2026-10-19 (M2c):** MIN and MAX are supported. MIN selects INTEGER and MAX REAL for numerically equal INTEGER/REAL entries; SQLite chooses by scan order. DISTINCT aggregates and group_concat remain unsupported.
 11. The SELECT list is the GROUP BY columns, each once, followed by the aggregates; GROUP BY names bare columns only (no positions like `GROUP BY 1`, no expressions); result column names must be unique; table names cannot be schema-qualified (`main.t`) (M1b Phase 2b)
 12. Explicit refresh is required — a permanent API, not a temporary compromise (§8.2)
 13. Delta tables capture every column, wasting space on wide tables

@@ -601,7 +601,7 @@ fn aggregate(scope: &Scope, call: &Function) -> Result<Agg, SqlError> {
         "max" => AggFn::Max,
         _ => {
             return Err(unsupported(&format!(
-            "the function `{func_name}` (v0's aggregates are COUNT, SUM, TOTAL, AVG, MIN and MAX)"
+            "the function `{func_name}` (ivmlite's aggregates are COUNT, SUM, TOTAL, AVG, MIN and MAX)"
         )))
         }
     };
@@ -948,6 +948,14 @@ mod tests {
         let v = ok("SELECT region AS r, SUM(amount) total FROM orders GROUP BY region");
         let names: Vec<&str> = v.columns.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, vec!["r", "total"]);
+    }
+
+    #[test]
+    fn unsupported_aggregate_diagnostic_lists_current_functions() {
+        assert_eq!(
+            err("SELECT region, group_concat(amount) FROM orders GROUP BY region"),
+            "the function `group_concat` (ivmlite's aggregates are COUNT, SUM, TOTAL, AVG, MIN and MAX) is not supported in an ivmlite v0 view (spec §13)"
+        );
     }
 
     #[test]
