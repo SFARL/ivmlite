@@ -4,7 +4,7 @@
 mod common;
 use common::*;
 
-use ivmlite_core::Value;
+use ivmlite_core::{from_sort_key, Value};
 use ivmlite_test::open_with_extension;
 use rusqlite::types::Value as Sql;
 use rusqlite::{ffi, Connection};
@@ -386,6 +386,88 @@ fn min_and_max_survive_retracting_the_current_extreme() {
     c.execute_batch("INSERT INTO t VALUES ('c', NULL)").unwrap();
     refresh(&c, "m").unwrap();
     assert_matches_oracle(&c, "m", sql);
+}
+
+const EXTREMA_QUERY: &str = "SELECT k, MIN(x), MAX(x), COUNT(*) FROM t GROUP BY k";
+
+/// Inspect every persisted entry, so a correct visible extreme cannot hide
+/// stale values, a wrong duplicate weight, or a vanished group's state.
+fn assert_extremum_entries(c: &Connection, expected: &[(Value, i64)]) {
+    for aggregate in 0..2 {
+        let table = format!("__ivm_state_m_0_agg_extremum_{aggregate}");
+        let entries: Vec<(Value, i64)> = c
+            .prepare(&format!("SELECT val, w FROM {table} ORDER BY val"))
+            .unwrap()
+            .query_map([], |r| Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, i64>(1)?)))
+            .unwrap()
+            .map(|r| {
+                let (val, weight) = r.unwrap();
+                (from_sort_key(&val).unwrap(), weight)
+            })
+            .collect();
+        assert_eq!(entries, expected, "persisted entries in {table}");
+    }
+    assert_matches_oracle(c, "m", EXTREMA_QUERY);
+}
+
+fn extrema_fixture(values: &str) -> Connection {
+    let c = open_with_extension(None).unwrap();
+    c.execute_batch(&format!(
+        "CREATE TABLE t(k TEXT, x); INSERT INTO t VALUES {values};"
+    ))
+    .unwrap();
+    create(&c, "m", EXTREMA_QUERY).unwrap();
+    c
+}
+
+#[test]
+fn min_and_max_retract_every_non_null_value_from_a_surviving_group() {
+    let c = extrema_fixture("('a', NULL), ('a', NULL), ('a', 3), ('a', 9)");
+    assert_extremum_entries(&c, &[(Value::Int(3), 1), (Value::Int(9), 1)]);
+    c.execute_batch("DELETE FROM t WHERE x IS NOT NULL")
+        .unwrap();
+    refresh(&c, "m").unwrap();
+    assert_extremum_entries(&c, &[]);
+    assert_eq!(
+        one_row(&c, "SELECT * FROM m"),
+        vec![Sql::Text("a".into()), Sql::Null, Sql::Null, Sql::Integer(2)]
+    );
+}
+
+#[test]
+fn min_and_max_remove_every_persisted_entry_of_a_vanished_group() {
+    let c = extrema_fixture("('a', 3), ('a', 9)");
+    assert_extremum_entries(&c, &[(Value::Int(3), 1), (Value::Int(9), 1)]);
+    c.execute_batch("DELETE FROM t").unwrap();
+    refresh(&c, "m").unwrap();
+    assert_extremum_entries(&c, &[]);
+    assert!(rows(&c, "SELECT * FROM m").is_empty());
+}
+
+#[test]
+fn min_and_max_preserve_a_value_retracted_and_readded_in_one_refresh() {
+    let c = extrema_fixture("('a', 3), ('a', 9)");
+    let expected = [(Value::Int(3), 1), (Value::Int(9), 1)];
+    assert_extremum_entries(&c, &expected);
+    // The NULL changes COUNT(*) and forces the aggregate to read its stored
+    // extremes even though the same-value retraction and addition cancel.
+    c.execute_batch("DELETE FROM t WHERE x = 3; INSERT INTO t VALUES ('a', 3), ('a', NULL)")
+        .unwrap();
+    refresh(&c, "m").unwrap();
+    assert_extremum_entries(&c, &expected);
+}
+
+#[test]
+fn min_and_max_keep_a_duplicate_extreme_with_weight_one_after_one_retraction() {
+    let c = extrema_fixture("('a', 3), ('a', 3), ('a', 9), ('a', 9)");
+    assert_extremum_entries(&c, &[(Value::Int(3), 2), (Value::Int(9), 2)]);
+    c.execute_batch(
+        "DELETE FROM t WHERE rowid = (SELECT rowid FROM t WHERE x = 3 LIMIT 1);
+         DELETE FROM t WHERE rowid = (SELECT rowid FROM t WHERE x = 9 LIMIT 1);",
+    )
+    .unwrap();
+    refresh(&c, "m").unwrap();
+    assert_extremum_entries(&c, &[(Value::Int(3), 1), (Value::Int(9), 1)]);
 }
 
 #[test]
