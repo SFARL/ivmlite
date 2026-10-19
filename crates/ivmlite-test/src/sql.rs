@@ -140,9 +140,7 @@ pub fn view_query_to_sql(query: &ViewQuery, db: &Database) -> String {
     for agg in &query.aggs {
         select.push(match (agg.func, agg.column) {
             (AggFn::Count, None) => "COUNT(*)".to_string(),
-            (AggFn::Count, Some(_)) => {
-                unreachable!("COUNT(column) is not enumerated before M2c Task 11")
-            }
+            (AggFn::Count, Some(i)) => format!("COUNT({})", name(i)),
             (AggFn::Sum, Some(i)) => format!("SUM({})", name(i)),
             (AggFn::Total, Some(i)) => format!("TOTAL({})", name(i)),
             (AggFn::Avg, Some(i)) => format!("AVG({})", name(i)),
@@ -249,6 +247,31 @@ mod tests {
             view_query_to_sql(&q, &Database::single(orders())),
             "SELECT \"orders\".\"region\", SUM(\"orders\".\"amount\"), COUNT(*) FROM \"orders\" GROUP BY \"orders\".\"region\""
         );
+    }
+
+    #[test]
+    fn every_aggregate_renders_with_its_column() {
+        let db = Database::single(orders());
+        let q = |func: AggFn, column: Option<usize>| ViewQuery {
+            group_by: vec![0],
+            aggs: vec![Agg { func, column }],
+            predicate: Predicate::None,
+            join: None,
+        };
+        for (func, column, want) in [
+            (AggFn::Count, None, "COUNT(*)"),
+            (AggFn::Count, Some(1), "COUNT(\"orders\".\"amount\")"),
+            (AggFn::Sum, Some(1), "SUM(\"orders\".\"amount\")"),
+            (AggFn::Total, Some(1), "TOTAL(\"orders\".\"amount\")"),
+            (AggFn::Avg, Some(1), "AVG(\"orders\".\"amount\")"),
+            (AggFn::Min, Some(1), "MIN(\"orders\".\"amount\")"),
+            (AggFn::Max, Some(1), "MAX(\"orders\".\"amount\")"),
+        ] {
+            assert!(
+                view_query_to_sql(&q(func, column), &db).contains(want),
+                "{func:?}"
+            );
+        }
     }
 
     #[test]

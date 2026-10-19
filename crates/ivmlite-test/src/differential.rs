@@ -1,12 +1,14 @@
 use std::collections::BTreeMap;
 
-use ivmlite_core::{Database, Row, ZSet};
+use ivmlite_core::{Database, Row, ZSet, SUM_OVERFLOW};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
+use crate::compare::compare_with_oracles;
+use crate::naive::{evaluate, Evaluated, SqliteTerms};
 use crate::{
     check_invariants, enumerate_database, gen_initial, gen_ops, recompute_via_sqlite,
-    view_query_to_sql, Domain, Engine, Op, ViewQuery,
+    view_query_to_sql, Domain, Engine, EngineError, Op, ViewQuery,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -174,44 +176,147 @@ fn initial_bases(initial: &BTreeMap<String, Vec<Row>>) -> BTreeMap<String, ZSet>
 /// `apply` is called once for each table with changes, and then `refresh` once —
 /// the only place consolidation can take effect.
 pub fn run<E: Engine>(engine: &mut E, case: &TestCase) -> Result<(), Failure> {
+    run_outcome(engine, case).map(|_| ())
+}
+
+/// How a case that passed every check ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    /// Every batch was applied and checked.
+    Completed,
+    /// A final exact SUM left `i64`: the engine reported `integer overflow in
+    /// SUM` and the reference agreed, so the case stopped there (M2c spec §6,
+    /// amendment 6).
+    EndedOnOverflow,
+}
+
+/// `run`, saying how the case ended. At bootstrap and after each batch the
+/// independent reference is evaluated on the new bases, and the engine's
+/// state is checked against it and SQLite with `compare_with_oracles`
+/// (M2c spec §6).
+///
+/// Overflow (amendment 6): when the engine's `create_view`, `refresh` or
+/// `materialize` fails with `integer overflow in SUM` and the reference
+/// overflows too, the case ends with `EndedOnOverflow`. An engine overflow
+/// the reference does not have, or a reference overflow the engine does not
+/// report, is a `Failure`. SQLite's own `integer overflow`, which an
+/// intermediate prefix sum can raise when the final sum fits, leaves the
+/// check to the reference alone.
+///
+/// Stages: `diff[stage]` when the engine disagrees with the reference,
+/// `reference[stage]` when the reference fails or disagrees with SQLite.
+pub fn run_outcome<E: Engine>(engine: &mut E, case: &TestCase) -> Result<Outcome, Failure> {
     let fail = |stage: &str, detail: String| Failure {
         case_seed: case.seed,
         stage: stage.to_string(),
         detail,
     };
+    let terms = SqliteTerms::new().map_err(|e| fail("reference", e.to_string()))?;
+    let sql = || view_query_to_sql(&case.query, &case.database);
+
+    // The reference on `bases`; `None` when a final exact SUM overflows.
+    let reference = |bases: &BTreeMap<String, ZSet>, stage: &str| match evaluate(
+        &case.database,
+        &case.query,
+        bases,
+        &terms,
+    ) {
+        Ok(evaluated) => Ok(Some(evaluated)),
+        Err(e) if e.0 == SUM_OVERFLOW => Ok(None),
+        Err(e) => Err(fail(&format!("reference[{stage}]"), e.to_string())),
+    };
+
+    // An engine step's error that is not an overflow fails the case at once,
+    // before the reference is consulted.
+    let unless_overflow = |result: Result<(), EngineError>, stage: &str| match result {
+        Err(e) if !e.0.contains(SUM_OVERFLOW) => Err(fail(stage, e.to_string())),
+        other => Ok(other),
+    };
+
+    // An engine step's result against the reference's overflow: `Some` when
+    // the case ends here.
+    let settle = |result: Result<(), EngineError>,
+                  expected: &Option<Evaluated>,
+                  stage: &str|
+     -> Result<Option<Outcome>, Failure> {
+        match result {
+            Ok(()) => Ok(None),
+            Err(e) if e.0.contains(SUM_OVERFLOW) && expected.is_none() => {
+                Ok(Some(Outcome::EndedOnOverflow))
+            }
+            Err(e) if e.0.contains(SUM_OVERFLOW) => Err(fail(
+                stage,
+                format!(
+                    "{e}, but every final exact SUM of the reference fits in i64\n  query: {}",
+                    sql()
+                ),
+            )),
+            Err(e) => Err(fail(stage, e.to_string())),
+        }
+    };
 
     let compare = |engine: &mut E,
                    bases: &BTreeMap<String, ZSet>,
+                   expected: Option<Evaluated>,
                    stage: &str|
-     -> Result<(), Failure> {
-        let got = engine
-            .materialize()
-            .map_err(|e| fail(&format!("materialize[{stage}]"), e.to_string()))?;
+     -> Result<Option<Outcome>, Failure> {
+        let got = match engine.materialize() {
+            Ok(got) => got,
+            // `settle` never returns `Ok(None)` for an error.
+            Err(e) => return settle(Err(e), &expected, &format!("materialize[{stage}]")),
+        };
         check_invariants(&got, &case.query)
             .map_err(|e| fail(&format!("invariants[{stage}]"), e))?;
-        let want = recompute_via_sqlite(&case.database, &case.query, bases)
-            .map_err(|e| fail(&format!("oracle[{stage}]"), e.to_string()))?;
-        if got != want {
+        let Some(expected) = expected else {
             return Err(fail(
-                    &format!("diff[{stage}]"),
-                    format!(
-                        "the engine disagrees with the oracle\n  query: {}\n  engine: {:?}\n  oracle: {:?}",
-                        view_query_to_sql(&case.query, &case.database),
-                        got,
-                        want
-                    ),
-                ));
+                &format!("diff[{stage}]"),
+                format!(
+                    "a final exact SUM of the reference leaves i64, but the engine reported \
+                     no {SUM_OVERFLOW:?}\n  query: {}\n  engine: {got:?}",
+                    sql()
+                ),
+            ));
+        };
+        if got != expected.rows {
+            return Err(fail(
+                &format!("diff[{stage}]"),
+                format!(
+                    "the engine disagrees with the exact reference\n  query: {}\n  engine:    {:?}\n  reference: {:?}",
+                    sql(),
+                    got,
+                    expected.rows
+                ),
+            ));
         }
-        Ok(())
+        let sqlite = match recompute_via_sqlite(&case.database, &case.query, bases) {
+            Ok(z) => Some(z),
+            // SQLite's prefix overflow: the reference alone judges this state.
+            Err(e) if e.0.contains("integer overflow") => None,
+            Err(e) => return Err(fail(&format!("oracle[{stage}]"), e.to_string())),
+        };
+        compare_with_oracles(&got, &expected, sqlite.as_ref(), &case.query).map_err(|e| {
+            fail(
+                &format!("reference[{stage}]"),
+                format!("{e}\n  query: {}\n  SQLite: {:?}", sql(), sqlite.as_ref()),
+            )
+        })?;
+        Ok(None)
     };
 
     let mut bases = initial_bases(&case.initial);
-    engine
-        .create_view(&case.database, &case.query, &bases)
-        .map_err(|e| fail("create_view", e.to_string()))?;
+    let created = unless_overflow(
+        engine.create_view(&case.database, &case.query, &bases),
+        "create_view",
+    )?;
+    let expected = reference(&bases, "bootstrap")?;
+    if let Some(end) = settle(created, &expected, "create_view")? {
+        return Ok(end);
+    }
 
     // Compare once right after bootstrap — so a case with no ops is genuinely checked too.
-    compare(engine, &bases, "bootstrap")?;
+    if let Some(end) = compare(engine, &bases, expected, "bootstrap")? {
+        return Ok(end);
+    }
 
     for (i, grouped) in case.batches().into_iter().enumerate() {
         for (table, raw) in &grouped {
@@ -219,9 +324,6 @@ pub fn run<E: Engine>(engine: &mut E, case: &TestCase) -> Result<(), Failure> {
                 .apply(table, raw)
                 .map_err(|e| fail(&format!("apply[{i}][{table}]"), e.to_string()))?;
         }
-        engine
-            .refresh()
-            .map_err(|e| fail(&format!("refresh[{i}]"), e.to_string()))?;
         // The harness's own reference bookkeeping merges here — that is the
         // harness's business, not the engine's (spec §8.2). The engine still sees
         // each table's `raw` in its original form.
@@ -231,13 +333,22 @@ pub fn run<E: Engine>(engine: &mut E, case: &TestCase) -> Result<(), Failure> {
                 zset.update(row.clone(), *weight);
             }
         }
-        compare(engine, &bases, &i.to_string())?;
+        let stage = i.to_string();
+        let refreshed = unless_overflow(engine.refresh(), &format!("refresh[{i}]"))?;
+        let expected = reference(&bases, &stage)?;
+        if let Some(end) = settle(refreshed, &expected, &format!("refresh[{i}]"))? {
+            return Ok(end);
+        }
+        if let Some(end) = compare(engine, &bases, expected, &stage)? {
+            return Ok(end);
+        }
     }
-    Ok(())
+    Ok(Outcome::Completed)
 }
 
 /// The second layer of spec §9.1: however the same delta sequence is batched,
-/// the final state must be the same. This property cannot be tested under an
+/// the final state must be the same. Only the modes whose case `Completed`
+/// are compared. This property cannot be tested under an
 /// automatic-maintenance mode — one of the benefits of v0 choosing explicit
 /// refresh.
 pub fn check_batch_invariance<E, F>(case: &TestCase, make: F) -> Result<(), Failure>
@@ -259,7 +370,11 @@ where
             batching: mode,
             ..case.clone()
         };
-        run(&mut engine, &scoped)?;
+        if run_outcome(&mut engine, &scoped)? == Outcome::EndedOnOverflow {
+            // M2c spec §6, amendment 6: this mode's case ended early, so it
+            // has no final state to compare.
+            continue;
+        }
         let state = engine.materialize().map_err(|e| Failure {
             case_seed: case.seed,
             stage: format!("batch_invariance[{mode:?}]"),
@@ -289,7 +404,8 @@ mod tests {
     use super::*;
     use crate::{
         enumerate, enumerate_join, gen_database, gen_database_with_swapped_right_table, Agg, AggFn,
-        Column, ColumnType, Domain, EngineError, NaiveRecompute, Predicate, Schema,
+        Column, ColumnType, Domain, EngineError, IncrementalEngine, NaiveRecompute, Predicate,
+        Schema,
     };
     use ivmlite_core::Value;
 
@@ -582,6 +698,164 @@ mod tests {
             multi_table_batches > 0,
             "at least one batch must really involve several tables, or the order assertion above never runs on a meaningful path"
         );
+    }
+
+    fn orders_row(amount: i64) -> Row {
+        Row::new(vec![Value::Text("a".into()), Value::Int(amount)])
+    }
+
+    fn sum_case(seed: u64, rows: Vec<Row>, ops: Vec<Op>, batching: Batching) -> TestCase {
+        let mut case = single_table_case(seed, rows, ops, batching);
+        case.query.aggs = vec![Agg {
+            func: AggFn::Sum,
+            column: Some(1),
+        }];
+        case
+    }
+
+    #[test]
+    fn sqlite_prefix_overflow_falls_back_to_the_reference() {
+        // The oracle inserts a base in `ZSet` order (ascending here), so SQLite's
+        // sum overflows on -MAX + -MAX; the final exact sum, 0, fits.
+        let r = orders_row;
+        let rows = vec![r(-i64::MAX), r(-i64::MAX), r(i64::MAX), r(i64::MAX)];
+        let case = sum_case(1, rows, vec![], Batching::All);
+        let sqlite =
+            recompute_via_sqlite(&case.database, &case.query, &initial_bases(&case.initial));
+        assert!(
+            sqlite
+                .as_ref()
+                .is_err_and(|e| e.0.contains("integer overflow")),
+            "SQLite itself must report the prefix overflow: {sqlite:?}"
+        );
+        assert!(matches!(
+            run_outcome(&mut NaiveRecompute::new(), &case),
+            Ok(Outcome::Completed)
+        ));
+        assert!(matches!(
+            run_outcome(&mut IncrementalEngine::new(), &case),
+            Ok(Outcome::Completed)
+        ));
+    }
+
+    #[test]
+    fn a_final_overflow_ends_the_case_when_the_reference_agrees() {
+        let r = orders_row;
+        let case = sum_case(2, vec![r(i64::MAX)], vec![Op::Insert(r(1))], Batching::One);
+        assert!(matches!(
+            run_outcome(&mut IncrementalEngine::new(), &case),
+            Ok(Outcome::EndedOnOverflow)
+        ));
+        assert!(matches!(
+            run_outcome(&mut NaiveRecompute::new(), &case),
+            Ok(Outcome::EndedOnOverflow)
+        ));
+        // At bootstrap too.
+        let case = sum_case(3, vec![r(i64::MAX), r(1)], vec![], Batching::One);
+        assert!(matches!(
+            run_outcome(&mut IncrementalEngine::new(), &case),
+            Ok(Outcome::EndedOnOverflow)
+        ));
+    }
+
+    /// Swallows refresh errors, so an overflow is never reported.
+    #[derive(Debug, Default)]
+    struct SilentOverflowEngine(IncrementalEngine);
+
+    impl Engine for SilentOverflowEngine {
+        fn create_view(
+            &mut self,
+            db: &Database,
+            query: &ViewQuery,
+            initial: &BTreeMap<String, ZSet>,
+        ) -> Result<(), EngineError> {
+            Engine::create_view(&mut self.0, db, query, initial)
+        }
+
+        fn apply(&mut self, table: &str, raw: &[(Row, i64)]) -> Result<(), EngineError> {
+            Engine::apply(&mut self.0, table, raw)
+        }
+
+        fn refresh(&mut self) -> Result<(), EngineError> {
+            // Deliberately dropped: the harness must notice the missing overflow.
+            let _ = Engine::refresh(&mut self.0);
+            Ok(())
+        }
+
+        fn materialize(&mut self) -> Result<ZSet, EngineError> {
+            Engine::materialize(&mut self.0)
+        }
+    }
+
+    /// Reports an overflow on every refresh, whatever the sums are.
+    #[derive(Debug, Default)]
+    struct SpuriousOverflowEngine(NaiveRecompute);
+
+    impl Engine for SpuriousOverflowEngine {
+        fn create_view(
+            &mut self,
+            db: &Database,
+            query: &ViewQuery,
+            initial: &BTreeMap<String, ZSet>,
+        ) -> Result<(), EngineError> {
+            self.0.create_view(db, query, initial)
+        }
+
+        fn apply(&mut self, table: &str, raw: &[(Row, i64)]) -> Result<(), EngineError> {
+            self.0.apply(table, raw)
+        }
+
+        fn refresh(&mut self) -> Result<(), EngineError> {
+            Err(EngineError(ivmlite_core::SUM_OVERFLOW.into()))
+        }
+
+        fn materialize(&mut self) -> Result<ZSet, EngineError> {
+            self.0.materialize()
+        }
+    }
+
+    #[test]
+    fn an_overflow_the_engine_does_not_report_is_a_failure() {
+        let r = orders_row;
+        let case = sum_case(4, vec![r(i64::MAX)], vec![Op::Insert(r(1))], Batching::One);
+        let failure = run_outcome(&mut SilentOverflowEngine::default(), &case).unwrap_err();
+        assert_eq!(failure.stage, "diff[0]", "{failure}");
+    }
+
+    #[test]
+    fn an_overflow_the_reference_does_not_have_is_a_failure() {
+        let r = orders_row;
+        let case = sum_case(5, vec![r(1)], vec![Op::Insert(r(2))], Batching::One);
+        let failure = run_outcome(&mut SpuriousOverflowEngine::default(), &case).unwrap_err();
+        assert_eq!(failure.stage, "refresh[0]", "{failure}");
+    }
+
+    #[test]
+    fn batch_invariance_compares_only_the_modes_that_completed() {
+        // One at a time, the insert overflows before the delete undoes it; in
+        // one batch the sum never leaves i64 and ends at MAX - 5, a state the
+        // overflowed engine never reached.
+        let r = orders_row;
+        let case = sum_case(
+            6,
+            vec![r(i64::MAX)],
+            vec![Op::Insert(r(1)), Op::Delete(r(1)), Op::Insert(r(-5))],
+            Batching::All,
+        );
+        let mut one = TestCase {
+            batching: Batching::One,
+            ..case.clone()
+        };
+        assert!(matches!(
+            run_outcome(&mut IncrementalEngine::new(), &one),
+            Ok(Outcome::EndedOnOverflow)
+        ));
+        one.batching = Batching::All;
+        assert!(matches!(
+            run_outcome(&mut IncrementalEngine::new(), &one),
+            Ok(Outcome::Completed)
+        ));
+        check_batch_invariance(&case, IncrementalEngine::new).unwrap();
     }
 
     #[test]

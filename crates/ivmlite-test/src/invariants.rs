@@ -29,7 +29,9 @@ pub fn check_invariants(state: &ZSet, query: &ViewQuery) -> Result<(), String> {
                 query.output_arity()
             ));
         }
-        let key: Vec<Value> = (0..key_arity).map(|i| row.get(i).clone()).collect();
+        // M2c spec §2: group equality is on the canonical key, so `1` and
+        // `1.0` are one group and may not both appear.
+        let key: Vec<Value> = (0..key_arity).map(|i| row.get(i).canonical()).collect();
         if !seen.insert(key.clone()) {
             // Item 20 (a deferred minor): include row:?, like the other three
             // error paths. A duplicate group key is M1's most likely failure
@@ -91,6 +93,18 @@ mod tests {
         // Debug text pins the intent; the substring check this replaced was a
         // single character meaning "row", which almost any message satisfied.
         assert!(err.contains(&format!("{:?}", out("a", 2))), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_keys_that_are_one_group_in_sqlite() {
+        // M2c spec §2: Int(1) and Real(1.0) are one group, so two output rows
+        // carrying them are a duplicate; Text("1") is another group.
+        let row = |key: Value| Row::new(vec![key, Value::Int(1)]);
+        let z = ZSet::from_rows([(row(Value::Int(1)), 1), (row(Value::Real(1.0)), 1)]);
+        let err = check_invariants(&z, &q()).unwrap_err();
+        assert!(err.contains("more than once"), "got: {err}");
+        let z = ZSet::from_rows([(row(Value::Int(1)), 1), (row(Value::Text("1".into())), 1)]);
+        assert!(check_invariants(&z, &q()).is_ok());
     }
 
     #[test]

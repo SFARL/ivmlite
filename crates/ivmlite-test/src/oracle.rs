@@ -6,17 +6,22 @@ use rusqlite::{Connection, ToSql};
 
 use crate::{create_table_sql, view_query_to_sql, EngineError, ViewQuery};
 
+/// `value` as SQLite's own value, storage class for storage class.
+pub(crate) fn to_sql(value: &Value) -> rusqlite::types::Value {
+    match value {
+        Value::Null => rusqlite::types::Value::Null,
+        Value::Int(n) => rusqlite::types::Value::Integer(*n),
+        Value::Real(x) => rusqlite::types::Value::Real(*x),
+        Value::Text(s) => rusqlite::types::Value::Text(s.clone()),
+        Value::Blob(b) => rusqlite::types::Value::Blob(b.clone()),
+    }
+}
+
 struct Bound<'a>(&'a Value);
 
 impl ToSql for Bound<'_> {
     fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
-        Ok(match self.0 {
-            Value::Null => ToSqlOutput::Owned(rusqlite::types::Value::Null),
-            Value::Int(n) => ToSqlOutput::Owned(rusqlite::types::Value::Integer(*n)),
-            Value::Real(x) => ToSqlOutput::Owned(rusqlite::types::Value::Real(*x)),
-            Value::Text(s) => ToSqlOutput::Owned(rusqlite::types::Value::Text(s.clone())),
-            Value::Blob(b) => ToSqlOutput::Owned(rusqlite::types::Value::Blob(b.clone())),
-        })
+        Ok(ToSqlOutput::Owned(to_sql(self.0)))
     }
 }
 
