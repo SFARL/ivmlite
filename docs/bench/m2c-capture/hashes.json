@@ -1,0 +1,94 @@
+{
+  "description": "Original capture identities and published normalized byte identities; CSV bytes are unchanged.",
+  "artifacts": [
+    {
+      "source_name": "machine.json",
+      "published_name": "machine.json",
+      "original_sha256": "6a26a428647adc90dc00055a9c115891988c41f39f157c53ace8f4a1496f1027",
+      "published_sha256": "c89d6b34c4bb160f7c4413a17224704c4a91a8ab74244d3687448e29bd8ca926",
+      "normalization": [
+        "Replace recorded local root paths with documented placeholders.",
+        "Resolve original pending SQLite field from actual raw outputs; retain original file hash."
+      ]
+    },
+    {
+      "source_name": "runs.jsonl",
+      "published_name": "runs.jsonl",
+      "original_sha256": "2f7821d1d352aed6889f16b7fa247b8dd49acd22414225f8bf9dacad669b550f",
+      "published_sha256": "3e75fed123142d3a945f4aafb3bcfeb8cb8290b053a9604cbece3bcdeea07bab",
+      "normalization": [
+        "Replace recorded local root paths with documented placeholders."
+      ]
+    },
+    {
+      "source_name": "raw-capture-provenance.json",
+      "published_name": "raw-capture-provenance.json",
+      "original_sha256": "ca0c5330468d7c050a55612788ac9534503b3b2c8b02f819a7e2c921ed7aec8a",
+      "published_sha256": "5dbd3406a228ef7e3283783fa216d00e5a209365b199882d78b914b40de1efdd",
+      "normalization": [
+        "Replace recorded local root paths with documented placeholders."
+      ]
+    },
+    {
+      "source_name": "application-progress-2.log",
+      "published_name": "application-progress-2.log",
+      "original_sha256": "63bb8aa906c7b2ba996483f6b08a00d7520fed283b9b07f57f064c8000c41277",
+      "published_sha256": "e35418c800bd12012692c505b5ee3d0858717d8f0e727ecb8faf69f87aae3a07",
+      "normalization": [
+        "Replace recorded local root paths with documented placeholders."
+      ]
+    },
+    {
+      "source_name": "fluxflow-before.txt",
+      "published_name": "fluxflow-before.txt",
+      "original_sha256": "c72300df17720f6dfd6fcfdf6e0ac87f7e369018a0847cbe71fbe9297b3de04b",
+      "published_sha256": "abd992c32bc2523dedad3f52e603dbfbafee964ff0910d120de466394c590377",
+      "normalization": [
+        "Replace recorded local root paths with documented placeholders."
+      ]
+    },
+    {
+      "source_name": "fluxflow-after.txt",
+      "published_name": "fluxflow-after.txt",
+      "original_sha256": "5c957cac9d6b2f6db514ecae43593f40ee78a3ba121aacbf891de209751374a3",
+      "published_sha256": "5bfbece96754c6ba7a8bcf982475c18366f8acbafb1d3acb37bde0d4a56d53e6",
+      "normalization": [
+        "Replace recorded local root paths with documented placeholders."
+      ]
+    },
+    {
+      "source_name": "kener-before.txt",
+      "published_name": "kener-before.txt",
+      "original_sha256": "1ffc16fe26baffe64514183c8a353154fb601ec5e39849158ce002b773c11e89",
+      "published_sha256": "25042e5b28c51b1623c260675004890ac43c8cd428775022fcbf8651205002dd",
+      "normalization": [
+        "Replace recorded local root paths with documented placeholders."
+      ]
+    },
+    {
+      "source_name": "kener-after.txt",
+      "published_name": "kener-after.txt",
+      "original_sha256": "b359cbae550ab5b25e419deecb30d50797850be88be3be150a59e476dae1525a",
+      "published_sha256": "30a5e1961729e6109153a7e67725ea4c1ba0868642ddefd0834c773fe16e7161",
+      "normalization": [
+        "Replace recorded local root paths with documented placeholders."
+      ]
+    }
+  ],
+  "csv_sha256": {
+    "docs/bench/m2c-ablation-builds.csv": "b31f8462df953b0a338b6f1e68f8d04aaf3c345d4a8119ce80481c86b4fa3872",
+    "docs/bench/m2c-ablation-write-amp.csv": "35716ea43f1a1be0c34364af8c224534d8e94a6079196c5f8846d3837d767b45",
+    "docs/bench/m2c-ablation.csv": "d972c74424f4e0ea7e4e0c1fbee9d28b25e85d507b51ec45b9df6f8af7e96d44",
+    "docs/bench/m2c-confirm-after.csv": "96b8cf1ce50c889be21f2db43a532e82e32e81bb77ac082614ac2772c0e42894",
+    "docs/bench/m2c-confirm-before.csv": "0d63c27e4755693e9e941c59b1d445b1842f3f69bd72d2a0444b32cab6b6878e",
+    "docs/bench/m2c-confirm-rerun/after.csv": "abcc7fb50ac700143559ecaaae4778d75af8bd44df7eeee23945cc09d6d18853",
+    "docs/bench/m2c-confirm-rerun/before.csv": "9eba42c34332047517c81e386e11e6b95eb6ae7286213009ea3682c0b3ef6865",
+    "docs/bench/m2c-confirm-rerun/selection.csv": "922d26c6c861cd3bca702161dfdf4aea4511848da605cf8eba4cccf80ef22c46",
+    "docs/bench/m2c-demos-builds.csv": "243f311fa18c69e0342197d224b773752b4757f58b6fab9f86244d8b470a95d1",
+    "docs/bench/m2c-demos.csv": "54ff808d8fffa100f6454f5704b553f2f5fbe05d8dc90536a1cf355be915a16f"
+  },
+  "combined_demo_capture_sha256": {
+    "docs/demos/results/2026-10-20-fluxflow-m2c.txt": "00a08408c3c916a09747c6af621ff01ef9b2ffd350189d172094b77460203426",
+    "docs/demos/results/2026-10-20-kener-m2c.txt": "ef24320390a95e57902ad6d6ea5ed2993b3ef7b711d90f474d7df7f4628275c1"
+  }
+}

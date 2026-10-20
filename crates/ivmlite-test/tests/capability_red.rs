@@ -1,6 +1,7 @@
-//! Opt-in red acceptance tests for source-shaped queries beyond ivmlite's
-//! current SQL subset. Ordinary CI lists them as ignored; run one explicitly
-//! with `cargo test -p ivmlite-test --test capability_red <name> -- --ignored`.
+//! Source-shaped capability acceptance tests. The Jot MIN/MAX/COUNT projection
+//! runs in ordinary CI; the three remaining unsupported queries are ignored.
+//! Run a red gate with
+//! `cargo test -p ivmlite-test --test capability_red <name> -- --ignored`.
 //! A green result must include parity after changes, not merely CREATE success.
 
 mod common;
@@ -51,7 +52,7 @@ fn cpa_exact_p95_matches_ranked_sqlite_after_append() {
 }
 
 #[test]
-#[ignore = "red: task buckets need MIN/MAX, AVG, DISTINCT collection, and top-N"]
+#[ignore = "red: task buckets need CASE/NULLIF expressions, DISTINCT GROUP_CONCAT, and ORDER BY/LIMIT"]
 fn cpa_task_buckets_match_sqlite_after_new_task() {
     let c = open_with_extension(None).unwrap();
     c.execute_batch(
@@ -90,7 +91,6 @@ fn cpa_task_buckets_match_sqlite_after_new_task() {
 }
 
 #[test]
-#[ignore = "red: exact session start/end needs maintained MIN/MAX under deletion and rekey"]
 fn jot_min_max_count_matches_sqlite_after_mixed_changes() {
     let c = open_with_extension(None).unwrap();
     c.execute_batch(JOT_SESSION_COUNTS.ddl()).unwrap();
@@ -113,7 +113,7 @@ fn jot_min_max_count_matches_sqlite_after_mixed_changes() {
 }
 
 #[test]
-#[ignore = "red: full sessions query needs LEFT JOIN, MIN/MAX, ordering, and LIMIT"]
+#[ignore = "red: full sessions query needs LEFT JOIN, an ungrouped title, and ORDER BY/LIMIT"]
 fn jot_full_session_list_matches_sqlite_after_title_change() {
     let c = open_with_extension(None).unwrap();
     c.execute_batch(JOT_SESSION_COUNTS.ddl()).unwrap();

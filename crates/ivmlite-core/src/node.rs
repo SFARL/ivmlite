@@ -1,6 +1,6 @@
 use crate::{
-    Arrangement, ArrangementId, ArrangementRole, JoinState, Plan, Predicate, Row, StateError,
-    Value, ZSet,
+    AggFn, Arrangement, ArrangementId, ArrangementRole, JoinState, Plan, Predicate, Row,
+    StateError, Value, ZSet,
 };
 
 /// Supplies an operator's arrangements by id: fresh in memory for
@@ -104,16 +104,25 @@ impl Node {
                 aggs,
             } => {
                 let input = Node::build_at(input, next, arrangements)?;
-                Node::Aggregate {
-                    input: Box::new(input),
-                    state: crate::AggState::new(
-                        group_by.clone(),
-                        aggs.clone(),
+                let groups = arrangements(ArrangementId {
+                    node,
+                    role: ArrangementRole::AggregateGroups,
+                })?;
+                // M2c spec §4: one state table per MIN or MAX, in `aggs` order.
+                let extremes = aggs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, a)| matches!(a.func, AggFn::Min | AggFn::Max))
+                    .map(|(i, _)| {
                         arrangements(ArrangementId {
                             node,
-                            role: ArrangementRole::AggregateGroups,
-                        })?,
-                    ),
+                            role: ArrangementRole::AggregateExtremum(i),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Node::Aggregate {
+                    input: Box::new(input),
+                    state: crate::AggState::new(group_by.clone(), aggs.clone(), groups, extremes),
                 }
             }
         })
@@ -195,16 +204,12 @@ impl Node {
 fn passes(predicate: &Predicate, row: &Row) -> bool {
     match predicate {
         Predicate::None => true,
-        Predicate::Compare { column, op, value } => match (row.get(*column), value) {
+        Predicate::Compare { column, op, value } => match row.get(*column) {
             // UNKNOWN for every operator, `!=` included: `NULL != 4` is not true.
-            (Value::Null, _) => false,
-            (Value::Int(a), Value::Int(b)) => op.holds(a.cmp(b)),
-            // Byte order, which is SQLite's BINARY collation (§7.1).
-            (Value::Text(a), Value::Text(b)) => op.holds(a.as_bytes().cmp(b.as_bytes())),
-            (a, b) => unreachable!(
-                "`lower` accepts a comparison only with a literal of the column's type, \
-                 and a STRICT table stores only that type: compared {a:?} with {b:?}"
-            ),
+            Value::Null => false,
+            // M2c spec §2, §5: SQLite's cross-class order; TEXT and BLOB by
+            // bytes (BINARY).
+            cell => op.holds(cell.sql_cmp(value)),
         },
         Predicate::IsNull { column } => matches!(row.get(*column), Value::Null),
         Predicate::IsNotNull { column } => !matches!(row.get(*column), Value::Null),
@@ -258,6 +263,25 @@ mod tests {
 
     fn int(i: i64) -> Value {
         Value::Int(i)
+    }
+
+    #[test]
+    fn comparisons_use_sqlites_cross_class_order() {
+        // Spec §2, §5: numerics compare exactly across Int and Real; TEXT sorts above numbers.
+        let gt_2 = Predicate::Compare {
+            column: 0,
+            op: CmpOp::Gt,
+            value: Value::Int(2),
+        };
+        assert!(passes(&gt_2, &row(vec![Value::Real(2.5)])));
+        assert!(!passes(&gt_2, &row(vec![Value::Real(2.0)])));
+        assert!(passes(&gt_2, &row(vec![Value::Text("1".into())])));
+        let eq_1 = Predicate::Compare {
+            column: 0,
+            op: CmpOp::Eq,
+            value: Value::Int(1),
+        };
+        assert!(passes(&eq_1, &row(vec![Value::Real(1.0)])));
     }
 
     /// Spec §6.1: each whitelisted operator keeps exactly the rows SQL keeps.
@@ -733,6 +757,45 @@ mod tests {
                 ]),
                 1
             )])
+        );
+    }
+
+    #[test]
+    fn a_real_group_key_from_the_right_side_of_a_join_is_real_while_a_real_row_is_live() {
+        // M2c spec §2 through Join → Project → Aggregate: grouping by a right
+        // table's column, `Int(5)` and `Real(5.0)` are one group whose key
+        // outputs as REAL exactly while a REAL row is live.
+        let plan = Plan::Aggregate {
+            input: Box::new(Plan::Project {
+                input: Box::new(join_plan()),
+                columns: vec![3],
+            }),
+            group_by: vec![0],
+            aggs: vec![count_agg()],
+        };
+        let mut n = Node::build(&plan, &mut crate::fresh_mem_arrangement).unwrap();
+        let right = |g: Value| row(vec![Value::Text("a".into()), g]);
+        let out = |key: Value, count: i64, w: i64| (row(vec![key, int(count)]), w);
+
+        n.delta("t0", &ZSet::from_rows([(right(int(1)), 1)]))
+            .unwrap();
+        assert_eq!(
+            n.delta("t1", &ZSet::from_rows([(right(int(5)), 1)]))
+                .unwrap(),
+            ZSet::from_rows([out(int(5), 1, 1)]),
+            "an INTEGER row alone gives an INTEGER key"
+        );
+        assert_eq!(
+            n.delta("t1", &ZSet::from_rows([(right(Value::Real(5.0)), 1)]))
+                .unwrap(),
+            ZSet::from_rows([out(int(5), 1, -1), out(Value::Real(5.0), 2, 1)]),
+            "Real(5.0) joins the group of Int(5), and the key becomes REAL"
+        );
+        assert_eq!(
+            n.delta("t1", &ZSet::from_rows([(right(Value::Real(5.0)), -1)]))
+                .unwrap(),
+            ZSet::from_rows([out(Value::Real(5.0), 2, -1), out(int(5), 1, 1)]),
+            "the key turns back to INTEGER once its last REAL row is retracted"
         );
     }
 

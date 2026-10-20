@@ -1,0 +1,11 @@
+CREATE TABLE orders(id INTEGER PRIMARY KEY,k TEXT,v INTEGER) STRICT;
+INSERT INTO orders VALUES(1,'a',3);
+CREATE MATERIALIZED VIEW totals AS SELECT k,COUNT(*) AS n,SUM(v) AS s FROM orders GROUP BY k;
+SELECT 'before_delete',quote(k),n,quote(s),typeof(s),CAST(s AS INTEGER) FROM totals ORDER BY k;
+SELECT 'before_delete_full',quote(k),n,quote(s),typeof(s),CAST(s AS INTEGER) FROM (SELECT k,COUNT(*) AS n,SUM(v) AS s FROM orders GROUP BY k) ORDER BY k;
+DELETE FROM orders;
+SELECT 'empty',quote(k),n,quote(s),typeof(s),CAST(s AS INTEGER) FROM totals ORDER BY k;
+SELECT 'empty_full',quote(k),n,quote(s),typeof(s),CAST(s AS INTEGER) FROM (SELECT k,COUNT(*) AS n,SUM(v) AS s FROM orders GROUP BY k) ORDER BY k;
+INSERT INTO orders VALUES(2,'a',5);
+SELECT 'recreate',quote(k),n,quote(s),typeof(s),CAST(s AS INTEGER) FROM totals ORDER BY k;
+SELECT 'recreate_full',quote(k),n,quote(s),typeof(s),CAST(s AS INTEGER) FROM (SELECT k,COUNT(*) AS n,SUM(v) AS s FROM orders GROUP BY k) ORDER BY k;

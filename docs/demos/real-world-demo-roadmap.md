@@ -2,6 +2,8 @@
 
 Research snapshot: 2026-10-18. Earlier candidate measurements below remain
 at their original dates; the CPA and jot gates were checked on 2026-10-18.
+Capability status was updated for M2c on 2026-10-20; this does not refresh
+the upstream issue-status or performance snapshots.
 
 This document ranks public workload reports that could become ivmlite demos.
 They are demand evidence, not customer interviews, endorsements, adoption, or
@@ -29,9 +31,11 @@ reproduction of a production deployment.
 
 The [CPA Manager Plus #647](https://github.com/seakee/CPA-Manager-Plus/issues/647)
 and [StoneHub/jot #209](https://github.com/StoneHub/jot/issues/209) issues
-remain open. Their complete queries are beyond today's ivmlite SQL subset.
+were open at that snapshot. Their complete queries remain beyond the M2c SQL subset.
 The [CPA](cpa-manager-plus.md) and [jot](jot.md) demos each include a runnable
-green slice plus source-shaped **red** acceptance tests. The red tests are
+green slice plus source-shaped acceptance tests. Jot's stored integer
+`MIN/MAX/COUNT` projection now runs in ordinary CI, with SQLite parity after
+three mixed batches. The other three tests remain **red** and are
 marked `#[ignore]` in
 [`capability_red.rs`](../../crates/ivmlite-test/tests/capability_red.rs):
 normal CI compiles them and stays green; explicitly running them with
@@ -42,8 +46,8 @@ the refreshed result against SQLite after writes.
 | Phase | CPA Manager Plus #647 | StoneHub/jot #209 |
 |---|---|---|
 | 0, executable now | Fixed-hour `COUNT` and integer `SUM` over a synthetic `STRICT` projection, checked against source-style conditional counts. This is part of the core totals; upstream already has a fast hourly path. | Ambient rows per session `COUNT(*)` with insert, delete, session move and mode change; duplicate ID and rollback checks. |
-| 1, aggregate operators | Direct conditional aggregates and nullable average, or proven equivalent projections, plus exact `MIN/MAX` maintenance under retractions and rekeys. | `MIN(start)` and `MAX(end)` beside count, including removal of the current extrema. The minimal typed-projection gate is red. |
-| 2, complete shapes | Exact nearest-rank P95/TTFT over ordered samples; task grouping with `MIN/MAX`, `AVG`, `GROUP_CONCAT(DISTINCT)` and deterministic top 500. Both source-shaped gates are red. Approximate percentile sketches would change the API result. | Source time expression and `REAL` values, title `LEFT JOIN`, `ORDER BY MAX(end)` and `LIMIT` with correct reordering after changes. The full-session gate is red. |
+| 1, aggregate operators | M2c supports `MIN/MAX` and nullable `AVG` over columns. Direct `CASE`/`NULLIF` aggregate arguments still need support or proven equivalent projections. | Stored integer `MIN(start)` and `MAX(end)` beside count, with deletion and rekey, now pass the ordinary-CI projection gate. |
+| 2, complete shapes | Exact nearest-rank P95/TTFT over ordered samples; task grouping with `CASE`/`NULLIF`, `GROUP_CONCAT(DISTINCT)` and deterministic top 500. Both source-shaped gates remain red; `MIN/MAX/AVG` are already supported. Approximate percentile sketches would change the API result. | M2c supports REAL values, but the source end expression, title `LEFT JOIN`, ungrouped title, `ORDER BY MAX(end)` and `LIMIT` remain beyond the stored-bounds projection. The full-session gate remains red. |
 | 3, application parity | Arbitrary `[from,to)` windows with exact partial-hour edges, rolling 30-minute totals, requested-timezone active days, zero-token models, retention coverage, and unchanged JSON/error behavior under the 30-second timeout. | `addCommitted` snapshots and duplicate writes, split/regroup, deletion, title changes, rollback, concurrency and native recovery. |
 
 These phases describe capabilities or application composition, not a promise
@@ -56,11 +60,11 @@ is an in-memory synthetic SQLite measurement, not production latency.
 
 | Priority | Candidate | Evidence available | Current fit | Decision |
 |---|---|---|---|---|
-| P0 | [FluxFlow #3](https://github.com/2ndtlmining/fluxflow/issues/3) / [PR #45](https://github.com/2ndtlmining/fluxflow/pull/45) | Public generator and source; no public production DB | A normalized grouped `SUM`/`COUNT` slice fits; retention semantics do not | Partly implemented: one source-scale slice with indexed and unindexed recomputation and trigger baselines; the variations below are not |
+| P0 | [FluxFlow #3](https://github.com/2ndtlmining/fluxflow/issues/3) / [PR #45](https://github.com/2ndtlmining/fluxflow/pull/45) | Public generator and source; no public production DB | A normalized native REAL grouped `SUM`/`COUNT` slice fits; retention semantics do not | Partly implemented: one source-scale slice with indexed and unindexed recomputation and trigger baselines; the variations below are not |
 | P0 | [Taproot Assets #642](https://github.com/lightninglabs/taproot-assets/issues/642) | Public source/query and an existing synthetic ivmlite fixture; no production DB | Existing split filtered join/count slice fits | Package and extend existing demo |
 | P1 | [noop #2314](https://github.com/ryanbr/noop/issues/2314) | Public source/query and issue measurements; no production DB or reusable large fixture captured here | Per-device/day `COUNT(*)` fits after storing the day bucket | Implemented adapted slice |
 | P1 | [Zcash #2476](https://github.com/zcash/librustzcash/issues/2476) | Public source/query and issue measurements; no production DB or matching large generator | Per-account integer `SUM` fits only after eligibility is denormalized | Implemented adapted slice |
-| P2 | [Kener #840](https://github.com/rajnandan1/kener/issues/840) / [PR #842](https://github.com/rajnandan1/kener/pull/842) | Issue-reported production numbers and an upstream rollup implementation; no production DB | Status-dimensional counts and integer latency sum fit; full rollup does not | Implemented high-cardinality slice |
+| P2 | [Kener #840](https://github.com/rajnandan1/kener/issues/840) / [PR #842](https://github.com/rajnandan1/kener/pull/842) | Issue-reported production numbers and an upstream rollup implementation; no production DB | Status-dimensional `COUNT` and REAL latency `AVG/MIN/MAX` fit; full rollup does not | Implemented high-cardinality slice |
 | P3 | [Bifrost #7460](https://github.com/maximhq/bifrost/issues/7460) | Issue-reported production numbers; no public DB or complete generator | Requires aggregates to survive raw deletion, which ivmlite does not support | Keep as a negative demo and sealing acceptance case |
 | Defer | [Claude Monitor #305](https://github.com/hoangsonww/Claude-Code-Agent-Monitor/issues/305) | Public proposal and small application fixtures; no row count, DB size, or timing in the issue | Also requires rollup-before-delete/sealing | Revisit after sealing exists |
 
@@ -111,8 +115,10 @@ The project solved its immediate problem without ivmlite.
 
 ### Executable slice
 
-Create a typed fact table that stores the grouping keys needed by one stable
-summary, for example:
+The earlier integer adaptation stored grouping keys needed by one stable
+summary as follows. This schema/query is retained as a historical example;
+the [current FluxFlow demo](fluxflow.md#adaptation) uses a non-STRICT table
+with native `amount REAL` and nullable `confidence REAL`:
 
 ```sql
 CREATE TABLE flow_facts (
@@ -259,11 +265,14 @@ database, and returns 847 KB. The proposed 15-minute rollup is reported as
 550,000 buckets and 23 MB for 4.1 million raw rows, versus 577 MB raw, with a
 4.4-second backfill and an expected read near 470 ms.
 
-A current ivmlite slice can pre-store `bucket_ts` and integer latency, then use
-status as a grouping dimension alongside `SUM(latency_ms)` and `COUNT(*)`.
-It cannot reproduce the full query because `MIN`, `MAX`, `AVG`, computed time
-buckets, compound predicates, and multiple conditional aggregates are
-unsupported.
+The current M2c slice pre-stores `bucket_ts` in a non-STRICT table with
+`latency_ms REAL NOT NULL`, then uses status as a grouping dimension beside
+`AVG(latency_ms)`, `MIN(latency_ms)`, `MAX(latency_ms)` and `COUNT(*)`.
+Computed time buckets, compound predicates and multiple conditional
+aggregates still prevent reproducing the full source query. The historical
+integer SUM/COUNT measurements in the demo retain their original dates;
+the [M2c results](../bench/README.md#m2c-column-types-and-aggregates)
+measure the new REAL aggregate shape separately.
 
 The executable [Kener demo](kener.md) tests 4.1 million rows, exactly 550,000
 initial result groups, historical rewrites and deletes. It also records the

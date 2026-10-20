@@ -687,6 +687,33 @@ At two columns the enumeration holds and its cost is a few seconds; at three a s
 
 **Decided (M1b Phase 2b, 2026-09-24): not widening.** The one shape three columns would add — a view that groups by one column, sums a second and filters on a third — is already enumerated: a join's row has four columns (for example `GROUP BY t0.k`, `SUM(t0.v)`, `WHERE t1.v …`), and a single-table view runs the same `Filter → Project → Aggregate` chain regardless of how many columns its table has. Widening would cost 12285 join queries per database, about 56 seconds per sweep (extrapolated, as recorded in the Phase 2a paragraph above) — for coverage the existing space already gives.
 
+**Amended 2026-10-19 (M2c): three columns are adopted with a restricted cross.** The non-STRICT test tables now have three nullable columns; the database set spans all five affinities and stored-form NULL/INTEGER/REAL/TEXT/BLOB pools. The single-table universe grows from 153 to **510** queries. The join universe grows from **900 per database over two databases** to **1,197 per database over three databases** (including REAL/NUMERIC keys); 900 was never the old total across both databases. The cross applies every enumerated aggregate/group-by combination without a predicate, then crosses predicates with two aggregate sets instead of multiplying every dimension together (M2c plan decision 13).
+
+The following after medians are three isolated debug runs at `d5dd2b9`, measured on 2026-10-19. The six before medians are the historical 2026-09-24 figures above, **not a same-day rebuilt comparison**; no earlier medians were recorded for the additional affinity or extension sweeps. Every sample, exact command, source commit, load reading and normalized terminal log is retained in the [runtime evidence](../../validation/m2c-test-runtime/README.md).
+
+| Debug sweep | Historical before median (s) | After median [min, max] (s) |
+|---|---:|---:|
+| `naive_engine_passes_every_enumerated_query` | 0.93 | 8.40 [8.32, 8.43] |
+| `naive_engine_passes_every_enumerated_query_over_real_and_numeric_columns` | not recorded | 8.40 [8.34, 8.42] |
+| `naive_engine_passes_every_enumerated_join_query` | 5.07 | 12.24 [12.18, 12.26] |
+| `naive_engine_passes_every_join_query_with_keys_at_different_positions` | 5.13 | 12.25 [12.21, 12.35] |
+| `naive_engine_passes_every_join_query_over_real_and_numeric_keys` | not recorded | 11.66 [11.61, 11.99] |
+| `incremental_engine_is_green_across_the_enumerated_space` | 0.57 | 3.30 [3.28, 3.31] |
+| `incremental_engine_is_green_across_the_enumerated_space_over_real_and_numeric_columns` | not recorded | 3.37 [3.37, 3.41] |
+| `incremental_engine_is_green_across_the_join_space` | 4.13 | 10.56 [10.56, 10.58] |
+| `incremental_engine_is_green_across_the_join_space_with_keys_at_different_positions` | 4.14 | 10.72 [10.65, 10.81] |
+| `incremental_engine_is_green_across_the_join_space_over_real_and_numeric_keys` | not recorded | 10.10 [10.10, 10.11] |
+| `the_extension_is_green_across_the_single_table_space` | not recorded | 3.44 [3.43, 3.47] |
+| `the_extension_is_green_across_the_join_space` | not recorded | 10.15 [10.11, 10.16] |
+| `the_extension_resumes_from_persisted_state_on_every_refresh` | not recorded | 17.87 [17.21, 20.73] |
+| `sibling_views_share_capture_across_the_single_table_space` | not recorded | 3.72 [3.71, 3.72] |
+| `sibling_views_share_capture_across_the_join_space` | not recorded | 8.76 [8.72, 8.76] |
+| `sibling_views_resume_from_persisted_state` | not recorded | 14.11 [14.08, 14.60] |
+
+The complete warmed `scripts/test-all.sh` run at the pre-Task11 snapshot `4d9a8b3` took **121.898s** (811 passed, 0 failed, 26 result binaries). The after run at `d5dd2b9` took **183.581s** (830 passed, 0 failed, 28 result binaries), a calculated **1.506x** wall-time ratio. These are one warmed full-script observation per snapshot, not medians and not sums of the individual sweep medians. Both were run separately from other native verification jobs; the before capture has no recorded load readings, while the after capture records its start/end load. They are source-specific test-cost measurements, not application performance benchmarks.
+
+The adopted three-column space keeps the roles of grouping, aggregation and filtering distinct and exercises the new storage classes and aggregates. Extension sampling remains explicit: 769 fresh cases, 191 reopening cases, 368 sibling cases and 98 reopening-with-sibling cases, each combining its single-table and join sweeps as documented in `extension_differential.rs`. The measured cost supports the planned restricted cross; no coverage was reduced after measuring it. The later 841-green release-preparation snapshot adds tests and does not replace these earlier source-specific inventories.
+
 ### 9.3 Shrinking
 
 **It must be written in-house; `proptest` cannot be used directly.** Naive sequence shrinking produces **illegal sequences** (remove an INSERT, and a later DELETE aimed at that row is left dangling). What is needed is a delta-debugging shrinker that preserves sequence legality: shrink the update sequence first, then the query, then the data.
@@ -989,15 +1016,15 @@ TanStack DB is a browser-side JS library, with a different runtime and audience 
 ## 13. Known limitations (v0)
 
 1. **The root operator must be an Aggregate with a non-empty GROUP BY**; views without aggregation and global aggregates are not supported (§5.2)
-2. STRICT tables only, with **`ANY` columns rejected** (STRICT alone does not exclude `ANY`; see §7.1); the column-type whitelist is `INTEGER` / `TEXT`
+2. STRICT tables only, with **`ANY` columns rejected** (STRICT alone does not exclude `ANY`; see §7.1); the column-type whitelist is `INTEGER` / `TEXT` **Amended 2026-10-19 (M2c):** Non-STRICT tables and every declared type are accepted by SQLite affinity, including STRICT ANY. The BINARY collation restriction and conservative COLLATE refusal in item 3 remain.
 3. BINARY collation only; detected by fetching the table's CREATE statement from `sqlite_master` and matching `COLLATE`, a conservative over-rejection (see §7.1)
 4. Group-by keys are bare columns only, not expressions
-5. No floating-point aggregation
-6. **Integer overflow is undefined behaviour**; the absolute value of a group's sum must be < 2^62 (§6.1)
+5. No floating-point aggregation **Amended 2026-10-19 (M2c):** SUM, TOTAL and AVG use an exact accumulator and round the final result once. REAL results can differ from SQLite scan-order KBN in their last bits; finite inputs can also overflow SQLite intermediate state to infinity or NULL while the exact final result is finite. Actual mixed-sign infinities give NULL.
+6. **Integer overflow is undefined behaviour**; the absolute value of a group's sum must be < 2^62 (§6.1) **Amended 2026-10-19 (M2c):** SUM fails refresh with `integer overflow in SUM` only when the final exact integer sum is outside i64. A scan prefix may overflow in SQLite while ivmlite succeeds.
 7. Comparison operators are limited to `>` `>=` `<` `<=` `=` `!=` `IS NULL` `IS NOT NULL`; no `NOT` / `OR` / `LIKE` / `IN` / `BETWEEN` / subqueries (§6.1); a view has at most one predicate — no `AND` (M1b Phase 2a)
-8. `SUM` only over INTEGER columns, and a column may be compared only with a non-NULL literal of its own type; both are rejected at `ivm_create_view` (§6.1)
-9. Joins are limited to a two-table inner equi-join on one pair of columns of the same type (M1a Phase 3). No outer joins, no self-joins, no more than two tables, no multi-column keys. A NULL key matches nothing. Filters are evaluated after the join. Written `FROM a [AS x] [INNER] JOIN b [AS y] ON <column> = <column>`; table aliases are supported, but a self-join is rejected even with aliases (M1b Phase 2b)
-10. No MIN / MAX / DISTINCT
+8. `SUM` only over INTEGER columns, and a column may be compared only with a non-NULL literal of its own type; both are rejected at `ivm_create_view` (§6.1) **Amended 2026-10-19 (M2c):** COUNT(column), SUM, TOTAL, AVG, MIN and MAX accept any column. INTEGER, REAL, TEXT and BLOB literals use comparison affinity, except REAL literals against TEXT-affinity columns are refused because rendering varies by SQLite version.
+9. Joins are limited to a two-table inner equi-join on one pair of columns of the same type (M1a Phase 3). No outer joins, no self-joins, no more than two tables, no multi-column keys. A NULL key matches nothing. Filters are evaluated after the join. Written `FROM a [AS x] [INNER] JOIN b [AS y] ON <column> = <column>`; table aliases are supported, but a self-join is rejected even with aliases (M1b Phase 2b) **Amended 2026-10-19 (M2c):** Join columns must have the same affinity, rather than the same declared type. Canonical numeric equality makes INTEGER 1 match REAL 1.0; NULL still matches nothing. All other join restrictions remain.
+10. No MIN / MAX / DISTINCT **Amended 2026-10-19 (M2c):** MIN and MAX are supported. MIN selects INTEGER and MAX REAL for numerically equal INTEGER/REAL entries; SQLite chooses by scan order. DISTINCT aggregates and group_concat remain unsupported.
 11. The SELECT list is the GROUP BY columns, each once, followed by the aggregates; GROUP BY names bare columns only (no positions like `GROUP BY 1`, no expressions); result column names must be unique; table names cannot be schema-qualified (`main.t`) (M1b Phase 2b)
 12. Explicit refresh is required — a permanent API, not a temporary compromise (§8.2)
 13. Delta tables capture every column, wasting space on wide tables

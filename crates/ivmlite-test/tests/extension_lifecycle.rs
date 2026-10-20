@@ -241,10 +241,7 @@ fn a_failing_stage_cleanup_fails_the_create_and_leaves_nothing() {
 fn what_v0_cannot_maintain_is_rejected_by_name() {
     let q = "SELECT k, COUNT(*) FROM t GROUP BY k";
     let cases = [
-        ("CREATE TABLE t(k TEXT, v INTEGER)", q, "not STRICT"),
-        ("CREATE TABLE t(k ANY, v INTEGER) STRICT", q, "type ANY"),
         ("CREATE TABLE t(k TEXT COLLATE NOCASE, v INTEGER) STRICT", q, "COLLATE"),
-        ("CREATE TABLE t(k TEXT, v REAL) STRICT", q, "type REAL"),
         ("PRAGMA encoding = 'UTF-16le'; CREATE TABLE t(k TEXT) STRICT", q, "UTF-8"),
         ("CREATE TABLE t(k TEXT) STRICT", "SELECT k, COUNT(*) FROM nope GROUP BY k", "no such table: nope"),
         ("CREATE TABLE t(k TEXT) STRICT; CREATE VIEW vv AS SELECT * FROM t", "SELECT k, COUNT(*) FROM vv GROUP BY k", "view"),
@@ -846,12 +843,11 @@ fn temp_tables_named_like_the_capture_tables_are_never_touched_by_replace_captur
     );
 }
 
-/// A SUM past `i64::MAX` panics in the core engine in a debug build
-/// (`agg.rs` adds with overflow checks on). Every extension callback runs
-/// inside `guard`, so create and refresh fail with an SQLite error rather
-/// than unwinding across the FFI boundary and aborting the host process
-/// (final review, Important 4). A release build wraps instead — within the
-/// parent spec's "overflow is undefined" (§6.1).
+/// A SUM past `i64::MAX` fails create and refresh with an SQLite error,
+/// never a crash. Before M2c it panicked in the core engine in a debug build
+/// and `guard` turned the panic into the error (final review, Important 4);
+/// since M2c the engine reports `integer overflow in SUM` itself (M2c spec
+/// §4), so the error no longer depends on `guard`.
 #[test]
 fn an_overflowing_sum_is_an_sqlite_error_not_a_crash() {
     let c = open_with_extension(None).unwrap();
@@ -875,6 +871,34 @@ fn an_overflowing_sum_is_an_sqlite_error_not_a_crash() {
         vec![vec![Value::Text("a".into()), Value::Integer(i64::MAX)]]
     );
     c.execute_batch("DROP TABLE big_sums").unwrap();
+}
+
+/// Spec §5: every callback runs inside `guard`, so a panic in the engine is
+/// an SQLite error, never an unwind across the FFI boundary. Corrupted
+/// persisted state still reaches one: a group whose stored row count is
+/// `i64::MAX` overflows on the next insert into it (`agg.rs` adds with
+/// overflow checks on in a debug build), and the refresh must fail with
+/// `ivmlite internal error` rather than abort the host process.
+#[test]
+fn a_panic_on_corrupted_state_is_an_sqlite_error_not_a_crash() {
+    let c = open_with_extension(None).unwrap();
+    c.execute_batch(
+        "CREATE TABLE t(k TEXT, x INTEGER) STRICT;
+         INSERT INTO t VALUES ('a', 1);",
+    )
+    .unwrap();
+    create(&c, "v", "SELECT k, COUNT(*) FROM t GROUP BY k").unwrap();
+    // The stored state's first value is `rows`: the INTEGER tag 0x01, then 8
+    // big-endian bytes (Phase 3a spec §4). `||` yields TEXT, so cast back.
+    c.execute_batch(
+        "UPDATE __ivm_state_v_0_agg_groups \
+         SET val = CAST(X'017FFFFFFFFFFFFFFF' || substr(val, 10) AS BLOB)",
+    )
+    .unwrap();
+    c.execute_batch("INSERT INTO t VALUES ('a', 2)").unwrap();
+    let err = refresh(&c, "v").expect_err("the corrupted row count overflows");
+    assert!(err.to_string().contains("ivmlite internal error"), "{err}");
+    c.execute_batch("DROP TABLE v").unwrap();
 }
 
 /// Spec §6 scenario 6 (M-1 scenario 9).

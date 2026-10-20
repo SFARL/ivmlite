@@ -4,7 +4,8 @@ use ivmlite_core::{lower_query, ColumnType};
 use ivmlite_sql::compile;
 use ivmlite_test::{
     create_table_sql, enumerate, enumerate_join, gen_database,
-    gen_database_with_swapped_right_table, view_query_to_sql, Database, ViewQuery,
+    gen_database_with_swapped_right_table, gen_real_numeric_database, view_query_to_sql, Database,
+    ViewQuery,
 };
 
 fn every_query(db: &Database) -> Vec<ViewQuery> {
@@ -13,8 +14,12 @@ fn every_query(db: &Database) -> Vec<ViewQuery> {
     qs
 }
 
-fn databases() -> [Database; 2] {
-    [gen_database(2), gen_database_with_swapped_right_table()]
+fn databases() -> [Database; 3] {
+    [
+        gen_database(2),
+        gen_database_with_swapped_right_table(),
+        gen_real_numeric_database(),
+    ]
 }
 
 /// The SQL a `ViewQuery` renders to compiles to the very `Plan` `lower_query`
@@ -24,7 +29,7 @@ fn databases() -> [Database; 2] {
 fn every_enumerated_query_compiles_to_the_plan_lower_query_builds() {
     for db in databases() {
         let queries = every_query(&db);
-        assert_eq!(queries.len(), 153 + 900);
+        assert_eq!(queries.len(), 510 + 1197);
         for q in queries {
             let sql = view_query_to_sql(&q, &db);
             let compiled = compile(&sql, &db).unwrap_or_else(|e| panic!("{sql}: {e}"));
@@ -100,7 +105,8 @@ fn result_column_names_match_sqlite() {
 /// Final review recommendation: an output column's type and nullability
 /// (Ruling 4) for a join query, not just its plan — a group key's are its
 /// table column's, `COUNT(*)` is a non-null INTEGER, `SUM` is a nullable
-/// INTEGER (SUM over only NULLs is NULL, spec §6.1). `gen_database`'s
+/// NUMERIC (SUM over only NULLs is NULL, spec §6.1, and it is INTEGER or
+/// REAL, M2c spec §4). `gen_database`'s
 /// columns are both nullable (`k TEXT`, `v INTEGER`), so the group key here
 /// is expected nullable too — it is not `COUNT(*)`'s non-null INTEGER that
 /// would pass by accident.
@@ -118,7 +124,7 @@ fn join_output_column_types_and_nullability_match_ruling_4() {
         types,
         vec![
             (ColumnType::Text, true),     // t1.k: the group key's own column
-            (ColumnType::Integer, true),  // SUM(t0.v): nullable
+            (ColumnType::Numeric, true),  // SUM(t0.v): nullable
             (ColumnType::Integer, false), // COUNT(*): never NULL
         ],
         "{sql}"

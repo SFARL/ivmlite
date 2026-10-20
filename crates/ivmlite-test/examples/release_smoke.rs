@@ -2,7 +2,7 @@
 //! Usage: cargo run --locked -p ivmlite-test --example release_smoke -- /path/to/library
 
 use std::error::Error;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ivmlite_test::open_with_extension_at;
@@ -94,6 +94,210 @@ fn snapshot(c: &Connection) -> Result<Vec<(String, Rows)>> {
 
 fn refresh(c: &Connection, mode: &str) -> rusqlite::Result<Value> {
     c.query_row("SELECT ivm_refresh_all(?1)", [mode], |row| row.get(0))
+}
+
+fn exact_rows(c: &Connection, sql: &str, expected: Rows) -> Result<()> {
+    let actual = rows(c, sql)?;
+    assert_eq!(actual.len(), expected.len(), "{sql}: {actual:?}");
+    for (actual, expected) in actual.iter().zip(&expected) {
+        assert_eq!(actual.len(), expected.len(), "{sql}");
+        for (actual, expected) in actual.iter().zip(expected) {
+            match (actual, expected) {
+                (Value::Real(a), Value::Real(b)) => {
+                    assert_eq!(a.to_bits(), b.to_bits(), "{sql}: {actual:?}");
+                }
+                _ => assert_eq!(actual, expected, "{sql}"),
+            }
+        }
+    }
+    Ok(())
+}
+
+fn real_rollup(
+    c: &Connection,
+    rows: i64,
+    count: i64,
+    sum: f64,
+    avg: f64,
+    min: f64,
+    max: f64,
+) -> Result<()> {
+    exact_rows(
+        c,
+        "SELECT * FROM real_rollup",
+        vec![vec![
+            Value::Text("a".into()),
+            Value::Integer(rows),
+            Value::Integer(count),
+            Value::Real(sum),
+            Value::Real(sum),
+            Value::Real(avg),
+            Value::Real(min),
+            Value::Real(max),
+        ]],
+    )
+}
+
+// M2c spec §§2-4: use the same checks for source tests and an extracted artifact.
+fn smoke_m2c_features(database: &Path, library: &Path) -> Result<()> {
+    let c = open_with_extension_at(Some(database), library)?;
+    c.execute_batch(
+        "CREATE TABLE classes(id INTEGER PRIMARY KEY, g);
+         CREATE TABLE reals(id INTEGER PRIMARY KEY, g TEXT, x REAL);
+         CREATE TABLE ties(id INTEGER PRIMARY KEY, g, x);
+         CREATE TABLE integers(id INTEGER PRIMARY KEY, g TEXT, x INTEGER);
+         INSERT INTO reals VALUES (1, 'a', 0.1), (2, 'a', 0.2),
+             (3, 'a', 0.3), (4, 'a', NULL);
+         INSERT INTO ties VALUES (1, 1, 1), (2, 1.0, 1.0);
+         INSERT INTO integers VALUES (1, 'a', 9223372036854775807),
+             (2, 'a', 1), (3, 'a', -1);",
+    )?;
+    let values = [
+        Value::Null,
+        Value::Integer(7),
+        Value::Real(1.25),
+        Value::Text("7".into()),
+        Value::Blob(vec![7]),
+    ];
+    for (i, value) in values.iter().enumerate() {
+        c.execute(
+            "INSERT INTO classes VALUES (?1, ?2)",
+            rusqlite::params![i64::try_from(i + 1)?, value],
+        )?;
+    }
+    let schema_sql = "SELECT type, name FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'";
+    let base_schema = rows(&c, schema_sql)?;
+    c.execute_batch(
+        "CREATE VIRTUAL TABLE class_rollup USING ivm(
+             'SELECT g, COUNT(*) FROM classes GROUP BY g');
+         CREATE VIRTUAL TABLE real_rollup USING ivm(
+             'SELECT g, COUNT(*), COUNT(x), SUM(x), TOTAL(x), AVG(x), MIN(x), MAX(x)
+              FROM reals GROUP BY g');
+         CREATE VIRTUAL TABLE tie_rollup USING ivm(
+             'SELECT g, COUNT(*), MIN(x), MAX(x) FROM ties GROUP BY g');
+         CREATE VIRTUAL TABLE integer_rollup USING ivm(
+             'SELECT g, SUM(x) FROM integers GROUP BY g');",
+    )?;
+    oracle(
+        &c,
+        "class_rollup",
+        "SELECT g, COUNT(*) FROM classes GROUP BY g",
+    )?;
+    assert_eq!(
+        rows(&c, "SELECT DISTINCT typeof(g) FROM class_rollup")?.len(),
+        5
+    );
+    // SQLite AVG rounds the sum first; these are exact-once results (M2c spec §4).
+    real_rollup(&c, 4, 3, 0.6, 0.2, 0.1, 0.3)?;
+    exact_rows(
+        &c,
+        "SELECT * FROM tie_rollup",
+        vec![vec![
+            Value::Real(1.0),
+            Value::Integer(2),
+            Value::Integer(1),
+            Value::Real(1.0),
+        ]],
+    )?;
+    exact_rows(
+        &c,
+        "SELECT * FROM integer_rollup",
+        vec![vec![Value::Text("a".into()), Value::Integer(i64::MAX)]],
+    )?;
+
+    c.execute_batch(
+        "DELETE FROM classes WHERE id = 3;
+         INSERT INTO classes VALUES (6, 2.5);
+         DELETE FROM reals WHERE id = 1;
+         UPDATE reals SET x = 0.25 WHERE id = 2;
+         UPDATE reals SET x = 0.5 WHERE id = 3;
+         DELETE FROM ties WHERE id = 2;",
+    )?;
+    real_rollup(&c, 4, 3, 0.6, 0.2, 0.1, 0.3)?;
+    assert_eq!(refresh(&c, "atomic")?, Value::Integer(3));
+    oracle(
+        &c,
+        "class_rollup",
+        "SELECT g, COUNT(*) FROM classes GROUP BY g",
+    )?;
+    real_rollup(&c, 3, 2, 0.75, 0.375, 0.25, 0.5)?;
+    exact_rows(
+        &c,
+        "SELECT * FROM tie_rollup",
+        vec![vec![
+            Value::Integer(1),
+            Value::Integer(1),
+            Value::Integer(1),
+            Value::Integer(1),
+        ]],
+    )?;
+
+    let before = snapshot(&c)?;
+    c.execute_batch(
+        "BEGIN; UPDATE reals SET x = 1.0 WHERE id = 2;
+                     INSERT INTO ties VALUES (2, 1.0, 1.0);",
+    )?;
+    assert_eq!(refresh(&c, "atomic")?, Value::Integer(2));
+    real_rollup(&c, 3, 2, 1.5, 0.75, 0.5, 1.0)?;
+    c.execute_batch("ROLLBACK")?;
+    assert_eq!(
+        snapshot(&c)?,
+        before,
+        "M2c rollback changed persistent state"
+    );
+    drop(c);
+
+    let c = open_with_extension_at(Some(database), library)?;
+    real_rollup(&c, 3, 2, 0.75, 0.375, 0.25, 0.5)?;
+    oracle(
+        &c,
+        "class_rollup",
+        "SELECT g, COUNT(*) FROM classes GROUP BY g",
+    )?;
+    exact_rows(
+        &c,
+        "SELECT * FROM tie_rollup",
+        vec![vec![
+            Value::Integer(1),
+            Value::Integer(1),
+            Value::Integer(1),
+            Value::Integer(1),
+        ]],
+    )?;
+    c.execute_batch("UPDATE reals SET x = 0.75 WHERE id = 4")?;
+    assert_eq!(refresh(&c, "atomic")?, Value::Integer(1));
+    real_rollup(&c, 3, 3, 1.5, 0.5, 0.25, 0.75)?;
+
+    c.execute_batch("DELETE FROM integers WHERE id = 3")?;
+    let before = snapshot(&c)?;
+    let error = c
+        .execute_batch("INSERT INTO integer_rollup(integer_rollup) VALUES ('refresh')")
+        .expect_err("final exact integer SUM must overflow");
+    assert!(
+        error.to_string().contains("integer overflow in SUM"),
+        "{error}"
+    );
+    assert_eq!(snapshot(&c)?, before, "overflow changed persistent state");
+    for name in [
+        "class_rollup",
+        "real_rollup",
+        "tie_rollup",
+        "integer_rollup",
+    ] {
+        c.execute_batch(&format!("DROP TABLE {name}"))?;
+    }
+    assert_eq!(
+        rows(&c, schema_sql)?,
+        base_schema,
+        "M2c DROP left extension objects"
+    );
+    Ok(())
+}
+
+#[test]
+fn alpha6_artifact_features_survive_retraction_rollback_and_reopen() -> Result<()> {
+    let temp = TempDir::new()?;
+    smoke_m2c_features(&temp.0.join("m2c.db"), &ivmlite_test::extension_library())
 }
 
 fn main() -> Result<()> {
@@ -210,6 +414,7 @@ fn main() -> Result<()> {
         "DROP left extension objects"
     );
     c.execute_batch("INSERT INTO orders VALUES ('after-drop', 1)")?;
+    smoke_m2c_features(&temp.0.join("m2c.db"), &library)?;
     println!("release artifact smoke passed: {}", library.display());
     Ok(())
 }

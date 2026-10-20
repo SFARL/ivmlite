@@ -1,9 +1,10 @@
 use ivmlite_core::{Database, IncrementalEngine, Row, ZSet};
 use ivmlite_test::{
     check_batch_invariance, enumerate, enumerate_join, gen_case, gen_case_with_query, gen_database,
-    gen_database_with_swapped_right_table, is_legal, load_regressions, recompute_via_sqlite, run,
-    save_regression, seed_range, shrink, Agg, AggFn, Batching, Column, ColumnType, Domain, Engine,
-    Join, NaiveRecompute, NoRetractionEngine, Predicate, Schema, TransientDriftEngine, ViewQuery,
+    gen_database_with_swapped_right_table, gen_real_numeric_database, is_legal, load_regressions,
+    recompute_via_sqlite, run, save_regression, seed_range, shrink, Agg, AggFn, Batching, Column,
+    ColumnType, Domain, Engine, Join, NaiveRecompute, NoRetractionEngine, Predicate, Schema,
+    TransientDriftEngine, ViewQuery, AGGREGATE_FUNCTIONS,
 };
 use std::collections::BTreeMap;
 
@@ -44,45 +45,43 @@ fn naive_engine_is_green_across_many_seeds() {
     }
 }
 
-/// The stride used to pick `naive_engine_satisfies_batch_invariance`'s and
-/// `incremental_engine_satisfies_batch_invariance`'s ten queries out of
-/// `enumerate`'s single-table space (M1b Phase 2a final review, Important 2):
-/// straight `seed % len` (what `gen_case` does) is not used here on purpose.
-/// With 17 predicates innermost in `cross`, `enumerate`'s first 51 entries are
-/// all `group_by=[0]`, and their first 17 are all `aggs=[COUNT(*)]` — so
-/// seeds 0..9 taken straight land on `group_by=[0]` with COUNT only, and SUM
-/// and the two-column group-by silently drop out of both batch-invariance
-/// sweeps. The stride spreads ten seeds across the whole 153-query space
-/// instead; `queries_covering_sum_and_two_column_group_by` below asserts the
-/// spread still reaches both, so a future change to the enumeration cannot
-/// remove them quietly.
-const BATCH_INVARIANCE_QUERY_STRIDE: usize = 7;
-
-/// Pick `seeds.len()` queries out of `queries` by `seed * BATCH_INVARIANCE_QUERY_STRIDE
-/// % queries.len()`, and assert the picks still include at least one SUM query
-/// and at least one two-column group-by (M1b Phase 2a final review,
-/// Important 2).
-fn queries_covering_sum_and_two_column_group_by(
-    queries: &[ViewQuery],
-    seeds: &[u64],
-) -> Vec<(u64, ViewQuery)> {
+/// Pick one query of `queries` for each of `seeds`, by property rather than
+/// by position (M1b Phase 2a final review, Important 2: a position silently
+/// changes meaning whenever the enumeration changes underneath it). Seed `s`
+/// takes a query that applies `AGGREGATE_FUNCTIONS[s % 6]` to a column,
+/// grouped by one column for `s % 12 < 6` and by two otherwise, so ten seeds
+/// reach every function and both group-by widths. The assertions keep the
+/// picks honest: at least one SUM and at least one two-column group-by.
+fn queries_covering_every_aggregate(queries: &[ViewQuery], seeds: &[u64]) -> Vec<(u64, ViewQuery)> {
     let selected: Vec<(u64, ViewQuery)> = seeds
         .iter()
         .map(|&seed| {
-            let query =
-                queries[(seed as usize * BATCH_INVARIANCE_QUERY_STRIDE) % queries.len()].clone();
-            (seed, query)
+            let s = seed as usize;
+            let func = AGGREGATE_FUNCTIONS[s % AGGREGATE_FUNCTIONS.len()];
+            let width = if s % 12 < 6 { 1 } else { 2 };
+            let candidates: Vec<&ViewQuery> = queries
+                .iter()
+                .filter(|q| {
+                    q.group_by.len() == width
+                        && q.aggs.iter().any(|a| a.func == func && a.column.is_some())
+                })
+                .collect();
+            assert!(
+                !candidates.is_empty(),
+                "no {func:?} query grouped by {width} columns"
+            );
+            (seed, candidates[s % candidates.len()].clone())
         })
         .collect();
     assert!(
         selected
             .iter()
             .any(|(_, q)| q.aggs.iter().any(|a| a.func == AggFn::Sum)),
-        "the stride must still reach at least one SUM query: {selected:?}"
+        "the selection must reach at least one SUM query: {selected:?}"
     );
     assert!(
         selected.iter().any(|(_, q)| q.group_by.len() == 2),
-        "the stride must still reach at least one two-column group-by: {selected:?}"
+        "the selection must reach at least one two-column group-by: {selected:?}"
     );
     selected
 }
@@ -93,7 +92,7 @@ fn naive_engine_satisfies_batch_invariance() {
     let domain = Domain::default();
     let queries = enumerate(&schema());
     let seeds: Vec<u64> = seed_range().into_iter().take(10).collect();
-    for (seed, query) in queries_covering_sum_and_two_column_group_by(&queries, &seeds) {
+    for (seed, query) in queries_covering_every_aggregate(&queries, &seeds) {
         let case = gen_case_with_query(seed, &db, &domain, query, 25, 120, Batching::All);
         check_batch_invariance(&case, NaiveRecompute::new).unwrap_or_else(|f| {
             panic!("the reference implementation should not violate batch independence: {f}")
@@ -116,7 +115,7 @@ fn incremental_engine_satisfies_batch_invariance() {
     let domain = Domain::default();
     let queries = enumerate(&db.tables()[0]);
     let seeds: Vec<u64> = seed_range().into_iter().take(10).collect();
-    for (seed, query) in queries_covering_sum_and_two_column_group_by(&queries, &seeds) {
+    for (seed, query) in queries_covering_every_aggregate(&queries, &seeds) {
         let case = gen_case_with_query(seed, &db, &domain, query, 25, 120, Batching::All);
         check_batch_invariance(&case, IncrementalEngine::new).unwrap_or_else(|f| {
             panic!("the incremental engine should not violate batch independence: {f}")
@@ -575,7 +574,18 @@ fn shrink_reduces_initial_rows_in_every_table_of_a_multi_table_case() {
 /// rather than 50 seeds (Ruling 6).
 #[test]
 fn incremental_engine_is_green_across_the_enumerated_space() {
-    let db = gen_database(2);
+    incremental_engine_is_green_across_the_single_table_space_of(&gen_database(2));
+}
+
+/// The same sweep over REAL, NUMERIC and TEXT columns (M2c spec §6).
+#[test]
+fn incremental_engine_is_green_across_the_enumerated_space_over_real_and_numeric_columns() {
+    incremental_engine_is_green_across_the_single_table_space_of(&gen_real_numeric_database());
+}
+
+/// Every single-table query over `db`'s first table, one case each, seeded
+/// by its index, run against `IncrementalEngine`.
+fn incremental_engine_is_green_across_the_single_table_space_of(db: &Database) {
     let domain = Domain::default();
     let queries = enumerate(&db.tables()[0]);
     // One case per query, seeded by its index, so the whole space is covered
@@ -591,7 +601,7 @@ fn incremental_engine_is_green_across_the_enumerated_space() {
     };
     for seed in selected {
         let query = queries[seed as usize % queries.len()].clone();
-        let case = gen_case_with_query(seed, &db, &domain, query, 20, 60, Batching::Chunks(4));
+        let case = gen_case_with_query(seed, db, &domain, query, 20, 60, Batching::Chunks(4));
         let mut engine = IncrementalEngine::new();
         if let Err(f) = run(&mut engine, &case) {
             panic!("the incremental engine disagrees with the oracle at seed={seed}: {f}");
@@ -704,19 +714,26 @@ fn incremental_engine_is_green_across_the_join_space() {
 }
 
 /// The same sweep with the right table's columns swapped, so the join keys sit
-/// at different positions — `(0, 1)` and `(1, 0)` — in the two tables. Over
-/// `gen_database(2)` both keys are always at the same position, where reading
+/// at different positions — `(0, 2)` and `(2, 0)` — in the two tables. Over
+/// `gen_database(2)` all keys are always at the same position, where reading
 /// one side's key index for the other goes unnoticed.
 #[test]
 fn incremental_engine_is_green_across_the_join_space_with_keys_at_different_positions() {
     incremental_engine_is_green_across_the_join_space_of(&gen_database_with_swapped_right_table());
 }
 
+/// The same sweep over REAL, NUMERIC and TEXT join keys, every pair at
+/// different positions (M2c spec §6).
+#[test]
+fn incremental_engine_is_green_across_the_join_space_over_real_and_numeric_keys() {
+    incremental_engine_is_green_across_the_join_space_of(&gen_real_numeric_database());
+}
+
 /// A join query whose group key crosses the table boundary: group by
 /// `t0.k, t1.v`, `SUM(t0.v)`, `COUNT(*)`, joined on `k = k`.
 fn cross_boundary_join(db: &Database) -> ViewQuery {
     ViewQuery {
-        group_by: vec![0, 3],
+        group_by: vec![0, 4],
         aggs: vec![
             Agg {
                 func: AggFn::Sum,
@@ -792,13 +809,10 @@ fn incremental_engine_matches_naive_recompute_on_a_join_at_every_refresh_point()
 fn incremental_engine_satisfies_batch_invariance_on_joins() {
     let db = gen_database(2);
     let domain = Domain::default();
-    // Spreads the 10 seeds across the join space instead of taking its first
-    // ten queries, which all share one group-by.
-    const BATCH_INVARIANCE_QUERY_STRIDE: usize = 67;
+    // Selected by property, like the single-table batch-invariance sweeps.
     let queries = enumerate_join(&db.tables()[0], &db.tables()[1]);
-    for seed in seed_range().into_iter().take(10) {
-        let query =
-            queries[(seed as usize * BATCH_INVARIANCE_QUERY_STRIDE) % queries.len()].clone();
+    let seeds: Vec<u64> = seed_range().into_iter().take(10).collect();
+    for (seed, query) in queries_covering_every_aggregate(&queries, &seeds) {
         let case = gen_case_with_query(seed, &db, &domain, query, 25, 120, Batching::All);
         check_batch_invariance(&case, IncrementalEngine::new).unwrap_or_else(|f| {
             panic!("the incremental engine should not violate batch independence on a join: {f}")

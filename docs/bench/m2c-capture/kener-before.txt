@@ -1,0 +1,11 @@
+# command: ${BEFORE_TREE}/target/release/examples/demand_case_bench kener_quarter_hour_rollup 4100000 500 --extension ${BEFORE_TREE}/crates/ivmlite-sqlite/target/release/libivmlite_sqlite.dylib
+# commit: b647bcba9fa5f8eb583b162f87f7dfd79a10f7fa; uncommitted changes under crates/, Cargo.toml or Cargo.lock: no
+# sqlite: 3.53.2 (bundled by rusqlite in this harness, which hosts the extension)
+# ivmlite extension: crates/ivmlite-sqlite/target/release/libivmlite_sqlite.dylib; given by --extension, staleness check skipped, so its version is not verified (this tree's ivmlite-sqlite is 0.1.0-alpha.5)
+# workload: kener_quarter_hour_rollup, 4100000 base rows, 500-operation mixed batches, 5 repeats; rows report the median and min-max over the repeats
+# rounds: one warm-up batch, then 10 measured batches per run; apply_ms, maintain_ms and read_ms are each a run's median over its measured batches, and apply_plus_maintain_ms and end_to_end_ms the median of each batch's own sum
+case,mode,base_rows,batch_size,repeats,bootstrap_ms,bootstrap_min_ms,bootstrap_max_ms,first_refresh_ms,first_refresh_min_ms,first_refresh_max_ms,apply_ms,apply_min_ms,apply_max_ms,maintain_ms,maintain_min_ms,maintain_max_ms,read_ms,read_min_ms,read_max_ms,apply_plus_maintain_ms,apply_plus_maintain_min_ms,apply_plus_maintain_max_ms,end_to_end_ms,end_to_end_min_ms,end_to_end_max_ms,database_kib,database_kib_min,database_kib_max
+kener_quarter_hour_rollup,no_maintenance,4100000,500,5,0.000,0.000,0.000,0.000,0.000,0.000,0.161,0.160,0.162,0.000,0.000,0.000,0.000,0.000,0.000,0.161,0.160,0.162,0.161,0.161,0.162,100940.0,100940.0,100940.0
+kener_quarter_hour_rollup,unindexed_recompute,4100000,500,5,0.000,0.000,0.000,1652.193,1639.783,1667.552,0.186,0.182,0.190,1644.106,1638.330,1651.092,0.000,0.000,0.000,1644.296,1638.514,1651.408,1644.296,1638.514,1651.408,100940.0,100940.0,100940.0
+kener_quarter_hour_rollup,indexed_recompute,4100000,500,5,1635.657,1631.255,1648.088,340.346,338.623,342.107,1.096,1.085,1.108,339.962,339.069,340.367,0.000,0.000,0.000,341.124,340.192,341.407,341.124,340.192,341.407,200596.0,200596.0,200596.0
+kener_quarter_hour_rollup,ivmlite,4100000,500,5,6016.495,5900.298,6221.211,7.091,6.711,12.943,3.974,3.956,3.994,1.651,1.643,1.663,129.841,129.238,130.567,6.158,6.103,6.191,135.932,135.246,136.705,255436.0,255436.0,255436.0

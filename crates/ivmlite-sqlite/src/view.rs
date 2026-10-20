@@ -17,7 +17,7 @@ use crate::names::{
     META, PREFIX, PROBE, PROBE_STEP, PROGRESS, PROGRESS_INDEX, TRACKED, VIEWS,
 };
 use crate::snapshot::{self, Snapshot};
-use crate::state::{BufferedArrangement, Pending};
+use crate::state::{codec, BufferedArrangement, Pending, ValueCodec};
 
 /// The shadow-table layout's version, stored in `__ivm_meta` and with each view.
 ///
@@ -40,7 +40,14 @@ use crate::state::{BufferedArrangement, Pending};
 /// Format 5 (Phase 6 spec §5) adds the index on `__ivm_progress`'s `tbl`, so
 /// the apply's garbage collection stops reading every view's watermark. A
 /// format-4 database has no such index, and is refused, not migrated.
-pub const FORMAT: i64 = 5;
+///
+/// Format 6 (M2c spec §3) declares every value column of the delta, pend,
+/// stage, state and output tables, and the virtual table's output columns,
+/// with no type, so SQLite stores each value with its storage class
+/// unchanged; the row encoding gains the REAL and BLOB tags, and the
+/// aggregate state its M2c layout. A format-5 database is refused, not
+/// migrated.
+pub const FORMAT: i64 = 6;
 
 /// The column of the view's output table that holds each row's weight.
 const WEIGHT: &str = "__w";
@@ -96,12 +103,18 @@ pub fn statement_capacity(view: &CompiledView) -> usize {
     const STAGING_SHAPES_PER_KIND: usize = 7; // the full chunk, then 32, 16, 8, 4, 2, 1
     const MARGIN: usize = 4;
     let tables = view.tables.len();
-    let arrangements = arrangement_ids(&view.plan).len();
+    let ids = arrangement_ids(&view.plan);
+    let arrangements = ids.len();
+    let extremes = ids
+        .iter()
+        .filter(|id| codec(**id) == ValueCodec::SortKey)
+        .count();
     let fixed = 1 // schema_version
         + 1 // latch (one text, bound per table)
         + 1 // watermark read
         + tables // delta reads
         + 2 * arrangements // BufferedArrangement get and scan
+        + extremes // BufferedArrangement first, one direction per MIN or MAX
         + 3 // stage delete, sentinel insert, progress insert
         + 2 * STAGING_SHAPES_PER_KIND
         + 1; // arming UPDATE
@@ -174,28 +187,31 @@ fn column_list(schema: &Schema, prefix: &str) -> String {
         .join(", ")
 }
 
-fn sql_type(column: &ivmlite_core::Column) -> &'static str {
-    match column.ty {
-        ivmlite_core::ColumnType::Integer => "INTEGER",
-        ivmlite_core::ColumnType::Text => "TEXT",
-    }
-}
-
 /// Everything the capture triggers depend on (Phase 3b spec §3): the
-/// columns' names and types in order, whether the table is WITHOUT ROWID,
-/// and every unique index — its key columns with collation, `NOT NULL` and
-/// default, and its partial and expression flags — in a canonical order,
-/// so an index's name never matters. Stored in `__ivm_tracked` when the
+/// columns' names, declared types and affinities in order (M2c spec §3),
+/// whether the table is WITHOUT ROWID, and every unique index — its key
+/// columns with collation, `NOT NULL` and default, and its partial and
+/// expression flags — in a canonical order, so an index's name never matters. Stored in `__ivm_tracked` when the
 /// table is first tracked and compared on every later create over it, every
 /// connect and every refresh that runs the catalog checks (Phase 5 spec §3:
 /// those after a schema change). A table dropped and recreated with other
 /// column types can compile to the same plan, since the plan names columns
 /// by position only.
-fn shape(schema: &Schema, capture: &CaptureInfo) -> String {
+fn shape(schema: &Schema, capture: &CaptureInfo) -> Result<String> {
+    // The columns and the declared types come from two catalog reads; if the
+    // table changed between them, the table has changed shape.
+    if capture.declared_types.len() != schema.columns.len() {
+        return Err(format!(
+            "base table {} changed shape since it was first tracked \
+             (its columns changed while the catalog was being read)",
+            schema.table
+        ));
+    }
     let columns: Vec<String> = schema
         .columns
         .iter()
-        .map(|c| format!("{} {}", quote(&c.name), sql_type(c)))
+        .zip(&capture.declared_types)
+        .map(|(c, declared)| format!("{} {} {}", quote(&c.name), declared, c.ty.name()))
         .collect();
     let mut keys: Vec<String> = capture
         .unique_keys
@@ -224,12 +240,12 @@ fn shape(schema: &Schema, capture: &CaptureInfo) -> String {
         })
         .collect();
     keys.sort();
-    format!(
+    Ok(format!(
         "{}; without rowid: {}; unique: [{}]",
         columns.join(", "),
         capture.without_rowid,
         keys.join("; ")
-    )
+    ))
 }
 
 /// The `CREATE TABLE` statement SQLite is given for the virtual table: the
@@ -255,11 +271,7 @@ pub fn declaration(name: &str, view: &CompiledView) -> Result<String> {
             c.name
         ));
     }
-    let columns: Vec<String> = view
-        .columns
-        .iter()
-        .map(|c| format!("{} {}", quote(&c.name), sql_type(c)))
-        .collect();
+    let columns: Vec<String> = view.columns.iter().map(|c| quote(&c.name)).collect();
     Ok(format!(
         "CREATE TABLE x({}, {} HIDDEN)",
         columns.join(", "),
@@ -687,11 +699,7 @@ fn capture_triggers(schema: &Schema, capture: &CaptureInfo, fingerprint: &Finger
 fn track(conn: &Connection, schema: &Schema) -> Result<()> {
     let t = &schema.table;
     let capture = SqliteCatalog { conn }.capture(t)?;
-    let defs: Vec<String> = schema
-        .columns
-        .iter()
-        .map(|c| format!("{} {}", quote(&c.name), sql_type(c)))
-        .collect();
+    let defs: Vec<String> = schema.columns.iter().map(|c| quote(&c.name)).collect();
     let defs = defs.join(", ");
     // AUTOINCREMENT: once Phase 3b's GC deletes consumed deltas, a reused
     // `seq` would fall below a watermark. The delta table's own columns are
@@ -712,7 +720,7 @@ fn track(conn: &Connection, schema: &Schema) -> Result<()> {
             "INSERT INTO {}(tbl, shape) VALUES (?1, ?2)",
             main_qualified(TRACKED)
         ),
-        params![t, shape(schema, &capture)],
+        params![t, shape(schema, &capture)?],
     )
     .map_err(sql_error)?;
     Ok(())
@@ -847,7 +855,7 @@ fn judge_capture(
     schema: &Schema,
     capture: &CaptureInfo,
 ) -> Result<()> {
-    let now = shape(schema, capture);
+    let now = shape(schema, capture)?;
     if now != recorded {
         return Err(format!(
             "base table {table} changed shape since it was first tracked \
@@ -910,11 +918,7 @@ fn create_out_table(conn: &Connection, name: &str, view: &CompiledView) -> Resul
             "a result column is named {WEIGHT}, which ivmlite reserves"
         ));
     }
-    let defs: Vec<String> = view
-        .columns
-        .iter()
-        .map(|c| format!("{} {}", quote(&c.name), sql_type(c)))
-        .collect();
+    let defs: Vec<String> = view.columns.iter().map(|c| quote(&c.name)).collect();
     let cols: Vec<String> = view.columns.iter().map(|c| quote(&c.name)).collect();
     // Non-unique (spec §4): v0's root aggregate makes output rows distinct,
     // but the apply trigger's semantics are per-copy — one `out-` removes
@@ -943,10 +947,11 @@ fn value_of(v: ValueRef<'_>) -> std::result::Result<Value, String> {
         ValueRef::Text(t) => std::str::from_utf8(t)
             .map(|s| Value::Text(s.to_string()))
             .map_err(|_| "a TEXT value is not UTF-8".to_string()),
-        other => Err(format!(
-            "a {:?} value in a column v0 declares INTEGER or TEXT",
-            other.data_type()
-        )),
+        ValueRef::Real(x) if x.is_nan() => {
+            Err("a NaN REAL value, which SQLite never stores".into())
+        }
+        ValueRef::Real(x) => Ok(Value::Real(x)),
+        ValueRef::Blob(b) => Ok(Value::Blob(b.to_vec())),
     }
 }
 
@@ -1059,12 +1064,7 @@ fn create_stage(
     let out = quote(&out_table(name));
     let progress = quote(PROGRESS);
     let n = view.columns.len();
-    let defs: Vec<String> = view
-        .columns
-        .iter()
-        .enumerate()
-        .map(|(i, c)| format!("c{i} {}", sql_type(c)))
-        .collect();
+    let defs: Vec<String> = (0..n).map(|i| format!("c{i}")).collect();
     let cols: Vec<String> = view.columns.iter().map(|c| quote(&c.name)).collect();
     // Phase 5 spec §4: the trigger fires once, when the arming `UPDATE` turns
     // the sentinel into `apply`, and each statement of its body applies every
@@ -1145,7 +1145,7 @@ fn create_stage(
     exec(
         conn,
         &format!(
-            "CREATE TABLE {}(op TEXT NOT NULL, arr INTEGER, key BLOB, val BLOB, w INTEGER,
+            "CREATE TABLE {}(op TEXT NOT NULL, arr INTEGER, key, val, w INTEGER,
                  tbl TEXT, seq INTEGER, {});
              CREATE TRIGGER {} AFTER UPDATE OF op ON {stage}
                  WHEN NEW.op = 'apply'
@@ -1164,6 +1164,8 @@ fn create_stage(
 struct Changes {
     /// Each arrangement's pending weight changes, indexed like `ids`.
     state: Vec<Pending>,
+    /// Each arrangement's value codec, indexed like `ids`.
+    codecs: Vec<ValueCodec>,
     output: ZSet,
     /// `(table, seq)`: the table's deltas through `seq` are consumed.
     progress: Vec<(String, i64)>,
@@ -1188,6 +1190,7 @@ fn compute(
             conn.clone(),
             &state_table(name, id),
             pending[i].clone(),
+            codec(id),
         )))
     })
     .map_err(|e| e.0)?;
@@ -1204,7 +1207,9 @@ fn sql_value(v: &Value) -> rusqlite::types::Value {
     match v {
         Value::Null => rusqlite::types::Value::Null,
         Value::Int(n) => rusqlite::types::Value::Integer(*n),
+        Value::Real(x) => rusqlite::types::Value::Real(*x),
         Value::Text(s) => rusqlite::types::Value::Text(s.clone()),
+        Value::Blob(b) => rusqlite::types::Value::Blob(b.clone()),
     }
 }
 
@@ -1377,7 +1382,7 @@ fn apply(conn: &Connection, name: &str, view: &CompiledView, changes: &Changes) 
                 state.push([
                     SqlValue::Integer(i as i64),
                     SqlValue::Blob(crate::encode::encode(key)),
-                    SqlValue::Blob(crate::encode::encode(val)),
+                    SqlValue::Blob(changes.codecs[i].encode_val(val).map_err(|e| e.0)?),
                     SqlValue::Integer(*w),
                 ])?;
             }
@@ -1471,7 +1476,7 @@ pub fn create(conn: &Rc<Connection>, name: &str, sql: &str) -> Result<(CompiledV
         exec(
             conn,
             &format!(
-                "CREATE TABLE {}(key BLOB NOT NULL, val BLOB NOT NULL, w INTEGER NOT NULL,
+                "CREATE TABLE {}(key NOT NULL, val NOT NULL, w INTEGER NOT NULL,
                      PRIMARY KEY(key, val)) WITHOUT ROWID",
                 main_qualified(&state_table(name, *id))
             ),
@@ -1527,6 +1532,7 @@ pub fn create(conn: &Rc<Connection>, name: &str, sql: &str) -> Result<(CompiledV
         &view,
         &Changes {
             state,
+            codecs: ids.iter().map(|id| codec(*id)).collect(),
             output,
             progress: Vec::new(),
         },
@@ -1821,6 +1827,7 @@ pub fn refresh(
         view,
         &Changes {
             state,
+            codecs: ids.iter().map(|id| codec(*id)).collect(),
             output,
             progress,
         },
@@ -1837,9 +1844,13 @@ fn is_state_table_of(table: &str, view: &str) -> bool {
     let Some((node, role)) = rest.split_once('_') else {
         return false;
     };
+    let is_extremum = |role: &str| {
+        role.strip_prefix("agg_extremum_")
+            .is_some_and(|agg| !agg.is_empty() && agg.bytes().all(|b| b.is_ascii_digit()))
+    };
     !node.is_empty()
         && node.bytes().all(|b| b.is_ascii_digit())
-        && ["join_left", "join_right", "agg_groups"].contains(&role)
+        && (["join_left", "join_right", "agg_groups"].contains(&role) || is_extremum(role))
 }
 
 /// `DROP TABLE v`: the view's own shadow tables and metadata first, then —
@@ -1977,6 +1988,9 @@ mod tests {
         assert!(!is_state_table_of("__ivm_state_v_x_agg_groups", "v"));
         assert!(!is_state_table_of("__ivm_state_v__agg_groups", "v"));
         assert!(!is_state_table_of("__ivm_out_v", "v"));
+        assert!(is_state_table_of("__ivm_state_v_0_agg_extremum_3", "v"));
+        assert!(!is_state_table_of("__ivm_state_v_0_agg_extremum_", "v"));
+        assert!(!is_state_table_of("__ivm_state_v_0_agg_extremum_x", "v"));
     }
 
     #[test]

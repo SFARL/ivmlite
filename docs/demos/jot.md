@@ -1,4 +1,4 @@
-# StoneHub/jot: session counts and red complete-session gates
+# StoneHub/jot: session counts, bounds and a red complete-session gate
 
 [StoneHub/jot #209](https://github.com/StoneHub/jot/issues/209) reports that
 each committed recognition block rereads the active session summary. The
@@ -9,7 +9,7 @@ list. See the pinned
 The issue's 100,000-row ~10 ms result was a warm, in-memory synthetic SQLite
 measurement, not observed app latency.
 
-## Green slice
+## Green slices
 
 `jot_session_counts` maintains `COUNT(*)` of ambient transcript blocks by
 session. The typed `STRICT` projection stores integer start/end times and a
@@ -19,6 +19,14 @@ change. An extension test compares the refreshed count to SQLite after every
 batch; another checks that duplicate IDs fail and rolled-back writes leave
 the result unchanged. The fixture uses synthetic integer IDs rather than the
 source's text IDs. This is **not** a full session summary.
+
+M2c also supports `MIN(started_ms)`, `MAX(ended_ms)` and `COUNT(*)`
+over that same ambient-session projection. The ordinary, non-ignored
+`jot_min_max_count_matches_sqlite_after_mixed_changes` acceptance test in
+[`capability_red.rs`](../../crates/ivmlite-test/tests/capability_red.rs)
+compares the initial view and each of three mixed batches with SQLite,
+including deletion and session reassignment. This proves the stored integer
+bounds projection; the benchmark below still measures counts only.
 
 ```sh
 cargo build --release --locked --manifest-path crates/ivmlite-sqlite/Cargo.toml
@@ -39,26 +47,25 @@ bootstrap took 69.41 ms versus 45.95 ms to build the covering index. These
 numbers concern session counts only; they cannot be compared directly with
 the issue's ~10 ms full-query SQLite measurement.
 
-## Red complete-session gates
+## Red complete-session gate
 
-These opt-in tests in
+The remaining Jot opt-in test in
 [`capability_red.rs`](../../crates/ivmlite-test/tests/capability_red.rs)
-currently fail at view creation. Once that works they also require exact
-SQLite parity after writes and title changes:
+currently fails at view creation. Once that works it also requires exact
+SQLite parity after a title change:
 
 ```sh
-cargo test --locked -p ivmlite-test --test capability_red \
-  jot_min_max_count_matches_sqlite_after_mixed_changes -- --ignored
 cargo test --locked -p ivmlite-test --test capability_red \
   jot_full_session_list_matches_sqlite_after_title_change -- --ignored
 ```
 
-The first isolates integer `MIN/MAX/COUNT` over a typed projection and
-requires correct extrema after deletion and rekey. The second adds the title
-`LEFT JOIN`, ordering and `LIMIT`. The actual source also stores `REAL`
-timestamps and computes the end expression; matching those and preserving
+The query adds the title `LEFT JOIN`, an ungrouped title column, ordering
+and `LIMIT`. The actual source also stores `REAL` timestamps and computes
+the end expression. M2c supports REAL storage and MIN/MAX, but this test
+still uses stored integer bounds; the computed source end and complete
+session query remain unvalidated. Preserving
 `addCommitted`'s asynchronous/idempotent behavior, split/regroup, native
 recovery and concurrency are later
 [roadmap](real-world-demo-roadmap.md#october-18-staged-full-statistics-gates)
-gates. Ignored red tests keep default CI green without disguising the missing
+gates. The ignored red test keeps default CI green without disguising the missing
 capabilities.

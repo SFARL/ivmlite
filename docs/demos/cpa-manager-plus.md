@@ -70,7 +70,9 @@ The first follows the source's nearest-rank
 [P95 window query](https://github.com/seakee/CPA-Manager-Plus/blob/64ce94e6aa1af691555429a3211e67c59c0480ad/apps/manager-server/internal/repository/usageevent/analytics.go#L946-L989).
 The second preserves the expensive shape of its
 [task-bucket query](https://github.com/seakee/CPA-Manager-Plus/blob/64ce94e6aa1af691555429a3211e67c59c0480ad/apps/manager-server/internal/repository/usageevent/analytics.go#L2457-L2518):
-`MIN/MAX`, `AVG`, `GROUP_CONCAT(DISTINCT)`, ordering and top 500. The fixture
+`MIN/MAX`, `AVG`, `CASE`/`NULLIF`, `GROUP_CONCAT(DISTINCT)`, ordering and top 500.
+M2c supports the aggregate operators `MIN/MAX` and `AVG`; the expressions,
+distinct string collection and `ORDER BY`/`LIMIT` still block this query. The fixture
 uses fewer columns and fixed boundaries but retains those operators. The
 [roadmap](real-world-demo-roadmap.md#october-18-staged-full-statistics-gates)
 tracks arbitrary window edges, requested timezones, retention and API parity

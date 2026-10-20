@@ -1,10 +1,16 @@
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 
-use ivmlite_core::{Database, Row, Value, ZSet};
+use ivmlite_core::{
+    parse_numeric_text, ColumnType, Database, NumericTerm, Row, Value, ZSet, SUM_OVERFLOW,
+};
+use rusqlite::Connection;
 
-use crate::{AggFn, CmpOp, Engine, EngineError, Predicate, ViewQuery};
+use crate::exact_reference::{exact_mean, fsum, int_pieces};
+use crate::{AggFn, CmpOp, Column, Engine, EngineError, Predicate, ViewQuery};
 
-/// The trivially correct reference implementation: it keeps the full base tables and recomputes on every materialize.
+/// The trivially correct reference implementation: it keeps the full base
+/// tables and recomputes on every materialize, with `evaluate`.
 ///
 /// Two uses: showing the test framework raises no false alarms, and serving as the benchmark's "naive recompute" baseline (spec §10.2).
 ///
@@ -16,54 +22,221 @@ use crate::{AggFn, CmpOp, Engine, EngineError, Predicate, ViewQuery};
 ///
 /// `base` is held per table (`BTreeMap<String, ZSet>`) — since the harness went
 /// multi-table, the initial state `create_view` receives is split by table
-/// anyway. `materialize` aggregates the anchor's state (the first table in
-/// `db`), or for a join query the nested-loop join of the anchor and the right
-/// table — deliberately the simplest correct algorithm, sharing no code with
-/// `JoinState`.
-#[derive(Debug, Default)]
+/// anyway.
+#[derive(Debug)]
 pub struct NaiveRecompute {
-    query: Option<ViewQuery>,
-    anchor: String,
+    view: Option<(Database, ViewQuery)>,
     base: BTreeMap<String, ZSet>,
     pending: Vec<(String, Row, i64)>,
+    terms: SqliteTerms,
+}
+
+impl Default for NaiveRecompute {
+    fn default() -> Self {
+        NaiveRecompute {
+            view: None,
+            base: BTreeMap::new(),
+            pending: Vec::new(),
+            terms: SqliteTerms::new().expect("an in-memory SQLite opens"),
+        }
+    }
 }
 
 impl NaiveRecompute {
     pub fn new() -> Self {
         Self::default()
     }
+}
 
-    /// The rows the view aggregates: the anchor's base state, or — for a join —
-    /// every matching pair of anchor and right rows, concatenated, with the
-    /// product of their weights.
-    ///
-    /// A NULL key never matches: SQL's `NULL = NULL` is UNKNOWN (measured in
-    /// SQLite; `sqlite_never_matches_null_join_keys` pins it on the oracle side).
-    ///
-    /// For a join, each side's rows with weight ≤ 0 are dropped **before**
-    /// joining (spec §5.1: they do not take part in recomputation), the same
-    /// rule `materialize` applies to a single table's rows. Dropping them only
-    /// after the join would let two negative rows join into a positive one.
-    fn input_rows(&self, query: &ViewQuery) -> ZSet {
-        let anchor = self.base.get(&self.anchor).cloned().unwrap_or_default();
-        let Some(join) = &query.join else {
-            return anchor;
+/// SQLite's own classification of a SUM/TOTAL/AVG input (M2c spec §4): the
+/// reference asks SQLite rather than `ivmlite_core::numeric_term`, so the
+/// engine's reading of a value is checked against SQLite's.
+#[derive(Debug)]
+pub struct SqliteTerms {
+    conn: Connection,
+    cache: RefCell<BTreeMap<Value, SqliteTerm>>,
+}
+
+/// What `SELECT sum(?1)` returns for one value: an INTEGER for a value that
+/// counts as an integer, a REAL for anything else.
+#[derive(Debug, Clone, Copy)]
+enum SqliteTerm {
+    Integer(i64),
+    Approx(f64),
+}
+
+impl SqliteTerms {
+    pub fn new() -> Result<SqliteTerms, EngineError> {
+        Ok(SqliteTerms {
+            conn: Connection::open_in_memory().map_err(|e| EngineError(e.to_string()))?,
+            cache: RefCell::new(BTreeMap::new()),
+        })
+    }
+
+    fn term(&self, value: &Value) -> Result<SqliteTerm, EngineError> {
+        if let Some(term) = self.cache.borrow().get(value) {
+            return Ok(*term);
+        }
+        let got: rusqlite::types::Value = self
+            .conn
+            .query_row("SELECT sum(?1)", [crate::oracle::to_sql(value)], |r| {
+                r.get(0)
+            })
+            .map_err(|e| EngineError(e.to_string()))?;
+        let term = match got {
+            rusqlite::types::Value::Integer(n) => SqliteTerm::Integer(n),
+            rusqlite::types::Value::Real(x) => SqliteTerm::Approx(x),
+            other => {
+                return Err(EngineError(format!(
+                    "SQLite's sum({value:?}) is {other:?}, neither INTEGER nor REAL"
+                )))
+            }
         };
-        let anchor = positive_part(&anchor);
-        let right = positive_part(&self.base.get(&join.right).cloned().unwrap_or_default());
-        let mut joined = ZSet::new();
-        for (l, &wl) in anchor.iter() {
-            for (r, &wr) in right.iter() {
-                let key = l.get(join.left_column);
-                if *key != Value::Null && key == r.get(join.right_column) {
-                    let mut values = l.0.clone();
-                    values.extend(r.0.iter().cloned());
-                    joined.update(Row::new(values), wl * wr);
-                }
+        self.cache.borrow_mut().insert(value.clone(), term);
+        Ok(term)
+    }
+}
+
+/// The view as M2c specifies it, recomputed from the base multisets.
+#[derive(Debug, Clone)]
+pub struct Evaluated {
+    pub rows: ZSet,
+    /// (Σ|xᵢ|, non-NULL count) of each SUM/TOTAL/AVG, by canonical group key and aggregate index.
+    pub magnitudes: BTreeMap<(Row, usize), (f64, i64)>,
+}
+
+/// The view as M2c specifies it (M2c spec §6, the independent reference),
+/// recomputed from `bases` with no incremental state: SQLite classifies each
+/// SUM/TOTAL/AVG input, `fsum` and `exact_mean` round, and nothing comes
+/// from `ivmlite_core::ExactSum`.
+///
+/// `Err(EngineError(SUM_OVERFLOW))` when a final exact SUM over integers
+/// leaves `i64` (M2c spec §4).
+pub fn evaluate(
+    db: &Database,
+    query: &ViewQuery,
+    bases: &BTreeMap<String, ZSet>,
+    terms: &SqliteTerms,
+) -> Result<Evaluated, EngineError> {
+    if let Some(agg) = query
+        .aggs
+        .iter()
+        .find(|a| a.func != AggFn::Count && a.column.is_none())
+    {
+        return Err(EngineError(format!("{:?} has no column", agg.func)));
+    }
+    let columns = joined_columns(db, query)?;
+    let mut groups: BTreeMap<Row, Group> = BTreeMap::new();
+    for (row, &weight) in input_rows(db, query, bases)?.iter() {
+        if !passes(&query.predicate, row, &columns) {
+            continue;
+        }
+        let key = Row::new(
+            query
+                .group_by
+                .iter()
+                .map(|&i| row.get(i).canonical())
+                .collect(),
+        );
+        groups
+            .entry(key)
+            .or_insert_with(|| Group::new(query))
+            .add(query, row, weight, terms)?;
+    }
+
+    let mut rows = ZSet::new();
+    let mut magnitudes = BTreeMap::new();
+    for (key, group) in groups {
+        let mut values: Vec<Value> = key
+            .0
+            .iter()
+            .zip(&group.real_keys)
+            .map(|(k, &reals)| output_key(k, reals))
+            .collect();
+        for (i, (agg, slot)) in query.aggs.iter().zip(&group.slots).enumerate() {
+            values.push(slot.output(agg.func, agg.column.is_some(), group.rows)?);
+            if matches!(agg.func, AggFn::Sum | AggFn::Total | AggFn::Avg) {
+                magnitudes.insert((key.clone(), i), (slot.magnitude(), slot.non_null));
             }
         }
-        joined
+        rows.update(Row::new(values), 1);
     }
+    Ok(Evaluated { rows, magnitudes })
+}
+
+/// M2c spec §2: a group's numeric key is output as REAL when any of its rows
+/// stored that key as a REAL.
+fn output_key(canonical: &Value, reals: i64) -> Value {
+    match canonical {
+        Value::Int(n) if reals > 0 => Value::Real(*n as f64),
+        other => other.clone(),
+    }
+}
+
+/// The columns of the rows `input_rows` produces: the anchor's, then — for a
+/// join — the right table's.
+fn joined_columns<'a>(db: &'a Database, query: &ViewQuery) -> Result<Vec<&'a Column>, EngineError> {
+    let anchor = db
+        .tables()
+        .first()
+        .ok_or_else(|| EngineError("database has no tables".into()))?;
+    let mut columns: Vec<&Column> = anchor.columns.iter().collect();
+    if let Some(join) = &query.join {
+        let right = db.get(&join.right).ok_or_else(|| {
+            EngineError(format!(
+                "the query joins {}, which the database does not declare",
+                join.right
+            ))
+        })?;
+        columns.extend(&right.columns);
+    }
+    Ok(columns)
+}
+
+/// The rows the view aggregates: the anchor's base state (the first table in
+/// `db`), or — for a join — every matching pair of anchor and right rows,
+/// concatenated, with the product of their weights. Deliberately the
+/// simplest correct algorithm, a nested loop sharing no code with
+/// `JoinState`.
+///
+/// Join keys match when their canonical values are equal (M2c spec §5: `1`
+/// matches `1.0`). A NULL key never matches: SQL's `NULL = NULL` is UNKNOWN
+/// (measured in SQLite; `sqlite_never_matches_null_join_keys` pins it on the
+/// oracle side).
+///
+/// Each side's rows with weight ≤ 0 are dropped **before** joining (spec
+/// §5.1: they do not take part in recomputation). Dropping them only after
+/// the join would let two negative rows join into a positive one.
+fn input_rows(
+    db: &Database,
+    query: &ViewQuery,
+    bases: &BTreeMap<String, ZSet>,
+) -> Result<ZSet, EngineError> {
+    let anchor = db
+        .tables()
+        .first()
+        .ok_or_else(|| EngineError("database has no tables".into()))?;
+    let base = |table: &str| positive_part(bases.get(table).unwrap_or(&ZSet::new()));
+    let anchor = base(&anchor.table);
+    let Some(join) = &query.join else {
+        return Ok(anchor);
+    };
+    let right = base(&join.right);
+    let mut joined = ZSet::new();
+    for (l, &wl) in anchor.iter() {
+        let key = l.get(join.left_column).canonical();
+        if key == Value::Null {
+            continue;
+        }
+        for (r, &wr) in right.iter() {
+            if key == r.get(join.right_column).canonical() {
+                let mut values = l.0.clone();
+                values.extend(r.0.iter().cloned());
+                joined.update(Row::new(values), wl * wr);
+            }
+        }
+    }
+    Ok(joined)
 }
 
 /// The rows of `z` with a positive weight.
@@ -75,7 +248,29 @@ fn positive_part(z: &ZSet) -> ZSet {
     )
 }
 
-fn passes(predicate: &Predicate, row: &Row) -> bool {
+/// M2c spec §5: a comparison literal after the column's affinity is applied
+/// to it (SQLite's datatype3.html §4.2). A TEXT literal that parses as a
+/// number meets a numeric-affinity column as that number, in its comparison
+/// form (`'3.0'` is `3`); an INTEGER literal meets a TEXT-affinity column as
+/// its decimal text; everything else is unchanged. (No REAL literal meets a
+/// TEXT-affinity column: the engine refuses that view.)
+fn affinity_literal(ty: ColumnType, literal: &Value) -> Value {
+    match (ty, literal) {
+        (ColumnType::Integer | ColumnType::Real | ColumnType::Numeric, Value::Text(t)) => {
+            match parse_numeric_text(t) {
+                Some(NumericTerm::Integer(n)) => Value::Int(n),
+                Some(NumericTerm::Approx(x)) => Value::Real(x).canonical(),
+                None => literal.clone(),
+            }
+        }
+        (ColumnType::Text, Value::Int(n)) => Value::Text(n.to_string()),
+        _ => literal.clone(),
+    }
+}
+
+/// Whether `row` passes `predicate`, with `columns` describing the row. A
+/// comparison follows M2c spec §2's cross-class order.
+fn passes(predicate: &Predicate, row: &Row, columns: &[&Column]) -> bool {
     match predicate {
         Predicate::None => true,
         Predicate::Compare { column, op, value } => {
@@ -84,26 +279,172 @@ fn passes(predicate: &Predicate, row: &Row) -> bool {
             if *cell == Value::Null {
                 return false;
             }
-            // `cell` and `value` are the same variant here — not because
-            // `lower` guarantees it (`NaiveRecompute` never calls `lower`),
-            // but because the enumerator only ever generates a comparison
-            // literal of the column's own type (see
-            // `every_comparison_literal_has_its_columns_type` in
-            // `crates/ivmlite-test/src/query.rs`). `Value`'s derived order
-            // within one variant is i64's order or `String`'s byte order —
-            // SQLite's BINARY collation.
+            let order = cell.sql_cmp(&affinity_literal(columns[*column].ty, value));
             match op {
-                CmpOp::Gt => cell > value,
-                CmpOp::Ge => cell >= value,
-                CmpOp::Lt => cell < value,
-                CmpOp::Le => cell <= value,
-                CmpOp::Eq => cell == value,
-                CmpOp::Ne => cell != value,
+                CmpOp::Gt => order.is_gt(),
+                CmpOp::Ge => order.is_ge(),
+                CmpOp::Lt => order.is_lt(),
+                CmpOp::Le => order.is_le(),
+                CmpOp::Eq => order.is_eq(),
+                CmpOp::Ne => order.is_ne(),
             }
         }
         Predicate::IsNull { column } => row.get(*column) == &Value::Null,
         Predicate::IsNotNull { column } => row.get(*column) != &Value::Null,
     }
+}
+
+/// One group's state while `evaluate` scans its rows.
+struct Group {
+    /// Rows, by weight: COUNT(*).
+    rows: i64,
+    /// Per group-by column, the rows whose key was a REAL, by weight.
+    real_keys: Vec<i64>,
+    slots: Vec<Slot>,
+}
+
+impl Group {
+    fn new(query: &ViewQuery) -> Group {
+        Group {
+            rows: 0,
+            real_keys: vec![0; query.group_by.len()],
+            slots: query.aggs.iter().map(|_| Slot::default()).collect(),
+        }
+    }
+
+    fn add(
+        &mut self,
+        query: &ViewQuery,
+        row: &Row,
+        weight: i64,
+        terms: &SqliteTerms,
+    ) -> Result<(), EngineError> {
+        self.rows += weight;
+        for (reals, &c) in self.real_keys.iter_mut().zip(&query.group_by) {
+            if matches!(row.get(c), Value::Real(_)) {
+                *reals += weight;
+            }
+        }
+        for (slot, agg) in self.slots.iter_mut().zip(&query.aggs) {
+            let Some(c) = agg.column else {
+                continue; // COUNT(*) reads `rows`
+            };
+            let value = row.get(c);
+            if *value == Value::Null {
+                continue;
+            }
+            slot.non_null += weight;
+            match agg.func {
+                AggFn::Count => {}
+                AggFn::Min | AggFn::Max => slot.values.push(value.clone()),
+                AggFn::Sum | AggFn::Total | AggFn::Avg => slot.add_term(terms.term(value)?, weight),
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One aggregate's inputs within a group.
+#[derive(Default)]
+struct Slot {
+    non_null: i64,
+    /// The exact sum of the terms SQLite counts as integers.
+    int_sum: i128,
+    /// Σ|n|·w of those integer terms, for KBN's bound.
+    int_magnitude: i128,
+    /// Each finite non-integer term, repeated by weight.
+    approx: Vec<f64>,
+    pos_inf: i64,
+    neg_inf: i64,
+    /// MIN/MAX's non-NULL values.
+    values: Vec<Value>,
+}
+
+impl Slot {
+    fn add_term(&mut self, term: SqliteTerm, weight: i64) {
+        match term {
+            SqliteTerm::Integer(n) => {
+                self.int_sum += i128::from(n) * i128::from(weight);
+                self.int_magnitude += i128::from(n).abs() * i128::from(weight);
+            }
+            SqliteTerm::Approx(x) if x == f64::INFINITY => self.pos_inf += weight,
+            SqliteTerm::Approx(x) if x == f64::NEG_INFINITY => self.neg_inf += weight,
+            SqliteTerm::Approx(x) => {
+                let copies = usize::try_from(weight).expect("a positive weight");
+                self.approx.extend(std::iter::repeat_n(x, copies));
+            }
+        }
+    }
+
+    /// M2c spec §4: a group is approximate once any input is not an integer.
+    fn is_approx(&self) -> bool {
+        !self.approx.is_empty() || self.pos_inf > 0 || self.neg_inf > 0
+    }
+
+    /// Finite terms whose exact sum is the sum of every finite input.
+    fn terms(&self) -> Vec<f64> {
+        let mut all = self.approx.clone();
+        all.extend(int_pieces(self.int_sum));
+        all
+    }
+
+    /// Σ|xᵢ| over every finite input, integers included (KBN's bound).
+    fn magnitude(&self) -> f64 {
+        let mut all: Vec<f64> = self.approx.iter().map(|x| x.abs()).collect();
+        all.extend(int_pieces(self.int_magnitude));
+        fsum(&all)
+    }
+
+    /// A REAL result: `finish` of the finite terms, unless an infinity is
+    /// present (M2c spec §4, amendment 5: both signs give NULL, SQLite's NaN).
+    fn real(&self, finish: impl Fn(&[f64]) -> f64) -> Value {
+        match (self.pos_inf > 0, self.neg_inf > 0) {
+            (true, true) => Value::Null,
+            (true, false) => Value::Real(f64::INFINITY),
+            (false, true) => Value::Real(f64::NEG_INFINITY),
+            (false, false) => Value::Real(finish(&self.terms())),
+        }
+    }
+
+    fn output(&self, func: AggFn, has_column: bool, rows: i64) -> Result<Value, EngineError> {
+        Ok(match func {
+            AggFn::Count if has_column => Value::Int(self.non_null),
+            AggFn::Count => Value::Int(rows),
+            AggFn::Sum | AggFn::Avg if self.non_null == 0 => Value::Null,
+            AggFn::Sum if self.is_approx() => self.real(fsum),
+            AggFn::Sum => i64::try_from(self.int_sum)
+                .map(Value::Int)
+                .map_err(|_| EngineError(SUM_OVERFLOW.into()))?,
+            AggFn::Total if self.non_null == 0 => Value::Real(0.0),
+            AggFn::Total => self.real(fsum),
+            AggFn::Avg => self.real(|t| exact_mean(t, self.non_null)),
+            AggFn::Min => extreme(&self.values, false),
+            AggFn::Max => extreme(&self.values, true),
+        })
+    }
+}
+
+/// M2c spec §4 and amendment 1: equal numerics order `Int`, then `Real`,
+/// then `Real(-0.0)`; MIN outputs the first, MAX the last.
+fn tie_rank(v: &Value) -> u8 {
+    match v {
+        Value::Real(x) if *x == 0.0 && x.is_sign_negative() => 2,
+        Value::Real(_) => 1,
+        _ => 0,
+    }
+}
+
+/// MIN (`max = false`) or MAX of `values` in M2c spec §2's order; NULL when empty.
+fn extreme(values: &[Value], max: bool) -> Value {
+    let order = |a: &&Value, b: &&Value| a.sql_cmp(b).then(tie_rank(a).cmp(&tie_rank(b)));
+    let it = values.iter();
+    (if max {
+        it.max_by(order)
+    } else {
+        it.min_by(order)
+    })
+    .cloned()
+    .unwrap_or(Value::Null)
 }
 
 impl Engine for NaiveRecompute {
@@ -114,16 +455,9 @@ impl Engine for NaiveRecompute {
         initial: &BTreeMap<String, ZSet>,
     ) -> Result<(), EngineError> {
         // Resolve everything that can fail before touching `self`, then commit
-        // the whole new view at once. Replacing `query` first and failing on the
-        // anchor lookup would leave a new query paired with the old base state.
-        let anchor = db
-            .tables()
-            .first()
-            .ok_or_else(|| EngineError("database has no tables".into()))?
-            .table
-            .clone();
-        self.query = Some(query.clone());
-        self.anchor = anchor;
+        // the whole new view at once.
+        joined_columns(db, query)?;
+        self.view = Some((db.clone(), query.clone()));
         self.base = initial.clone();
         // Deltas applied but not yet refreshed belong to the view being replaced.
         self.pending.clear();
@@ -147,59 +481,11 @@ impl Engine for NaiveRecompute {
     }
 
     fn materialize(&mut self) -> Result<ZSet, EngineError> {
-        let query = self
-            .query
+        let (db, query) = self
+            .view
             .as_ref()
             .ok_or_else(|| EngineError("materialize was called before create_view".into()))?;
-
-        // Each aggregate slot is (running sum, count of non-NULL inputs). The
-        // second is required: SUM over zero non-NULL inputs returns NULL, not 0
-        // (spec §6.1, "the NULL-semantics contract for aggregates"). Keeping only
-        // the running sum would silently output 0.
-        let mut groups: BTreeMap<Vec<Value>, Vec<(i64, i64)>> = BTreeMap::new();
-
-        let rows = self.input_rows(query);
-        for (row, weight) in rows.iter() {
-            if *weight <= 0 {
-                continue;
-            }
-            if !passes(&query.predicate, row) {
-                continue;
-            }
-            let key: Vec<Value> = query.group_by.iter().map(|i| row.get(*i).clone()).collect();
-            let acc = groups
-                .entry(key)
-                .or_insert_with(|| vec![(0, 0); query.aggs.len()]);
-            for (slot, agg) in acc.iter_mut().zip(&query.aggs) {
-                match (agg.func, agg.column) {
-                    (AggFn::Count, _) => slot.0 += weight,
-                    (AggFn::Sum, Some(col)) => {
-                        if let Value::Int(n) = row.get(col) {
-                            slot.0 += n * weight;
-                            slot.1 += weight;
-                        }
-                    }
-                    (AggFn::Sum, None) => {
-                        return Err(EngineError("SUM has no column".into()));
-                    }
-                }
-            }
-        }
-
-        let mut out = ZSet::new();
-        for (key, acc) in groups {
-            let mut values = key;
-            for (agg, (total, non_null)) in query.aggs.iter().zip(acc) {
-                values.push(match agg.func {
-                    // COUNT(*) counts rows, regardless of whether a column is NULL
-                    AggFn::Count => Value::Int(total),
-                    AggFn::Sum if non_null == 0 => Value::Null,
-                    AggFn::Sum => Value::Int(total),
-                });
-            }
-            out.update(Row::new(values), 1);
-        }
-        Ok(out)
+        Ok(evaluate(db, query, &self.base, &self.terms)?.rows)
     }
 }
 
@@ -207,8 +493,7 @@ impl Engine for NaiveRecompute {
 mod tests {
     use super::*;
     use crate::test_support::{join_on_k, kv, single_table_bases as single_table_case};
-    use crate::{Agg, AggFn, Column, ColumnType, Predicate, Schema, ViewQuery};
-    use ivmlite_core::{Row, Value};
+    use crate::{Agg, Schema};
 
     fn schema() -> Schema {
         Schema {
@@ -438,20 +723,355 @@ mod tests {
 
     #[test]
     fn naive_passes_follows_three_valued_logic_for_not_equal_and_is_null() {
+        let int = column("x", ColumnType::Integer);
+        let columns = [&int];
         let ne = Predicate::Compare {
             column: 0,
             op: CmpOp::Ne,
             value: Value::Int(4),
         };
-        assert!(passes(&ne, &Row::new(vec![Value::Int(3)])));
-        assert!(!passes(&ne, &Row::new(vec![Value::Int(4)])));
+        assert!(passes(&ne, &Row::new(vec![Value::Int(3)]), &columns));
+        assert!(!passes(&ne, &Row::new(vec![Value::Int(4)]), &columns));
         assert!(
-            !passes(&ne, &Row::new(vec![Value::Null])),
+            !passes(&ne, &Row::new(vec![Value::Null]), &columns),
             "NULL != 4 is UNKNOWN"
         );
         let is_null = Predicate::IsNull { column: 0 };
-        assert!(passes(&is_null, &Row::new(vec![Value::Null])));
-        assert!(!passes(&is_null, &Row::new(vec![Value::Int(0)])));
+        assert!(passes(&is_null, &Row::new(vec![Value::Null]), &columns));
+        assert!(!passes(&is_null, &Row::new(vec![Value::Int(0)]), &columns));
+    }
+
+    fn column(name: &str, ty: ColumnType) -> Column {
+        Column {
+            name: name.into(),
+            ty,
+            nullable: true,
+        }
+    }
+
+    /// `t(k TEXT, x <ty>)`.
+    fn kx(ty: ColumnType) -> Schema {
+        Schema {
+            table: "t".into(),
+            columns: vec![column("k", ColumnType::Text), column("x", ty)],
+        }
+    }
+
+    fn by_k(aggs: Vec<(AggFn, Option<usize>)>) -> ViewQuery {
+        ViewQuery {
+            group_by: vec![0],
+            aggs: aggs
+                .into_iter()
+                .map(|(func, column)| Agg { func, column })
+                .collect(),
+            predicate: Predicate::None,
+            join: None,
+        }
+    }
+
+    fn evaluate_rows(
+        schema: &Schema,
+        query: &ViewQuery,
+        rows: Vec<Row>,
+    ) -> Result<Evaluated, EngineError> {
+        let (db, bases) =
+            single_table_case(schema, ZSet::from_rows(rows.into_iter().map(|r| (r, 1))));
+        evaluate(&db, query, &bases, &SqliteTerms::new().unwrap())
+    }
+
+    fn kx_row(k: &str, x: Value) -> Row {
+        Row::new(vec![Value::Text(k.into()), x])
+    }
+
+    #[test]
+    fn affinity_literal_follows_sqlites_comparison_rules() {
+        // M2c spec §5, with the literal in its comparison form.
+        for ty in [ColumnType::Integer, ColumnType::Real, ColumnType::Numeric] {
+            let lit = |t: &str| affinity_literal(ty, &Value::Text(t.into()));
+            assert_eq!(lit("3.0"), Value::Int(3));
+            assert_eq!(lit("2.5e1"), Value::Int(25));
+            assert_eq!(lit("-0.0"), Value::Int(0));
+            assert_eq!(lit("2.5"), Value::Real(2.5));
+            assert_eq!(lit("x"), Value::Text("x".into()));
+            assert_eq!(affinity_literal(ty, &Value::Int(3)), Value::Int(3));
+        }
+        assert_eq!(
+            affinity_literal(ColumnType::Text, &Value::Int(12)),
+            Value::Text("12".into())
+        );
+        assert_eq!(
+            affinity_literal(ColumnType::Blob, &Value::Text("3".into())),
+            Value::Text("3".into())
+        );
+        assert_eq!(
+            affinity_literal(ColumnType::Text, &Value::Blob(vec![1])),
+            Value::Blob(vec![1])
+        );
+    }
+
+    #[test]
+    fn a_text_literal_meets_an_integer_column_as_a_number_as_in_sqlite() {
+        let q = ViewQuery {
+            predicate: Predicate::Compare {
+                column: 1,
+                op: CmpOp::Ge,
+                value: Value::Text("3.0".into()),
+            },
+            ..by_k(vec![(AggFn::Count, None)])
+        };
+        let s = kx(ColumnType::Integer);
+        let rows: Vec<Row> = (1..=4).map(|n| kx_row("a", Value::Int(n))).collect();
+        let got = evaluate_rows(&s, &q, rows.clone()).unwrap();
+        assert_eq!(got.rows, ZSet::from_rows([(kx_row("a", Value::Int(2)), 1)]));
+        let (db, bases) = single_table_case(&s, ZSet::from_rows(rows.into_iter().map(|r| (r, 1))));
+        assert_eq!(
+            crate::recompute_via_sqlite(&db, &q, &bases).unwrap(),
+            got.rows
+        );
+    }
+
+    #[test]
+    fn sqlite_classifies_each_term() {
+        // M2c spec §4, read from SQLite itself.
+        let terms = SqliteTerms::new().unwrap();
+        let int = |v: Value| match terms.term(&v).unwrap() {
+            SqliteTerm::Integer(n) => Some(n),
+            SqliteTerm::Approx(_) => None,
+        };
+        let approx = |v: Value| match terms.term(&v).unwrap() {
+            SqliteTerm::Approx(x) => Some(x.to_bits()),
+            SqliteTerm::Integer(_) => None,
+        };
+        assert_eq!(int(Value::Int(i64::MAX)), Some(i64::MAX));
+        assert_eq!(int(Value::Text("12".into())), Some(12));
+        assert_eq!(approx(Value::Text("1.5".into())), Some(1.5f64.to_bits()));
+        assert_eq!(approx(Value::Text("3.0".into())), Some(3.0f64.to_bits()));
+        assert_eq!(approx(Value::Text("abc".into())), Some(0.0f64.to_bits()));
+        assert_eq!(approx(Value::Real(2.0)), Some(2.0f64.to_bits()));
+        assert_eq!(approx(Value::Blob(b"12".to_vec())), Some(12.0f64.to_bits()));
+        assert_eq!(
+            approx(Value::Text("9223372036854775808".into())),
+            Some(9_223_372_036_854_775_808.0f64.to_bits())
+        );
+        // A second ask is served from the cache, unchanged.
+        assert_eq!(int(Value::Text("12".into())), Some(12));
+        assert_eq!(terms.cache.borrow().len(), 8);
+    }
+
+    #[test]
+    fn real_sums_and_means_are_rounded_once() {
+        let q = by_k(vec![
+            (AggFn::Sum, Some(1)),
+            (AggFn::Total, Some(1)),
+            (AggFn::Avg, Some(1)),
+            (AggFn::Count, Some(1)),
+        ]);
+        let rows = vec![
+            kx_row("a", Value::Real(0.1)),
+            kx_row("a", Value::Real(0.2)),
+            kx_row("a", Value::Real(0.3)),
+            kx_row("a", Value::Null),
+        ];
+        let got = evaluate_rows(&kx(ColumnType::Real), &q, rows).unwrap();
+        let want = Row::new(vec![
+            Value::Text("a".into()),
+            Value::Real(0.6),
+            Value::Real(0.6),
+            Value::Real(0.2),
+            Value::Int(3),
+        ]);
+        assert_eq!(got.rows, ZSet::from_rows([(want, 1)]));
+    }
+
+    #[test]
+    fn a_mix_of_integer_and_real_terms_sums_exactly() {
+        // 2^53 + 1 is an INTEGER term; adding 0.5 makes the group approximate,
+        // and the exact 2^53 + 1.5 rounds to 2^53 + 2.
+        let q = by_k(vec![(AggFn::Sum, Some(1)), (AggFn::Avg, Some(1))]);
+        let p53 = 2f64.powi(53);
+        let rows = vec![
+            kx_row("a", Value::Int((1 << 53) + 1)),
+            kx_row("a", Value::Real(0.5)),
+        ];
+        let got = evaluate_rows(&kx(ColumnType::Blob), &q, rows).unwrap();
+        let want = Row::new(vec![
+            Value::Text("a".into()),
+            Value::Real(p53 + 2.0),
+            // (2^53 + 1.5) / 2 = 2^52 + 0.75, which rounds to 2^52 + 1.
+            Value::Real(p53 / 2.0 + 1.0),
+        ]);
+        assert_eq!(got.rows, ZSet::from_rows([(want, 1)]));
+    }
+
+    #[test]
+    fn the_kbn_magnitude_counts_every_term_by_weight() {
+        let q = by_k(vec![(AggFn::Total, Some(1)), (AggFn::Min, Some(1))]);
+        let s = kx(ColumnType::Blob);
+        let (db, bases) = single_table_case(
+            &s,
+            ZSet::from_rows([
+                (kx_row("a", Value::Int(3)), 2),
+                (kx_row("a", Value::Int(-5)), 1),
+                (kx_row("a", Value::Real(-0.5)), 3),
+            ]),
+        );
+        let got = evaluate(&db, &q, &bases, &SqliteTerms::new().unwrap()).unwrap();
+        let key = Row::new(vec![Value::Text("a".into())]);
+        assert_eq!(got.magnitudes, BTreeMap::from([((key, 0), (12.5, 6))]));
+    }
+
+    #[test]
+    fn an_integer_sum_outside_i64_overflows_but_total_does_not() {
+        let rows = vec![
+            kx_row("a", Value::Int(i64::MAX)),
+            kx_row("b", Value::Int(1)),
+        ];
+        let mut rows_a = rows.clone();
+        rows_a.push(kx_row("a", Value::Int(1)));
+        let s = kx(ColumnType::Integer);
+        assert_eq!(
+            evaluate_rows(&s, &by_k(vec![(AggFn::Sum, Some(1))]), rows_a.clone()).unwrap_err(),
+            EngineError(SUM_OVERFLOW.into())
+        );
+        let total = evaluate_rows(&s, &by_k(vec![(AggFn::Total, Some(1))]), rows_a).unwrap();
+        assert_eq!(
+            total
+                .rows
+                .weight_of(&kx_row("a", Value::Real(2f64.powi(63)))),
+            1
+        );
+        assert!(evaluate_rows(&s, &by_k(vec![(AggFn::Sum, Some(1))]), rows).is_ok());
+    }
+
+    #[test]
+    fn infinities_are_counted_outside_the_sum() {
+        // M2c spec §4, amendment 5.
+        let q = by_k(vec![(AggFn::Sum, Some(1)), (AggFn::Avg, Some(1))]);
+        let s = kx(ColumnType::Real);
+        let one = evaluate_rows(
+            &s,
+            &q,
+            vec![
+                kx_row("a", Value::Real(f64::INFINITY)),
+                kx_row("a", Value::Real(1.0)),
+            ],
+        )
+        .unwrap();
+        let inf = Value::Real(f64::INFINITY);
+        assert_eq!(
+            one.rows,
+            ZSet::from_rows([(Row::new(vec![Value::Text("a".into()), inf.clone(), inf]), 1)])
+        );
+        let both = evaluate_rows(
+            &s,
+            &q,
+            vec![
+                kx_row("a", Value::Real(f64::INFINITY)),
+                kx_row("a", Value::Real(f64::NEG_INFINITY)),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            both.rows,
+            ZSet::from_rows([(
+                Row::new(vec![Value::Text("a".into()), Value::Null, Value::Null]),
+                1
+            )])
+        );
+    }
+
+    #[test]
+    fn min_and_max_break_numeric_ties_by_class() {
+        // M2c spec §4 and amendment 1: Int < Real < Real(-0.0) among equals.
+        let q = by_k(vec![(AggFn::Min, Some(1)), (AggFn::Max, Some(1))]);
+        let s = kx(ColumnType::Blob);
+        let zeros = vec![
+            kx_row("a", Value::Real(-0.0)),
+            kx_row("a", Value::Real(0.0)),
+            kx_row("a", Value::Int(0)),
+        ];
+        let got = evaluate_rows(&s, &q, zeros).unwrap();
+        let want = Row::new(vec![
+            Value::Text("a".into()),
+            Value::Int(0),
+            Value::Real(-0.0),
+        ]);
+        assert_eq!(got.rows, ZSet::from_rows([(want, 1)]));
+        // Across classes: numeric < TEXT < BLOB; NULL is skipped.
+        let mixed = vec![
+            kx_row("a", Value::Blob(vec![0])),
+            kx_row("a", Value::Text("z".into())),
+            kx_row("a", Value::Real(2.5)),
+            kx_row("a", Value::Null),
+        ];
+        let got = evaluate_rows(&s, &q, mixed).unwrap();
+        let want = Row::new(vec![
+            Value::Text("a".into()),
+            Value::Real(2.5),
+            Value::Blob(vec![0]),
+        ]);
+        assert_eq!(got.rows, ZSet::from_rows([(want, 1)]));
+    }
+
+    #[test]
+    fn a_group_keyed_by_one_and_one_point_zero_is_one_real_keyed_group() {
+        // M2c spec §2: canonical keys; output as REAL when a row's key was REAL.
+        let s = Schema {
+            table: "t".into(),
+            columns: vec![column("x", ColumnType::Blob)],
+        };
+        let q = ViewQuery {
+            group_by: vec![0],
+            ..by_k(vec![(AggFn::Count, None)])
+        };
+        let rows = |keys: Vec<Value>| keys.into_iter().map(|k| Row::new(vec![k])).collect();
+        let got = evaluate_rows(
+            &s,
+            &q,
+            rows(vec![
+                Value::Int(1),
+                Value::Real(1.0),
+                Value::Text("1".into()),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(
+            got.rows,
+            ZSet::from_rows([
+                (Row::new(vec![Value::Real(1.0), Value::Int(2)]), 1),
+                (Row::new(vec![Value::Text("1".into()), Value::Int(1)]), 1),
+            ])
+        );
+        let got = evaluate_rows(&s, &q, rows(vec![Value::Real(-0.0), Value::Int(0)])).unwrap();
+        assert_eq!(
+            got.rows,
+            ZSet::from_rows([(Row::new(vec![Value::Real(0.0), Value::Int(2)]), 1)])
+        );
+    }
+
+    #[test]
+    fn join_keys_match_by_canonical_value() {
+        // M2c spec §5: 1 matches 1.0; NULL matches nothing.
+        let db = Database::new(vec![kv("t0"), kv("t1")]);
+        let r = |k: Value, v: i64| Row::new(vec![k, Value::Int(v)]);
+        let bases = BTreeMap::from([
+            (
+                "t0".to_string(),
+                ZSet::from_rows([(r(Value::Int(1), 1), 1), (r(Value::Null, 2), 1)]),
+            ),
+            (
+                "t1".to_string(),
+                ZSet::from_rows([(r(Value::Real(1.0), 10), 1), (r(Value::Null, 20), 1)]),
+            ),
+        ]);
+        let got = evaluate(&db, &join_on_k(), &bases, &SqliteTerms::new().unwrap()).unwrap();
+        assert_eq!(
+            got.rows,
+            ZSet::from_rows([(
+                Row::new(vec![Value::Int(1), Value::Int(1), Value::Int(10)]),
+                1
+            )])
+        );
     }
 
     /// Item 13 (a deferred minor, from the same source as I4): the `IsNotNull`

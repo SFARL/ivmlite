@@ -219,16 +219,16 @@ mod tests {
     }
 
     #[test]
-    fn generated_database_tables_have_exactly_two_columns() {
+    fn generated_database_tables_have_exactly_three_columns() {
         let db = gen_database(2);
         assert_eq!(db.len(), 2);
         for t in db.tables() {
             assert_eq!(
                 t.arity(),
-                2,
-                "spec §9.2 item 4: the differential schema is fixed at 2 columns per table — \
-                 widening to 3 grows the enumeration about 8x; it is the precondition for \
-                 \"enumeration beats randomness\", not a magic number"
+                3,
+                "parent spec §9.2 item 4, amended by M2c: the differential schema is fixed at \
+                 3 columns per table — the enumeration's recorded size follows from it; it is \
+                 the precondition for \"enumeration beats randomness\", not a magic number"
             );
         }
     }

@@ -1,0 +1,77 @@
+{
+  "format_version": 1,
+  "original_runs_sha256": "d0a9dd237ef8924837826b8dc1ccb608802949b3090273b6a6fb5c825edfa1cd",
+  "original_driver_sha256": "efc6686ed15b51bef697aa4d7a101aad89954e8b1ceb9f8df397f2015dc1627c",
+  "published_driver_sha256": "690a145bd78e4c6905b2c8e82d4f03b1a428df99ba2024654a517932fe673c76",
+  "normalization": "Only local root paths in command/driver strings were replaced with placeholders; output/selection CSV bytes are unchanged. Output hashes were added to each published run.",
+  "runs": [
+    {
+      "label": "before",
+      "source_commit": "b647bcba9fa5f8eb583b162f87f7dfd79a10f7fa",
+      "harness_commit": "b647bcba9fa5f8eb583b162f87f7dfd79a10f7fa",
+      "command": [
+        "${FROZEN_ROOT}/target/release/ivmlite-bench",
+        "confirm",
+        "--from",
+        "${EVIDENCE_DIR}/selection.csv",
+        "--workload",
+        "${FROZEN_ROOT}/workloads/m0-baseline.toml",
+        "--extension",
+        "${FROZEN_ROOT}/crates/ivmlite-sqlite/target/release/libivmlite_sqlite.dylib"
+      ],
+      "binary_sha256": "7232d3dba6639e56b26d9daee6ac07802364c7d2d639cdfd268bd53729676f09",
+      "library_sha256": "dae0be83cdd527a55fa609572c416c71e289f3a87e7601f0d9ba3f01287510f3",
+      "selection_source_sha256": "0423fd09dcde4a76d6ac56d297f9659e4903a0abaff667230046a301486b78ce",
+      "selection_sha256": "922d26c6c861cd3bca702161dfdf4aea4511848da605cf8eba4cccf80ef22c46",
+      "started_at": "2026-10-20T22:09:43Z",
+      "load_start": [
+        4.90966796875,
+        4.72705078125,
+        3.7578125
+      ],
+      "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+      "returncode": 0,
+      "wall_seconds": 0.3953356249839999,
+      "load_end": [
+        4.75634765625,
+        4.6982421875,
+        3.7529296875
+      ],
+      "output_sha256": "9eba42c34332047517c81e386e11e6b95eb6ae7286213009ea3682c0b3ef6865"
+    },
+    {
+      "label": "after",
+      "source_commit": "84e4c07c2ebfc9db8b6bafb57378627414df5524",
+      "harness_commit": "84e4c07c2ebfc9db8b6bafb57378627414df5524",
+      "command": [
+        "${FROZEN_ROOT}/target/release/ivmlite-bench",
+        "confirm",
+        "--from",
+        "${EVIDENCE_DIR}/selection.csv",
+        "--workload",
+        "${FROZEN_ROOT}/workloads/m0-baseline.toml",
+        "--extension",
+        "${FROZEN_ROOT}/crates/ivmlite-sqlite/target/release/libivmlite_sqlite.dylib"
+      ],
+      "binary_sha256": "f067fbee7b0c417d001e3ba24f07cae998dad8c1ee4b4397786cacb1b0263e8c",
+      "library_sha256": "f5cf7b47c17860512316b118ce8ac6f9dcca4b7772e28d8e1b4938b4d72c0203",
+      "selection_source_sha256": "0423fd09dcde4a76d6ac56d297f9659e4903a0abaff667230046a301486b78ce",
+      "selection_sha256": "922d26c6c861cd3bca702161dfdf4aea4511848da605cf8eba4cccf80ef22c46",
+      "started_at": "2026-10-20T22:09:44Z",
+      "load_start": [
+        4.75634765625,
+        4.6982421875,
+        3.7529296875
+      ],
+      "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+      "returncode": 0,
+      "wall_seconds": 0.40678633301286027,
+      "load_end": [
+        4.75634765625,
+        4.6982421875,
+        3.7529296875
+      ],
+      "output_sha256": "abcc7fb50ac700143559ecaaae4778d75af8bd44df7eeee23945cc09d6d18853"
+    }
+  ]
+}

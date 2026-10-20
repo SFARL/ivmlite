@@ -12,8 +12,26 @@
 use std::collections::BTreeMap;
 
 use ivmlite_core::{
-    Agg, AggFn, Column, ColumnType, Database, Join, Predicate, Row, Schema, ViewQuery, ZSet,
+    Agg, AggFn, Column, ColumnType, Database, Join, Predicate, Row, Schema, Value, ViewQuery, ZSet,
 };
+
+/// SQLite's value as ours, storage class for storage class (the inverse of
+/// `oracle::to_sql`).
+///
+/// # Panics
+/// On a NaN, which SQLite never stores.
+pub fn from_sql(v: rusqlite::types::Value) -> Value {
+    match v {
+        rusqlite::types::Value::Null => Value::Null,
+        rusqlite::types::Value::Integer(n) => Value::Int(n),
+        rusqlite::types::Value::Real(x) => {
+            assert!(!x.is_nan(), "SQLite never stores a NaN");
+            Value::Real(x)
+        }
+        rusqlite::types::Value::Text(s) => Value::Text(s),
+        rusqlite::types::Value::Blob(b) => Value::Blob(b),
+    }
+}
 
 /// Wrap a single `Schema` as a `Database` holding only that table.
 pub fn single_table_db(schema: &Schema) -> Database {

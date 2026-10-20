@@ -227,7 +227,9 @@ fn show_counts(name: &str, result: &ZSet) {
 fn display_value(value: &Value) -> String {
     match value {
         Value::Int(n) => n.to_string(),
+        Value::Real(x) => format!("{x:?}"),
         Value::Text(text) => text.clone(),
+        Value::Blob(bytes) => format!("{} bytes", bytes.len()),
         Value::Null => "NULL".into(),
     }
 }

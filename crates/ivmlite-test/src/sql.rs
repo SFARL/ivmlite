@@ -7,10 +7,15 @@
 
 use ivmlite_core::{AggFn, CmpOp, ColumnType, Database, Predicate, Schema, Value, ViewQuery};
 
-fn sql_type(ty: ColumnType) -> &'static str {
+/// A declared type that gives a column the affinity `ty` (datatype3.html
+/// §3.1); BLOB affinity is the empty declared type.
+fn declared_type(ty: ColumnType) -> &'static str {
     match ty {
         ColumnType::Integer => "INTEGER",
+        ColumnType::Real => "REAL",
+        ColumnType::Numeric => "NUMERIC",
         ColumnType::Text => "TEXT",
+        ColumnType::Blob => "",
     }
 }
 
@@ -25,35 +30,67 @@ fn sql_op(op: CmpOp) -> &'static str {
     }
 }
 
-/// A literal as SQL. A TEXT literal is single-quoted, with each `'` doubled.
+/// A literal as SQL. A TEXT literal is single-quoted, with each `'` doubled;
+/// a BLOB is `X'…'` in upper-case hex.
 ///
 /// # Panics
 /// On `Value::Null`, which `lower` rejects as a comparison literal.
 fn sql_literal(value: &Value) -> String {
     match value {
         Value::Int(n) => n.to_string(),
+        Value::Real(x) => real_literal(*x),
         Value::Text(s) => format!("'{}'", s.replace('\'', "''")),
+        Value::Blob(b) => format!(
+            "X'{}'",
+            b.iter()
+                .map(|byte| format!("{byte:02X}"))
+                .collect::<String>()
+        ),
         Value::Null => panic!("a comparison literal is never NULL; lower rejects it"),
     }
 }
 
-/// Generate a STRICT CREATE TABLE statement (spec §7.1: STRICT pins column
-/// types; otherwise type affinity lets a column store a different type in each
-/// row, splitting one logical group key in two).
+/// A REAL as SQL text that reads back to the same bits: Rust's shortest
+/// round-trip form, with `.0` for an integral value so SQLite parses a
+/// REAL, and `1e999` for an infinity (SQLite's own spelling of overflow).
+fn real_literal(x: f64) -> String {
+    if x.is_infinite() {
+        return if x > 0.0 {
+            "1e999".into()
+        } else {
+            "-1e999".into()
+        };
+    }
+    let text = format!("{x:?}");
+    if text.contains(['.', 'e', 'E']) {
+        text
+    } else {
+        format!("{text}.0")
+    }
+}
+
+/// Generate a CREATE TABLE statement: each column with a declared type
+/// giving it its affinity (none for BLOB affinity), ` NOT NULL` when it is
+/// not nullable, and no `STRICT`.
+///
+/// M2c spec §3: base tables need not be STRICT, so the harness's tables are
+/// not, and SQLite's affinity applies to every value written into them. The
+/// generator draws only fixed points of each affinity (`value_pool`), so
+/// SQLite stores exactly the values the in-memory engines see.
 pub fn create_table_sql(schema: &Schema) -> String {
     let cols: Vec<String> = schema
         .columns
         .iter()
         .map(|c| {
+            let ty = match declared_type(c.ty) {
+                "" => String::new(),
+                ty => format!(" {ty}"),
+            };
             let null = if c.nullable { "" } else { " NOT NULL" };
-            format!("\"{}\" {}{}", c.name, sql_type(c.ty), null)
+            format!("\"{}\"{ty}{null}", c.name)
         })
         .collect();
-    format!(
-        "CREATE TABLE \"{}\" ({}) STRICT",
-        schema.table,
-        cols.join(", ")
-    )
+    format!("CREATE TABLE \"{}\" ({})", schema.table, cols.join(", "))
 }
 
 /// Render a ViewQuery as SQL against `db`.
@@ -107,9 +144,14 @@ pub fn view_query_to_sql(query: &ViewQuery, db: &Database) -> String {
     }
     for agg in &query.aggs {
         select.push(match (agg.func, agg.column) {
-            (AggFn::Count, _) => "COUNT(*)".to_string(),
+            (AggFn::Count, None) => "COUNT(*)".to_string(),
+            (AggFn::Count, Some(i)) => format!("COUNT({})", name(i)),
             (AggFn::Sum, Some(i)) => format!("SUM({})", name(i)),
-            (AggFn::Sum, None) => panic!("SUM must name a column"),
+            (AggFn::Total, Some(i)) => format!("TOTAL({})", name(i)),
+            (AggFn::Avg, Some(i)) => format!("AVG({})", name(i)),
+            (AggFn::Min, Some(i)) => format!("MIN({})", name(i)),
+            (AggFn::Max, Some(i)) => format!("MAX({})", name(i)),
+            (func, None) => panic!("{func:?} must name a column"),
         });
     }
 
@@ -179,14 +221,17 @@ mod tests {
     }
 
     #[test]
-    fn create_table_sql_is_strict() {
-        let sql = create_table_sql(&orders());
-        assert!(
-            sql.contains("STRICT"),
-            "spec §7.1 requires a STRICT table: {sql}"
+    fn create_table_sql_declares_each_affinity_without_strict() {
+        let sql = create_table_sql(&crate::gen_real_numeric_database().tables()[0]);
+        assert_eq!(
+            sql,
+            "CREATE TABLE \"t0\" (\"r\" REAL, \"n\" NUMERIC, \"k\" TEXT)"
         );
-        assert!(sql.contains("\"region\" TEXT"));
-        assert!(sql.contains("\"amount\" INTEGER NOT NULL"));
+        assert_eq!(
+            create_table_sql(&crate::gen_database(1).tables()[0]),
+            "CREATE TABLE \"t0\" (\"k\" TEXT, \"v\" INTEGER, \"x\")"
+        );
+        assert!(create_table_sql(&orders()).contains("\"amount\" INTEGER NOT NULL"));
     }
 
     #[test]
@@ -210,6 +255,31 @@ mod tests {
             view_query_to_sql(&q, &Database::single(orders())),
             "SELECT \"orders\".\"region\", SUM(\"orders\".\"amount\"), COUNT(*) FROM \"orders\" GROUP BY \"orders\".\"region\""
         );
+    }
+
+    #[test]
+    fn every_aggregate_renders_with_its_column() {
+        let db = Database::single(orders());
+        let q = |func: AggFn, column: Option<usize>| ViewQuery {
+            group_by: vec![0],
+            aggs: vec![Agg { func, column }],
+            predicate: Predicate::None,
+            join: None,
+        };
+        for (func, column, want) in [
+            (AggFn::Count, None, "COUNT(*)"),
+            (AggFn::Count, Some(1), "COUNT(\"orders\".\"amount\")"),
+            (AggFn::Sum, Some(1), "SUM(\"orders\".\"amount\")"),
+            (AggFn::Total, Some(1), "TOTAL(\"orders\".\"amount\")"),
+            (AggFn::Avg, Some(1), "AVG(\"orders\".\"amount\")"),
+            (AggFn::Min, Some(1), "MIN(\"orders\".\"amount\")"),
+            (AggFn::Max, Some(1), "MAX(\"orders\".\"amount\")"),
+        ] {
+            assert!(
+                view_query_to_sql(&q(func, column), &db).contains(want),
+                "{func:?}"
+            );
+        }
     }
 
     #[test]
@@ -334,5 +404,28 @@ mod tests {
             sql.ends_with("GROUP BY \"t0\".\"k\", \"t1\".\"k\""),
             "the GROUP BY clause names the column, not the alias: {sql}"
         );
+    }
+
+    /// Literals are built as `Value`s directly and rendered here; no test
+    /// relies on how SQLite constant-folds a literal such as `-0.0`.
+    #[test]
+    fn real_and_blob_literals_render_and_read_back_exactly() {
+        assert_eq!(sql_literal(&Value::Real(1.0)), "1.0");
+        assert_eq!(sql_literal(&Value::Real(0.1)), "0.1");
+        assert_eq!(sql_literal(&Value::Real(1e300)), "1e300");
+        assert_eq!(sql_literal(&Value::Real(f64::INFINITY)), "1e999");
+        assert_eq!(sql_literal(&Value::Real(f64::NEG_INFINITY)), "-1e999");
+        assert_eq!(sql_literal(&Value::Blob(vec![0x0a, 0xff])), "X'0AFF'");
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        for x in [1.0, 0.1, -2.5, 1e300, 5e-324, f64::MAX, f64::INFINITY] {
+            let back: f64 = conn
+                .query_row(
+                    &format!("SELECT {}", sql_literal(&Value::Real(x))),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(back.to_bits(), x.to_bits(), "{x:?}");
+        }
     }
 }

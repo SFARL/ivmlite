@@ -10,3 +10,6 @@ repository.workspace = true
 ivmlite-test = { path = "../ivmlite-test" }
 ivmlite-workload = { path = "../ivmlite-workload" }
 rusqlite = { workspace = true, features = ["load_extension"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+sha2 = "0.10"

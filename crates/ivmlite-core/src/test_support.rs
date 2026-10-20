@@ -126,3 +126,22 @@ pub(crate) fn join_on_k() -> ViewQuery {
         }),
     }
 }
+
+/// A deterministic random source for property tests (Steele, Lea and Flood's
+/// SplitMix64). Hand-written: `rand` is not a dependency of ivmlite-core.
+pub(crate) struct SplitMix64(pub u64);
+
+impl SplitMix64 {
+    pub(crate) fn next_u64(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    }
+
+    /// Uniform in `0..n`, `n > 0` (the modulo bias is irrelevant here).
+    pub(crate) fn below(&mut self, n: u64) -> u64 {
+        self.next_u64() % n
+    }
+}

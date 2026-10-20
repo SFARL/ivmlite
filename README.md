@@ -5,12 +5,12 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 ivmlite is an experimental SQLite loadable extension that incrementally
-maintains grouped `COUNT(*)` and integer `SUM` queries. It supports a fixed
+maintains grouped `COUNT`, `SUM`, `TOTAL`, `AVG`, `MIN` and `MAX` queries. It supports a fixed
 filter and one two-table inner equi-join, captures ordinary SQL writes with
 triggers, and updates a materialized result when the application explicitly
 refreshes it.
 
-**Current status: `v0.1.0-alpha.5` technical preview.** Use it to test real
+**Current status: `v0.1.0-alpha.6` technical preview, in release preparation.** Use it to test real
 workloads and help shape the SQL subset. The on-disk format and supported SQL
 may change before a stable release.
 
@@ -29,8 +29,8 @@ usually a better fit.
 
 ## Quick start
 
-Download the archive for your platform from the
-[v0.1.0-alpha.5 release](https://github.com/SFARL/ivmlite/releases/tag/v0.1.0-alpha.5),
+Once published, download the archive for your platform from the
+[v0.1.0-alpha.6 release](https://github.com/SFARL/ivmlite/releases/tag/v0.1.0-alpha.6),
 extract it, and start a SQLite CLI that supports loadable extensions.
 
 On macOS, the system SQLite omits extension loading. Install SQLite with
@@ -60,7 +60,7 @@ CREATE TABLE orders(
   id INTEGER PRIMARY KEY,
   region TEXT NOT NULL,
   amount INTEGER NOT NULL
-) STRICT;
+);
 
 INSERT INTO orders VALUES
   (1, 'north', 10),
@@ -109,19 +109,59 @@ The library is written to:
 
 ## Supported view SQL
 
-A maintained view must currently have:
+Base tables may be STRICT or non-STRICT with any declared type. SQLite affinity
+rules determine stored values; NULL, INTEGER, REAL, TEXT and BLOB are captured,
+persisted and returned without changing their storage class. STRICT `ANY` is
+accepted. BINARY collation is required; the conservative `COLLATE` check can
+also refuse an explicitly declared BINARY collation.
+
+A maintained view must have:
 
 - a non-empty `GROUP BY` over bare columns;
-- `COUNT(*)`, integer `SUM(column)`, or both;
+- bare group-by columns in its SELECT list, followed by one or more of
+  `COUNT(*)`, `COUNT(column)`, `SUM(column)`, `TOTAL(column)`, `AVG(column)`,
+  `MIN(column)` and `MAX(column)`;
 - optionally one comparison or `IS NULL` / `IS NOT NULL` predicate;
-- optionally one two-table inner equi-join on same-typed columns;
-- `STRICT` base tables containing only `INTEGER`, `TEXT`, and `NULL`, with
-  binary collation.
+- optionally one two-table inner equi-join on columns with the same affinity.
+  Numerically equal INTEGER and REAL join keys match, so `1` matches `1.0`;
+  NULL keys match nothing.
 
-Notable unsupported features include global aggregates, `COUNT(column)`,
-`MIN`, `MAX`, `AVG`, expressions in grouping or aggregates, `AND`/`OR`,
-subqueries, CTEs, outer/self/multi-table joins, `DISTINCT`, `HAVING`,
-`ORDER BY`, and `LIMIT`.
+Comparison literals may be integers, reals, quoted strings or blobs (`X'…'`).
+They are converted by the column's comparison affinity. A REAL literal against
+a TEXT-affinity column is refused because SQLite's REAL-to-TEXT rendering
+varies between versions; use a quoted string instead.
+
+Notable unsupported features include global aggregates and views without
+aggregates, expressions in SELECT / GROUP BY / aggregates, `AND`/`OR`,
+subqueries, CTEs, outer/self/multi-table joins, `DISTINCT` aggregates,
+`group_concat`, `HAVING`, `ORDER BY` and `LIMIT`. The supported SQLite behavior
+is 3.45 and later; tests use bundled SQLite 3.53.2.
+
+### Differences from SQLite
+
+REAL `SUM`, `TOTAL` and `AVG` return the exact result rounded once. They can
+differ from SQLite in the last bits: SQLite sums in scan order with
+Kahan–Babuška–Neumaier and divides after rounding the sum. For example, AVG of
+0.1, 0.2 and 0.3 is `0.2` here and `0.19999999999999998` in SQLite.
+Finite inputs can also overflow SQLite's intermediate REAL accumulator to
+infinity (or produce NULL after intermediate infinity cancellation) while
+ivmlite's exact final result is finite. Named finite-input tests observe
+infinity on SQLite 3.53.2; NULL compatibility is covered separately by synthetic
+comparator tests. A sum with actual `+Inf` and `-Inf` inputs returns NULL, as
+SQLite does.
+
+Integer `SUM` fails refresh with `integer overflow in SUM` only when the final
+exact sum is outside the signed 64-bit range. SQLite can fail when a scan
+prefix overflows even if the final sum fits. For numerically equal INTEGER and
+REAL values, MIN returns the INTEGER and MAX the REAL; SQLite's choice depends
+on scan order.
+
+### Format 6 upgrade
+
+**alpha.6 cannot read alpha.5's format-5 maintained state.** Old views open as
+broken views so they can be dropped. Drop every old ivmlite view, then recreate
+it from its SELECT query to build format-6 state. There is no automatic
+migration; the base tables remain the source of truth.
 
 Refresh is intentionally explicit:
 

@@ -1,0 +1,2475 @@
+{
+  "meta": {
+    "corpus": "Nexmark Flink SQL variant, queries q0-q23",
+    "revision": "6b3646c3baec701f1fa74baf938d235f742e5d3c",
+    "ivmlite_version": "v0.1.0-alpha.5 (v0 subset, taxonomy.md)",
+    "notes": [
+      "F15 appears in item lists as plain 'F15'; its subtype is in f15_detail. In aggregates the subtypes are split as F15:dedup, F15:ordered, F15:flink-fn.",
+      "minimal_unlock excludes soft F15 (flink-fn) because a SQLite built-in expression is a faithful rewrite; strictly blocking are F12 and F15:ordered.",
+      "adapted_unlock null means no faithful rewrite was found; [] means the adapted form runs on v0 with no new feature code.",
+      "adapted_cost: bag = preflight bag rewrite only; stored-columns = app-maintained columns added; heavy = app-maintained expansion table."
+    ]
+  },
+  "summary": {
+    "query_count": 24,
+    "fit_counts_as_written": {
+      "fits_now": 0,
+      "fits_with": 17,
+      "out_of_scope": 7,
+      "not_ivm_shaped": 0
+    },
+    "adapted_runnable_on_v0_zero_codes": [
+      "Q0",
+      "Q1",
+      "Q2",
+      "Q3",
+      "Q8",
+      "Q10",
+      "Q12",
+      "Q13",
+      "Q14",
+      "Q20",
+      "Q21",
+      "Q22"
+    ],
+    "adapted_none_available": [
+      "Q4",
+      "Q6",
+      "Q9",
+      "Q11",
+      "Q18",
+      "Q19"
+    ],
+    "never_fit_F12_or_blocking_F15": [
+      "Q5",
+      "Q6",
+      "Q7",
+      "Q8",
+      "Q11",
+      "Q12",
+      "Q13"
+    ]
+  },
+  "items": [
+    {
+      "id": "Q0",
+      "source": "https://github.com/nexmark/nexmark/blob/6b3646c3baec701f1fa74baf938d235f742e5d3c/nexmark-flink/src/main/resources/queries/q0.sql",
+      "source_file": "nexmark-flink/src/main/resources/queries/q0.sql",
+      "pinned_revision": "6b3646c3",
+      "query": "INSERT INTO nexmark_q0\nSELECT auction, bidder, price, `dateTime`, extra FROM bid;",
+      "schema": {
+        "tables": [
+          "bid(auction INTEGER, bidder INTEGER, price INTEGER, channel TEXT, url TEXT, dateTime INTEGER, extra TEXT) STRICT"
+        ],
+        "note": "Preflight STRICT mapping (docs/bench/m2b-preflight): BIGINT->INTEGER, VARCHAR->TEXT, TIMESTAMP(3)->INTEGER (epoch unit unspecified by preflight). Flink source is one datagen table with ROW<> columns and WATERMARK dateTime - 4s, exposed through views person/auction/bid filtered by event_type (ddl_gen.sql, ddl_views.sql)."
+      },
+      "flink_specific_constructs": [],
+      "core_logic_meaningful_in_sqlite_without_flink_constructs": true,
+      "features": [
+        "F1"
+      ],
+      "f15_detail": [],
+      "minimal_unlock": [
+        "F1"
+      ],
+      "adapted_unlock": [],
+      "adapted_cost": "bag",
+      "adapted_rewrite": "Bag rewrite from the preflight (executed, q0_bag): SELECT all five columns plus COUNT(*) AS multiplicity ... GROUP BY all five columns. Expanding multiplicity reconstructs the bag; output shape and maintenance workload change.",
+      "adapted_executed_by_preflight": true,
+      "adapted_confidence": "high",
+      "fit": "fits_with",
+      "confidence": "high",
+      "confidence_reason": "Pure pass-through projection; preflight error is exactly the missing aggregate/GROUP BY.",
+      "notes": "NULL payload columns group together under GROUP BY, so the multiset is preserved (preflight checkpoints passed)."
+    },
+    {
+      "id": "Q1",
+      "source": "https://github.com/nexmark/nexmark/blob/6b3646c3baec701f1fa74baf938d235f742e5d3c/nexmark-flink/src/main/resources/queries/q1.sql",
+      "source_file": "nexmark-flink/src/main/resources/queries/q1.sql",
+      "pinned_revision": "6b3646c3",
+      "query": "INSERT INTO nexmark_q1\nSELECT\n    auction,\n    bidder,\n    0.908 * price as price, -- convert dollar to euro\n    `dateTime`,\n    extra\nFROM bid;",
+      "schema": {
+        "tables": [
+          "bid(auction INTEGER, bidder INTEGER, price INTEGER, channel TEXT, url TEXT, dateTime INTEGER, extra TEXT) STRICT"
+        ],
+        "note": "Preflight STRICT mapping (docs/bench/m2b-preflight): BIGINT->INTEGER, VARCHAR->TEXT, TIMESTAMP(3)->INTEGER (epoch unit unspecified by preflight). Flink source is one datagen table with ROW<> columns and WATERMARK dateTime - 4s, exposed through views person/auction/bid filtered by event_type (ddl_gen.sql, ddl_views.sql)."
+      },
+      "flink_specific_constructs": [
+        "DECIMAL(23,3) result type"
+      ],
+      "core_logic_meaningful_in_sqlite_without_flink_constructs": true,
+      "features": [
+        "F1",
+        "F4b",
+        "F10b"
+      ],
+      "f15_detail": [],
+      "minimal_unlock": [
+        "F1",
+        "F4b",
+        "F10b"
+      ],
+      "adapted_unlock": [],
+      "adapted_cost": "stored-columns",
+      "adapted_rewrite": "Bag rewrite (GROUP BY all projected columns + COUNT(*)) and the expression 0.908*price replaced by an app-maintained INTEGER column price_eur_milli = price*908 (exactly the DECIMAL(23,3) value scaled by 1000). Alternative without a stored column: bag rewrite + F5 (price*908 as a GROUP BY expression).",
+      "adapted_executed_by_preflight": false,
+      "adapted_confidence": "high",
+      "fit": "fits_with",
+      "confidence": "high",
+      "confidence_reason": "One arithmetic projection over a single table; the preflight rejected `0.908 * price`.",
+      "notes": "In SQLite 0.908*price is REAL (hence F10b/float); the scaled-integer column is exact because 0.908 has three decimals."
+    },
+    {
+      "id": "Q2",
+      "source": "https://github.com/nexmark/nexmark/blob/6b3646c3baec701f1fa74baf938d235f742e5d3c/nexmark-flink/src/main/resources/queries/q2.sql",
+      "source_file": "nexmark-flink/src/main/resources/queries/q2.sql",
+      "pinned_revision": "6b3646c3",
+      "query": "INSERT INTO nexmark_q2\nSELECT auction, price FROM bid WHERE MOD(auction, 123) = 0;",
+      "schema": {
+        "tables": [
+          "bid(auction INTEGER, bidder INTEGER, price INTEGER, channel TEXT, url TEXT, dateTime INTEGER, extra TEXT) STRICT"
+        ],
+        "note": "Preflight STRICT mapping (docs/bench/m2b-preflight): BIGINT->INTEGER, VARCHAR->TEXT, TIMESTAMP(3)->INTEGER (epoch unit unspecified by preflight). Flink source is one datagen table with ROW<> columns and WATERMARK dateTime - 4s, exposed through views person/auction/bid filtered by event_type (ddl_gen.sql, ddl_views.sql)."
+      },
+      "flink_specific_constructs": [],
+      "core_logic_meaningful_in_sqlite_without_flink_constructs": true,
+      "features": [
+        "F1",
+        "F6"
+      ],
+      "f15_detail": [],
+      "minimal_unlock": [
+        "F1",
+        "F6"
+      ],
+      "adapted_unlock": [],
+      "adapted_cost": "stored-columns",
+      "adapted_rewrite": "Bag rewrite on (auction, price) + COUNT(*), with the predicate MOD(auction,123)=0 turned into an app-maintained INTEGER column auction_mod123 and `WHERE auction_mod123 = 0` (one col-op-literal predicate).",
+      "adapted_executed_by_preflight": false,
+      "adapted_confidence": "high",
+      "fit": "fits_with",
+      "confidence": "high",
+      "confidence_reason": "Single-table filter with a scalar function in the predicate; no Flink-only construct.",
+      "notes": "SQLite `%` truncates toward zero like Flink MOD; keys here are non-negative anyway. Preflight reported the first error as the aggregate-less root, the function-in-WHERE comes second."
+    },
+    {
+      "id": "Q3",
+      "source": "https://github.com/nexmark/nexmark/blob/6b3646c3baec701f1fa74baf938d235f742e5d3c/nexmark-flink/src/main/resources/queries/q3.sql",
+      "source_file": "nexmark-flink/src/main/resources/queries/q3.sql",
+      "pinned_revision": "6b3646c3",
+      "query": "INSERT INTO nexmark_q3\nSELECT\n    P.name, P.city, P.state, A.id\nFROM\n    auction AS A INNER JOIN person AS P on A.seller = P.id\nWHERE\n    A.category = 10 and (P.state = 'OR' OR P.state = 'ID' OR P.state = 'CA');",
+      "schema": {
+        "tables": [
+          "auction(id INTEGER, itemName TEXT, description TEXT, initialBid INTEGER, reserve INTEGER, dateTime INTEGER, expires INTEGER, seller INTEGER, category INTEGER, extra TEXT) STRICT",
+          "person(id INTEGER, name TEXT, emailAddress TEXT, creditCard TEXT, city TEXT, state TEXT, dateTime INTEGER, extra TEXT) STRICT"
+        ],
+        "note": "Preflight STRICT mapping (docs/bench/m2b-preflight): BIGINT->INTEGER, VARCHAR->TEXT, TIMESTAMP(3)->INTEGER (epoch unit unspecified by preflight). Flink source is one datagen table with ROW<> columns and WATERMARK dateTime - 4s, exposed through views person/auction/bid filtered by event_type (ddl_gen.sql, ddl_views.sql)."
+      },
+      "flink_specific_constructs": [],
+      "core_logic_meaningful_in_sqlite_without_flink_constructs": true,
+      "features": [
+        "F1",
+        "F6"
+      ],
+      "f15_detail": [],
+      "minimal_unlock": [
+        "F1",
+        "F6"
+      ],
+      "adapted_unlock": [],
+      "adapted_cost": "stored-columns",
+      "adapted_rewrite": "Bag rewrite on (name, city, state, A.id) + COUNT(*). The two filters are folded into nullable app-maintained join keys, which exploits the rule that a NULL join key matches nothing (spec 7.x, measured): auction.seller_if_cat10 = CASE WHEN category=10 THEN seller END and person.id_if_state_ok = CASE WHEN state IN ('OR','ID','CA') THEN id END; join ON seller_if_cat10 = id_if_state_ok with no WHERE.",
+      "adapted_executed_by_preflight": false,
+      "adapted_confidence": "low",
+      "adapted_confidence_reason": "Correct by the NULL-key rule but untested here; the stored keys move the whole filter into the application and change the join-key columns.",
+      "fit": "fits_with",
+      "confidence": "high",
+      "confidence_reason": "Join plus AND/OR predicates on two tables; nothing Flink-specific.",
+      "notes": "v0 allows one WHERE predicate, so the AND of a category test and a three-way OR over state is F6."
+    },
+    {
+      "id": "Q4",
+      "source": "https://github.com/nexmark/nexmark/blob/6b3646c3baec701f1fa74baf938d235f742e5d3c/nexmark-flink/src/main/resources/queries/q4.sql",
+      "source_file": "nexmark-flink/src/main/resources/queries/q4.sql",
+      "pinned_revision": "6b3646c3",
+      "query": "INSERT INTO nexmark_q4\nSELECT\n    Q.category,\n    AVG(Q.final)\nFROM (\n    SELECT MAX(B.price) AS final, A.category\n    FROM auction A, bid B\n    WHERE A.id = B.auction AND B.`dateTime` BETWEEN A.`dateTime` AND A.expires\n    GROUP BY A.id, A.category\n) Q\nGROUP BY Q.category;",
+      "schema": {
+        "tables": [
+          "auction(id INTEGER, itemName TEXT, description TEXT, initialBid INTEGER, reserve INTEGER, dateTime INTEGER, expires INTEGER, seller INTEGER, category INTEGER, extra TEXT) STRICT",
+          "bid(auction INTEGER, bidder INTEGER, price INTEGER, channel TEXT, url TEXT, dateTime INTEGER, extra TEXT) STRICT"
+        ],
+        "note": "Preflight STRICT mapping (docs/bench/m2b-preflight): BIGINT->INTEGER, VARCHAR->TEXT, TIMESTAMP(3)->INTEGER (epoch unit unspecified by preflight). Flink source is one datagen table with ROW<> columns and WATERMARK dateTime - 4s, exposed through views person/auction/bid filtered by event_type (ddl_gen.sql, ddl_views.sql)."
+      },
+      "flink_specific_constructs": [],
+      "core_logic_meaningful_in_sqlite_without_flink_constructs": true,
+      "features": [
+        "F8",
+        "F3c",
+        "F3b",
+        "F6",
+        "F7c"
+      ],
+      "f15_detail": [],
+      "minimal_unlock": [
+        "F8",
+        "F3c",
+        "F3b",
+        "F6",
+        "F7c"
+      ],
+      "adapted_unlock": null,
+      "adapted_cost": null,
+      "adapted_rewrite": "No light rewrite found: the inner MAX per auction must feed an outer AVG per category. Splitting into two chained views (inner view GROUP BY A.id, A.category with MAX; outer GROUP BY category with SUM and COUNT) still needs F8 in the form of view-over-view, which v0 does not demonstrate.",
+      "adapted_executed_by_preflight": false,
+      "adapted_confidence": "low",
+      "fit": "fits_with",
+      "confidence": "high",
+      "confidence_reason": "Pure relational nested aggregation; the BETWEEN is on data columns, not a window.",
+      "notes": "The join has an equi pair (A.id=B.auction) plus a range condition on two other columns (F7c non-equi, F6 BETWEEN with column bounds). MAX needs delete-aware state (F3c). SQLite AVG returns REAL whereas Flink returns BIGINT, so the output differs unless truncated (F4b)."
+    },
+    {
+      "id": "Q5",
+      "source": "https://github.com/nexmark/nexmark/blob/6b3646c3baec701f1fa74baf938d235f742e5d3c/nexmark-flink/src/main/resources/queries/q5.sql",
+      "source_file": "nexmark-flink/src/main/resources/queries/q5.sql",
+      "pinned_revision": "6b3646c3",
+      "query": "INSERT INTO nexmark_q5\nSELECT AuctionBids.auction, AuctionBids.num\n FROM (\n   SELECT\n     auction,\n     count(*) AS num,\n     window_start AS starttime,\n     window_end AS endtime\n     FROM TABLE(\n             HOP(TABLE bid, DESCRIPTOR(`dateTime`), INTERVAL '2' SECOND, INTERVAL '10' SECOND))\n     GROUP BY auction, window_start, window_end\n ) AS AuctionBids\n JOIN (\n   SELECT\n     max(CountBids.num) AS maxn,\n     CountBids.starttime,\n     CountBids.endtime\n   FROM (\n     SELECT\n       count(*) AS num,\n       window_start AS starttime,\n       window_end AS endtime\n     FROM TABLE(\n                HOP(TABLE bid, DESCRIPTOR(`dateTime`), INTERVAL '2' SECOND, INTERVAL '10' SECOND))\n     GROUP BY auction, window_start, window_end\n     ) AS CountBids\n   GROUP BY CountBids.starttime, CountBids.endtime\n ) AS MaxBids\n ON AuctionBids.starttime = MaxBids.starttime AND\n    AuctionBids.endtime = MaxBids.endtime AND\n    AuctionBids.num >= MaxBids.maxn;",
+      "schema": {
+        "tables": [
+          "bid(auction INTEGER, bidder INTEGER, price INTEGER, channel TEXT, url TEXT, dateTime INTEGER, extra TEXT) STRICT"
+        ],
+        "note": "Preflight STRICT mapping (docs/bench/m2b-preflight): BIGINT->INTEGER, VARCHAR->TEXT, TIMESTAMP(3)->INTEGER (epoch unit unspecified by preflight). Flink source is one datagen table with ROW<> columns and WATERMARK dateTime - 4s, exposed through views person/auction/bid filtered by event_type (ddl_gen.sql, ddl_views.sql)."
+      },
+      "flink_specific_constructs": [
+        "HOP(TABLE bid, DESCRIPTOR(dateTime), 2s, 10s) table function",
+        "window_start/window_end",
+        "watermark-driven window close"
+      ],
+      "core_logic_meaningful_in_sqlite_without_flink_constructs": true,
+      "features": [
+        "F12",
+        "F1",
+        "F8",
+        "F3c",
+        "F7c",
+        "F6"
+      ],
+      "f15_detail": [],
+      "minimal_unlock": [
+        "F1",
+        "F12",
+        "F8",
+        "F3c",
+        "F7c",
+        "F6"
+      ],
+      "adapted_unlock": [
+        "F8",
+        "F3c",
+        "F7c",
+        "F6"
+      ],
+      "adapted_cost": "heavy",
+      "adapted_rewrite": "Replace HOP with an app-maintained window-membership table bid_win(auction, win_start, win_end) holding 5 rows per bid (10s window, 2s slide); bag rewrite at the root. The two window/group derived tables, the MAX, the (start,end) two-column join key and the num >= maxn non-equi condition remain.",
+      "adapted_executed_by_preflight": false,
+      "adapted_confidence": "low",
+      "fit": "out_of_scope",
+      "confidence": "high",
+      "confidence_reason": "HOP table function is F12 by definition; the relational residue is a nested aggregate with a multi-column non-equi join.",
+      "notes": "Core logic (per-window hottest auctions) is meaningful in SQLite given a membership table, but the answer then holds every window ever seen, not the window-close emissions of Flink. Fan-out of 5 changes the maintenance workload."
+    },
+    {
+      "id": "Q6",
+      "source": "https://github.com/nexmark/nexmark/blob/6b3646c3baec701f1fa74baf938d235f742e5d3c/nexmark-flink/src/main/resources/queries/q6.sql",
+      "source_file": "nexmark-flink/src/main/resources/queries/q6.sql",
+      "pinned_revision": "6b3646c3",
+      "query": "INSERT INTO nexmark_q6\nSELECT\n    Q.seller,\n    AVG(Q.price) OVER\n        (PARTITION BY Q.seller ORDER BY Q.`dateTime` ROWS BETWEEN 10 PRECEDING AND CURRENT ROW)\nFROM (\n    SELECT *, ROW_NUMBER() OVER (PARTITION BY A.id, A.seller ORDER BY B.price DESC) AS rownum\n    FROM (SELECT A.id, A.seller, B.price, B.`dateTime`\n        FROM auction AS A,\n            bid AS B\n        WHERE A.id = B.auction\n            and B.`dateTime` between A.`dateTime` and A.expires)\n    WHERE rownum <= 1\n) AS Q;",
+      "schema": {
+        "tables": [
+          "auction(id INTEGER, itemName TEXT, description TEXT, initialBid INTEGER, reserve INTEGER, dateTime INTEGER, expires INTEGER, seller INTEGER, category INTEGER, extra TEXT) STRICT",
+          "bid(auction INTEGER, bidder INTEGER, price INTEGER, channel TEXT, url TEXT, dateTime INTEGER, extra TEXT) STRICT"
+        ],
+        "note": "Preflight STRICT mapping (docs/bench/m2b-preflight): BIGINT->INTEGER, VARCHAR->TEXT, TIMESTAMP(3)->INTEGER (epoch unit unspecified by preflight). Flink source is one datagen table with ROW<> columns and WATERMARK dateTime - 4s, exposed through views person/auction/bid filtered by event_type (ddl_gen.sql, ddl_views.sql)."
+      },
+      "flink_specific_constructs": [
+        "Query text is not valid Flink SQL as written (window alias rownum filtered at its own query level, B.price referenced outside its subquery); upstream marks it unsupported"
+      ],
+      "core_logic_meaningful_in_sqlite_without_flink_constructs": true,
+      "features": [
+        "F9",
+        "F8",
+        "F3b",
+        "F6",
+        "F7c",
+        "F15"
+      ],
+      "f15_detail": [
+        {
+          "name": "ordered",
+          "detail": "ordered rolling frame AVG(...) OVER (PARTITION BY seller ORDER BY dateTime ROWS BETWEEN 10 PRECEDING AND CURRENT ROW) over a retracting input; the file itself carries a TODO saying Flink SQL does not support it",
+          "blocking": true,
+          "in_minimal_unlock": true
+        }
+      ],
+      "minimal_unlock": [
+        "F9",
+        "F8",
+        "F3b",
+        "F6",
+        "F7c",
+        "F15"
+      ],
+      "adapted_unlock": null,
+      "adapted_cost": null,
+      "adapted_rewrite": "None. Even a corrected form needs winning-bid top-1 per auction (ROW_NUMBER, F9), then a per-seller rolling average over the last 10 closed auctions ordered by time, which is an ordered window frame.",
+      "adapted_executed_by_preflight": false,
+      "adapted_confidence": "low",
+      "fit": "out_of_scope",
+      "confidence": "low",
+      "confidence_reason": "The query is broken upstream, so the classification rests on the corrected intent (rolling frame with retractions), not on the text.",
+      "notes": "Could be reclassified fits_with (all F9) if ivmlite ever implements generic window functions with retraction; ordered-frame maintenance is the blocking part."
+    },
+    {
+      "id": "Q7",
+      "source": "https://github.com/nexmark/nexmark/blob/6b3646c3baec701f1fa74baf938d235f742e5d3c/nexmark-flink/src/main/resources/queries/q7.sql",
+      "source_file": "nexmark-flink/src/main/resources/queries/q7.sql",
+      "pinned_revision": "6b3646c3",
+      "query": "INSERT INTO nexmark_q7\nSELECT B.auction, B.price, B.bidder, B.`dateTime`, B.extra\nfrom bid B\nJOIN (\n  SELECT MAX(price) AS maxprice, window_end as `dateTime`\n  FROM TABLE(\n          TUMBLE(TABLE bid, DESCRIPTOR(`dateTime`), INTERVAL '10' SECOND))\n  GROUP BY window_start, window_end\n) B1\nON B.price = B1.maxprice\nWHERE B.`dateTime` BETWEEN B1.`dateTime`  - INTERVAL '10' SECOND AND B1.`dateTime`;",
+      "schema": {
+        "tables": [
+          "bid(auction INTEGER, bidder INTEGER, price INTEGER, channel TEXT, url TEXT, dateTime INTEGER, extra TEXT) STRICT"
+        ],
+        "note": "Preflight STRICT mapping (docs/bench/m2b-preflight): BIGINT->INTEGER, VARCHAR->TEXT, TIMESTAMP(3)->INTEGER (epoch unit unspecified by preflight). Flink source is one datagen table with ROW<> columns and WATERMARK dateTime - 4s, exposed through views person/auction/bid filtered by event_type (ddl_gen.sql, ddl_views.sql)."
+      },
+      "flink_specific_constructs": [
+        "TUMBLE(TABLE bid, DESCRIPTOR(dateTime), 10s) table function",
+        "window_start/window_end",
+        "watermark-driven window close"
+      ],
+      "core_logic_meaningful_in_sqlite_without_flink_constructs": true,
+      "features": [
+        "F1",
+        "F12",
+        "F8",
+        "F3c",
+        "F7c",
+        "F6"
+      ],
+      "f15_detail": [],
+      "minimal_unlock": [
+        "F1",
+        "F12",
+        "F8",
+        "F3c",
+        "F7c",
+        "F6"
+      ],
+      "adapted_unlock": [
+        "F8",
+        "F3c",
+        "F7c",
+        "F6"
+      ],
+      "adapted_cost": "stored-columns",
+      "adapted_rewrite": "Add an app-maintained INTEGER column win_end = (dateTime/10000+1)*10000 to bid (TUMBLE is [start,end), so floor division is exact); derived table B1 becomes SELECT MAX(price), win_end FROM bid GROUP BY win_end; keep the join `B.price = B1.maxprice AND B.dateTime BETWEEN B1.win_end-10000 AND B1.win_end` including its closed upper bound, so a bid exactly on a window boundary behaves as in the original; bag rewrite at the root.",
+      "adapted_executed_by_preflight": false,
+      "adapted_confidence": "low",
+      "fit": "out_of_scope",
+      "confidence": "high",
+      "confidence_reason": "TUMBLE is F12; the residue is a derived-table MAX joined back with an equality plus a range predicate.",
+      "notes": "'Highest bid per 10s bucket' is meaningful in SQLite with a stored bucket. Flink emits per closed window; the SQLite view holds all buckets."
+    },
+    {
+      "id": "Q8",
+      "source": "https://github.com/nexmark/nexmark/blob/6b3646c3baec701f1fa74baf938d235f742e5d3c/nexmark-flink/src/main/resources/queries/q8.sql",
+      "source_file": "nexmark-flink/src/main/resources/queries/q8.sql",
+      "pinned_revision": "6b3646c3",
+      "query": "INSERT INTO nexmark_q8\nSELECT P.id, P.name, P.starttime\nFROM (\n  SELECT id, name,\n        window_start AS starttime,\n        window_end AS endtime\n  FROM TABLE(\n            TUMBLE(TABLE person, DESCRIPTOR(`dateTime`), INTERVAL '10' SECOND))\n  GROUP BY id, name, window_start, window_end\n) P\nJOIN (\n  SELECT seller,\n        window_start AS starttime,\n        window_end AS endtime\n  FROM TABLE(\n        TUMBLE(TABLE auction, DESCRIPTOR(`dateTime`), INTERVAL '10' SECOND))\n  GROUP BY seller, window_start, window_end\n) A\nON P.id = A.seller AND P.starttime = A.starttime AND P.endtime = A.endtime;",
+      "schema": {
+        "tables": [
+          "person(id INTEGER, name TEXT, emailAddress TEXT, creditCard TEXT, city TEXT, state TEXT, dateTime INTEGER, extra TEXT) STRICT",
+          "auction(id INTEGER, itemName TEXT, description TEXT, initialBid INTEGER, reserve INTEGER, dateTime INTEGER, expires INTEGER, seller INTEGER, category INTEGER, extra TEXT) STRICT"
+        ],
+        "note": "Preflight STRICT mapping (docs/bench/m2b-preflight): BIGINT->INTEGER, VARCHAR->TEXT, TIMESTAMP(3)->INTEGER (epoch unit unspecified by preflight). Flink source is one datagen table with ROW<> columns and WATERMARK dateTime - 4s, exposed through views person/auction/bid filtered by event_type (ddl_gen.sql, ddl_views.sql)."
+      },
+      "flink_specific_constructs": [
+        "TUMBLE over person and over auction",
+        "window_start/window_end",
+        "watermark-driven window close"
+      ],
+      "core_logic_meaningful_in_sqlite_without_flink_constructs": true,
+      "features": [
+        "F12",
+        "F1",
+        "F8",
+        "F7c",
+        "F15"
+      ],
+      "f15_detail": [
+        {
+          "name": "dedup",
+          "detail": "GROUP BY with no aggregate on both derived tables (set/DISTINCT semantics)",
+          "blocking": false,
+          "in_minimal_unlock": true
+        }
+      ],
+      "minimal_unlock": [
+        "F1",
+        "F12",
+        "F8",
+        "F7c",
+        "F15"
+      ],
+      "adapted_unlock": [],
+      "adapted_cost": "stored-columns",
+      "adapted_rewrite": "Add win_start INTEGER = (dateTime/10000)*10000 to person and auction, plus a composite TEXT join key on each side (person.pk = id||':'||win_start, auction.sk = seller||':'||win_start) so the join is a single same-typed pair. Collapse both derived tables into the join and use the bag rewrite GROUP BY P.id, P.name, P.win_start + COUNT(*). Presence of a group equals presence of the original row; multiplicity becomes the number of auctions by that seller in the window instead of 1.",
+      "adapted_executed_by_preflight": false,
+      "adapted_confidence": "low",
+      "adapted_confidence_reason": "Set semantics are lost; it is faithful only after collapsing multiplicity to presence, and it assumes person (id,name,window) is already unique.",
+      "fit": "out_of_scope",
+      "confidence": "high",
+      "confidence_reason": "Two TUMBLE windows are F12; the join also needs a two-column key.",
+      "notes": "'People who both joined and opened an auction in the same 10s bucket' is meaningful in SQLite with stored buckets."
+    },
+    {
+      "id": "Q9",
+      "source": "https://github.com/nexmark/nexmark/blob/6b3646c3baec701f1fa74baf938d235f742e5d3c/nexmark-flink/src/main/resources/queries/q9.sql",
+      "source_file": "nexmark-flink/src/main/resources/queries/q9.sql",
+      "pinned_revision": "6b3646c3",
+      "query": "INSERT INTO nexmark_q9\nSELECT\n    id, itemName, description, initialBid, reserve, `dateTime`, expires, seller, category, extra,\n    auction, bidder, price, bid_dateTime, bid_extra\nFROM (\n   SELECT A.*, B.auction, B.bidder, B.price, B.`dateTime` AS bid_dateTime, B.extra AS bid_extra,\n     ROW_NUMBER() OVER (PARTITION BY A.id ORDER BY B.price DESC, B.`dateTime` ASC) AS rownum\n   FROM auction A, bid B\n   WHERE A.id = B.auction AND B.`dateTime` BETWEEN A.`dateTime` AND A.expires\n)\nWHERE rownum <= 1;",
+      "schema": {
+        "tables": [
+          "auction(id INTEGER, itemName TEXT, description TEXT, initialBid INTEGER, reserve INTEGER, dateTime INTEGER, expires INTEGER, seller INTEGER, category INTEGER, extra TEXT) STRICT",
+          "bid(auction INTEGER, bidder INTEGER, price INTEGER, channel TEXT, url TEXT, dateTime INTEGER, extra TEXT) STRICT"
+        ],
+        "note": "Preflight STRICT mapping (docs/bench/m2b-preflight): BIGINT->INTEGER, VARCHAR->TEXT, TIMESTAMP(3)->INTEGER (epoch unit unspecified by preflight). Flink source is one datagen table with ROW<> columns and WATERMARK dateTime - 4s, exposed through views person/auction/bid filtered by event_type (ddl_gen.sql, ddl_views.sql)."
+      },
+      "flink_specific_constructs": [],
+      "core_logic_meaningful_in_sqlite_without_flink_constructs": true,
+      "features": [
+        "F9",
+        "F8",
+        "F6",
+        "F7c"
+      ],
+      "f15_detail": [],
+      "minimal_unlock": [
+        "F9",
+        "F8",
+        "F6",
+        "F7c"
+      ],
+      "adapted_unlock": null,
+      "adapted_cost": null,
+      "adapted_rewrite": "None found; winning bid per auction needs a top-1 by (price DESC, dateTime ASC), which has no GROUP BY/SUM form in v0.",
+      "adapted_executed_by_preflight": false,
+      "adapted_confidence": "low",
+      "fit": "fits_with",
+      "confidence": "high",
+      "confidence_reason": "Standard top-1-per-group over a range join; no Flink-only construct (BETWEEN is on data columns).",
+      "notes": "Output is the full auction and bid row, so any maintained form is a bag/ranked result. Ties on (price, dateTime) are resolved arbitrarily."
+    },
+    {
+      "id": "Q10",
+      "source": "https://github.com/nexmark/nexmark/blob/6b3646c3baec701f1fa74baf938d235f742e5d3c/nexmark-flink/src/main/resources/queries/q10.sql",
+      "source_file": "nexmark-flink/src/main/resources/queries/q10.sql",
+      "pinned_revision": "6b3646c3",
+      "query": "INSERT INTO nexmark_q10\nSELECT auction, bidder, price, `dateTime`, extra, DATE_FORMAT(`dateTime`, 'yyyy-MM-dd'), DATE_FORMAT(`dateTime`, 'HH:mm')\nFROM bid;",
+      "schema": {
+        "tables": [
+          "bid(auction INTEGER, bidder INTEGER, price INTEGER, channel TEXT, url TEXT, dateTime INTEGER, extra TEXT) STRICT"
+        ],
+        "note": "Preflight STRICT mapping (docs/bench/m2b-preflight): BIGINT->INTEGER, VARCHAR->TEXT, TIMESTAMP(3)->INTEGER (epoch unit unspecified by preflight). Flink source is one datagen table with ROW<> columns and WATERMARK dateTime - 4s, exposed through views person/auction/bid filtered by event_type (ddl_gen.sql, ddl_views.sql)."
+      },
+      "flink_specific_constructs": [
+        "Filesystem sink partitioned by (dt, hm) with partition-commit policy (sink side only, not part of the SELECT)"
+      ],
+      "core_logic_meaningful_in_sqlite_without_flink_constructs": true,
+      "features": [
+        "F1",
+        "F4b"
+      ],
+      "f15_detail": [],
+      "minimal_unlock": [
+        "F1",
+        "F4b"
+      ],
+      "adapted_unlock": [],
+      "adapted_cost": "stored-columns",
+      "adapted_rewrite": "Bag rewrite + app-maintained TEXT columns dt = strftime('%Y-%m-%d', dateTime/1000,'unixepoch') and hm = strftime('%H:%M', ...) (assumes epoch milliseconds, UTC).",
+      "adapted_executed_by_preflight": false,
+      "adapted_confidence": "high",
+      "fit": "fits_with",
+      "confidence": "high",
+      "confidence_reason": "The SELECT is a projection plus two date-format scalars; the file-system sink is outside the view.",
+      "notes": "DATE_FORMAT maps to strftime, so no new feature code beyond F4b. Timezone: Flink uses the session time zone."
+    },
+    {
+      "id": "Q11",
+      "source": "https://github.com/nexmark/nexmark/blob/6b3646c3baec701f1fa74baf938d235f742e5d3c/nexmark-flink/src/main/resources/queries/q11.sql",
+      "source_file": "nexmark-flink/src/main/resources/queries/q11.sql",
+      "pinned_revision": "6b3646c3",
+      "query": "INSERT INTO nexmark_q11\nSELECT\n    B.bidder,\n    count(*) as bid_count,\n    SESSION_START(B.`dateTime`, INTERVAL '10' SECOND) as starttime,\n    SESSION_END(B.`dateTime`, INTERVAL '10' SECOND) as endtime\nFROM bid B\nGROUP BY B.bidder, SESSION(B.`dateTime`, INTERVAL '10' SECOND);",
+      "schema": {
+        "tables": [
+          "bid(auction INTEGER, bidder INTEGER, price INTEGER, channel TEXT, url TEXT, dateTime INTEGER, extra TEXT) STRICT"
+        ],
+        "note": "Preflight STRICT mapping (docs/bench/m2b-preflight): BIGINT->INTEGER, VARCHAR->TEXT, TIMESTAMP(3)->INTEGER (epoch unit unspecified by preflight). Flink source is one datagen table with ROW<> columns and WATERMARK dateTime - 4s, exposed through views person/auction/bid filtered by event_type (ddl_gen.sql, ddl_views.sql)."
+      },
+      "flink_specific_constructs": [
+        "SESSION(dateTime, 10s) group window, SESSION_START, SESSION_END",
+        "watermark-driven window close"
+      ],
+      "core_logic_meaningful_in_sqlite_without_flink_constructs": false,
+      "features": [
+        "F12",
+        "F15"
+      ],
+      "f15_detail": [
+        {
+          "name": "ordered",
+          "detail": "gap-based session merging: an insert inside a gap can merge two sessions and a delete can split one, so the grouping itself is order/gap dependent",
+          "blocking": true,
+          "in_minimal_unlock": true
+        }
+      ],
+      "minimal_unlock": [
+        "F12",
+        "F15"
+      ],
+      "adapted_unlock": null,
+      "adapted_cost": null,
+      "adapted_rewrite": "None. Sessionisation in plain SQL needs LAG/window functions and a cumulative sum over each bidder's ordered bids; one new bid can renumber every later session.",
+      "adapted_executed_by_preflight": false,
+      "adapted_confidence": "high",
+      "fit": "out_of_scope",
+      "confidence": "high",
+      "confidence_reason": "Session windows are F12 and also a stateful ordered grouping that does not decompose into GROUP BY/SUM deltas.",
+      "notes": "Never fits."
+    },
+    {
+      "id": "Q12",
+      "source": "https://github.com/nexmark/nexmark/blob/6b3646c3baec701f1fa74baf938d235f742e5d3c/nexmark-flink/src/main/resources/queries/q12.sql",
+      "source_file": "nexmark-flink/src/main/resources/queries/q12.sql",
+      "pinned_revision": "6b3646c3",
+      "query": "CREATE VIEW B AS SELECT *, PROCTIME() as p_time FROM bid;\nINSERT INTO nexmark_q12\nSELECT\n    bidder,\n    count(*) as bid_count,\n    window_start AS starttime,\n    window_end AS endtime\nFROM TABLE(\n        TUMBLE(TABLE B, DESCRIPTOR(p_time), INTERVAL '10' SECOND))\nGROUP BY bidder, window_start, window_end;",
+      "schema": {
+        "tables": [
+          "bid(auction INTEGER, bidder INTEGER, price INTEGER, channel TEXT, url TEXT, dateTime INTEGER, extra TEXT) STRICT"
+        ],
+        "note": "Preflight STRICT mapping (docs/bench/m2b-preflight): BIGINT->INTEGER, VARCHAR->TEXT, TIMESTAMP(3)->INTEGER (epoch unit unspecified by preflight). Flink source is one datagen table with ROW<> columns and WATERMARK dateTime - 4s, exposed through views person/auction/bid filtered by event_type (ddl_gen.sql, ddl_views.sql)."
+      },
+      "flink_specific_constructs": [
+        "PROCTIME() processing-time attribute (wall clock at arrival)",
+        "TUMBLE(TABLE B, DESCRIPTOR(p_time), 10s) over a view",
+        "window_start/window_end"
+      ],
+      "core_logic_meaningful_in_sqlite_without_flink_constructs": false,
+      "features": [
+        "F12"
+      ],
+      "f15_detail": [],
+      "minimal_unlock": [
+        "F12"
+      ],
+      "adapted_unlock": [],
+      "adapted_cost": "stored-columns",
+      "adapted_rewrite": "Stamp each bid at insert time with INTEGER p_start (arrival time floored to 10s) and p_end = p_start+10000 (column DEFAULT or insert trigger), then GROUP BY bidder, p_start, p_end + COUNT(*).",
+      "adapted_executed_by_preflight": false,
+      "adapted_confidence": "low",
+      "adapted_confidence_reason": "Result depends on when rows were inserted, not on row contents, so it is reproducible only because the stamp is stored; it is a different (arrival-time) semantics and meaningless as a replayable benchmark.",
+      "fit": "out_of_scope",
+      "confidence": "high",
+      "confidence_reason": "Processing-time windows depend on the wall clock at arrival, which is F12 by the taxonomy.",
+      "notes": "Bucket counts per bidder per arrival bucket is runnable on v0 once the stamp column exists."
+    },
+    {
+      "id": "Q13",
+      "source": "https://github.com/nexmark/nexmark/blob/6b3646c3baec701f1fa74baf938d235f742e5d3c/nexmark-flink/src/main/resources/queries/q13.sql",
+      "source_file": "nexmark-flink/src/main/resources/queries/q13.sql",
+      "pinned_revision": "6b3646c3",
+      "query": "INSERT INTO nexmark_q13\nSELECT\n    B.auction,\n    B.bidder,\n    B.price,\n    B.`dateTime`,\n    S.`value`\nFROM (SELECT *, PROCTIME() as p_time FROM bid) B\nJOIN side_input FOR SYSTEM_TIME AS OF B.p_time AS S\nON mod(B.auction, 10000) = S.key;",
+      "schema": {
+        "tables": [
+          "bid(auction INTEGER, bidder INTEGER, price INTEGER, channel TEXT, url TEXT, dateTime INTEGER, extra TEXT) STRICT",
+          "side_input(key INTEGER, value TEXT) STRICT"
+        ],
+        "note": "Preflight STRICT mapping (docs/bench/m2b-preflight): BIGINT->INTEGER, VARCHAR->TEXT, TIMESTAMP(3)->INTEGER (epoch unit unspecified by preflight). Flink source is one datagen table with ROW<> columns and WATERMARK dateTime - 4s, exposed through views person/auction/bid filtered by event_type (ddl_gen.sql, ddl_views.sql)."
+      },
+      "flink_specific_constructs": [
+        "PROCTIME()",
+        "temporal join: side_input FOR SYSTEM_TIME AS OF B.p_time",
+        "join key is an expression mod(B.auction,10000)"
+      ],
+      "core_logic_meaningful_in_sqlite_without_flink_constructs": true,
+      "features": [
+        "F1",
+        "F12",
+        "F7c"
+      ],
+      "f15_detail": [],
+      "minimal_unlock": [
+        "F1",
+        "F12",
+        "F7c"
+      ],
+      "adapted_unlock": [],
+      "adapted_cost": "stored-columns",
+      "adapted_rewrite": "Bag rewrite on (auction, bidder, price, dateTime, value) + COUNT(*); an app-maintained INTEGER column auction_mod10000 on bid; ordinary inner join ON bid.auction_mod10000 = side_input.key. The temporal (as-of-arrival) lookup is replaced by a snapshot join, which is exact only if side_input never changes after the bids it joins.",
+      "adapted_executed_by_preflight": false,
+      "adapted_confidence": "low",
+      "adapted_confidence_reason": "Equivalent only for a frozen side table; any later change to side_input would retroactively rewrite old joined rows, which the temporal join would not.",
+      "fit": "out_of_scope",
+      "confidence": "high",
+      "confidence_reason": "A FOR SYSTEM_TIME AS OF temporal join is explicitly F12.",
+      "notes": "Nexmark loads side_input once from a file, so the frozen assumption holds in the benchmark. The expression join key is the additional gap."
+    },
+    {
+      "id": "Q14",
+      "source": "https://github.com/nexmark/nexmark/blob/6b3646c3baec701f1fa74baf938d235f742e5d3c/nexmark-flink/src/main/resources/queries/q14.sql",
+      "source_file": "nexmark-flink/src/main/resources/queries/q14.sql",
+      "pinned_revision": "6b3646c3",
+      "query": "-- CREATE FUNCTION count_char AS 'com.github.nexmark.flink.udf.CountChar';\nINSERT INTO nexmark_q14\nSELECT \n    auction,\n    bidder,\n    0.908 * price as price,\n    CASE\n        WHEN HOUR(`dateTime`) >= 8 AND HOUR(`dateTime`) <= 18 THEN 'dayTime'\n        WHEN HOUR(`dateTime`) <= 6 OR HOUR(`dateTime`) >= 20 THEN 'nightTime'\n        ELSE 'otherTime'\n    END AS bidTimeType,\n    `dateTime`,\n    extra,\n    count_char(extra, 'c') AS c_counts\nFROM bid\nWHERE 0.908 * price > 1000000 AND 0.908 * price < 50000000;",
+      "schema": {
+        "tables": [
+          "bid(auction INTEGER, bidder INTEGER, price INTEGER, channel TEXT, url TEXT, dateTime INTEGER, extra TEXT) STRICT"
+        ],
+        "note": "Preflight STRICT mapping (docs/bench/m2b-preflight): BIGINT->INTEGER, VARCHAR->TEXT, TIMESTAMP(3)->INTEGER (epoch unit unspecified by preflight). Flink source is one datagen table with ROW<> columns and WATERMARK dateTime - 4s, exposed through views person/auction/bid filtered by event_type (ddl_gen.sql, ddl_views.sql)."
+      },
+      "flink_specific_constructs": [
+        "Flink Java UDF count_char",
+        "HOUR(dateTime)",
+        "DECIMAL(23,3) result type"
+      ],
+      "core_logic_meaningful_in_sqlite_without_flink_constructs": true,
+      "features": [
+        "F1",
+        "F4b",
+        "F6",
+        "F10b",
+        "F15"
+      ],
+      "f15_detail": [
+        {
+          "name": "flink-fn",
+          "detail": "count_char UDF (Java, counts bytes equal to the first byte of the argument); replaceable by length(CAST(x AS BLOB)) - length(CAST(replace(x,'c','') AS BLOB)) with NULL mapped to 0, so not blocking",
+          "blocking": false,
+          "in_minimal_unlock": false
+        }
+      ],
+      "minimal_unlock": [
+        "F1",
+        "F4b",
+        "F6",
+        "F10b"
+      ],
+      "adapted_unlock": [],
+      "adapted_cost": "stored-columns",
+      "adapted_rewrite": "Bag rewrite + app-maintained columns: price_eur_milli = price*908 (INTEGER), bid_time_type (CASE over the hour), c_counts (byte count of 'c' in extra, 0 for NULL), and a 0/1 flag in_range = (price*908 > 1000000000 AND price*908 < 50000000000) replacing the two expression predicates with `WHERE in_range = 1`.",
+      "adapted_executed_by_preflight": false,
+      "adapted_confidence": "low",
+      "adapted_confidence_reason": "Every computed output and the filter live in stored columns, so the view merely stores what the application computes; the integer scaling is exact.",
+      "fit": "fits_with",
+      "confidence": "high",
+      "confidence_reason": "Expressions, CASE, a UDF and an AND of two expression predicates over a single table.",
+      "notes": "The comparison bounds scale by 1000 along with the stored milli price."
+    },
+    {
+      "id": "Q15",
+      "source": "https://github.com/nexmark/nexmark/blob/6b3646c3baec701f1fa74baf938d235f742e5d3c/nexmark-flink/src/main/resources/queries/q15.sql",
+      "source_file": "nexmark-flink/src/main/resources/queries/q15.sql",
+      "pinned_revision": "6b3646c3",
+      "query": "INSERT INTO nexmark_q15\nSELECT\n     DATE_FORMAT(`dateTime`, 'yyyy-MM-dd') as `day`,\n     count(*) AS total_bids,\n     count(*) filter (where price < 10000) AS rank1_bids,\n     count(*) filter (where price >= 10000 and price < 1000000) AS rank2_bids,\n     count(*) filter (where price >= 1000000) AS rank3_bids,\n     count(distinct bidder) AS total_bidders,\n     count(distinct bidder) filter (where price < 10000) AS rank1_bidders,\n     count(distinct bidder) filter (where price >= 10000 and price < 1000000) AS rank2_bidders,\n     count(distinct bidder) filter (where price >= 1000000) AS rank3_bidders,\n     count(distinct auction) AS total_auctions,\n     count(distinct auction) filter (where price < 10000) AS rank1_auctions,\n     count(distinct auction) filter (where price >= 10000 and price < 1000000) AS rank2_auctions,\n     count(distinct auction) filter (where price >= 1000000) AS rank3_auctions\nFROM bid\nGROUP BY DATE_FORMAT(`dateTime`, 'yyyy-MM-dd');",
+      "schema": {
+        "tables": [
+          "bid(auction INTEGER, bidder INTEGER, price INTEGER, channel TEXT, url TEXT, dateTime INTEGER, extra TEXT) STRICT"
+        ],
+        "note": "Preflight STRICT mapping (docs/bench/m2b-preflight): BIGINT->INTEGER, VARCHAR->TEXT, TIMESTAMP(3)->INTEGER (epoch unit unspecified by preflight). Flink source is one datagen table with ROW<> columns and WATERMARK dateTime - 4s, exposed through views person/auction/bid filtered by event_type (ddl_gen.sql, ddl_views.sql)."
+      },
+      "flink_specific_constructs": [
+        "FILTER (WHERE ...) clauses on aggregates (a standard-SQL feature SQLite 3.30+ also supports)"
+      ],
+      "core_logic_meaningful_in_sqlite_without_flink_constructs": true,
+      "features": [
+        "F5",
+        "F3d",
+        "F4a"
+      ],
+      "f15_detail": [],
+      "minimal_unlock": [
+        "F5",
+        "F3d",
+        "F4a"
+      ],
+      "adapted_unlock": [
+        "F3d"
+      ],
+      "adapted_cost": "stored-columns",
+      "adapted_rewrite": "App-maintained day TEXT column; three 0/1 flag columns r1,r2,r3 for the price bands so `count(*) filter (where band)` becomes SUM(r1) etc. (v0 SUM over INTEGER); stored nullable columns bidder_r1/_r2/_r3 and auction_r1/_r2/_r3 (= bidder or auction when in the band, else NULL) so each filtered distinct count becomes COUNT(DISTINCT bidder_rN). The three unfiltered distinct counts remain COUNT(DISTINCT col): F3d stays.",
+      "adapted_executed_by_preflight": false,
+      "adapted_confidence": "low",
+      "adapted_confidence_reason": "Needs 12 extra stored columns; F3d (distinct state) cannot be rewritten into v0 without chained views.",
+      "fit": "fits_with",
+      "confidence": "high",
+      "confidence_reason": "Day bucketing, FILTER aggregates and COUNT(DISTINCT) are all ordinary SQL.",
+      "notes": "DATE_FORMAT('yyyy-MM-dd') maps to strftime, an F5 expression in GROUP BY."
+    },
+    {
+      "id": "Q16",
+      "source": "https://github.com/nexmark/nexmark/blob/6b3646c3baec701f1fa74baf938d235f742e5d3c/nexmark-flink/src/main/resources/queries/q16.sql",
+      "source_file": "nexmark-flink/src/main/resources/queries/q16.sql",
+      "pinned_revision": "6b3646c3",
+      "query": "INSERT INTO nexmark_q16\nSELECT\n    channel,\n    DATE_FORMAT(`dateTime`, 'yyyy-MM-dd') as `day`,\n    max(DATE_FORMAT(`dateTime`, 'HH:mm')) as `minute`,\n    count(*) AS total_bids,\n    count(*) filter (where price < 10000) AS rank1_bids,\n    count(*) filter (where price >= 10000 and price < 1000000) AS rank2_bids,\n    count(*) filter (where price >= 1000000) AS rank3_bids,\n    count(distinct bidder) AS total_bidders,\n    count(distinct bidder) filter (where price < 10000) AS rank1_bidders,\n    count(distinct bidder) filter (where price >= 10000 and price < 1000000) AS rank2_bidders,\n    count(distinct bidder) filter (where price >= 1000000) AS rank3_bidders,\n    count(distinct auction) AS total_auctions,\n    count(distinct auction) filter (where price < 10000) AS rank1_auctions,\n    count(distinct auction) filter (where price >= 10000 and price < 1000000) AS rank2_auctions,\n    count(distinct auction) filter (where price >= 1000000) AS rank3_auctions\nFROM bid\nGROUP BY channel, DATE_FORMAT(`dateTime`, 'yyyy-MM-dd');",
+      "schema": {
+        "tables": [
+          "bid(auction INTEGER, bidder INTEGER, price INTEGER, channel TEXT, url TEXT, dateTime INTEGER, extra TEXT) STRICT"
+        ],
+        "note": "Preflight STRICT mapping (docs/bench/m2b-preflight): BIGINT->INTEGER, VARCHAR->TEXT, TIMESTAMP(3)->INTEGER (epoch unit unspecified by preflight). Flink source is one datagen table with ROW<> columns and WATERMARK dateTime - 4s, exposed through views person/auction/bid filtered by event_type (ddl_gen.sql, ddl_views.sql)."
+      },
+      "flink_specific_constructs": [],
+      "core_logic_meaningful_in_sqlite_without_flink_constructs": true,
+      "features": [
+        "F5",
+        "F3d",
+        "F4a",
+        "F3c"
+      ],
+      "f15_detail": [],
+      "minimal_unlock": [
+        "F5",
+        "F3d",
+        "F4a",
+        "F3c"
+      ],
+      "adapted_unlock": [
+        "F3d",
+        "F3c"
+      ],
+      "adapted_cost": "stored-columns",
+      "adapted_rewrite": "As Q15 (stored day, band flags, nullable per-band bidder/auction columns), plus a stored TEXT column minute = HH:mm so max(minute) becomes MAX(minute), still F3c (MAX on TEXT).",
+      "adapted_executed_by_preflight": false,
+      "adapted_confidence": "low",
+      "adapted_confidence_reason": "Same heavy stored-column preparation as Q15; F3d and F3c remain.",
+      "fit": "fits_with",
+      "confidence": "high",
+      "confidence_reason": "Same shape as Q15 plus a MAX over a derived string.",
+      "notes": "channel is a bare TEXT group key; the day is an expression key (F5)."
+    },
+    {
+      "id": "Q17",
+      "source": "https://github.com/nexmark/nexmark/blob/6b3646c3baec701f1fa74baf938d235f742e5d3c/nexmark-flink/src/main/resources/queries/q17.sql",
+      "source_file": "nexmark-flink/src/main/resources/queries/q17.sql",
+      "pinned_revision": "6b3646c3",
+      "query": "INSERT INTO nexmark_q17\nSELECT\n     auction,\n     DATE_FORMAT(`dateTime`, 'yyyy-MM-dd') as `day`,\n     count(*) AS total_bids,\n     count(*) filter (where price < 10000) AS rank1_bids,\n     count(*) filter (where price >= 10000 and price < 1000000) AS rank2_bids,\n     count(*) filter (where price >= 1000000) AS rank3_bids,\n     min(price) AS min_price,\n     max(price) AS max_price,\n     avg(price) AS avg_price,\n     sum(price) AS sum_price\nFROM bid\nGROUP BY auction, DATE_FORMAT(`dateTime`, 'yyyy-MM-dd');",
+      "schema": {
+        "tables": [
+          "bid(auction INTEGER, bidder INTEGER, price INTEGER, channel TEXT, url TEXT, dateTime INTEGER, extra TEXT) STRICT"
+        ],
+        "note": "Preflight STRICT mapping (docs/bench/m2b-preflight): BIGINT->INTEGER, VARCHAR->TEXT, TIMESTAMP(3)->INTEGER (epoch unit unspecified by preflight). Flink source is one datagen table with ROW<> columns and WATERMARK dateTime - 4s, exposed through views person/auction/bid filtered by event_type (ddl_gen.sql, ddl_views.sql)."
+      },
+      "flink_specific_constructs": [],
+      "core_logic_meaningful_in_sqlite_without_flink_constructs": true,
+      "features": [
+        "F5",
+        "F4a",
+        "F3c",
+        "F3b"
+      ],
+      "f15_detail": [],
+      "minimal_unlock": [
+        "F5",
+        "F4a",
+        "F3c",
+        "F3b"
+      ],
+      "adapted_unlock": [
+        "F3c",
+        "F3b"
+      ],
+      "adapted_cost": "stored-columns",
+      "adapted_rewrite": "Stored day TEXT column; 0/1 band flags so filtered counts are SUM(r1) etc.; COUNT(*) and SUM(price) already in v0. MIN, MAX and AVG remain.",
+      "adapted_executed_by_preflight": false,
+      "adapted_confidence": "high",
+      "fit": "fits_with",
+      "confidence": "high",
+      "confidence_reason": "Group by one bare column plus a day expression with ten ordinary aggregates.",
+      "notes": "AVG(price) is BIGINT in Flink and REAL in SQLite; MIN/MAX/AVG need delete-aware or SUM/COUNT-derived state. Preflight notes that reducing to COUNT/SUM changes the workload."
+    },
+    {
+      "id": "Q18",
+      "source": "https://github.com/nexmark/nexmark/blob/6b3646c3baec701f1fa74baf938d235f742e5d3c/nexmark-flink/src/main/resources/queries/q18.sql",
+      "source_file": "nexmark-flink/src/main/resources/queries/q18.sql",
+      "pinned_revision": "6b3646c3",
+      "query": "INSERT INTO nexmark_q18\nSELECT auction, bidder, price, channel, url, `dateTime`, extra\n FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY bidder, auction ORDER BY `dateTime` DESC) AS rank_number\n       FROM bid)\n WHERE rank_number <= 1;",
+      "schema": {
+        "tables": [
+          "bid(auction INTEGER, bidder INTEGER, price INTEGER, channel TEXT, url TEXT, dateTime INTEGER, extra TEXT) STRICT"
+        ],
+        "note": "Preflight STRICT mapping (docs/bench/m2b-preflight): BIGINT->INTEGER, VARCHAR->TEXT, TIMESTAMP(3)->INTEGER (epoch unit unspecified by preflight). Flink source is one datagen table with ROW<> columns and WATERMARK dateTime - 4s, exposed through views person/auction/bid filtered by event_type (ddl_gen.sql, ddl_views.sql)."
+      },
+      "flink_specific_constructs": [],
+      "core_logic_meaningful_in_sqlite_without_flink_constructs": true,
+      "features": [
+        "F9",
+        "F8"
+      ],
+      "f15_detail": [],
+      "minimal_unlock": [
+        "F9",
+        "F8"
+      ],
+      "adapted_unlock": null,
+      "adapted_cost": null,
+      "adapted_rewrite": "None found: latest row per (bidder, auction) needs either ROW_NUMBER or MAX(dateTime) joined back, both outside v0.",
+      "adapted_executed_by_preflight": false,
+      "adapted_confidence": "low",
+      "fit": "fits_with",
+      "confidence": "high",
+      "confidence_reason": "Deduplication by ROW_NUMBER is plain SQL; dateTime is just a data column here.",
+      "notes": "Ties on dateTime within a partition are resolved arbitrarily."
+    },
+    {
+      "id": "Q19",
+      "source": "https://github.com/nexmark/nexmark/blob/6b3646c3baec701f1fa74baf938d235f742e5d3c/nexmark-flink/src/main/resources/queries/q19.sql",
+      "source_file": "nexmark-flink/src/main/resources/queries/q19.sql",
+      "pinned_revision": "6b3646c3",
+      "query": "INSERT INTO nexmark_q19\nSELECT * FROM\n(SELECT *, ROW_NUMBER() OVER (PARTITION BY auction ORDER BY price DESC) AS rank_number FROM bid)\nWHERE rank_number <= 10;",
+      "schema": {
+        "tables": [
+          "bid(auction INTEGER, bidder INTEGER, price INTEGER, channel TEXT, url TEXT, dateTime INTEGER, extra TEXT) STRICT"
+        ],
+        "note": "Preflight STRICT mapping (docs/bench/m2b-preflight): BIGINT->INTEGER, VARCHAR->TEXT, TIMESTAMP(3)->INTEGER (epoch unit unspecified by preflight). Flink source is one datagen table with ROW<> columns and WATERMARK dateTime - 4s, exposed through views person/auction/bid filtered by event_type (ddl_gen.sql, ddl_views.sql)."
+      },
+      "flink_specific_constructs": [],
+      "core_logic_meaningful_in_sqlite_without_flink_constructs": true,
+      "features": [
+        "F9",
+        "F8"
+      ],
+      "f15_detail": [],
+      "minimal_unlock": [
+        "F9",
+        "F8"
+      ],
+      "adapted_unlock": null,
+      "adapted_cost": null,
+      "adapted_rewrite": "None found: top-10 per auction by price is a ranked result.",
+      "adapted_executed_by_preflight": false,
+      "adapted_confidence": "low",
+      "fit": "fits_with",
+      "confidence": "high",
+      "confidence_reason": "Top-N per partition via ROW_NUMBER is plain SQL.",
+      "notes": "Output also includes the rank column. Ties on price are resolved arbitrarily."
+    },
+    {
+      "id": "Q20",
+      "source": "https://github.com/nexmark/nexmark/blob/6b3646c3baec701f1fa74baf938d235f742e5d3c/nexmark-flink/src/main/resources/queries/q20.sql",
+      "source_file": "nexmark-flink/src/main/resources/queries/q20.sql",
+      "pinned_revision": "6b3646c3",
+      "query": "INSERT INTO nexmark_q20\nSELECT\n    auction, bidder, price, channel, url, B.`dateTime`, B.extra,\n    itemName, description, initialBid, reserve, A.`dateTime`, expires, seller, category, A.extra\nFROM\n    bid AS B INNER JOIN auction AS A on B.auction = A.id\nWHERE A.category = 10;",
+      "schema": {
+        "tables": [
+          "bid(auction INTEGER, bidder INTEGER, price INTEGER, channel TEXT, url TEXT, dateTime INTEGER, extra TEXT) STRICT",
+          "auction(id INTEGER, itemName TEXT, description TEXT, initialBid INTEGER, reserve INTEGER, dateTime INTEGER, expires INTEGER, seller INTEGER, category INTEGER, extra TEXT) STRICT"
+        ],
+        "note": "Preflight STRICT mapping (docs/bench/m2b-preflight): BIGINT->INTEGER, VARCHAR->TEXT, TIMESTAMP(3)->INTEGER (epoch unit unspecified by preflight). Flink source is one datagen table with ROW<> columns and WATERMARK dateTime - 4s, exposed through views person/auction/bid filtered by event_type (ddl_gen.sql, ddl_views.sql)."
+      },
+      "flink_specific_constructs": [],
+      "core_logic_meaningful_in_sqlite_without_flink_constructs": true,
+      "features": [
+        "F1"
+      ],
+      "f15_detail": [],
+      "minimal_unlock": [
+        "F1"
+      ],
+      "adapted_unlock": [],
+      "adapted_cost": "bag",
+      "adapted_rewrite": "Bag rewrite from the preflight (executed, q20_bag): alias the duplicate dateTime and extra columns (bid_dateTime, bid_extra, auction_dateTime, auction_extra) and add COUNT(*) AS multiplicity with GROUP BY every output field. Aliasing only renames columns that the Flink sink also names positionally.",
+      "adapted_executed_by_preflight": true,
+      "adapted_confidence": "high",
+      "fit": "fits_with",
+      "confidence": "high",
+      "confidence_reason": "Single equi-join with one col=literal filter; only the aggregate-less root and duplicate output names block it.",
+      "notes": "The duplicate-name rejection is an ivmlite output-column rule, not a missing SQL feature."
+    },
+    {
+      "id": "Q21",
+      "source": "https://github.com/nexmark/nexmark/blob/6b3646c3baec701f1fa74baf938d235f742e5d3c/nexmark-flink/src/main/resources/queries/q21.sql",
+      "source_file": "nexmark-flink/src/main/resources/queries/q21.sql",
+      "pinned_revision": "6b3646c3",
+      "query": "INSERT INTO nexmark_q21\nSELECT\n    auction, bidder, price, channel,\n    CASE\n        WHEN lower(channel) = 'apple' THEN '0'\n        WHEN lower(channel) = 'google' THEN '1'\n        WHEN lower(channel) = 'facebook' THEN '2'\n        WHEN lower(channel) = 'baidu' THEN '3'\n        ELSE REGEXP_EXTRACT(url, '(&|^)channel_id=([^&]*)', 2)\n        END\n    AS channel_id FROM bid\n    where REGEXP_EXTRACT(url, '(&|^)channel_id=([^&]*)', 2) is not null or\n          lower(channel) in ('apple', 'google', 'facebook', 'baidu');",
+      "schema": {
+        "tables": [
+          "bid(auction INTEGER, bidder INTEGER, price INTEGER, channel TEXT, url TEXT, dateTime INTEGER, extra TEXT) STRICT"
+        ],
+        "note": "Preflight STRICT mapping (docs/bench/m2b-preflight): BIGINT->INTEGER, VARCHAR->TEXT, TIMESTAMP(3)->INTEGER (epoch unit unspecified by preflight). Flink source is one datagen table with ROW<> columns and WATERMARK dateTime - 4s, exposed through views person/auction/bid filtered by event_type (ddl_gen.sql, ddl_views.sql)."
+      },
+      "flink_specific_constructs": [
+        "REGEXP_EXTRACT"
+      ],
+      "core_logic_meaningful_in_sqlite_without_flink_constructs": true,
+      "features": [
+        "F1",
+        "F4b",
+        "F6",
+        "F15"
+      ],
+      "f15_detail": [
+        {
+          "name": "flink-fn",
+          "detail": "REGEXP_EXTRACT(url,'(&|^)channel_id=([^&]*)',2); replaceable by instr/substr on '&'||url (leftmost match semantics are preserved), so not blocking",
+          "blocking": false,
+          "in_minimal_unlock": false
+        }
+      ],
+      "minimal_unlock": [
+        "F1",
+        "F4b",
+        "F6"
+      ],
+      "adapted_unlock": [],
+      "adapted_cost": "stored-columns",
+      "adapted_rewrite": "Bag rewrite on (auction, bidder, price, channel, channel_id) + COUNT(*) with app-maintained TEXT column channel_id (the CASE/lower/extract expression) and a 0/1 column keep (the OR/IN predicate, including the regexp-not-null test), then `WHERE keep = 1`.",
+      "adapted_executed_by_preflight": false,
+      "adapted_confidence": "low",
+      "adapted_confidence_reason": "The stored columns carry the whole query logic, so the view reduces to a bag over precomputed values.",
+      "fit": "fits_with",
+      "confidence": "high",
+      "confidence_reason": "CASE, lower(), string extraction and an OR/IN predicate over one table.",
+      "notes": "SQLite lower() is ASCII-only; Flink lower() is Unicode-aware."
+    },
+    {
+      "id": "Q22",
+      "source": "https://github.com/nexmark/nexmark/blob/6b3646c3baec701f1fa74baf938d235f742e5d3c/nexmark-flink/src/main/resources/queries/q22.sql",
+      "source_file": "nexmark-flink/src/main/resources/queries/q22.sql",
+      "pinned_revision": "6b3646c3",
+      "query": "INSERT INTO nexmark_q22\nSELECT\n    auction, bidder, price, channel,\n    SPLIT_INDEX(url, '/', 3) as dir1,\n    SPLIT_INDEX(url, '/', 4) as dir2,\n    SPLIT_INDEX(url, '/', 5) as dir3 FROM bid;",
+      "schema": {
+        "tables": [
+          "bid(auction INTEGER, bidder INTEGER, price INTEGER, channel TEXT, url TEXT, dateTime INTEGER, extra TEXT) STRICT"
+        ],
+        "note": "Preflight STRICT mapping (docs/bench/m2b-preflight): BIGINT->INTEGER, VARCHAR->TEXT, TIMESTAMP(3)->INTEGER (epoch unit unspecified by preflight). Flink source is one datagen table with ROW<> columns and WATERMARK dateTime - 4s, exposed through views person/auction/bid filtered by event_type (ddl_gen.sql, ddl_views.sql)."
+      },
+      "flink_specific_constructs": [
+        "SPLIT_INDEX"
+      ],
+      "core_logic_meaningful_in_sqlite_without_flink_constructs": true,
+      "features": [
+        "F1",
+        "F4b",
+        "F15"
+      ],
+      "f15_detail": [
+        {
+          "name": "flink-fn",
+          "detail": "SPLIT_INDEX(url,'/',n); no SQLite built-in, expressible with nested instr/substr (NULL when the index is out of range), so not blocking",
+          "blocking": false,
+          "in_minimal_unlock": false
+        }
+      ],
+      "minimal_unlock": [
+        "F1",
+        "F4b"
+      ],
+      "adapted_unlock": [],
+      "adapted_cost": "stored-columns",
+      "adapted_rewrite": "Bag rewrite on (auction, bidder, price, channel, dir1, dir2, dir3) + COUNT(*) with three app-maintained TEXT columns computed by the application from url.",
+      "adapted_executed_by_preflight": false,
+      "adapted_confidence": "low",
+      "adapted_confidence_reason": "All logic is in stored columns.",
+      "fit": "fits_with",
+      "confidence": "low",
+      "confidence_reason": "Hinges on whether a Flink-only function counts as F15 out_of_scope or a plain F4b expression; the logic itself is a trivial projection.",
+      "notes": "Under a strict reading of the taxonomy (F15 'Flink-only function SPLIT_INDEX') this would be out_of_scope; here it is treated as a dialect function. The same reading applies to Q21's REGEXP_EXTRACT and Q14's count_char."
+    },
+    {
+      "id": "Q23",
+      "source": "https://github.com/nexmark/nexmark/blob/6b3646c3baec701f1fa74baf938d235f742e5d3c/nexmark-flink/src/main/resources/queries/q23.sql",
+      "source_file": "nexmark-flink/src/main/resources/queries/q23.sql",
+      "pinned_revision": "6b3646c3",
+      "query": "INSERT INTO nexmark_q23\nSELECT bidder,\n       price,\n       channel,\n       url,\n       B.extra    AS bid_extra,\n\n       P.id       AS person_id,\n       name,\n       emailAddress,\n       creditCard,\n       city,\n       state,\n       P.extra    AS person_extra,\n       itemName,\n\n       description,\n       initialBid,\n       reserve,\n       A.dateTime AS auction_dateTime,\n       expires,\n       seller,\n       category,\n       A.extra    AS auction_extra\nFROM bid B\n         JOIN\n     person P ON P.id = B.bidder\n         JOIN\n     auction A ON A.seller = B.bidder;",
+      "schema": {
+        "tables": [
+          "bid(auction INTEGER, bidder INTEGER, price INTEGER, channel TEXT, url TEXT, dateTime INTEGER, extra TEXT) STRICT",
+          "person(id INTEGER, name TEXT, emailAddress TEXT, creditCard TEXT, city TEXT, state TEXT, dateTime INTEGER, extra TEXT) STRICT",
+          "auction(id INTEGER, itemName TEXT, description TEXT, initialBid INTEGER, reserve INTEGER, dateTime INTEGER, expires INTEGER, seller INTEGER, category INTEGER, extra TEXT) STRICT"
+        ],
+        "note": "Preflight STRICT mapping (docs/bench/m2b-preflight): BIGINT->INTEGER, VARCHAR->TEXT, TIMESTAMP(3)->INTEGER (epoch unit unspecified by preflight). Flink source is one datagen table with ROW<> columns and WATERMARK dateTime - 4s, exposed through views person/auction/bid filtered by event_type (ddl_gen.sql, ddl_views.sql)."
+      },
+      "flink_specific_constructs": [],
+      "core_logic_meaningful_in_sqlite_without_flink_constructs": true,
+      "features": [
+        "F1",
+        "F7b"
+      ],
+      "f15_detail": [],
+      "minimal_unlock": [
+        "F1",
+        "F7b"
+      ],
+      "adapted_unlock": [
+        "F7b"
+      ],
+      "adapted_cost": "bag",
+      "adapted_rewrite": "Bag rewrite (GROUP BY all 21 output fields + COUNT(*), with the aliases the query already has). The three-table join remains; materialising person JOIN auction in the application would defeat the purpose.",
+      "adapted_executed_by_preflight": false,
+      "adapted_confidence": "high",
+      "fit": "fits_with",
+      "confidence": "high",
+      "confidence_reason": "Plain inner joins over three tables; the preflight rejected the table count.",
+      "notes": "Both joins share the key bid.bidder (P.id = B.bidder, A.seller = B.bidder), so the join graph is a star around bid."
+    }
+  ],
+  "aggregates": {
+    "per_code": [
+      {
+        "code": "F1",
+        "queries_needing": [
+          "Q0",
+          "Q1",
+          "Q2",
+          "Q3",
+          "Q5",
+          "Q7",
+          "Q8",
+          "Q10",
+          "Q13",
+          "Q14",
+          "Q20",
+          "Q21",
+          "Q22",
+          "Q23"
+        ],
+        "n_needing": 14,
+        "queries_with_in_minimal_unlock": [
+          "Q0",
+          "Q1",
+          "Q2",
+          "Q3",
+          "Q5",
+          "Q7",
+          "Q8",
+          "Q10",
+          "Q13",
+          "Q14",
+          "Q20",
+          "Q21",
+          "Q22",
+          "Q23"
+        ],
+        "n_minimal": 14,
+        "runnable_if_only_this_code_added": [
+          "Q0",
+          "Q20"
+        ],
+        "n_alone": 2,
+        "adapted_in_unlock": [],
+        "n_adapted_in_unlock": 0,
+        "adapted_runnable_if_only_this_code_added": []
+      },
+      {
+        "code": "F3b",
+        "queries_needing": [
+          "Q4",
+          "Q6",
+          "Q17"
+        ],
+        "n_needing": 3,
+        "queries_with_in_minimal_unlock": [
+          "Q4",
+          "Q6",
+          "Q17"
+        ],
+        "n_minimal": 3,
+        "runnable_if_only_this_code_added": [],
+        "n_alone": 0,
+        "adapted_in_unlock": [
+          "Q17"
+        ],
+        "n_adapted_in_unlock": 1,
+        "adapted_runnable_if_only_this_code_added": []
+      },
+      {
+        "code": "F3c",
+        "queries_needing": [
+          "Q4",
+          "Q5",
+          "Q7",
+          "Q16",
+          "Q17"
+        ],
+        "n_needing": 5,
+        "queries_with_in_minimal_unlock": [
+          "Q4",
+          "Q5",
+          "Q7",
+          "Q16",
+          "Q17"
+        ],
+        "n_minimal": 5,
+        "runnable_if_only_this_code_added": [],
+        "n_alone": 0,
+        "adapted_in_unlock": [
+          "Q5",
+          "Q7",
+          "Q16",
+          "Q17"
+        ],
+        "n_adapted_in_unlock": 4,
+        "adapted_runnable_if_only_this_code_added": []
+      },
+      {
+        "code": "F3d",
+        "queries_needing": [
+          "Q15",
+          "Q16"
+        ],
+        "n_needing": 2,
+        "queries_with_in_minimal_unlock": [
+          "Q15",
+          "Q16"
+        ],
+        "n_minimal": 2,
+        "runnable_if_only_this_code_added": [],
+        "n_alone": 0,
+        "adapted_in_unlock": [
+          "Q15",
+          "Q16"
+        ],
+        "n_adapted_in_unlock": 2,
+        "adapted_runnable_if_only_this_code_added": [
+          "Q15"
+        ]
+      },
+      {
+        "code": "F4a",
+        "queries_needing": [
+          "Q15",
+          "Q16",
+          "Q17"
+        ],
+        "n_needing": 3,
+        "queries_with_in_minimal_unlock": [
+          "Q15",
+          "Q16",
+          "Q17"
+        ],
+        "n_minimal": 3,
+        "runnable_if_only_this_code_added": [],
+        "n_alone": 0,
+        "adapted_in_unlock": [],
+        "n_adapted_in_unlock": 0,
+        "adapted_runnable_if_only_this_code_added": []
+      },
+      {
+        "code": "F4b",
+        "queries_needing": [
+          "Q1",
+          "Q10",
+          "Q14",
+          "Q21",
+          "Q22"
+        ],
+        "n_needing": 5,
+        "queries_with_in_minimal_unlock": [
+          "Q1",
+          "Q10",
+          "Q14",
+          "Q21",
+          "Q22"
+        ],
+        "n_minimal": 5,
+        "runnable_if_only_this_code_added": [],
+        "n_alone": 0,
+        "adapted_in_unlock": [],
+        "n_adapted_in_unlock": 0,
+        "adapted_runnable_if_only_this_code_added": []
+      },
+      {
+        "code": "F5",
+        "queries_needing": [
+          "Q15",
+          "Q16",
+          "Q17"
+        ],
+        "n_needing": 3,
+        "queries_with_in_minimal_unlock": [
+          "Q15",
+          "Q16",
+          "Q17"
+        ],
+        "n_minimal": 3,
+        "runnable_if_only_this_code_added": [],
+        "n_alone": 0,
+        "adapted_in_unlock": [],
+        "n_adapted_in_unlock": 0,
+        "adapted_runnable_if_only_this_code_added": []
+      },
+      {
+        "code": "F6",
+        "queries_needing": [
+          "Q2",
+          "Q3",
+          "Q4",
+          "Q5",
+          "Q6",
+          "Q7",
+          "Q9",
+          "Q14",
+          "Q21"
+        ],
+        "n_needing": 9,
+        "queries_with_in_minimal_unlock": [
+          "Q2",
+          "Q3",
+          "Q4",
+          "Q5",
+          "Q6",
+          "Q7",
+          "Q9",
+          "Q14",
+          "Q21"
+        ],
+        "n_minimal": 9,
+        "runnable_if_only_this_code_added": [],
+        "n_alone": 0,
+        "adapted_in_unlock": [
+          "Q5",
+          "Q7"
+        ],
+        "n_adapted_in_unlock": 2,
+        "adapted_runnable_if_only_this_code_added": []
+      },
+      {
+        "code": "F7b",
+        "queries_needing": [
+          "Q23"
+        ],
+        "n_needing": 1,
+        "queries_with_in_minimal_unlock": [
+          "Q23"
+        ],
+        "n_minimal": 1,
+        "runnable_if_only_this_code_added": [],
+        "n_alone": 0,
+        "adapted_in_unlock": [
+          "Q23"
+        ],
+        "n_adapted_in_unlock": 1,
+        "adapted_runnable_if_only_this_code_added": [
+          "Q23"
+        ]
+      },
+      {
+        "code": "F7c",
+        "queries_needing": [
+          "Q4",
+          "Q5",
+          "Q6",
+          "Q7",
+          "Q8",
+          "Q9",
+          "Q13"
+        ],
+        "n_needing": 7,
+        "queries_with_in_minimal_unlock": [
+          "Q4",
+          "Q5",
+          "Q6",
+          "Q7",
+          "Q8",
+          "Q9",
+          "Q13"
+        ],
+        "n_minimal": 7,
+        "runnable_if_only_this_code_added": [],
+        "n_alone": 0,
+        "adapted_in_unlock": [
+          "Q5",
+          "Q7"
+        ],
+        "n_adapted_in_unlock": 2,
+        "adapted_runnable_if_only_this_code_added": []
+      },
+      {
+        "code": "F8",
+        "queries_needing": [
+          "Q4",
+          "Q5",
+          "Q6",
+          "Q7",
+          "Q8",
+          "Q9",
+          "Q18",
+          "Q19"
+        ],
+        "n_needing": 8,
+        "queries_with_in_minimal_unlock": [
+          "Q4",
+          "Q5",
+          "Q6",
+          "Q7",
+          "Q8",
+          "Q9",
+          "Q18",
+          "Q19"
+        ],
+        "n_minimal": 8,
+        "runnable_if_only_this_code_added": [],
+        "n_alone": 0,
+        "adapted_in_unlock": [
+          "Q5",
+          "Q7"
+        ],
+        "n_adapted_in_unlock": 2,
+        "adapted_runnable_if_only_this_code_added": []
+      },
+      {
+        "code": "F9",
+        "queries_needing": [
+          "Q6",
+          "Q9",
+          "Q18",
+          "Q19"
+        ],
+        "n_needing": 4,
+        "queries_with_in_minimal_unlock": [
+          "Q6",
+          "Q9",
+          "Q18",
+          "Q19"
+        ],
+        "n_minimal": 4,
+        "runnable_if_only_this_code_added": [],
+        "n_alone": 0,
+        "adapted_in_unlock": [],
+        "n_adapted_in_unlock": 0,
+        "adapted_runnable_if_only_this_code_added": []
+      },
+      {
+        "code": "F10b",
+        "queries_needing": [
+          "Q1",
+          "Q14"
+        ],
+        "n_needing": 2,
+        "queries_with_in_minimal_unlock": [
+          "Q1",
+          "Q14"
+        ],
+        "n_minimal": 2,
+        "runnable_if_only_this_code_added": [],
+        "n_alone": 0,
+        "adapted_in_unlock": [],
+        "n_adapted_in_unlock": 0,
+        "adapted_runnable_if_only_this_code_added": []
+      },
+      {
+        "code": "F12",
+        "queries_needing": [
+          "Q5",
+          "Q7",
+          "Q8",
+          "Q11",
+          "Q12",
+          "Q13"
+        ],
+        "n_needing": 6,
+        "queries_with_in_minimal_unlock": [
+          "Q5",
+          "Q7",
+          "Q8",
+          "Q11",
+          "Q12",
+          "Q13"
+        ],
+        "n_minimal": 6,
+        "runnable_if_only_this_code_added": [],
+        "n_alone": 0,
+        "adapted_in_unlock": [],
+        "n_adapted_in_unlock": 0,
+        "adapted_runnable_if_only_this_code_added": []
+      },
+      {
+        "code": "F15:dedup",
+        "queries_needing": [
+          "Q8"
+        ],
+        "n_needing": 1,
+        "queries_with_in_minimal_unlock": [
+          "Q8"
+        ],
+        "n_minimal": 1,
+        "runnable_if_only_this_code_added": [],
+        "n_alone": 0,
+        "adapted_in_unlock": [],
+        "n_adapted_in_unlock": 0,
+        "adapted_runnable_if_only_this_code_added": []
+      },
+      {
+        "code": "F15:ordered",
+        "queries_needing": [
+          "Q6",
+          "Q11"
+        ],
+        "n_needing": 2,
+        "queries_with_in_minimal_unlock": [
+          "Q6",
+          "Q11"
+        ],
+        "n_minimal": 2,
+        "runnable_if_only_this_code_added": [],
+        "n_alone": 0,
+        "adapted_in_unlock": [],
+        "n_adapted_in_unlock": 0,
+        "adapted_runnable_if_only_this_code_added": []
+      },
+      {
+        "code": "F15:flink-fn",
+        "queries_needing": [
+          "Q14",
+          "Q21",
+          "Q22"
+        ],
+        "n_needing": 3,
+        "queries_with_in_minimal_unlock": [],
+        "n_minimal": 0,
+        "runnable_if_only_this_code_added": [],
+        "n_alone": 0,
+        "adapted_in_unlock": [],
+        "n_adapted_in_unlock": 0,
+        "adapted_runnable_if_only_this_code_added": []
+      }
+    ],
+    "bundles_pairs_best_as_written": [
+      {
+        "bundle": [
+          "F1",
+          "F4b"
+        ],
+        "as_written": [
+          "Q0",
+          "Q10",
+          "Q20",
+          "Q22"
+        ],
+        "n_as_written": 4,
+        "adapted": [
+          "Q0",
+          "Q1",
+          "Q2",
+          "Q3",
+          "Q8",
+          "Q10",
+          "Q12",
+          "Q13",
+          "Q14",
+          "Q20",
+          "Q21",
+          "Q22"
+        ],
+        "n_adapted": 12,
+        "adapted_marginal_over_zero_codes": [],
+        "n_adapted_marginal": 0
+      },
+      {
+        "bundle": [
+          "F1",
+          "F6"
+        ],
+        "as_written": [
+          "Q0",
+          "Q2",
+          "Q3",
+          "Q20"
+        ],
+        "n_as_written": 4,
+        "adapted": [
+          "Q0",
+          "Q1",
+          "Q2",
+          "Q3",
+          "Q8",
+          "Q10",
+          "Q12",
+          "Q13",
+          "Q14",
+          "Q20",
+          "Q21",
+          "Q22"
+        ],
+        "n_adapted": 12,
+        "adapted_marginal_over_zero_codes": [],
+        "n_adapted_marginal": 0
+      },
+      {
+        "bundle": [
+          "F1",
+          "F7b"
+        ],
+        "as_written": [
+          "Q0",
+          "Q20",
+          "Q23"
+        ],
+        "n_as_written": 3,
+        "adapted": [
+          "Q0",
+          "Q1",
+          "Q2",
+          "Q3",
+          "Q8",
+          "Q10",
+          "Q12",
+          "Q13",
+          "Q14",
+          "Q20",
+          "Q21",
+          "Q22",
+          "Q23"
+        ],
+        "n_adapted": 13,
+        "adapted_marginal_over_zero_codes": [
+          "Q23"
+        ],
+        "n_adapted_marginal": 1
+      },
+      {
+        "bundle": [
+          "F1",
+          "F10b"
+        ],
+        "as_written": [
+          "Q0",
+          "Q20"
+        ],
+        "n_as_written": 2,
+        "adapted": [
+          "Q0",
+          "Q1",
+          "Q2",
+          "Q3",
+          "Q8",
+          "Q10",
+          "Q12",
+          "Q13",
+          "Q14",
+          "Q20",
+          "Q21",
+          "Q22"
+        ],
+        "n_adapted": 12,
+        "adapted_marginal_over_zero_codes": [],
+        "n_adapted_marginal": 0
+      },
+      {
+        "bundle": [
+          "F1",
+          "F15:dedup"
+        ],
+        "as_written": [
+          "Q0",
+          "Q20"
+        ],
+        "n_as_written": 2,
+        "adapted": [
+          "Q0",
+          "Q1",
+          "Q2",
+          "Q3",
+          "Q8",
+          "Q10",
+          "Q12",
+          "Q13",
+          "Q14",
+          "Q20",
+          "Q21",
+          "Q22"
+        ],
+        "n_adapted": 12,
+        "adapted_marginal_over_zero_codes": [],
+        "n_adapted_marginal": 0
+      },
+      {
+        "bundle": [
+          "F1",
+          "F15:flink-fn"
+        ],
+        "as_written": [
+          "Q0",
+          "Q20"
+        ],
+        "n_as_written": 2,
+        "adapted": [
+          "Q0",
+          "Q1",
+          "Q2",
+          "Q3",
+          "Q8",
+          "Q10",
+          "Q12",
+          "Q13",
+          "Q14",
+          "Q20",
+          "Q21",
+          "Q22"
+        ],
+        "n_adapted": 12,
+        "adapted_marginal_over_zero_codes": [],
+        "n_adapted_marginal": 0
+      }
+    ],
+    "bundles_pairs_best_adapted_marginal": [
+      {
+        "bundle": [
+          "F3c",
+          "F3d"
+        ],
+        "as_written": [],
+        "n_as_written": 0,
+        "adapted": [
+          "Q0",
+          "Q1",
+          "Q2",
+          "Q3",
+          "Q8",
+          "Q10",
+          "Q12",
+          "Q13",
+          "Q14",
+          "Q15",
+          "Q16",
+          "Q20",
+          "Q21",
+          "Q22"
+        ],
+        "n_adapted": 14,
+        "adapted_marginal_over_zero_codes": [
+          "Q15",
+          "Q16"
+        ],
+        "n_adapted_marginal": 2
+      },
+      {
+        "bundle": [
+          "F3d",
+          "F7b"
+        ],
+        "as_written": [],
+        "n_as_written": 0,
+        "adapted": [
+          "Q0",
+          "Q1",
+          "Q2",
+          "Q3",
+          "Q8",
+          "Q10",
+          "Q12",
+          "Q13",
+          "Q14",
+          "Q15",
+          "Q20",
+          "Q21",
+          "Q22",
+          "Q23"
+        ],
+        "n_adapted": 14,
+        "adapted_marginal_over_zero_codes": [
+          "Q15",
+          "Q23"
+        ],
+        "n_adapted_marginal": 2
+      },
+      {
+        "bundle": [
+          "F1",
+          "F3d"
+        ],
+        "as_written": [
+          "Q0",
+          "Q20"
+        ],
+        "n_as_written": 2,
+        "adapted": [
+          "Q0",
+          "Q1",
+          "Q2",
+          "Q3",
+          "Q8",
+          "Q10",
+          "Q12",
+          "Q13",
+          "Q14",
+          "Q15",
+          "Q20",
+          "Q21",
+          "Q22"
+        ],
+        "n_adapted": 13,
+        "adapted_marginal_over_zero_codes": [
+          "Q15"
+        ],
+        "n_adapted_marginal": 1
+      },
+      {
+        "bundle": [
+          "F1",
+          "F7b"
+        ],
+        "as_written": [
+          "Q0",
+          "Q20",
+          "Q23"
+        ],
+        "n_as_written": 3,
+        "adapted": [
+          "Q0",
+          "Q1",
+          "Q2",
+          "Q3",
+          "Q8",
+          "Q10",
+          "Q12",
+          "Q13",
+          "Q14",
+          "Q20",
+          "Q21",
+          "Q22",
+          "Q23"
+        ],
+        "n_adapted": 13,
+        "adapted_marginal_over_zero_codes": [
+          "Q23"
+        ],
+        "n_adapted_marginal": 1
+      },
+      {
+        "bundle": [
+          "F3b",
+          "F3c"
+        ],
+        "as_written": [],
+        "n_as_written": 0,
+        "adapted": [
+          "Q0",
+          "Q1",
+          "Q2",
+          "Q3",
+          "Q8",
+          "Q10",
+          "Q12",
+          "Q13",
+          "Q14",
+          "Q17",
+          "Q20",
+          "Q21",
+          "Q22"
+        ],
+        "n_adapted": 13,
+        "adapted_marginal_over_zero_codes": [
+          "Q17"
+        ],
+        "n_adapted_marginal": 1
+      },
+      {
+        "bundle": [
+          "F3b",
+          "F3d"
+        ],
+        "as_written": [],
+        "n_as_written": 0,
+        "adapted": [
+          "Q0",
+          "Q1",
+          "Q2",
+          "Q3",
+          "Q8",
+          "Q10",
+          "Q12",
+          "Q13",
+          "Q14",
+          "Q15",
+          "Q20",
+          "Q21",
+          "Q22"
+        ],
+        "n_adapted": 13,
+        "adapted_marginal_over_zero_codes": [
+          "Q15"
+        ],
+        "n_adapted_marginal": 1
+      }
+    ],
+    "bundles_triples_best_as_written": [
+      {
+        "bundle": [
+          "F1",
+          "F4b",
+          "F6"
+        ],
+        "as_written": [
+          "Q0",
+          "Q2",
+          "Q3",
+          "Q10",
+          "Q20",
+          "Q21",
+          "Q22"
+        ],
+        "n_as_written": 7,
+        "adapted": [
+          "Q0",
+          "Q1",
+          "Q2",
+          "Q3",
+          "Q8",
+          "Q10",
+          "Q12",
+          "Q13",
+          "Q14",
+          "Q20",
+          "Q21",
+          "Q22"
+        ],
+        "n_adapted": 12,
+        "adapted_marginal_over_zero_codes": [],
+        "n_adapted_marginal": 0
+      },
+      {
+        "bundle": [
+          "F1",
+          "F4b",
+          "F10b"
+        ],
+        "as_written": [
+          "Q0",
+          "Q1",
+          "Q10",
+          "Q20",
+          "Q22"
+        ],
+        "n_as_written": 5,
+        "adapted": [
+          "Q0",
+          "Q1",
+          "Q2",
+          "Q3",
+          "Q8",
+          "Q10",
+          "Q12",
+          "Q13",
+          "Q14",
+          "Q20",
+          "Q21",
+          "Q22"
+        ],
+        "n_adapted": 12,
+        "adapted_marginal_over_zero_codes": [],
+        "n_adapted_marginal": 0
+      },
+      {
+        "bundle": [
+          "F1",
+          "F4b",
+          "F7b"
+        ],
+        "as_written": [
+          "Q0",
+          "Q10",
+          "Q20",
+          "Q22",
+          "Q23"
+        ],
+        "n_as_written": 5,
+        "adapted": [
+          "Q0",
+          "Q1",
+          "Q2",
+          "Q3",
+          "Q8",
+          "Q10",
+          "Q12",
+          "Q13",
+          "Q14",
+          "Q20",
+          "Q21",
+          "Q22",
+          "Q23"
+        ],
+        "n_adapted": 13,
+        "adapted_marginal_over_zero_codes": [
+          "Q23"
+        ],
+        "n_adapted_marginal": 1
+      },
+      {
+        "bundle": [
+          "F1",
+          "F6",
+          "F7b"
+        ],
+        "as_written": [
+          "Q0",
+          "Q2",
+          "Q3",
+          "Q20",
+          "Q23"
+        ],
+        "n_as_written": 5,
+        "adapted": [
+          "Q0",
+          "Q1",
+          "Q2",
+          "Q3",
+          "Q8",
+          "Q10",
+          "Q12",
+          "Q13",
+          "Q14",
+          "Q20",
+          "Q21",
+          "Q22",
+          "Q23"
+        ],
+        "n_adapted": 13,
+        "adapted_marginal_over_zero_codes": [
+          "Q23"
+        ],
+        "n_adapted_marginal": 1
+      },
+      {
+        "bundle": [
+          "F1",
+          "F3b",
+          "F4b"
+        ],
+        "as_written": [
+          "Q0",
+          "Q10",
+          "Q20",
+          "Q22"
+        ],
+        "n_as_written": 4,
+        "adapted": [
+          "Q0",
+          "Q1",
+          "Q2",
+          "Q3",
+          "Q8",
+          "Q10",
+          "Q12",
+          "Q13",
+          "Q14",
+          "Q20",
+          "Q21",
+          "Q22"
+        ],
+        "n_adapted": 12,
+        "adapted_marginal_over_zero_codes": [],
+        "n_adapted_marginal": 0
+      },
+      {
+        "bundle": [
+          "F1",
+          "F3b",
+          "F6"
+        ],
+        "as_written": [
+          "Q0",
+          "Q2",
+          "Q3",
+          "Q20"
+        ],
+        "n_as_written": 4,
+        "adapted": [
+          "Q0",
+          "Q1",
+          "Q2",
+          "Q3",
+          "Q8",
+          "Q10",
+          "Q12",
+          "Q13",
+          "Q14",
+          "Q20",
+          "Q21",
+          "Q22"
+        ],
+        "n_adapted": 12,
+        "adapted_marginal_over_zero_codes": [],
+        "n_adapted_marginal": 0
+      }
+    ],
+    "bundles_triples_best_adapted_marginal": [
+      {
+        "bundle": [
+          "F3b",
+          "F3c",
+          "F3d"
+        ],
+        "as_written": [],
+        "n_as_written": 0,
+        "adapted": [
+          "Q0",
+          "Q1",
+          "Q2",
+          "Q3",
+          "Q8",
+          "Q10",
+          "Q12",
+          "Q13",
+          "Q14",
+          "Q15",
+          "Q16",
+          "Q17",
+          "Q20",
+          "Q21",
+          "Q22"
+        ],
+        "n_adapted": 15,
+        "adapted_marginal_over_zero_codes": [
+          "Q15",
+          "Q16",
+          "Q17"
+        ],
+        "n_adapted_marginal": 3
+      },
+      {
+        "bundle": [
+          "F3c",
+          "F3d",
+          "F7b"
+        ],
+        "as_written": [],
+        "n_as_written": 0,
+        "adapted": [
+          "Q0",
+          "Q1",
+          "Q2",
+          "Q3",
+          "Q8",
+          "Q10",
+          "Q12",
+          "Q13",
+          "Q14",
+          "Q15",
+          "Q16",
+          "Q20",
+          "Q21",
+          "Q22",
+          "Q23"
+        ],
+        "n_adapted": 15,
+        "adapted_marginal_over_zero_codes": [
+          "Q15",
+          "Q16",
+          "Q23"
+        ],
+        "n_adapted_marginal": 3
+      },
+      {
+        "bundle": [
+          "F1",
+          "F3c",
+          "F3d"
+        ],
+        "as_written": [
+          "Q0",
+          "Q20"
+        ],
+        "n_as_written": 2,
+        "adapted": [
+          "Q0",
+          "Q1",
+          "Q2",
+          "Q3",
+          "Q8",
+          "Q10",
+          "Q12",
+          "Q13",
+          "Q14",
+          "Q15",
+          "Q16",
+          "Q20",
+          "Q21",
+          "Q22"
+        ],
+        "n_adapted": 14,
+        "adapted_marginal_over_zero_codes": [
+          "Q15",
+          "Q16"
+        ],
+        "n_adapted_marginal": 2
+      },
+      {
+        "bundle": [
+          "F1",
+          "F3d",
+          "F7b"
+        ],
+        "as_written": [
+          "Q0",
+          "Q20",
+          "Q23"
+        ],
+        "n_as_written": 3,
+        "adapted": [
+          "Q0",
+          "Q1",
+          "Q2",
+          "Q3",
+          "Q8",
+          "Q10",
+          "Q12",
+          "Q13",
+          "Q14",
+          "Q15",
+          "Q20",
+          "Q21",
+          "Q22",
+          "Q23"
+        ],
+        "n_adapted": 14,
+        "adapted_marginal_over_zero_codes": [
+          "Q15",
+          "Q23"
+        ],
+        "n_adapted_marginal": 2
+      },
+      {
+        "bundle": [
+          "F3b",
+          "F3c",
+          "F7b"
+        ],
+        "as_written": [],
+        "n_as_written": 0,
+        "adapted": [
+          "Q0",
+          "Q1",
+          "Q2",
+          "Q3",
+          "Q8",
+          "Q10",
+          "Q12",
+          "Q13",
+          "Q14",
+          "Q17",
+          "Q20",
+          "Q21",
+          "Q22",
+          "Q23"
+        ],
+        "n_adapted": 14,
+        "adapted_marginal_over_zero_codes": [
+          "Q17",
+          "Q23"
+        ],
+        "n_adapted_marginal": 2
+      },
+      {
+        "bundle": [
+          "F3b",
+          "F3d",
+          "F7b"
+        ],
+        "as_written": [],
+        "n_as_written": 0,
+        "adapted": [
+          "Q0",
+          "Q1",
+          "Q2",
+          "Q3",
+          "Q8",
+          "Q10",
+          "Q12",
+          "Q13",
+          "Q14",
+          "Q15",
+          "Q20",
+          "Q21",
+          "Q22",
+          "Q23"
+        ],
+        "n_adapted": 14,
+        "adapted_marginal_over_zero_codes": [
+          "Q15",
+          "Q23"
+        ],
+        "n_adapted_marginal": 2
+      }
+    ],
+    "named_bundles": {
+      "F1+F4b": {
+        "bundle": [
+          "F1",
+          "F4b"
+        ],
+        "as_written": [
+          "Q0",
+          "Q10",
+          "Q20",
+          "Q22"
+        ],
+        "adapted": [
+          "Q0",
+          "Q1",
+          "Q2",
+          "Q3",
+          "Q8",
+          "Q10",
+          "Q12",
+          "Q13",
+          "Q14",
+          "Q20",
+          "Q21",
+          "Q22"
+        ]
+      },
+      "F1+F6": {
+        "bundle": [
+          "F1",
+          "F6"
+        ],
+        "as_written": [
+          "Q0",
+          "Q2",
+          "Q3",
+          "Q20"
+        ],
+        "adapted": [
+          "Q0",
+          "Q1",
+          "Q2",
+          "Q3",
+          "Q8",
+          "Q10",
+          "Q12",
+          "Q13",
+          "Q14",
+          "Q20",
+          "Q21",
+          "Q22"
+        ]
+      },
+      "F1+F4b+F6": {
+        "bundle": [
+          "F1",
+          "F4b",
+          "F6"
+        ],
+        "as_written": [
+          "Q0",
+          "Q2",
+          "Q3",
+          "Q10",
+          "Q20",
+          "Q21",
+          "Q22"
+        ],
+        "adapted": [
+          "Q0",
+          "Q1",
+          "Q2",
+          "Q3",
+          "Q8",
+          "Q10",
+          "Q12",
+          "Q13",
+          "Q14",
+          "Q20",
+          "Q21",
+          "Q22"
+        ]
+      },
+      "F1+F4b+F6+F10b": {
+        "bundle": [
+          "F1",
+          "F4b",
+          "F6",
+          "F10b"
+        ],
+        "as_written": [
+          "Q0",
+          "Q1",
+          "Q2",
+          "Q3",
+          "Q10",
+          "Q14",
+          "Q20",
+          "Q21",
+          "Q22"
+        ],
+        "adapted": [
+          "Q0",
+          "Q1",
+          "Q2",
+          "Q3",
+          "Q8",
+          "Q10",
+          "Q12",
+          "Q13",
+          "Q14",
+          "Q20",
+          "Q21",
+          "Q22"
+        ]
+      },
+      "F1+F7b": {
+        "bundle": [
+          "F1",
+          "F7b"
+        ],
+        "as_written": [
+          "Q0",
+          "Q20",
+          "Q23"
+        ],
+        "adapted": [
+          "Q0",
+          "Q1",
+          "Q2",
+          "Q3",
+          "Q8",
+          "Q10",
+          "Q12",
+          "Q13",
+          "Q14",
+          "Q20",
+          "Q21",
+          "Q22",
+          "Q23"
+        ]
+      },
+      "F9+F8": {
+        "bundle": [
+          "F9",
+          "F8"
+        ],
+        "as_written": [
+          "Q18",
+          "Q19"
+        ],
+        "adapted": [
+          "Q0",
+          "Q1",
+          "Q2",
+          "Q3",
+          "Q8",
+          "Q10",
+          "Q12",
+          "Q13",
+          "Q14",
+          "Q20",
+          "Q21",
+          "Q22"
+        ]
+      },
+      "F5+F4a+F3d": {
+        "bundle": [
+          "F5",
+          "F4a",
+          "F3d"
+        ],
+        "as_written": [
+          "Q15"
+        ],
+        "adapted": [
+          "Q0",
+          "Q1",
+          "Q2",
+          "Q3",
+          "Q8",
+          "Q10",
+          "Q12",
+          "Q13",
+          "Q14",
+          "Q15",
+          "Q20",
+          "Q21",
+          "Q22"
+        ]
+      },
+      "F5+F4a+F3c+F3b": {
+        "bundle": [
+          "F5",
+          "F4a",
+          "F3c",
+          "F3b"
+        ],
+        "as_written": [
+          "Q17"
+        ],
+        "adapted": [
+          "Q0",
+          "Q1",
+          "Q2",
+          "Q3",
+          "Q8",
+          "Q10",
+          "Q12",
+          "Q13",
+          "Q14",
+          "Q17",
+          "Q20",
+          "Q21",
+          "Q22"
+        ]
+      },
+      "F3c+F3b+F3d (adapted aggregates)": {
+        "bundle": [
+          "F3c",
+          "F3b",
+          "F3d"
+        ],
+        "as_written": [],
+        "adapted": [
+          "Q0",
+          "Q1",
+          "Q2",
+          "Q3",
+          "Q8",
+          "Q10",
+          "Q12",
+          "Q13",
+          "Q14",
+          "Q15",
+          "Q16",
+          "Q17",
+          "Q20",
+          "Q21",
+          "Q22"
+        ]
+      },
+      "F8+F3c+F7c+F6 (+F3b)": {
+        "bundle": [
+          "F8",
+          "F3c",
+          "F7c",
+          "F6",
+          "F3b"
+        ],
+        "as_written": [
+          "Q4"
+        ],
+        "adapted": [
+          "Q0",
+          "Q1",
+          "Q2",
+          "Q3",
+          "Q5",
+          "Q7",
+          "Q8",
+          "Q10",
+          "Q12",
+          "Q13",
+          "Q14",
+          "Q17",
+          "Q20",
+          "Q21",
+          "Q22"
+        ]
+      }
+    }
+  }
+}

@@ -4,8 +4,8 @@ use ivmlite_core::{Database, Schema};
 ///
 /// A trait so the front end is testable without SQLite: `Database` implements
 /// it here. M1b Phase 3's SQLite implementation reads `PRAGMA table_info` and
-/// the table's DDL, and reports what v0 cannot represent — a non-STRICT table,
-/// an `ANY` column, a `COLLATE` clause (spec §7.1) — as a `CatalogError`.
+/// the table's DDL, and reports what the extension cannot capture — a `COLLATE`
+/// clause (spec §7.1) or anything else it cannot represent — as a `CatalogError`.
 pub trait Catalog {
     /// The table called `name`, matched the way SQLite matches identifiers:
     /// ASCII case-insensitively, quoted or not. `Ok(None)` if there is none.

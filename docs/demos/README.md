@@ -25,7 +25,7 @@ mixed mutations; the dark-xray and CPA ledger cases model append-only events:
 - [OpenWhispr speaker counts and word sums](openwhispr.md);
 - [dark-xray period and lifetime traffic totals](dark-xray.md);
 - [CPA Manager Plus hourly core and red full-summary gates](cpa-manager-plus.md);
-- [StoneHub/jot session counts and red complete-session gates](jot.md).
+- [StoneHub/jot session counts, bounds and a red complete-session gate](jot.md).
 
 All except FluxFlow share one selectable benchmark executable:
 
@@ -62,10 +62,17 @@ The OpenWhispr case has 100 synthetic segments per note and checks a stored
 word count against the source's text expression after mixed edits.
 The dark-xray cases use the issue's 9,524,296-event scale by default and check
 the stored total against the source's `up_bytes + down_bytes` expression.
-CPA uses a fixed-hour, stored-column slice of its core totals; jot maintains
-only ambient-session counts. Their complete source-shaped queries are kept as
-opt-in red acceptance tests in
+CPA uses a fixed-hour, stored-column slice of its core totals; the jot
+benchmark measures ambient-session counts. M2c also checks Jot's stored
+integer `MIN/MAX/COUNT` projection after three mixed batches in ordinary CI.
+Their three remaining complete source-shaped queries are kept as opt-in red acceptance tests in
 [`capability_red.rs`](../../crates/ivmlite-test/tests/capability_red.rs).
+
+The current [FluxFlow](fluxflow.md) and [Kener](kener.md) slices use native
+REAL values; Kener maintains `AVG/MIN/MAX/COUNT`. The historical integer
+results below retain their original schemas and dates. Current M2c results
+and the changed-query comparison boundary are in the
+[M2c report](../bench/README.md#m2c-column-types-and-aggregates).
 
 Each case records its public evidence, exact adaptation, unsupported behavior,
 run command and any raw output. These are synthetic development

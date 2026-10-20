@@ -7,6 +7,52 @@ SQL subset and persisted shadow-table format without migration.
 
 ## [Unreleased]
 
+## [0.1.0-alpha.6] - 2026-10-20
+
+### Breaking
+
+- Shadow-table format 6 refuses alpha.5 format-5 state. Old views open as
+  broken views that can be dropped. Drop every old view and recreate it from
+  its SELECT query; there is no automatic state migration.
+
+### Added
+
+- Non-STRICT base tables, every declared type by SQLite affinity, STRICT ANY,
+  and all five storage classes through capture, persisted state and output.
+- `COUNT(column)`, `TOTAL`, `AVG`, `MIN` and `MAX`; exact REAL `SUM`, with
+  retraction-safe indexed extremum state and order-independent aggregation.
+- REAL and BLOB literals with comparison affinity, and same-affinity joins
+  with canonical numeric equality (`1` matches `1.0`).
+- Mixed-type differential tests with an independent exact reference, REAL
+  order-independence and persisted-extremum checks, and artifact smoke coverage
+  for new aggregates, storage classes, retractions, rollback and reopen.
+- An [After M2c census](docs/census/2026-10-17/README.md#after-m2c)
+  compatibility projection: ten adapted application candidates, including
+  low-confidence fits; this is not upstream execution or adoption.
+- A normal-CI Jot stored integer `MIN/MAX/COUNT` projection gate with SQLite
+  parity after three mixed batches. CPA's two full-summary gates and Jot's
+  complete-session gate remain ignored and unsupported; see the
+  [demo roadmap](docs/demos/real-world-demo-roadmap.md#october-18-staged-full-statistics-gates).
+- Task 13 native application measurements (2026-10-19–20): all original
+  ivmlite steady integer ratios were at most 1.038; eight unchanged demos
+  were at most 1.0367. Original naive-recompute 1.061/1.062 flags did not
+  reproduce in the one allowed follow-up (1.027/1.028); a new trigger-control
+  1.053 flag remains explicit. This is not a claim that all raw comparisons
+  are below 5%. [Results and complete evidence](docs/bench/README.md#m2c-column-types-and-aggregates)
+  also report write amplification and changed REAL demo costs, including
+  Kener's 1,760,784 KiB database page allocation and 30.64-second bootstrap.
+
+### Changed
+
+- SUM accepts any column. Integer SUM overflow is judged on the final exact
+  result. REAL SUM/TOTAL/AVG round once and may differ from SQLite's scan-order
+  results, including finite exact results after SQLite intermediate overflow.
+- Group keys use SQLite numeric equality while preserving REAL output when
+  a live REAL key exists. MIN prefers INTEGER and MAX REAL in numeric ties.
+- FluxFlow uses native REAL amounts; Kener uses REAL latency with AVG/MIN/MAX.
+  The supported SQL boundaries and numerical differences are documented in the
+  [release notes](docs/releases/v0.1.0-alpha.6.md).
+
 ## [0.1.0-alpha.5] - 2026-10-15
 
 ### Fixed
@@ -323,7 +369,8 @@ First public technical preview.
 - The Org-roam join/count case is slower than full recomputation at both
   measured configurations.
 
-[Unreleased]: https://github.com/SFARL/ivmlite/compare/v0.1.0-alpha.5...HEAD
+[Unreleased]: https://github.com/SFARL/ivmlite/compare/v0.1.0-alpha.6...HEAD
+[0.1.0-alpha.6]: https://github.com/SFARL/ivmlite/releases/tag/v0.1.0-alpha.6
 [0.1.0-alpha.5]: https://github.com/SFARL/ivmlite/releases/tag/v0.1.0-alpha.5
 [0.1.0-alpha.4]: https://github.com/SFARL/ivmlite/releases/tag/v0.1.0-alpha.4
 [0.1.0-alpha.3]: https://github.com/SFARL/ivmlite/releases/tag/v0.1.0-alpha.3

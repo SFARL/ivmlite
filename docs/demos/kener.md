@@ -20,11 +20,13 @@ ivmlite result.
 
 ## Adapted query
 
-The demo precomputes the quarter-hour bucket, stores integer latency and turns
-conditional status counts into a grouping dimension:
+The demo uses a non-STRICT table with `latency_ms REAL NOT NULL`, precomputes
+the quarter-hour bucket, and turns conditional status counts into a grouping
+dimension:
 
 ```sql
-SELECT monitor_id, bucket_ts, status, SUM(latency_ms), COUNT(*)
+SELECT monitor_id, bucket_ts, status,
+       AVG(latency_ms), MIN(latency_ms), MAX(latency_ms), COUNT(*)
 FROM monitoring_facts
 GROUP BY monitor_id, bucket_ts, status;
 ```
@@ -32,8 +34,12 @@ GROUP BY monitor_id, bucket_ts, status;
 At the source-scale setting, the deterministic fixture produces 4.1 million
 rows and exactly 550,000 initial result groups across 215 monitors. The mixed
 batch covers append, historical status/monitor rewrite, latency correction and
-delete. The application could pivot the status dimension and derive an average
-from sum and count.
+delete. The application can still pivot the status dimension; AVG/MIN/MAX are now
+maintained directly. Latencies are seeded as
+`20 + id % 980 + 0.25 * (id % 4)`, and corrections add 25.0. These dyadic
+values have exactly representable sums at the recorded scale, so the SQLite
+multiset oracle checks the current aggregates exactly. General REAL inputs
+retain the [documented numerical differences](../releases/v0.1.0-alpha.6.md#differences-from-sqlite).
 
 ## Run and result
 
@@ -49,7 +55,10 @@ The covering index of `indexed_recompute` is `monitoring_facts(monitor_id,
 bucket_ts, status, latency_ms)`. The protocol and columns are in the [demos
 README](README.md#benchmark-protocol).
 
-This run, on 2026-10-10, used an Apple M2 Pro, macOS 26.2, Rust 1.95.0,
+### Historical alpha.3 result (2026-10-10)
+
+The following unchanged historical table measures the earlier STRICT integer
+SUM/COUNT adaptation, not the current REAL AVG/MIN/MAX query. This run, on 2026-10-10, used an Apple M2 Pro, macOS 26.2, Rust 1.95.0,
 SQLite 3.53.2, the `0.1.0-alpha.3` extension, an in-memory database, 4.1 million
 base rows, a 500-operation mixed batch and five independent repetitions.
 Apply, maintain and read are each a repetition's median over its ten measured
@@ -86,11 +95,60 @@ before/after run, the same build's first refresh was 4.92 ms.
 
 See the [raw results](results/2026-10-10-kener-macos-m2-pro.txt).
 
+## M2c source-scale result (2026-10-20)
+
+This October 20 run used a 10-core Apple M2 Pro with 16 GiB, macOS 27.0.1,
+Rust 1.95.0, bundled SQLite 3.53.2, an in-memory database, 4.1 million base rows,
+550,000 initial result groups and 500-operation mixed batches. Five independent
+runs each measured ten steady batches after warm-up. Values are medians
+[minimum, maximum] over runs; combined times are measured batch sums. The
+after extension is `84e4c07`, with clean harness `aba0fd7`; the same-day before
+capture used `b647bcb` and its original integer SUM/COUNT query. Exact hashes
+and commands are in the [build CSV](../bench/m2c-demos-builds.csv) and
+[capture provenance](../bench/m2c-capture/README.md).
+
+| Mode | Bootstrap (ms) | First refresh (ms) | Apply (ms) | Maintain (ms) | Read (ms) | Apply + maintain (ms) | End to end (ms) | SQLite pages (KiB) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| no_maintenance | 0.000 [0.000, 0.000] | 0.000 [0.000, 0.000] | 0.167 [0.162, 0.170] | 0.000 [0.000, 0.000] | 0.000 [0.000, 0.000] | 0.167 [0.162, 0.170] | 0.167 [0.162, 0.170] | 119,500 |
+| unindexed_recompute | 0.000 [0.000, 0.000] | 1912.466 [1895.986, 1922.866] | 0.192 [0.189, 0.209] | 1908.265 [1901.148, 1914.990] | 0.000 [0.000, 0.000] | 1908.596 [1901.472, 1915.313] | 1908.596 [1901.472, 1915.313] | 119,500 |
+| indexed_recompute | 1637.267 [1628.107, 1700.497] | 572.818 [570.149, 576.866] | 1.207 [1.197, 1.229] | 571.278 [570.310, 574.859] | 0.000 [0.000, 0.000] | 572.612 [571.511, 576.074] | 572.612 [571.511, 576.074] | 237,728 |
+| ivmlite | 30638.833 [29687.721, 31928.525] | 17.006 [16.310, 20.899] | 4.057 [4.042, 4.072] | 7.010 [6.988, 8.574] | 155.472 [155.102, 159.344] | 11.072 [11.033, 12.648] | 166.546 [166.160, 171.359] | 1,760,784 |
+
+Write plus refresh is 51.72x faster than indexed recomputation and 172.38x
+faster than unindexed recomputation. Reading all groups costs 155.472 ms;
+including that read, the comparisons narrow to 3.44x and 11.46x. There is no
+specialized affected-bucket application baseline here.
+
+These benefits have substantial bootstrap and space costs. Bootstrap is
+30,638.833 [29,687.721, 31,928.525] ms, versus current indexed recomputation's
+1,637.267 [1,628.107, 1,700.497] ms. Total database page allocation is
+**1,760,784 KiB**, versus 237,728 KiB for indexed recomputation and 119,500 KiB
+for the base-only database. Retractable MIN/MAX retain live value
+multiplicities. These page counts cover base tables, indexes, captured deltas
+and shadow state; they measure neither process RSS nor pure operator-state
+size.
+
+In the same-day old-shape capture, ivmlite bootstrap was 6,016.495
+[5,900.298, 6,221.211] ms and page allocation was 255,436 KiB: the current
+figures are 5.092x and **6.893x** larger. Maintenance changed from 1.651
+[1.643, 1.663] to 7.010 [6.988, 8.574] ms; combined cost from 6.158
+[6.103, 6.191] to 11.072 [11.033, 12.648] ms. The query and value types changed,
+so these are adaptation costs, not an engine speedup or integer regression
+gate. The [complete report](../bench/m2c-report.md) retains every before/after
+mode; [matching integer comparisons](../bench/README.md#m2c-column-types-and-aggregates)
+use unchanged shapes.
+
+The [raw results](results/2026-10-20-kener-m2c.txt) ran 09:46–09:56 EDT
+(13:46–13:56 UTC); one-minute load was 2.250 → 1.896 for before and
+1.896 → 2.150 for after. The host was not isolated. These measurements remain
+synthetic and do not establish production performance or adoption.
+
 ## Boundaries
 
-Current ivmlite cannot maintain the source's computed time expression,
-conditional aggregates, `AVG`, `MIN` or `MAX`; it also does not push monitor or
-time constraints into a virtual-table scan. This benchmark drains all 550,000
+Current ivmlite maintains AVG/MIN/MAX but still cannot maintain the source's
+computed time expression or conditional aggregates; stored time buckets and
+status grouping remain adaptations. It also does not push monitor or time
+constraints into a virtual-table scan. This benchmark drains all 550,000
 groups, unlike the page-specific upstream query. It does not test response
 compression, JSON padding, viewer-timezone day composition or concurrent
 writers. PR #842 rebuilds affected buckets in the application; that

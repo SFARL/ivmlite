@@ -1,31 +1,63 @@
 use crate::{Agg, AggFn, CmpOp, ColumnType, Predicate, Schema, ViewQuery};
 use ivmlite_core::{Database, Join, Value};
 
-/// Enumerate v0's single-table query space.
+/// Every aggregate function, each enumerated over every column (M2c spec §6).
+pub const AGGREGATE_FUNCTIONS: [AggFn; 6] = [
+    AggFn::Sum,
+    AggFn::Total,
+    AggFn::Avg,
+    AggFn::Count,
+    AggFn::Min,
+    AggFn::Max,
+];
+
+/// Enumerate the single-table query space.
 ///
-/// Spec §9.2: v0 has finitely many combinations, so enumeration beats
-/// randomness — reproducible and complete. Randomness is left to the update
-/// sequences.
+/// Spec §9.2: the subset has finitely many combinations, so enumeration
+/// beats randomness — reproducible and complete. Randomness is left to the
+/// update sequences.
+///
+/// M2c spec §6 widens it to every aggregate, and the full cross would be
+/// large, so it is restricted (parent spec §9.2 item 4, amended): every
+/// aggregate set meets every group-by under no predicate, and each predicate
+/// meets every group-by with two aggregate sets, `[COUNT(*)]` and one that
+/// mixes SUM, MIN, AVG and `COUNT(column)`. Over a 3-column table that is
+/// 6 × 37 + 6 × 2 × 24 = 510 queries.
 pub fn enumerate(schema: &Schema) -> Vec<ViewQuery> {
-    cross(
+    let arity = schema.arity();
+    let agg = |func: AggFn, column: usize| Agg {
+        func,
+        column: Some(column % arity),
+    };
+    let filtered_aggs = vec![
+        vec![count_star()],
+        vec![
+            agg(AggFn::Sum, 0),
+            agg(AggFn::Min, 1),
+            agg(AggFn::Avg, 2),
+            agg(AggFn::Count, 0),
+        ],
+    ];
+    restricted_cross(
         &group_by_choices(schema),
         &agg_choices(schema),
+        &filtered_aggs,
         &predicates(schema),
     )
 }
 
-/// Enumerate v0's two-table join space: every pair of same-typed key columns,
-/// crossed with the group-bys, aggregates and join predicates over the joined
-/// row — `left`'s columns, then `right`'s.
+/// Enumerate the two-table join space: every pair of same-affinity key
+/// columns, crossed with the group-bys, aggregates and join predicates over
+/// the joined row — `left`'s columns, then `right`'s.
 ///
-/// Keys of different types are never generated: `lower` rejects them (SQLite
-/// would compare them under numeric affinity).
+/// Keys of different affinities are never generated: `lower` rejects them
+/// (M2c spec §5).
 ///
 /// The predicates are `join_predicates`, not the single-table set (M1b Phase
 /// 2a, Ruling 4): one comparison and one null test per column, which reaches
-/// every position of the joined row. The operators rotate with the column, so
-/// over a 4-column joined row only `>`, `>=`, `<` and `<=` appear; `=` and `!=`
-/// are covered by the single-table space.
+/// every position of the joined row. The aggregates rotate with the column
+/// (`join_agg_choices`), and the predicates meet only `[COUNT(*)]`: per key
+/// pair, over a 6-column joined row, 21 × 7 + 21 × 12 = 399 queries.
 pub fn enumerate_join(left: &Schema, right: &Schema) -> Vec<ViewQuery> {
     // The joined row, as a schema, so the dimension functions can run on it.
     // Its name and column names are never rendered.
@@ -38,9 +70,10 @@ pub fn enumerate_join(left: &Schema, right: &Schema) -> Vec<ViewQuery> {
             .cloned()
             .collect(),
     };
-    let shapes = cross(
+    let shapes = restricted_cross(
         &group_by_choices(&joined),
-        &agg_choices(&joined),
+        &join_agg_choices(&joined),
+        &[vec![count_star()]],
         &join_predicates(&joined),
     );
     let mut out = Vec::new();
@@ -91,17 +124,29 @@ pub fn enumerate_database(db: &Database) -> Vec<ViewQuery> {
     }
 }
 
-fn cross(group_bys: &[Vec<usize>], aggs: &[Vec<Agg>], predicates: &[Predicate]) -> Vec<ViewQuery> {
+/// For each group-by: every aggregate set of `aggs` with no predicate, then
+/// every aggregate set of `filtered_aggs` with every predicate of
+/// `predicates` but `Predicate::None` (M2c spec §6).
+fn restricted_cross(
+    group_bys: &[Vec<usize>],
+    aggs: &[Vec<Agg>],
+    filtered_aggs: &[Vec<Agg>],
+    predicates: &[Predicate],
+) -> Vec<ViewQuery> {
+    let query = |group_by: &[usize], aggs: &[Agg], predicate: &Predicate| ViewQuery {
+        group_by: group_by.to_vec(),
+        aggs: aggs.to_vec(),
+        predicate: predicate.clone(),
+        join: None,
+    };
     let mut out = Vec::new();
     for group_by in group_bys {
         for aggs in aggs {
-            for predicate in predicates {
-                out.push(ViewQuery {
-                    group_by: group_by.clone(),
-                    aggs: aggs.clone(),
-                    predicate: predicate.clone(),
-                    join: None,
-                });
+            out.push(query(group_by, aggs, &Predicate::None));
+        }
+        for aggs in filtered_aggs {
+            for predicate in predicates.iter().filter(|p| **p != Predicate::None) {
+                out.push(query(group_by, aggs, predicate));
             }
         }
     }
@@ -119,47 +164,84 @@ fn group_by_choices(schema: &Schema) -> Vec<Vec<usize>> {
     out
 }
 
-fn agg_choices(schema: &Schema) -> Vec<Vec<Agg>> {
-    let count = Agg {
+fn count_star() -> Agg {
+    Agg {
         func: AggFn::Count,
         column: None,
-    };
-    let mut out = vec![vec![count.clone()]];
-    for (i, col) in schema.columns.iter().enumerate() {
-        if col.ty != ColumnType::Integer {
-            continue;
+    }
+}
+
+/// `[COUNT(*)]`, then for each column and each function `[f(c)]` and
+/// `[f(c), COUNT(*)]`.
+fn agg_choices(schema: &Schema) -> Vec<Vec<Agg>> {
+    let mut out = vec![vec![count_star()]];
+    for column in 0..schema.arity() {
+        for func in AGGREGATE_FUNCTIONS {
+            let agg = Agg {
+                func,
+                column: Some(column),
+            };
+            out.push(vec![agg.clone()]);
+            out.push(vec![agg, count_star()]);
         }
-        let sum = Agg {
-            func: AggFn::Sum,
-            column: Some(i),
-        };
-        out.push(vec![sum.clone()]);
-        out.push(vec![sum, count.clone()]);
     }
     out
 }
 
-/// The literal every enumerated comparison on a column of type `ty` uses: the
-/// middle of `Domain::default()`'s values (`0..8`, rendered `"v0"`..`"v7"` for
-/// TEXT), so each operator keeps some rows and drops others, and `=` / `!=`
-/// meet rows equal to the literal.
-fn literal(ty: ColumnType) -> Value {
+/// `[COUNT(*)]`, then for joined column `c`
+/// `[AGGREGATE_FUNCTIONS[c % 6](c), COUNT(*)]`: over a 6-column joined row
+/// every function appears once, on both sides of the table boundary.
+fn join_agg_choices(joined: &Schema) -> Vec<Vec<Agg>> {
+    let mut out = vec![vec![count_star()]];
+    for column in 0..joined.arity() {
+        let func = AGGREGATE_FUNCTIONS[column % AGGREGATE_FUNCTIONS.len()];
+        out.push(vec![
+            Agg {
+                func,
+                column: Some(column),
+            },
+            count_star(),
+        ]);
+    }
+    out
+}
+
+/// The literals a comparison on a column of affinity `ty` uses, picked by
+/// an index (`literals(ty)[i % len]`): values of several classes, each
+/// meeting the column through SQLite's comparison affinity (M2c spec §5),
+/// near the middle of the column's pool, so each operator keeps some rows
+/// and drops others.
+///
+/// A TEXT column never meets a REAL literal, which `lower` refuses
+/// (M2c spec §5, amendment 4).
+fn literals(ty: ColumnType) -> Vec<Value> {
+    let text = |s: &str| Value::Text(s.into());
     match ty {
-        ColumnType::Integer => Value::Int(4),
-        ColumnType::Text => Value::Text("v4".into()),
+        ColumnType::Integer | ColumnType::Numeric => {
+            vec![Value::Int(3), Value::Real(2.5), text("3")]
+        }
+        ColumnType::Real => vec![Value::Real(2.0), text("2.5"), Value::Int(3)],
+        ColumnType::Text => vec![text("v3"), Value::Int(12)],
+        ColumnType::Blob => vec![Value::Int(2), text("v1"), Value::Blob(vec![1])],
     }
 }
 
-/// The single-table predicates: `None`, every operator on every column, and
-/// `IS NULL` / `IS NOT NULL` on every nullable column.
+fn literal(ty: ColumnType, i: usize) -> Value {
+    let all = literals(ty);
+    all[i % all.len()].clone()
+}
+
+/// The single-table predicates: `None`, every operator on every column (the
+/// literal picked by the operator's index in `CmpOp::ALL`), and `IS NULL` /
+/// `IS NOT NULL` on every nullable column.
 fn predicates(schema: &Schema) -> Vec<Predicate> {
     let mut out = vec![Predicate::None];
     for (column, col) in schema.columns.iter().enumerate() {
-        for op in CmpOp::ALL {
+        for (i, op) in CmpOp::ALL.into_iter().enumerate() {
             out.push(Predicate::Compare {
                 column,
                 op,
-                value: literal(col.ty),
+                value: literal(col.ty, i),
             });
         }
     }
@@ -173,15 +255,16 @@ fn predicates(schema: &Schema) -> Vec<Predicate> {
 }
 
 /// The join predicates (Ruling 4): `None`, one comparison per column with the
-/// operator `CmpOp::ALL[column % 6]`, and one null test per nullable column —
-/// `IS NULL` on even columns, `IS NOT NULL` on odd ones.
+/// operator `CmpOp::ALL[column % 6]` and the literal picked by the column,
+/// and one null test per nullable column — `IS NULL` on even columns,
+/// `IS NOT NULL` on odd ones.
 fn join_predicates(joined: &Schema) -> Vec<Predicate> {
     let mut out = vec![Predicate::None];
     for (column, col) in joined.columns.iter().enumerate() {
         out.push(Predicate::Compare {
             column,
             op: CmpOp::ALL[column % CmpOp::ALL.len()],
-            value: literal(col.ty),
+            value: literal(col.ty, column),
         });
     }
     for (column, col) in joined.columns.iter().enumerate() {
@@ -201,7 +284,7 @@ mod tests {
     use super::*;
     use crate::test_support::kv;
     use crate::{Column, ColumnType, Schema};
-    use ivmlite_core::{CmpOp, Value};
+    use ivmlite_core::CmpOp;
 
     #[test]
     fn enumerate_join_pairs_only_same_typed_keys() {
@@ -228,7 +311,17 @@ mod tests {
             })
             .collect();
         pairs.dedup();
-        assert_eq!(pairs, vec![(0, 1), (1, 0)]);
+        assert_eq!(pairs, vec![(0, 2), (1, 1), (2, 0)]);
+        let db = crate::gen_real_numeric_database();
+        let mut pairs: Vec<(usize, usize)> = enumerate_join(&db.tables()[0], &db.tables()[1])
+            .iter()
+            .map(|q| {
+                let j = q.join.as_ref().expect("every join query has a join");
+                (j.left_column, j.right_column)
+            })
+            .collect();
+        pairs.dedup();
+        assert_eq!(pairs, vec![(0, 2), (1, 0), (2, 1)]);
     }
 
     #[test]
@@ -314,32 +407,110 @@ mod tests {
     }
 
     #[test]
-    fn enumerate_sizes_match_the_plan() {
-        // M1b Phase 2a, Ruling 4.
+    fn the_enumeration_has_the_recorded_size() {
+        // Recorded in the parent spec §9.2 amendment (M2c spec §6).
         let db = crate::gen_database(2);
-        assert_eq!(enumerate(&db.tables()[0]).len(), 153);
-        assert_eq!(enumerate_join(&db.tables()[0], &db.tables()[1]).len(), 900);
-        let swapped = crate::gen_database_with_swapped_right_table();
-        assert_eq!(
-            enumerate_join(&swapped.tables()[0], &swapped.tables()[1]).len(),
-            900
-        );
+        assert_eq!(enumerate(&db.tables()[0]).len(), 510);
+        for db in [
+            crate::gen_database(2),
+            crate::gen_database_with_swapped_right_table(),
+            crate::gen_real_numeric_database(),
+        ] {
+            assert_eq!(enumerate_join(&db.tables()[0], &db.tables()[1]).len(), 1197);
+        }
     }
 
     #[test]
-    fn every_comparison_literal_has_its_columns_type() {
+    fn the_enumeration_covers_every_aggregate_on_every_column() {
         let db = crate::gen_database(2);
-        let (l, r) = (&db.tables()[0], &db.tables()[1]);
-        let joined: Vec<ColumnType> = l.columns.iter().chain(&r.columns).map(|c| c.ty).collect();
-        let single = enumerate(l).into_iter().map(|q| (q, &joined[..2]));
-        let joins = enumerate_join(l, r).into_iter().map(|q| (q, &joined[..]));
-        for (q, types) in single.chain(joins) {
-            if let Predicate::Compare { column, value, .. } = &q.predicate {
-                let ok = matches!(
-                    (types[*column], value),
-                    (ColumnType::Integer, Value::Int(_)) | (ColumnType::Text, Value::Text(_))
+        let queries = enumerate(&db.tables()[0]);
+        for func in [
+            AggFn::Sum,
+            AggFn::Total,
+            AggFn::Avg,
+            AggFn::Count,
+            AggFn::Min,
+            AggFn::Max,
+        ] {
+            for c in 0..3 {
+                assert!(
+                    queries.iter().any(|q| q.aggs.contains(&Agg {
+                        func,
+                        column: Some(c)
+                    })),
+                    "{func:?}({c})"
                 );
-                assert!(ok, "{q:?}");
+            }
+        }
+        let joins = enumerate_join(&db.tables()[0], &db.tables()[1]);
+        for func in [
+            AggFn::Sum,
+            AggFn::Total,
+            AggFn::Avg,
+            AggFn::Count,
+            AggFn::Min,
+            AggFn::Max,
+        ] {
+            assert!(
+                joins
+                    .iter()
+                    .any(|q| q.aggs.iter().any(|a| a.func == func && a.column.is_some())),
+                "{func:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn comparison_literals_follow_the_recorded_affinity_rotation() {
+        // Pin the inputs as well as lower's acceptance: a different literal
+        // can lower successfully while silently losing conversion coverage.
+        let expected = |ty: ColumnType| match ty {
+            ColumnType::Integer | ColumnType::Numeric => {
+                vec![Value::Int(3), Value::Real(2.5), Value::Text("3".into())]
+            }
+            ColumnType::Real => {
+                vec![Value::Real(2.0), Value::Text("2.5".into()), Value::Int(3)]
+            }
+            ColumnType::Text => vec![Value::Text("v3".into()), Value::Int(12)],
+            ColumnType::Blob => {
+                vec![
+                    Value::Int(2),
+                    Value::Text("v1".into()),
+                    Value::Blob(vec![1]),
+                ]
+            }
+        };
+        for db in [
+            crate::gen_database(2),
+            crate::gen_database_with_swapped_right_table(),
+            crate::gen_real_numeric_database(),
+        ] {
+            let schema = &db.tables()[0];
+            for q in enumerate(schema) {
+                if let Predicate::Compare { column, op, value } = q.predicate {
+                    let literals = expected(schema.columns[column].ty);
+                    let index = CmpOp::ALL
+                        .iter()
+                        .position(|candidate| *candidate == op)
+                        .unwrap();
+                    assert_eq!(value, literals[index % literals.len()]);
+                }
+            }
+            let columns: Vec<_> = db.tables().iter().flat_map(|t| &t.columns).collect();
+            for q in enumerate_join(&db.tables()[0], &db.tables()[1]) {
+                if let Predicate::Compare { column, value, .. } = q.predicate {
+                    let literals = expected(columns[column].ty);
+                    assert_eq!(value, literals[column % literals.len()]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_literal_is_one_lower_accepts() {
+        for db in [crate::gen_database(2), crate::gen_real_numeric_database()] {
+            for q in enumerate_database(&db) {
+                ivmlite_core::lower_query(&q, &db).unwrap_or_else(|e| panic!("{q:?}: {e}"));
             }
         }
     }
@@ -350,7 +521,7 @@ mod tests {
         // position of the joined row, both sides of the boundary.
         let db = crate::gen_database(2);
         let qs = enumerate_join(&db.tables()[0], &db.tables()[1]);
-        for column in 0..4 {
+        for column in 0..6 {
             assert!(
                 qs.iter().any(
                     |q| matches!(q.predicate, Predicate::Compare { column: c, .. } if c == column)
@@ -393,34 +564,26 @@ mod tests {
     }
 
     #[test]
-    fn enumerate_only_sums_integer_columns() {
-        let schema = orders();
-        for q in enumerate(&schema) {
+    fn only_count_may_omit_its_column() {
+        // Spec §5.2 (`lower`): every aggregate but COUNT(*) names a column.
+        let db = crate::gen_database(2);
+        let single = enumerate(&db.tables()[0]);
+        let joins = enumerate_join(&db.tables()[0], &db.tables()[1]);
+        for q in single.iter().chain(&joins) {
             for agg in &q.aggs {
-                if agg.func == AggFn::Sum {
-                    let idx = agg.column.expect("SUM must have a column");
-                    assert_eq!(
-                        schema.columns[idx].ty,
-                        ColumnType::Integer,
-                        "v0 has no floating point, so SUM may only apply to INTEGER columns"
-                    );
-                }
+                assert!(
+                    agg.func == AggFn::Count || agg.column.is_some(),
+                    "{:?} must name a column: {q:?}",
+                    agg.func
+                );
             }
         }
-    }
-
-    #[test]
-    fn enumerate_always_count_has_none() {
-        let schema = orders();
-        for q in enumerate(&schema) {
-            for agg in &q.aggs {
-                if agg.func == AggFn::Count {
-                    assert!(
-                        agg.column.is_none(),
-                        "COUNT(*) must have column: None (spec §5.2)"
-                    );
-                }
-            }
-        }
+        assert!(
+            single.iter().any(|q| q
+                .aggs
+                .iter()
+                .any(|a| a.func == AggFn::Count && a.column.is_none())),
+            "COUNT(*) is enumerated"
+        );
     }
 }
