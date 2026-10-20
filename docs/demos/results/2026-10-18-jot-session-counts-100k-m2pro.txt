@@ -1,0 +1,11 @@
+# command: target/release/examples/demand_case_bench jot_session_counts 100000 200 3
+# commit: 7fe0910c2979636ee054348cec56a434418f66f8; uncommitted changes under crates/, Cargo.toml or Cargo.lock: yes
+# sqlite: 3.53.2 (bundled by rusqlite in this harness, which hosts the extension)
+# ivmlite extension: crates/ivmlite-sqlite/target/release/libivmlite_sqlite.dylib; built from ivmlite-sqlite 0.1.0-alpha.5; staleness check passed
+# workload: jot_session_counts, 100000 base rows, 200-operation batches, 3 repeats; rows report the median and min-max over the repeats
+# rounds: one warm-up batch, then 10 measured batches per run; apply_ms, maintain_ms and read_ms are each a run's median over its measured batches, and apply_plus_maintain_ms and end_to_end_ms the median of each batch's own sum
+case,mode,base_rows,batch_size,repeats,bootstrap_ms,bootstrap_min_ms,bootstrap_max_ms,first_refresh_ms,first_refresh_min_ms,first_refresh_max_ms,apply_ms,apply_min_ms,apply_max_ms,maintain_ms,maintain_min_ms,maintain_max_ms,read_ms,read_min_ms,read_max_ms,apply_plus_maintain_ms,apply_plus_maintain_min_ms,apply_plus_maintain_max_ms,end_to_end_ms,end_to_end_min_ms,end_to_end_max_ms,database_kib,database_kib_min,database_kib_max
+jot_session_counts,no_maintenance,100000,200,3,0.000,0.000,0.000,0.000,0.000,0.000,0.073,0.069,0.075,0.000,0.000,0.000,0.000,0.000,0.000,0.073,0.069,0.075,0.073,0.069,0.075,3688.0,3688.0,3688.0
+jot_session_counts,unindexed_recompute,100000,200,3,0.000,0.000,0.000,18.117,17.697,18.288,0.074,0.074,0.076,17.401,17.307,17.466,0.000,0.000,0.000,17.477,17.381,17.541,17.477,17.381,17.541,3688.0,3688.0,3688.0
+jot_session_counts,indexed_recompute,100000,200,3,45.951,45.796,46.086,3.526,3.507,3.540,0.261,0.254,0.288,3.527,3.510,3.556,0.000,0.000,0.000,3.786,3.771,3.837,3.786,3.771,3.837,6456.0,6456.0,6456.0
+jot_session_counts,ivmlite,100000,200,3,69.412,65.168,76.245,0.902,0.875,0.914,1.542,1.539,1.617,0.617,0.613,0.670,0.019,0.018,0.025,2.158,2.157,2.287,2.180,2.176,2.309,3816.0,3816.0,3816.0

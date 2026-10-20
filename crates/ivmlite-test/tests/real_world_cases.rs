@@ -9,7 +9,8 @@ mod common;
 use common::*;
 
 use ivmlite_test::demand_cases::{
-    DemandCase, KENER, NICTI, NOOP, OPENWHISPR, PHOENIX, POCKETBASE, POSTIO, ZCASH, ZENOD,
+    DemandCase, CPA_HOURLY_CORE, DARK_XRAY_LIFETIME, DARK_XRAY_PERIOD, JOT_SESSION_COUNTS, KENER,
+    NICTI, NOOP, OPENWHISPR, PHOENIX, POCKETBASE, POSTIO, ZCASH, ZENOD,
 };
 use ivmlite_test::demo_bench::{measured_rounds, Workload, ROUNDS};
 use ivmlite_test::fluxflow::{
@@ -293,6 +294,114 @@ fn pocketbase_counts_retract_the_last_book_of_an_author() {
 #[test]
 fn openwhispr_speaker_rollup_tracks_segment_and_note_changes() {
     assert_demand_case_tracks_mixed_changes(&OPENWHISPR, 1);
+}
+
+#[test]
+fn dark_xray_period_and_lifetime_totals_track_immutable_arrivals() {
+    for (case, keys) in [(&DARK_XRAY_PERIOD, 2), (&DARK_XRAY_LIFETIME, 1)] {
+        assert_demand_case_tracks_mixed_changes(case, keys);
+    }
+}
+
+#[test]
+fn dark_xray_views_match_the_original_byte_expression() {
+    let c = open_with_extension(None).unwrap();
+    c.execute_batch(DARK_XRAY_PERIOD.ddl).unwrap();
+    DARK_XRAY_PERIOD.seed(&c, 1_200).unwrap();
+    for case in [&DARK_XRAY_PERIOD, &DARK_XRAY_LIFETIME] {
+        create(&c, case.view_name, case.view_sql).unwrap();
+    }
+
+    for round in 0..=ROUNDS {
+        if round > 0 {
+            DARK_XRAY_PERIOD
+                .apply_mixed_batch(&c, 1_200, 40, round - 1)
+                .unwrap();
+            refresh(&c, DARK_XRAY_PERIOD.view_name).unwrap();
+            refresh(&c, DARK_XRAY_LIFETIME.view_name).unwrap();
+        }
+        assert_eq!(
+            rows(&c, "SELECT * FROM dark_xray_period_totals"),
+            rows(
+                &c,
+                "SELECT owner, period, SUM(up_bytes + down_bytes)
+                      FROM traffic_ledger GROUP BY owner, period"
+            ),
+            "period round {round}"
+        );
+        assert_eq!(
+            rows(&c, "SELECT * FROM dark_xray_lifetime_totals"),
+            rows(
+                &c,
+                "SELECT owner, SUM(up_bytes + down_bytes)
+                      FROM traffic_ledger GROUP BY owner"
+            ),
+            "lifetime round {round}"
+        );
+    }
+}
+
+#[test]
+fn cpa_hourly_core_tracks_arrivals_and_source_conditional_counts() {
+    const SOURCE_CORE: &str = "SELECT hour_bucket, model, COUNT(*),
+        SUM(CASE WHEN failed=0 THEN 1 ELSE 0 END),
+        SUM(CASE WHEN failed=1 THEN 1 ELSE 0 END),
+        SUM(input_tokens), SUM(output_tokens), SUM(total_tokens)
+        FROM usage_events GROUP BY hour_bucket, model";
+    assert_demand_case_tracks_mixed_changes(&CPA_HOURLY_CORE, 2);
+
+    let c = open_with_extension(None).unwrap();
+    c.execute_batch(CPA_HOURLY_CORE.ddl).unwrap();
+    CPA_HOURLY_CORE.seed(&c, 1_200).unwrap();
+    create(&c, CPA_HOURLY_CORE.view_name, CPA_HOURLY_CORE.view_sql).unwrap();
+    for round in 0..=ROUNDS {
+        if round > 0 {
+            CPA_HOURLY_CORE
+                .apply_mixed_batch(&c, 1_200, 40, round - 1)
+                .unwrap();
+            refresh(&c, CPA_HOURLY_CORE.view_name).unwrap();
+        }
+        assert_eq!(
+            rows(&c, "SELECT * FROM cpa_hourly_core_totals"),
+            rows(&c, SOURCE_CORE),
+            "conditional counts at round {round}"
+        );
+    }
+}
+
+#[test]
+fn jot_session_counts_track_mixed_changes_and_failed_replay() {
+    assert_demand_case_tracks_mixed_changes(&JOT_SESSION_COUNTS, 1);
+
+    let c = open_with_extension(None).unwrap();
+    c.execute_batch(JOT_SESSION_COUNTS.ddl).unwrap();
+    JOT_SESSION_COUNTS.seed(&c, 1_200).unwrap();
+    create(
+        &c,
+        JOT_SESSION_COUNTS.view_name,
+        JOT_SESSION_COUNTS.view_sql,
+    )
+    .unwrap();
+    let initial = rows(&c, "SELECT * FROM jot_ambient_counts");
+
+    c.execute_batch("BEGIN").unwrap();
+    assert!(c
+        .execute(
+            "INSERT INTO transcripts VALUES (0, 'session-00', 'ambient', 0, 500)",
+            []
+        )
+        .is_err());
+    c.execute_batch("ROLLBACK").unwrap();
+    refresh(&c, JOT_SESSION_COUNTS.view_name).unwrap();
+    assert_eq!(rows(&c, "SELECT * FROM jot_ambient_counts"), initial);
+
+    c.execute_batch(
+        "BEGIN; INSERT INTO transcripts VALUES
+        (5000, 'session-00', 'ambient', 5000000, 5000500); ROLLBACK",
+    )
+    .unwrap();
+    refresh(&c, JOT_SESSION_COUNTS.view_name).unwrap();
+    assert_eq!(rows(&c, "SELECT * FROM jot_ambient_counts"), initial);
 }
 
 #[test]

@@ -8,8 +8,9 @@ The [real-world demo roadmap](real-world-demo-roadmap.md) records the next
 source-backed candidates, their evidence levels, current ivmlite boundaries,
 and the order in which they were implemented.
 
-Ten executable workloads now use the real extension,
-deterministic large fixtures, mixed mutations and SQLite recomputation oracles:
+Fourteen executable workloads now use the real extension,
+deterministic large fixtures and SQLite recomputation oracles. Most exercise
+mixed mutations; the dark-xray and CPA ledger cases model append-only events:
 
 - [FluxFlow grouped-flow rollup](fluxflow.md), including a hand-written trigger
   baseline;
@@ -21,7 +22,10 @@ deterministic large fixtures, mixed mutations and SQLite recomputation oracles:
 - [Postio mailbox footprint](postio.md);
 - [Phoenix project token rollup](phoenix.md);
 - [PocketBase author counts](pocketbase.md);
-- [OpenWhispr speaker counts and word sums](openwhispr.md).
+- [OpenWhispr speaker counts and word sums](openwhispr.md);
+- [dark-xray period and lifetime traffic totals](dark-xray.md);
+- [CPA Manager Plus hourly core and red full-summary gates](cpa-manager-plus.md);
+- [StoneHub/jot session counts, bounds and a red complete-session gate](jot.md).
 
 All except FluxFlow share one selectable benchmark executable:
 
@@ -41,6 +45,10 @@ cargo run --release --locked -p ivmlite-test --example demand_case_bench -- post
 cargo run --release --locked -p ivmlite-test --example demand_case_bench -- phoenix_token_rollup
 cargo run --release --locked -p ivmlite-test --example demand_case_bench -- pocketbase_author_counts
 cargo run --release --locked -p ivmlite-test --example demand_case_bench -- openwhispr_speaker_words
+cargo run --release --locked -p ivmlite-test --example demand_case_bench -- dark_xray_period_usage
+cargo run --release --locked -p ivmlite-test --example demand_case_bench -- dark_xray_lifetime_usage
+cargo run --release --locked -p ivmlite-test --example demand_case_bench -- cpa_hourly_core
+cargo run --release --locked -p ivmlite-test --example demand_case_bench -- jot_session_counts
 ```
 
 For the five new cases, `rows` means ledger events (Zenod), assets (Nicti),
@@ -52,9 +60,22 @@ necessarily the same number of SQL statements across different cases.
 All modes within a case perform exactly the same statements.
 The OpenWhispr case has 100 synthetic segments per note and checks a stored
 word count against the source's text expression after mixed edits.
+The dark-xray cases use the issue's 9,524,296-event scale by default and check
+the stored total against the source's `up_bytes + down_bytes` expression.
+CPA uses a fixed-hour, stored-column slice of its core totals; the jot
+benchmark measures ambient-session counts. M2c also checks Jot's stored
+integer `MIN/MAX/COUNT` projection after three mixed batches in ordinary CI.
+Their three remaining complete source-shaped queries are kept as opt-in red acceptance tests in
+[`capability_red.rs`](../../crates/ivmlite-test/tests/capability_red.rs).
+
+The current [FluxFlow](fluxflow.md) and [Kener](kener.md) slices use native
+REAL values; Kener maintains `AVG/MIN/MAX/COUNT`. The historical integer
+results below retain their original schemas and dates. Current M2c results
+and the changed-query comparison boundary are in the
+[M2c report](../bench/README.md#m2c-column-types-and-aggregates).
 
 Each case records its public evidence, exact adaptation, unsupported behavior,
-source-scale command and raw output. These are synthetic development
+run command and any raw output. These are synthetic development
 benchmarks rather than reproductions of production deployments.
 
 ### Benchmark protocol
@@ -85,8 +106,9 @@ Phase 4 benchmark protocol
      which may come from different batches;
   7. verify the final state, and record `database_kib`.
 
-  Every batch follows the same operation schedule, and no two batches touch the same rows, so
-  one run applies eleven. The state is verified after the warm-up and after
+  Every batch follows the same operation schedule, so one run applies eleven.
+  Mixed-mutation cases touch disjoint row ranges; dark-xray and CPA only append
+  new event IDs. The state is verified after the warm-up and after
   the last measured batch, outside the timers, but not between measured
   batches. Verification compares multisets of rows: duplicates count, and the
   integer 5 differs from the real 5.0. A mismatch aborts the run.
@@ -121,11 +143,11 @@ The modes are:
   mode retains SQLite's natural plan. Both plans execute equivalent SQL,
   checked against the ordinary query after timing and space sampling. Compare ivmlite with
   the faster recomputation mode when discussing a speedup;
-- `handwritten_trigger` (FluxFlow and the five new rollups): a rollup table kept inside each write
-  by independent SQL triggers; reading it is `read_ms`. The new rollups
-  generate those triggers from fixed case definitions and maintain both
-  sides of each join. They are local counterparts, not copies of upstream
-  implementations;
+- `handwritten_trigger` (FluxFlow, five rollups, and dark-xray): a rollup table
+  kept inside each write by independent SQL triggers; reading it is `read_ms`.
+  The five rollups generate triggers from fixed case definitions and maintain
+  both sides of each join. These are local counterparts, not copies of
+  upstream implementations;
 - `ivmlite`: capture triggers inside the writes, then explicit refresh
   (`maintain_ms`) and reading the view (`read_ms`).
 

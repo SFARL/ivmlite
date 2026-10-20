@@ -29,6 +29,10 @@ SQL subset and persisted shadow-table format without migration.
 - An [After M2c census](docs/census/2026-10-17/README.md#after-m2c)
   compatibility projection: ten adapted application candidates, including
   low-confidence fits; this is not upstream execution or adoption.
+- A normal-CI Jot stored integer `MIN/MAX/COUNT` projection gate with SQLite
+  parity after three mixed batches. CPA's two full-summary gates and Jot's
+  complete-session gate remain ignored and unsupported; see the
+  [demo roadmap](docs/demos/real-world-demo-roadmap.md#october-18-staged-full-statistics-gates).
 - Task 13 native application measurements (2026-10-19–20): all original
   ivmlite steady integer ratios were at most 1.038; eight unchanged demos
   were at most 1.0367. Original naive-recompute 1.061/1.062 flags did not

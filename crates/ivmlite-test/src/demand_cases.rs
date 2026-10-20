@@ -8,8 +8,14 @@ use rusqlite::{params, Connection, Statement};
 
 use crate::demo_bench::{ApplyFn, Handwritten, Workload};
 
+mod cpa;
+mod dark_xray;
+mod jot;
 mod openwhispr;
 mod rollups;
+pub use cpa::CPA_HOURLY_CORE;
+pub use dark_xray::{DARK_XRAY_LIFETIME, DARK_XRAY_PERIOD};
+pub use jot::JOT_SESSION_COUNTS;
 pub use openwhispr::OPENWHISPR;
 pub use rollups::{NICTI, PHOENIX, POCKETBASE, POSTIO, ZENOD};
 
@@ -205,7 +211,7 @@ const KENER_STATUS: usize = 1;
 const KENER_LATENCY: usize = 2;
 const KENER_DELETE: usize = 3;
 
-pub const ALL: [&DemandCase; 9] = [
+pub const ALL: [&DemandCase; 13] = [
     &NOOP,
     &ZCASH,
     &KENER,
@@ -215,6 +221,10 @@ pub const ALL: [&DemandCase; 9] = [
     &PHOENIX,
     &POCKETBASE,
     &OPENWHISPR,
+    &DARK_XRAY_PERIOD,
+    &DARK_XRAY_LIFETIME,
+    &CPA_HOURLY_CORE,
+    &JOT_SESSION_COUNTS,
 ];
 
 pub fn by_name(name: &str) -> Option<&'static DemandCase> {
