@@ -1,0 +1,4088 @@
+[
+  {
+    "id": "row15",
+    "rows": [
+      15
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-core/src/node.rs",
+        "old": "Value::Null => false,",
+        "new": "Value::Null => true,",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "be697f7cae33940c135e0e1183ebfd28cec315b84e3d6c5f881409078a5ece47"
+      },
+      {
+        "file": "crates/ivmlite-core/src/node.rs",
+        "old": "Predicate::IsNotNull { column } => !matches!(row.get(*column), Value::Null),",
+        "new": "Predicate::IsNotNull { .. } => true,",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "be697f7cae33940c135e0e1183ebfd28cec315b84e3d6c5f881409078a5ece47"
+      }
+    ],
+    "primary_tests": [
+      "node::tests::filter_treats_null_as_unknown_not_as_false_negation"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-core/src/node.rs": "be697f7cae33940c135e0e1183ebfd28cec315b84e3d6c5f881409078a5ece47"
+    },
+    "edits_sha256": "be7f0b3ef8ece6b8967e4f75dc4c112ffc60ece0a37eb29918eabf9bff9be611",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "§6.1 Three-valued logic: a predicate evaluates to UNKNOWN on `NULL`, and the row enters neither side's result — not \"NULL is false\", and not \"NULL is true\" (M1a Phase 2 Task 3)",
+    "source_ledger_anchors": [
+      {
+        "original_index": 15,
+        "current_index": 15,
+        "current_line": 43,
+        "spec": "§6.1 Three-valued logic: a predicate evaluates to UNKNOWN on `NULL`, and the row enters neither side's result — not \"NULL is false\", and not \"NULL is true\" (M1a Phase 2 Task 3)",
+        "mutation": "Make `passes` return `true` for `Value::Null` (in `Compare`'s `(Value::Null, _)` arm — M1b Phase 2a: previously the single-operator predicate's non-`Int` arm — and in `IsNotNull`)"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 15,
+        "line": 49,
+        "spec": "§6.1 Three-valued logic: a predicate evaluates to UNKNOWN on `NULL`, and the row enters neither side's result — not \"NULL is false\", and not \"NULL is true\" (M1a Phase 2 Task 3)"
+      }
+    ],
+    "accepted_attempt_id": "row15-a"
+  },
+  {
+    "id": "row22",
+    "rows": [
+      22
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-core/src/plan.rs",
+        "old": "    let mut predicate = view.predicate.clone();",
+        "new": "    if let Predicate::IsNotNull { column } = &view.predicate {\n        if columns[*column].ty != ColumnType::Integer {\n            return Err(PlanError(\"mutated IsNotNull type check\".into()));\n        }\n    }\n    let mut predicate = view.predicate.clone();",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "63673b186f61c5a944e0dd3f1b358d2e7f931f6a3c097a6d9e762e989fe87d78"
+      }
+    ],
+    "primary_tests": [
+      "plan::tests::is_not_null_over_a_text_column_is_still_allowed"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-core/src/plan.rs": "63673b186f61c5a944e0dd3f1b358d2e7f931f6a3c097a6d9e762e989fe87d78"
+    },
+    "edits_sha256": "5bd57a5da76339af304e8763f6bbadd481b5778f2e6aea920fb347330693a318",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "The type checks must not over-reject: `IS NOT NULL` is type-agnostic and must stay legal on TEXT columns",
+    "source_ledger_anchors": [
+      {
+        "original_index": 22,
+        "current_index": 22,
+        "current_line": 50,
+        "spec": "The type checks must not over-reject: `IS NOT NULL` is type-agnostic and must stay legal on TEXT columns",
+        "mutation": "Make `lower` also require INTEGER for `IsNotNull`"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 22,
+        "line": 56,
+        "spec": "The type checks must not over-reject: `IS NOT NULL` is type-agnostic and must stay legal on TEXT columns"
+      }
+    ],
+    "accepted_attempt_id": "row22-b"
+  },
+  {
+    "id": "row23",
+    "rows": [
+      23
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-core/src/arrangement.rs",
+        "old": "Some(vals) => vals.iter().map(|(v, &w)| (v.clone(), w)).collect(),",
+        "new": "Some(vals) => vals.iter().take(1).map(|(v, &w)| (v.clone(), w)).collect(),",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "3fcc81b4b1243ce6ea7a08e98f574334a412d24096ce38698042c3394a73a7ae"
+      }
+    ],
+    "primary_tests": [
+      "arrangement::tests::one_key_can_hold_multiple_values"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-core/src/arrangement.rs": "3fcc81b4b1243ce6ea7a08e98f574334a412d24096ce38698042c3394a73a7ae"
+    },
+    "edits_sha256": "aa90a31b85a338be628037444a726bbfd336690e4a84531042f96c67f9249949",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "§6.3 `Arrangement::get` must return every value of a key (key → many values), not an `Option` — v0's group-by stores one value per key and has no use for more, but each side of a join is key → many rows, and the shape must hold now. Since M1b Phase 3a `get` returns `Result<Vec<(Row, i64)>, StateError>` rather than `Box<dyn Iterator<...>>` (every method can fail once a real shadow-table implementation exists), but the multi-value shape itself is unchanged",
+    "source_ledger_anchors": [
+      {
+        "original_index": 23,
+        "current_index": 23,
+        "current_line": 51,
+        "spec": "§6.3 `Arrangement::get` must return every value of a key (key → many values), not an `Option` — v0's group-by stores one value per key and has no use for more, but each side of a join is key → many rows, and the shape must hold now. Since M1b Phase 3a `get` returns `Result<Vec<(Row, i64)>, StateError>` rather than `Box<dyn Iterator<...>>` (every method can fail once a real shadow-table implementation exists), but the multi-value shape itself is unchanged",
+        "mutation": "Add `.take(1)` after `vals.iter()` in `get`, returning a single value"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 23,
+        "line": 57,
+        "spec": "§6.3 `Arrangement::get` must return every value of a key (key → many values), not an `Option` — v0's group-by stores one value per key and has no use for more, but each side of a join is key → many rows, and the shape must hold now. Since M1b Phase 3a `get` returns `Result<Vec<(Row, i64)>, StateError>` rather than `Box<dyn Iterator<...>>` (every method can fail once a real shadow-table implementation exists), but the multi-value shape itself is unchanged"
+      }
+    ],
+    "accepted_attempt_id": "row23-c"
+  },
+  {
+    "id": "row24",
+    "rows": [
+      24
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-core/src/arrangement.rs",
+        "old": "        if *w == 0 {\n            vals.remove(val);\n            if vals.is_empty() {\n                self.inner.remove(key);\n            }\n        }\n",
+        "new": "",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "3fcc81b4b1243ce6ea7a08e98f574334a412d24096ce38698042c3394a73a7ae"
+      }
+    ],
+    "primary_tests": [
+      "arrangement::tests::weights_accumulate_and_zero_removes_the_entry"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-core/src/arrangement.rs": "3fcc81b4b1243ce6ea7a08e98f574334a412d24096ce38698042c3394a73a7ae"
+    },
+    "edits_sha256": "92ad33cdf565030d394acf884868a6a9d99e03004267f5dbb68012258391b23d",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "§5.1 A (key, val) whose weight reaches zero must be removed, leaving no zombie entry",
+    "source_ledger_anchors": [
+      {
+        "original_index": 24,
+        "current_index": 24,
+        "current_line": 52,
+        "spec": "§5.1 A (key, val) whose weight reaches zero must be removed, leaving no zombie entry",
+        "mutation": "Delete the whole `if *w == 0 { vals.remove(val); if vals.is_empty() { self.inner.remove(key); } }` block from `MemArrangement::update`"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 24,
+        "line": 58,
+        "spec": "§5.1 A (key, val) whose weight reaches zero must be removed, leaving no zombie entry"
+      }
+    ],
+    "accepted_attempt_id": "row24-a"
+  },
+  {
+    "id": "row30",
+    "rows": [
+      30
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-core/src/agg.rs",
+        "old": "                if let Some(row) = old_out {\n                    out.update(row, -1);\n                }\n",
+        "new": "",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "46497f1c1df5f5556d32e5178a4b6037f42edb2da29802475978aeae5ac00860"
+      }
+    ],
+    "primary_tests": [
+      "agg::tests::a_changed_sum_emits_a_retraction_pair_not_a_bare_insert"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-core/src/agg.rs": "46497f1c1df5f5556d32e5178a4b6037f42edb2da29802475978aeae5ac00860"
+    },
+    "edits_sha256": "312eff46a982e82acb3e1bf02c8508dc7d7748648376ac8fbaa6702f82495f82",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "§6.2 An aggregate must **retract the row it last emitted** — when SUM goes from 100 to 150 it emits `(key,100) w=-1` and `(key,150) w=+1`, not a single `+1` row. This is the real reason aggregation needs state: the operator must remember what it emitted in order to retract it (M1a Phase 2 Task 4). Since M1b Phase 1 what it remembers is the accumulators: the row to retract, `old_out`, is recomputed from the group's **old** stored state rather than kept as `g.emitted` (the plan's Ruling 1)",
+    "source_ledger_anchors": [
+      {
+        "original_index": 30,
+        "current_index": 30,
+        "current_line": 58,
+        "spec": "§6.2 An aggregate must **retract the row it last emitted** — when SUM goes from 100 to 150 it emits `(key,100) w=-1` and `(key,150) w=+1`, not a single `+1` row. This is the real reason aggregation needs state: the operator must remember what it emitted in order to retract it (M1a Phase 2 Task 4). Since M1b Phase 1 what it remembers is the accumulators: the row to retract, `old_out`, is recomputed from the group's **old** stored state rather than kept as `g.emitted` (the plan's Ruling 1)",
+        "mutation": "Delete `if let Some(row) = old_out { out.update(row, -1); }` from `AggState::absorb`'s emit block (re-mapped in M1b Phase 1; was `if let Some(old) = &g.emitted { out.update(old.clone(), -1); }`)"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 30,
+        "line": 64,
+        "spec": "§6.2 An aggregate must **retract the row it last emitted** — when SUM goes from 100 to 150 it emits `(key,100) w=-1` and `(key,150) w=+1`, not a single `+1` row. This is the real reason aggregation needs state: the operator must remember what it emitted in order to retract it (M1a Phase 2 Task 4). Since M1b Phase 1 what it remembers is the accumulators: the row to retract, `old_out`, is recomputed from the group's **old** stored state rather than kept as `g.emitted` (the plan's Ruling 1)"
+      }
+    ],
+    "accepted_attempt_id": "row30-b"
+  },
+  {
+    "id": "row32",
+    "rows": [
+      32
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-core/src/agg.rs",
+        "old": "for (i, (acc, agg)) in self.accs.iter().zip(aggs).enumerate() {",
+        "new": "for (i, (acc, agg)) in std::iter::repeat(&self.accs[0]).zip(aggs).enumerate() {",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "46497f1c1df5f5556d32e5178a4b6037f42edb2da29802475978aeae5ac00860"
+      }
+    ],
+    "primary_tests": [
+      "agg::tests::each_agg_reads_its_own_accumulator"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-core/src/agg.rs": "46497f1c1df5f5556d32e5178a4b6037f42edb2da29802475978aeae5ac00860"
+    },
+    "edits_sha256": "3b40deca279606dcab9bb8965951805b0a6c921a939281c5f3db85ec34218272",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "§6.1 With several aggs, `accs[i]` must correspond one-to-one with `aggs[i]`, not all share `accs[0]`",
+    "source_ledger_anchors": [
+      {
+        "original_index": 32,
+        "current_index": 32,
+        "current_line": 60,
+        "spec": "§6.1 With several aggs, `accs[i]` must correspond one-to-one with `aggs[i]`, not all share `accs[0]`",
+        "mutation": "In `GroupState::output`, replace `self.accs.iter().zip(aggs)` with `std::iter::repeat(&self.accs[0]).zip(aggs)` (re-mapped in M1b Phase 1; was \"change every emit-side `g.accs[i]` to `g.accs[0]` (4 sites)\") M2c Task 6: the same text, in `GroupState::output`'s loop (`encode` has its own zip, untouched)."
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 32,
+        "line": 66,
+        "spec": "§6.1 With several aggs, `accs[i]` must correspond one-to-one with `aggs[i]`, not all share `accs[0]`"
+      }
+    ],
+    "accepted_attempt_id": "row32-c"
+  },
+  {
+    "id": "row33",
+    "rows": [
+      33
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-core/src/agg.rs",
+        "old": "let old = self.load(&key)?;",
+        "new": "let old = GroupState::empty(self.group_by.len(), self.aggs.len());",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "46497f1c1df5f5556d32e5178a4b6037f42edb2da29802475978aeae5ac00860"
+      }
+    ],
+    "primary_tests": [
+      "node::tests::aggregate_retracts_across_two_batches_through_the_same_node"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-core/src/agg.rs": "46497f1c1df5f5556d32e5178a4b6037f42edb2da29802475978aeae5ac00860"
+    },
+    "edits_sha256": "155d6fe06cb2f529303126d48799c31ec0ebcf0e9de2677ef30620c9e1675a7a",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "§6.2 `AggState` must survive across batches — only by keeping a batch's accumulators until the next batch can the next batch recompute, and so retract, the row the previous one emitted (before M1b Phase 1, `emitted` recorded \"what was last emitted\" and had to be kept for the same reason)",
+    "source_ledger_anchors": [
+      {
+        "original_index": 33,
+        "current_index": 33,
+        "current_line": 61,
+        "spec": "§6.2 `AggState` must survive across batches — only by keeping a batch's accumulators until the next batch can the next batch recompute, and so retract, the row the previous one emitted (before M1b Phase 1, `emitted` recorded \"what was last emitted\" and had to be kept for the same reason)",
+        "mutation": "In `AggState::absorb`, replace `let old = self.load(&key);` with `let old = GroupState::empty(self.aggs.len());`, so every batch starts each group from nothing (re-mapped in M1b Phase 1; was \"insert `self.groups.clear();` at the start of `absorb`\")"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 33,
+        "line": 67,
+        "spec": "§6.2 `AggState` must survive across batches — only by keeping a batch's accumulators until the next batch can the next batch recompute, and so retract, the row the previous one emitted (before M1b Phase 1, `emitted` recorded \"what was last emitted\" and had to be kept for the same reason)"
+      }
+    ],
+    "accepted_attempt_id": "row33-a"
+  },
+  {
+    "id": "row35",
+    "rows": [
+      35
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-core/src/agg.rs",
+        "old": "            d.rows += w;",
+        "new": "            d.rows += 1;",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "46497f1c1df5f5556d32e5178a4b6037f42edb2da29802475978aeae5ac00860"
+      }
+    ],
+    "primary_tests": [
+      "agg::tests::an_unchanged_group_emits_nothing"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-core/src/agg.rs": "46497f1c1df5f5556d32e5178a4b6037f42edb2da29802475978aeae5ac00860"
+    },
+    "edits_sha256": "46867e56952fc5e43fa7d7cf08bab35e9e407389889faba4bf1904623f740bba",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "§5.2 `COUNT(*)` must equal the group's **total weight**, not its number of delta rows — a Z-set row can carry any weight, and a `rows += 1` implementation diverges as soon as weights differ from ±1 or a group has several rows (M1a Phase 2 Task 4)",
+    "source_ledger_anchors": [
+      {
+        "original_index": 35,
+        "current_index": 35,
+        "current_line": 63,
+        "spec": "§5.2 `COUNT(*)` must equal the group's **total weight**, not its number of delta rows — a Z-set row can carry any weight, and a `rows += 1` implementation diverges as soon as weights differ from ±1 or a group has several rows (M1a Phase 2 Task 4)",
+        "mutation": "Change `d.rows += w` in `AggState::absorb` to `d.rows += 1` (re-mapped in M1b Phase 1; was `g.rows += w`)"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 35,
+        "line": 69,
+        "spec": "§5.2 `COUNT(*)` must equal the group's **total weight**, not its number of delta rows — a Z-set row can carry any weight, and a `rows += 1` implementation diverges as soon as weights differ from ±1 or a group has several rows (M1a Phase 2 Task 4)"
+      }
+    ],
+    "accepted_attempt_id": "row35-b"
+  },
+  {
+    "id": "row37",
+    "rows": [
+      37
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-core/src/agg.rs",
+        "old": "        self.non_null += w;\n",
+        "new": "",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "46497f1c1df5f5556d32e5178a4b6037f42edb2da29802475978aeae5ac00860"
+      },
+      {
+        "file": "crates/ivmlite-core/src/agg.rs",
+        "old": "AggFn::Sum if acc.non_null == 0",
+        "new": "AggFn::Sum if self.rows == 0",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "46497f1c1df5f5556d32e5178a4b6037f42edb2da29802475978aeae5ac00860"
+      }
+    ],
+    "primary_tests": [
+      "agg::tests::sum_over_only_null_inputs_is_null_not_zero"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-core/src/agg.rs": "46497f1c1df5f5556d32e5178a4b6037f42edb2da29802475978aeae5ac00860"
+    },
+    "edits_sha256": "275962400296c3ba070a5ea3cffbda59e8f30ee14508cd9cc80c09f4764ae405",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "§6.1 (measured) `SUM` must output `NULL` when \"the group is non-empty but the column is entirely NULL\", and SQLite outputs `NULL` too; an implementation that keeps only the running sum outputs `0`, and the disagreement is **silent** — so the state must keep both `sum` and `non_null` (M1a Phase 2 Task 4)",
+    "source_ledger_anchors": [
+      {
+        "original_index": 37,
+        "current_index": 37,
+        "current_line": 65,
+        "spec": "§6.1 (measured) `SUM` must output `NULL` when \"the group is non-empty but the column is entirely NULL\", and SQLite outputs `NULL` too; an implementation that keeps only the running sum outputs `0`, and the disagreement is **silent** — so the state must keep both `sum` and `non_null` (M1a Phase 2 Task 4)",
+        "mutation": "Delete the `d.accs[i].non_null += w;` line (no longer maintaining `non_null`), and change `GroupState::output`'s test from `acc.non_null == 0` to `self.rows == 0` (re-mapped in M1b Phase 1; was `g.accs[i].non_null += w` and `g.accs[i].non_null == 0` → `g.rows == 0`) **Re-mapped in M2c Task 6**: delete `self.non_null += w;` in `Acc::absorb_term`, and change `output`'s `AggFn::Sum if acc.non_null == 0` to `AggFn::Sum if self.rows == 0`."
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 37,
+        "line": 71,
+        "spec": "§6.1 (measured) `SUM` must output `NULL` when \"the group is non-empty but the column is entirely NULL\", and SQLite outputs `NULL` too; an implementation that keeps only the running sum outputs `0`, and the disagreement is **silent** — so the state must keep both `sum` and `non_null` (M1a Phase 2 Task 4)"
+      }
+    ],
+    "accepted_attempt_id": "row37-c"
+  },
+  {
+    "id": "row38",
+    "rows": [
+      38
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-core/src/agg.rs",
+        "old": "AggFn::Sum if acc.non_null == 0",
+        "new": "AggFn::Sum if acc.int_sum == 0",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "46497f1c1df5f5556d32e5178a4b6037f42edb2da29802475978aeae5ac00860"
+      }
+    ],
+    "primary_tests": [
+      "agg::tests::sum_that_genuinely_totals_zero_is_int_zero_not_null"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-core/src/agg.rs": "46497f1c1df5f5556d32e5178a4b6037f42edb2da29802475978aeae5ac00860"
+    },
+    "edits_sha256": "e12be413a2eb3f36d570c347bd9c8fa439d7dceb280e3d6ae262ebfeaf39ff40",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "The counterpart to the previous row: `SUM`'s test must be \"were there any non-NULL inputs\", not \"is the sum 0\" — with non-NULL inputs that happen to sum to 0, it must output `Int(0)`, not `NULL` (M1a Phase 2 Task 4)",
+    "source_ledger_anchors": [
+      {
+        "original_index": 38,
+        "current_index": 38,
+        "current_line": 66,
+        "spec": "The counterpart to the previous row: `SUM`'s test must be \"were there any non-NULL inputs\", not \"is the sum 0\" — with non-NULL inputs that happen to sum to 0, it must output `Int(0)`, not `NULL` (M1a Phase 2 Task 4)",
+        "mutation": "Change `GroupState::output`'s test `acc.non_null == 0` to `acc.sum == 0` (re-mapped in M1b Phase 1; was `if g.accs[i].non_null == 0` → `if g.accs[i].sum == 0`) **Re-mapped in M2c Task 6**: `AggFn::Sum if acc.non_null == 0` → `AggFn::Sum if acc.int_sum == 0`."
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 38,
+        "line": 72,
+        "spec": "The counterpart to the previous row: `SUM`'s test must be \"were there any non-NULL inputs\", not \"is the sum 0\" — with non-NULL inputs that happen to sum to 0, it must output `Int(0)`, not `NULL` (M1a Phase 2 Task 4)"
+      }
+    ],
+    "accepted_attempt_id": "row38-a"
+  },
+  {
+    "id": "row39",
+    "rows": [
+      39
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-core/src/agg.rs",
+        "old": "i128::from(n) * i128::from(w)",
+        "new": "i128::from(n)",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "46497f1c1df5f5556d32e5178a4b6037f42edb2da29802475978aeae5ac00860"
+      }
+    ],
+    "primary_tests": [
+      "agg::tests::sum_scales_each_input_by_its_weight"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-core/src/agg.rs": "46497f1c1df5f5556d32e5178a4b6037f42edb2da29802475978aeae5ac00860"
+    },
+    "edits_sha256": "40d02e3a1cc53595a2e6a3f65e11dda2025d14365c09b5e318d51766460c4bec",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "`SUM` must accumulate `v * w`, scaling each input by its weight, not ignore the weight with `+= v` (M1a Phase 2 Task 4)",
+    "source_ledger_anchors": [
+      {
+        "original_index": 39,
+        "current_index": 39,
+        "current_line": 67,
+        "spec": "`SUM` must accumulate `v * w`, scaling each input by its weight, not ignore the weight with `+= v` (M1a Phase 2 Task 4)",
+        "mutation": "Change `d.accs[i].sum += v * w` to `d.accs[i].sum += v` (re-mapped in M1b Phase 1; was `g.accs[i].sum`) **Re-mapped in M2c Task 6**: in `Acc::absorb_term`, `i128::from(n) * i128::from(w)` → `i128::from(n)`."
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 39,
+        "line": 73,
+        "spec": "`SUM` must accumulate `v * w`, scaling each input by its weight, not ignore the weight with `+= v` (M1a Phase 2 Task 4)"
+      }
+    ],
+    "accepted_attempt_id": "row39-b"
+  },
+  {
+    "id": "row40",
+    "rows": [
+      40
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-core/src/agg.rs",
+        "old": "                if let Some(row) = new_out {\n                    out.update(row, 1);",
+        "new": "                if let Some(row) = new_out {\n                    out.update(row, new.rows);",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "46497f1c1df5f5556d32e5178a4b6037f42edb2da29802475978aeae5ac00860"
+      }
+    ],
+    "primary_tests": [
+      "agg::tests::emitted_output_weight_is_always_one"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-core/src/agg.rs": "46497f1c1df5f5556d32e5178a4b6037f42edb2da29802475978aeae5ac00860"
+    },
+    "edits_sha256": "80ad71240f1f6dc5a13ae7dc22cc5b6b23f23a89468217800064e948a84dc112",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "§5.2 group key → exactly one output row, and outgoing delta weights are always ±1; a group's internal weight lives only in operator state and must not leak into the output (M1a Phase 2 Task 4)",
+    "source_ledger_anchors": [
+      {
+        "original_index": 40,
+        "current_index": 40,
+        "current_line": 68,
+        "spec": "§5.2 group key → exactly one output row, and outgoing delta weights are always ±1; a group's internal weight lives only in operator state and must not leak into the output (M1a Phase 2 Task 4)",
+        "mutation": "Change the weight of the new-row emission `out.update(row, 1)` (in `if let Some(row) = new_out`) to `new.rows` (re-mapped in M1b Phase 1; was `out.update(new.clone(), 1)` → `g.rows`)"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 40,
+        "line": 74,
+        "spec": "§5.2 group key → exactly one output row, and outgoing delta weights are always ±1; a group's internal weight lives only in operator state and must not leak into the output (M1a Phase 2 Task 4)"
+      }
+    ],
+    "accepted_attempt_id": "row40-c"
+  },
+  {
+    "id": "row43",
+    "rows": [
+      43
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-core/src/agg.rs",
+        "old": "        if !new.is_empty() {",
+        "new": "        if true {",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "46497f1c1df5f5556d32e5178a4b6037f42edb2da29802475978aeae5ac00860"
+      }
+    ],
+    "primary_tests": [
+      "agg::tests::a_group_that_empties_leaves_no_state_behind"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-core/src/agg.rs": "46497f1c1df5f5556d32e5178a4b6037f42edb2da29802475978aeae5ac00860"
+    },
+    "edits_sha256": "73c8750fe3d5bd2a72206f38ba232c774317639fb8c42e7b04a1584cc33b7420",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "§5.1 Once a group is completely empty, its state is removed — since M1b Phase 1, `AggState::store` stores nothing for a group whose `GroupState` is all zero (`is_empty`), so the group disappears from its arrangement, as it will from its `__ivm_state_<view>_<op>` table (before M1b Phase 1: once `rows == 0` and `emitted == None`, the group was removed from `groups`)",
+    "source_ledger_anchors": [
+      {
+        "original_index": 43,
+        "current_index": 43,
+        "current_line": 71,
+        "spec": "§5.1 Once a group is completely empty, its state is removed — since M1b Phase 1, `AggState::store` stores nothing for a group whose `GroupState` is all zero (`is_empty`), so the group disappears from its arrangement, as it will from its `__ivm_state_<view>_<op>` table (before M1b Phase 1: once `rows == 0` and `emitted == None`, the group was removed from `groups`)",
+        "mutation": "Delete the `if !new.is_empty()` guard in `AggState::store`, so an all-zero state is stored (re-mapped in M1b Phase 1; was \"delete the whole `if g.rows == 0 && g.emitted.is_none() { self.groups.remove(&key); }` block\")"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 43,
+        "line": 77,
+        "spec": "§5.1 Once a group is completely empty, its state is removed — since M1b Phase 1, `AggState::store` stores nothing for a group whose `GroupState` is all zero (`is_empty`), so the group disappears from its arrangement, as it will from its `__ivm_state_<view>_<op>` table (before M1b Phase 1: once `rows == 0` and `emitted == None`, the group was removed from `groups`)"
+      }
+    ],
+    "accepted_attempt_id": "row43-a"
+  },
+  {
+    "id": "row47",
+    "rows": [
+      47,
+      46
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-core/src/engine.rs",
+        "old": "        for schema in db.tables() {",
+        "new": "        for schema in db.tables().iter().take(1) {",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "1d9d7b15710d7d820e67adb58bea0428a3a6f102962bf9f267bcdf07ab721eea"
+      }
+    ],
+    "primary_tests": [
+      "engine::tests::a_join_view_bootstraps_from_both_tables",
+      "engine::tests::create_view_errors_when_a_declared_table_has_no_initial_state"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-core/src/engine.rs": "1d9d7b15710d7d820e67adb58bea0428a3a6f102962bf9f267bcdf07ab721eea"
+    },
+    "edits_sha256": "24388d9bbec82123b85c755f82aac14a922addab4e1ee0a2742a90c05a74b2b3",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "The same mutation as the previous row (`.take(1)`), pinning a different property — item 4 of the \"join landing\" checklist at the end (added in M1a Phase 2 Task 5, the **engine-side** counterpart of items 1-3): a non-anchor table's initial rows must actually be absorbed into the view by bootstrap, even when `initial` provides state for every table. This differs from the previous row: that one tests \"does a missing state raise an error\", this one \"is a provided state actually used\"",
+    "source_ledger_anchors": [
+      {
+        "original_index": 47,
+        "current_index": 47,
+        "current_line": 75,
+        "spec": "The same mutation as the previous row (`.take(1)`), pinning a different property — item 4 of the \"join landing\" checklist at the end (added in M1a Phase 2 Task 5, the **engine-side** counterpart of items 1-3): a non-anchor table's initial rows must actually be absorbed into the view by bootstrap, even when `initial` provides state for every table. This differs from the previous row: that one tests \"does a missing state raise an error\", this one \"is a provided state actually used\"",
+        "mutation": "As above — change `for schema in db.tables()` to `for schema in db.tables().iter().take(1)`"
+      },
+      {
+        "original_index": 46,
+        "current_index": 46,
+        "current_line": 74,
+        "spec": "§8.5 `IncrementalEngine::create_view` must fail when a table is declared but its state is missing from `initial`, rather than quietly treating non-anchor tables as \"not our concern\" with a `.take(1)`-style short-circuit. **Final review Finding E: this row's previously registered \"measurement\" was stale — a false verified** — the Task 5 re-review fix (after this row was first written) added `create_view_errors_when_a_declared_table_has_no_initial_state`, whose fixture is precisely two tables with initial state for only the first; the mutation below short-circuits that test (after `.take(1)` the loop never reaches the second table, so it never fails for its missing initial state), but nobody came back to re-run the mutation at registration, and it said in black and white \"all green (155/155)\". Re-measured against the current code: **this property is in fact caught by this mutation** — a different property from the next row's \"is the non-anchor table's bootstrap actually absorbed\", and the two cannot be folded into one blanket n/a",
+        "mutation": "Change the bootstrap loop `for schema in db.tables()` to `for schema in db.tables().iter().take(1)`, absorbing only the anchor table's initial state"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 46,
+        "line": 80,
+        "spec": "§8.5 `IncrementalEngine::create_view` must fail when a table is declared but its state is missing from `initial`, rather than quietly treating non-anchor tables as \"not our concern\" with a `.take(1)`-style short-circuit. **Final review Finding E: this row's previously registered \"measurement\" was stale — a false verified** — the Task 5 re-review fix (after this row was first written) added `create_view_errors_when_a_declared_table_has_no_initial_state`, whose fixture is precisely two tables with initial state for only the first; the mutation below short-circuits that test (after `.take(1)` the loop never reaches the second table, so it never fails for its missing initial state), but nobody came back to re-run the mutation at registration, and it said in black and white \"all green (155/155)\". Re-measured against the current code: **this property is in fact caught by this mutation** — a different property from the next row's \"is the non-anchor table's bootstrap actually absorbed\", and the two cannot be folded into one blanket n/a"
+      },
+      {
+        "index": 47,
+        "line": 81,
+        "spec": "The same mutation as the previous row (`.take(1)`), pinning a different property — item 4 of the \"join landing\" checklist at the end (added in M1a Phase 2 Task 5, the **engine-side** counterpart of items 1-3): a non-anchor table's initial rows must actually be absorbed into the view by bootstrap, even when `initial` provides state for every table. This differs from the previous row: that one tests \"does a missing state raise an error\", this one \"is a provided state actually used\""
+      }
+    ],
+    "accepted_attempt_id": "row47-b"
+  },
+  {
+    "id": "row48",
+    "rows": [
+      48
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-core/src/engine.rs",
+        "old": "std::mem::take(&mut self.pending)",
+        "new": "self.pending.clone()",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "1d9d7b15710d7d820e67adb58bea0428a3a6f102962bf9f267bcdf07ab721eea"
+      }
+    ],
+    "primary_tests": [
+      "incremental_engine_matches_naive_recompute_at_every_refresh_point"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-core/src/engine.rs": "1d9d7b15710d7d820e67adb58bea0428a3a6f102962bf9f267bcdf07ab721eea"
+    },
+    "edits_sha256": "be5a163fd5107877d39b6bd14207df14f9fae7c7676f1870f554d334670cb270",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "§8.5 `refresh` must drain `pending` (`std::mem::take`), not merely read it (`clone`) — otherwise the same batch of deltas is pushed through the operator tree again on the next `refresh`",
+    "source_ledger_anchors": [
+      {
+        "original_index": 48,
+        "current_index": 48,
+        "current_line": 76,
+        "spec": "§8.5 `refresh` must drain `pending` (`std::mem::take`), not merely read it (`clone`) — otherwise the same batch of deltas is pushed through the operator tree again on the next `refresh`",
+        "mutation": "Change `std::mem::take(&mut self.pending)` in `refresh` to `self.pending.clone()` (no draining)"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 48,
+        "line": 82,
+        "spec": "§8.5 `refresh` must drain `pending` (`std::mem::take`), not merely read it (`clone`) — otherwise the same batch of deltas is pushed through the operator tree again on the next `refresh`"
+      }
+    ],
+    "accepted_attempt_id": "row48-c"
+  },
+  {
+    "id": "row51",
+    "rows": [
+      51
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-core/src/engine.rs",
+        "old": "            let base = initial.get(&schema.table).ok_or_else(|| {\n                EngineError(format!(\n                    \"table {} is declared but has no initial state\",\n                    schema.table\n                ))\n            })?;",
+        "new": "            let empty = ZSet::new();\n            let base = initial.get(&schema.table).unwrap_or(&empty);",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "1d9d7b15710d7d820e67adb58bea0428a3a6f102962bf9f267bcdf07ab721eea"
+      }
+    ],
+    "primary_tests": [
+      "engine::tests::create_view_errors_when_a_declared_table_has_no_initial_state"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-core/src/engine.rs": "1d9d7b15710d7d820e67adb58bea0428a3a6f102962bf9f267bcdf07ab721eea"
+    },
+    "edits_sha256": "5530af73dbc836b70d91a8e41222a3e78c66a45bb62b0b1b4b593962a290548f",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "**M1a Phase 2 Task 5 re-review Finding 2**: when `create_view` declares a table but cannot find its state in `initial`, it must fail rather than quietly treat it as empty — the differential harness's `gen_initial` always fills every table in `db.tables()`, so this path is structurally unreachable at the differential level, while M1b's hand-built `initial` (say, rebuilding a view for only some tables) will genuinely hit it. When `engine.rs` landed this branch had **zero `#[test]`s**, and its only explanatory comment claimed parity with the oracle side's `missing_base_state_for_a_declared_table_is_an_error` — that test is real, this one was not, so the comment misled readers into thinking it was guarded too",
+    "source_ledger_anchors": [
+      {
+        "original_index": 51,
+        "current_index": 51,
+        "current_line": 79,
+        "spec": "**M1a Phase 2 Task 5 re-review Finding 2**: when `create_view` declares a table but cannot find its state in `initial`, it must fail rather than quietly treat it as empty — the differential harness's `gen_initial` always fills every table in `db.tables()`, so this path is structurally unreachable at the differential level, while M1b's hand-built `initial` (say, rebuilding a view for only some tables) will genuinely hit it. When `engine.rs` landed this branch had **zero `#[test]`s**, and its only explanatory comment claimed parity with the oracle side's `missing_base_state_for_a_declared_table_is_an_error` — that test is real, this one was not, so the comment misled readers into thinking it was guarded too",
+        "mutation": "Change `initial.get(&schema.table).ok_or_else(\\|\\| EngineError(...))?` to `initial.get(&schema.table).unwrap_or(&empty)` (`empty` being a `ZSet::new()` declared up front, silently treating the missing table as empty)"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 51,
+        "line": 85,
+        "spec": "**M1a Phase 2 Task 5 re-review Finding 2**: when `create_view` declares a table but cannot find its state in `initial`, it must fail rather than quietly treat it as empty — the differential harness's `gen_initial` always fills every table in `db.tables()`, so this path is structurally unreachable at the differential level, while M1b's hand-built `initial` (say, rebuilding a view for only some tables) will genuinely hit it. When `engine.rs` landed this branch had **zero `#[test]`s**, and its only explanatory comment claimed parity with the oracle side's `missing_base_state_for_a_declared_table_is_an_error` — that test is real, this one was not, so the comment misled readers into thinking it was guarded too"
+      }
+    ],
+    "accepted_attempt_id": "row51-a"
+  },
+  {
+    "id": "row52",
+    "rows": [
+      52
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-core/src/engine.rs",
+        "old": "        self.view.clone()",
+        "new": "        ZSet::new()",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "1d9d7b15710d7d820e67adb58bea0428a3a6f102962bf9f267bcdf07ab721eea"
+      }
+    ],
+    "primary_tests": [
+      "incremental_engine_is_green_across_the_enumerated_space"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-core/src/engine.rs": "1d9d7b15710d7d820e67adb58bea0428a3a6f102962bf9f267bcdf07ab721eea"
+    },
+    "edits_sha256": "118ac1dfc084a49f3d33044b35cf159c7827818c66b8f887c33e04a6d9b5bc10",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "`IncrementalEngine::snapshot` (named `materialize` before re-review Finding 1; see the rename row below) must return the `view` accumulated so far, not a constant empty `ZSet` — it is the only way `IncrementalEngine` exposes its state",
+    "source_ledger_anchors": [
+      {
+        "original_index": 52,
+        "current_index": 52,
+        "current_line": 80,
+        "spec": "`IncrementalEngine::snapshot` (named `materialize` before re-review Finding 1; see the rename row below) must return the `view` accumulated so far, not a constant empty `ZSet` — it is the only way `IncrementalEngine` exposes its state",
+        "mutation": "Change `snapshot`'s `self.view.clone()` to `ZSet::new()`"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 52,
+        "line": 86,
+        "spec": "`IncrementalEngine::snapshot` (named `materialize` before re-review Finding 1; see the rename row below) must return the `view` accumulated so far, not a constant empty `ZSet` — it is the only way `IncrementalEngine` exposes its state"
+      }
+    ],
+    "accepted_attempt_id": "row52-b"
+  },
+  {
+    "id": "row55",
+    "rows": [
+      55
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-core/src/engine.rs",
+        "old": "    tree: Option<CountingTree>,",
+        "new": "    tree: Option<CountingTree>,\n    plan_for_mutation_test: Option<crate::Plan>,",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "1d9d7b15710d7d820e67adb58bea0428a3a6f102962bf9f267bcdf07ab721eea"
+      },
+      {
+        "file": "crates/ivmlite-core/src/engine.rs",
+        "old": "        self.tree = Some(tree);",
+        "new": "        self.plan_for_mutation_test = Some(plan);\n        self.tree = Some(tree);",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "1d9d7b15710d7d820e67adb58bea0428a3a6f102962bf9f267bcdf07ab721eea"
+      },
+      {
+        "file": "crates/ivmlite-core/src/engine.rs",
+        "old": "        let tree = self\n            .tree\n            .as_mut()\n            .ok_or_else(|| EngineError(\"refresh was called before create_view\".into()))?;",
+        "new": "        let mut rebuilt = CountingTree::new(Node::build(self.plan_for_mutation_test.as_ref().ok_or_else(|| EngineError(\"no plan\".into()))?, &mut fresh_mem_arrangement).map_err(state_error)?);\n        let tree = &mut rebuilt;",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "1d9d7b15710d7d820e67adb58bea0428a3a6f102962bf9f267bcdf07ab721eea"
+      }
+    ],
+    "primary_tests": [
+      "incremental_engine_matches_naive_recompute_at_every_refresh_point"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-core/src/engine.rs": "1d9d7b15710d7d820e67adb58bea0428a3a6f102962bf9f267bcdf07ab721eea"
+    },
+    "edits_sha256": "c8af537edae325c6b8b4785ade6e2c3921f29e98d941aeae59e9a76fd23ee4e1",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "§6.2 The **engine-level** form of the above (the \"node-level form\" row above hands its debt here): `refresh` must reuse the `self.tree` built by `create_view`, not `Node::build` afresh from the plan every time — rebuilding makes `AggState` lose all its state between two refreshes, so every refresh starts from empty groups, never retracts what it last emitted, and emits only bare `+1`s (M1a Phase 2 Task 5)",
+    "source_ledger_anchors": [
+      {
+        "original_index": 55,
+        "current_index": 55,
+        "current_line": 83,
+        "spec": "§6.2 The **engine-level** form of the above (the \"node-level form\" row above hands its debt here): `refresh` must reuse the `self.tree` built by `create_view`, not `Node::build` afresh from the plan every time — rebuilding makes `AggState` lose all its state between two refreshes, so every refresh starts from empty groups, never retracts what it last emitted, and emits only bare `+1`s (M1a Phase 2 Task 5)",
+        "mutation": "**Temporarily** add a `plan_for_mutation_test: Option<Plan>` field to `IncrementalEngine` (with `create_view` also storing a `plan.clone()` in it), and change `refresh` to `Node::build` a brand-new tree from that field without touching `self.tree`; revert the field and the change immediately after verifying, keeping it out of production code — the same approach as the row above's \"the review originally used `let mut scratch = state.clone()`\": added only to run this mutation, not to widen the public API for a mutation's sake"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 55,
+        "line": 89,
+        "spec": "§6.2 The **engine-level** form of the above (the \"node-level form\" row above hands its debt here): `refresh` must reuse the `self.tree` built by `create_view`, not `Node::build` afresh from the plan every time — rebuilding makes `AggState` lose all its state between two refreshes, so every refresh starts from empty groups, never retracts what it last emitted, and emits only bare `+1`s (M1a Phase 2 Task 5)"
+      }
+    ],
+    "accepted_attempt_id": "row55-c"
+  },
+  {
+    "id": "row58",
+    "rows": [
+      58
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-core/src/engine.rs",
+        "old": "            by_table.entry(table).or_default().update(row, w);",
+        "new": "            let first = by_table.keys().next().cloned().unwrap_or(table);\n            by_table.entry(first).or_default().update(row, w);",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "1d9d7b15710d7d820e67adb58bea0428a3a6f102962bf9f267bcdf07ab721eea"
+      }
+    ],
+    "primary_tests": [
+      "engine::tests::deltas_for_different_tables_are_consolidated_separately"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-core/src/engine.rs": "1d9d7b15710d7d820e67adb58bea0428a3a6f102962bf9f267bcdf07ab721eea"
+    },
+    "edits_sha256": "e9e003c57785280c99907f36e64df5f4d17f9c594a94f208128297665935f169",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "§8.2 The same row value appearing in two tables must not be merged across tables — per-table merging is a correctness requirement, not just a performance one: merging across tables would let one table's changes silently cancel another's",
+    "source_ledger_anchors": [
+      {
+        "original_index": 58,
+        "current_index": 58,
+        "current_line": 86,
+        "spec": "§8.2 The same row value appearing in two tables must not be merged across tables — per-table merging is a correctness requirement, not just a performance one: merging across tables would let one table's changes silently cancel another's",
+        "mutation": "Make `refresh` stop grouping by table: take the first entry's table name in `pending` as the only key, merge all raw Δ (across tables) into one `ZSet`, and call `tree.delta` once with that key"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 58,
+        "line": 92,
+        "spec": "§8.2 The same row value appearing in two tables must not be merged across tables — per-table merging is a correctness requirement, not just a performance one: merging across tables would let one table's changes silently cancel another's"
+      }
+    ],
+    "accepted_attempt_id": "row58-a"
+  },
+  {
+    "id": "row67",
+    "rows": [
+      67
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-core/src/join.rs",
+        "old": "out.update(concat(&l, r), wl * wr);",
+        "new": "out.update(concat(&l, r), 0 * wl + wr);",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "ba72d3795c8b9308e4c3880f950845ff8e2c2e66de14dfed522bcf5bb95c751e"
+      }
+    ],
+    "primary_tests": [
+      "incremental_engine_is_green_across_the_join_space"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-core/src/join.rs": "ba72d3795c8b9308e4c3880f950845ff8e2c2e66de14dfed522bcf5bb95c751e"
+    },
+    "edits_sha256": "70c81e5a03b9813e0b2aa929c04855bb63ed7fbf4b0a8a5d3f3e7136b4816d69",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "The same product on the other path: in the `(R+ΔR)⋈ΔS` probe loop, a joined row's weight is `wl * wr`, not the right delta's weight alone (found by the M1a Phase 3 Task 1 review: this mutation left every Task 1 unit test green, since each of them probes the right delta against left rows of weight 1)",
+    "source_ledger_anchors": [
+      {
+        "original_index": 67,
+        "current_index": 67,
+        "current_line": 95,
+        "spec": "The same product on the other path: in the `(R+ΔR)⋈ΔS` probe loop, a joined row's weight is `wl * wr`, not the right delta's weight alone (found by the M1a Phase 3 Task 1 review: this mutation left every Task 1 unit test green, since each of them probes the right delta against left rows of weight 1)",
+        "mutation": "In the right-delta probe loop, replace `out.update(concat(&l, r), wl * wr)` with `out.update(concat(&l, r), wr)`"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 67,
+        "line": 101,
+        "spec": "The same product on the other path: in the `(R+ΔR)⋈ΔS` probe loop, a joined row's weight is `wl * wr`, not the right delta's weight alone (found by the M1a Phase 3 Task 1 review: this mutation left every Task 1 unit test green, since each of them probes the right delta against left rows of weight 1)"
+      }
+    ],
+    "accepted_attempt_id": "row67-b"
+  },
+  {
+    "id": "row70",
+    "rows": [
+      70
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-core/src/join.rs",
+        "old": "join_key(r, self.right_key)",
+        "new": "join_key(r, self.left_key)",
+        "expected_count": 2,
+        "observed_count": 2,
+        "source_sha256": "ba72d3795c8b9308e4c3880f950845ff8e2c2e66de14dfed522bcf5bb95c751e"
+      }
+    ],
+    "primary_tests": [
+      "join::tests::each_side_reads_its_own_key_column"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-core/src/join.rs": "ba72d3795c8b9308e4c3880f950845ff8e2c2e66de14dfed522bcf5bb95c751e"
+    },
+    "edits_sha256": "f2a2a4b4e7b66c84f925aaa3eae22d71747fc7402a80fa8f988c609eeb8cf675",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "§6.1 A join's two key columns are indexed per side: `JoinState::absorb` must read a right-delta row's key at `right_key`, not `left_key` (final review Important 1: every join test used to join column `i` to column `i`, where the two are the same index and this mutation left the whole suite green, 210/0)",
+    "source_ledger_anchors": [
+      {
+        "original_index": 70,
+        "current_index": 70,
+        "current_line": 98,
+        "spec": "§6.1 A join's two key columns are indexed per side: `JoinState::absorb` must read a right-delta row's key at `right_key`, not `left_key` (final review Important 1: every join test used to join column `i` to column `i`, where the two are the same index and this mutation left the whole suite green, 210/0)",
+        "mutation": "In `JoinState::absorb`'s two right-delta loops (the `(R+ΔR)⋈ΔS` probe and the fold into `self.right`), replace `join_key(r, self.right_key)` with `join_key(r, self.left_key)`"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 70,
+        "line": 104,
+        "spec": "§6.1 A join's two key columns are indexed per side: `JoinState::absorb` must read a right-delta row's key at `right_key`, not `left_key` (final review Important 1: every join test used to join column `i` to column `i`, where the two are the same index and this mutation left the whole suite green, 210/0)"
+      }
+    ],
+    "accepted_attempt_id": "row70-c"
+  },
+  {
+    "id": "row71",
+    "rows": [
+      71
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-core/src/plan.rs",
+        "old": "            left_key: join.left_column,\n            right_key: join.right_column,",
+        "new": "            left_key: join.right_column,\n            right_key: join.left_column,",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "63673b186f61c5a944e0dd3f1b358d2e7f931f6a3c097a6d9e762e989fe87d78"
+      }
+    ],
+    "primary_tests": [
+      "plan::tests::join_keys_keep_their_own_sides_column_positions"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-core/src/plan.rs": "63673b186f61c5a944e0dd3f1b358d2e7f931f6a3c097a6d9e762e989fe87d78"
+    },
+    "edits_sha256": "b89192a84321ac22874e84143a3e69d79668366b0b9c092855befaa54b945337",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "§5.2 lowering keeps each join key with its own side: `lower` must set `Plan::Join { left_key: join.left_column, right_key: join.right_column }`, not the other way round (final review Important 1: measured green, 210/0, before any test joined keys at different positions)",
+    "source_ledger_anchors": [
+      {
+        "original_index": 71,
+        "current_index": 71,
+        "current_line": 99,
+        "spec": "§5.2 lowering keeps each join key with its own side: `lower` must set `Plan::Join { left_key: join.left_column, right_key: join.right_column }`, not the other way round (final review Important 1: measured green, 210/0, before any test joined keys at different positions)",
+        "mutation": "In `lower`'s `Plan::Join` construction, swap them: `left_key: join.right_column, right_key: join.left_column`"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 71,
+        "line": 105,
+        "spec": "§5.2 lowering keeps each join key with its own side: `lower` must set `Plan::Join { left_key: join.left_column, right_key: join.right_column }`, not the other way round (final review Important 1: measured green, 210/0, before any test joined keys at different positions)"
+      }
+    ],
+    "accepted_attempt_id": "row71-a"
+  },
+  {
+    "id": "row76",
+    "rows": [
+      76
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-core/src/agg.rs",
+        "old": "            self.state.update(key, &old.encode(&self.aggs), -1)?;\n",
+        "new": "",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "46497f1c1df5f5556d32e5178a4b6037f42edb2da29802475978aeae5ac00860"
+      }
+    ],
+    "primary_tests": [
+      "agg::tests::the_stored_state_is_one_value_per_group"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-core/src/agg.rs": "46497f1c1df5f5556d32e5178a4b6037f42edb2da29802475978aeae5ac00860"
+    },
+    "edits_sha256": "d21f53d8e9f7262fb1de283493f124c1cc93cfab4a14fd4fcd0455964e1d9caa",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "§4.4 / §5.1 (M1b Phase 1) Each group's stored state is exactly one value of weight 1: `AggState::store` must retract the group's old encoded state before adding the new one, or the arrangement keeps one value per past state — zombie entries that a shadow table would keep too",
+    "source_ledger_anchors": [
+      {
+        "original_index": 76,
+        "current_index": 76,
+        "current_line": 104,
+        "spec": "§4.4 / §5.1 (M1b Phase 1) Each group's stored state is exactly one value of weight 1: `AggState::store` must retract the group's old encoded state before adding the new one, or the arrangement keeps one value per past state — zombie entries that a shadow table would keep too",
+        "mutation": "In `AggState::store`, delete `self.state.update(key, &old.encode(), -1);`"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 76,
+        "line": 110,
+        "spec": "§4.4 / §5.1 (M1b Phase 1) Each group's stored state is exactly one value of weight 1: `AggState::store` must retract the group's old encoded state before adding the new one, or the arrangement keeps one value per past state — zombie entries that a shadow table would keep too"
+      }
+    ],
+    "accepted_attempt_id": "row76-b"
+  },
+  {
+    "id": "row90",
+    "rows": [
+      90
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-core/src/query.rs",
+        "old": "CmpOp::Gt => ord == Greater,",
+        "new": "CmpOp::Gt => ord != Less,",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "17a3154a9c9bd02c03fa7ed314dfb8722900ed22576e95808e3af63c8a6fec75"
+      }
+    ],
+    "primary_tests": [
+      "node::tests::each_comparison_operator_keeps_the_rows_sql_keeps"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-core/src/query.rs": "17a3154a9c9bd02c03fa7ed314dfb8722900ed22576e95808e3af63c8a6fec75"
+    },
+    "edits_sha256": "413019d73e0cf26ff0de5bd5dcb17ebd903e18c8e9dcb6ada99d41796f129786",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "§6.1 `>` excludes the literal's own value",
+    "source_ledger_anchors": [
+      {
+        "original_index": 90,
+        "current_index": 90,
+        "current_line": 118,
+        "spec": "§6.1 `>` excludes the literal's own value",
+        "mutation": "In `CmpOp::holds`, make `Gt` return `ord != Less`"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 90,
+        "line": 124,
+        "spec": "§6.1 `>` excludes the literal's own value"
+      }
+    ],
+    "accepted_attempt_id": "row90-c"
+  },
+  {
+    "id": "row91",
+    "rows": [
+      91
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-core/src/query.rs",
+        "old": "CmpOp::Ge => ord != Less,",
+        "new": "CmpOp::Ge => ord == Greater,",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "17a3154a9c9bd02c03fa7ed314dfb8722900ed22576e95808e3af63c8a6fec75"
+      }
+    ],
+    "primary_tests": [
+      "node::tests::each_comparison_operator_keeps_the_rows_sql_keeps"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-core/src/query.rs": "17a3154a9c9bd02c03fa7ed314dfb8722900ed22576e95808e3af63c8a6fec75"
+    },
+    "edits_sha256": "062e49dc163e6fbbaaf065c0d71de3a1f57812f2162c2a8397bc3f4017dbfa14",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "§6.1 `>=` includes the literal's own value",
+    "source_ledger_anchors": [
+      {
+        "original_index": 91,
+        "current_index": 91,
+        "current_line": 119,
+        "spec": "§6.1 `>=` includes the literal's own value",
+        "mutation": "In `CmpOp::holds`, make `Ge` return `ord == Greater`"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 91,
+        "line": 125,
+        "spec": "§6.1 `>=` includes the literal's own value"
+      }
+    ],
+    "accepted_attempt_id": "row91-a"
+  },
+  {
+    "id": "row92",
+    "rows": [
+      92
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-core/src/query.rs",
+        "old": "CmpOp::Lt => ord == Less,",
+        "new": "CmpOp::Lt => ord != Greater,",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "17a3154a9c9bd02c03fa7ed314dfb8722900ed22576e95808e3af63c8a6fec75"
+      }
+    ],
+    "primary_tests": [
+      "node::tests::each_comparison_operator_keeps_the_rows_sql_keeps"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-core/src/query.rs": "17a3154a9c9bd02c03fa7ed314dfb8722900ed22576e95808e3af63c8a6fec75"
+    },
+    "edits_sha256": "73b26306743fc37329fa7863aea76f7a13184ec52e957e123b23862cbf8bfb64",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "§6.1 `<` excludes the literal's own value",
+    "source_ledger_anchors": [
+      {
+        "original_index": 92,
+        "current_index": 92,
+        "current_line": 120,
+        "spec": "§6.1 `<` excludes the literal's own value",
+        "mutation": "In `CmpOp::holds`, make `Lt` return `ord != Greater`"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 92,
+        "line": 126,
+        "spec": "§6.1 `<` excludes the literal's own value"
+      }
+    ],
+    "accepted_attempt_id": "row92-b"
+  },
+  {
+    "id": "row93",
+    "rows": [
+      93
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-core/src/query.rs",
+        "old": "CmpOp::Le => ord != Greater,",
+        "new": "CmpOp::Le => ord == Less,",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "17a3154a9c9bd02c03fa7ed314dfb8722900ed22576e95808e3af63c8a6fec75"
+      }
+    ],
+    "primary_tests": [
+      "node::tests::each_comparison_operator_keeps_the_rows_sql_keeps"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-core/src/query.rs": "17a3154a9c9bd02c03fa7ed314dfb8722900ed22576e95808e3af63c8a6fec75"
+    },
+    "edits_sha256": "d008457a47147694637e999bc6909ef366b8040e8da2dd5e4936eea9003e9068",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "§6.1 `<=` includes the literal's own value",
+    "source_ledger_anchors": [
+      {
+        "original_index": 93,
+        "current_index": 93,
+        "current_line": 121,
+        "spec": "§6.1 `<=` includes the literal's own value",
+        "mutation": "In `CmpOp::holds`, make `Le` return `ord == Less`"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 93,
+        "line": 127,
+        "spec": "§6.1 `<=` includes the literal's own value"
+      }
+    ],
+    "accepted_attempt_id": "row93-c"
+  },
+  {
+    "id": "row94",
+    "rows": [
+      94
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-core/src/query.rs",
+        "old": "CmpOp::Eq => ord == Equal,",
+        "new": "CmpOp::Eq => ord != Equal,",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "17a3154a9c9bd02c03fa7ed314dfb8722900ed22576e95808e3af63c8a6fec75"
+      }
+    ],
+    "primary_tests": [
+      "node::tests::each_comparison_operator_keeps_the_rows_sql_keeps"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-core/src/query.rs": "17a3154a9c9bd02c03fa7ed314dfb8722900ed22576e95808e3af63c8a6fec75"
+    },
+    "edits_sha256": "e417219867c44e0f1d53d894df3a142a0621cb481c72509d6a925c70dbd73cce",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "§6.1 `=`",
+    "source_ledger_anchors": [
+      {
+        "original_index": 94,
+        "current_index": 94,
+        "current_line": 122,
+        "spec": "§6.1 `=`",
+        "mutation": "In `CmpOp::holds`, make `Eq` return `ord != Equal`"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 94,
+        "line": 128,
+        "spec": "§6.1 `=`"
+      }
+    ],
+    "accepted_attempt_id": "row94-a"
+  },
+  {
+    "id": "row95",
+    "rows": [
+      95
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-core/src/query.rs",
+        "old": "CmpOp::Ne => ord != Equal,",
+        "new": "CmpOp::Ne => ord == Equal,",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "17a3154a9c9bd02c03fa7ed314dfb8722900ed22576e95808e3af63c8a6fec75"
+      }
+    ],
+    "primary_tests": [
+      "node::tests::each_comparison_operator_keeps_the_rows_sql_keeps"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-core/src/query.rs": "17a3154a9c9bd02c03fa7ed314dfb8722900ed22576e95808e3af63c8a6fec75"
+    },
+    "edits_sha256": "2c87a9aa1a00df6d649e38b4abf2a49532933cbfbe6b4c478c026b8bee4f6f59",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "§6.1 `!=`",
+    "source_ledger_anchors": [
+      {
+        "original_index": 95,
+        "current_index": 95,
+        "current_line": 123,
+        "spec": "§6.1 `!=`",
+        "mutation": "In `CmpOp::holds`, make `Ne` return `ord == Equal`"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 95,
+        "line": 129,
+        "spec": "§6.1 `!=`"
+      }
+    ],
+    "accepted_attempt_id": "row95-b"
+  },
+  {
+    "id": "row96",
+    "rows": [
+      96
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-core/src/node.rs",
+        "old": "Value::Null => false,",
+        "new": "Value::Null => *op == crate::CmpOp::Ne,",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "be697f7cae33940c135e0e1183ebfd28cec315b84e3d6c5f881409078a5ece47"
+      }
+    ],
+    "primary_tests": [
+      "node::tests::a_null_value_passes_no_comparison_not_even_not_equal"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-core/src/node.rs": "be697f7cae33940c135e0e1183ebfd28cec315b84e3d6c5f881409078a5ece47"
+    },
+    "edits_sha256": "be413bd9b0dba07fd9545788e8fc3b92b1696069da41218d0ce97458979ef3f0",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "§6.1 / Ruling 3: `NULL <op> literal` is UNKNOWN for every operator, `!=` included",
+    "source_ledger_anchors": [
+      {
+        "original_index": 96,
+        "current_index": 96,
+        "current_line": 124,
+        "spec": "§6.1 / Ruling 3: `NULL <op> literal` is UNKNOWN for every operator, `!=` included",
+        "mutation": "In `passes`, make the `(Value::Null, _)` arm return `*op == CmpOp::Ne`"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 96,
+        "line": 130,
+        "spec": "§6.1 / Ruling 3: `NULL <op> literal` is UNKNOWN for every operator, `!=` included"
+      }
+    ],
+    "accepted_attempt_id": "row96-c"
+  },
+  {
+    "id": "row97",
+    "rows": [
+      97
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-core/src/node.rs",
+        "old": "Predicate::IsNull { column } => matches!(row.get(*column), Value::Null),",
+        "new": "Predicate::IsNull { column } => !matches!(row.get(*column), Value::Null),",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "be697f7cae33940c135e0e1183ebfd28cec315b84e3d6c5f881409078a5ece47"
+      }
+    ],
+    "primary_tests": [
+      "node::tests::is_null_keeps_only_null_rows"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-core/src/node.rs": "be697f7cae33940c135e0e1183ebfd28cec315b84e3d6c5f881409078a5ece47"
+    },
+    "edits_sha256": "60ca51881e2fb545341de5cb853665e7210598e944ec40890e2019a10181a638",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "§6.1 `IS NULL` keeps exactly the NULL rows",
+    "source_ledger_anchors": [
+      {
+        "original_index": 97,
+        "current_index": 97,
+        "current_line": 125,
+        "spec": "§6.1 `IS NULL` keeps exactly the NULL rows",
+        "mutation": "Make `IsNull`'s arm the same as `IsNotNull`'s"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 97,
+        "line": 131,
+        "spec": "§6.1 `IS NULL` keeps exactly the NULL rows"
+      }
+    ],
+    "accepted_attempt_id": "row97-a"
+  },
+  {
+    "id": "row98",
+    "rows": [
+      98
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-core/src/value.rs",
+        "old": "(Value::Text(a), Value::Text(b)) => a.as_bytes().cmp(b.as_bytes()),",
+        "new": "(Value::Text(a), Value::Text(b)) => a.len().cmp(&b.len()).then(a.as_bytes().cmp(b.as_bytes())),",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "e7bca872d8b993b1634d7d97ccce937757578d3b9dc089214a4f067c9228f031"
+      }
+    ],
+    "primary_tests": [
+      "node::tests::text_comparison_is_byte_order"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-core/src/value.rs": "e7bca872d8b993b1634d7d97ccce937757578d3b9dc089214a4f067c9228f031"
+    },
+    "edits_sha256": "4ce55c61af5771b64e86d65617bad9b6e0fd87c9df4f8c6b611ae961ae4c96d7",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "§7.1 TEXT compares by byte order (BINARY collation)",
+    "source_ledger_anchors": [
+      {
+        "original_index": 98,
+        "current_index": 98,
+        "current_line": 126,
+        "spec": "§7.1 TEXT compares by byte order (BINARY collation)",
+        "mutation": "Compare TEXT by length first, then bytes (`a.len().cmp(&b.len()).then(a.cmp(b))`)"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 98,
+        "line": 132,
+        "spec": "§7.1 TEXT compares by byte order (BINARY collation)"
+      }
+    ],
+    "accepted_attempt_id": "row98-b"
+  },
+  {
+    "id": "row185",
+    "rows": [
+      185
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-sqlite/src/state.rs",
+        "old": "        overlay(&mut values, self.pending.borrow().get(key));\n",
+        "new": "",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "fe17db6cd2b9186375d7e0042e56cfb3edcea354808f2cb906bf01989121d9e3"
+      }
+    ],
+    "primary_tests": [
+      "a_failed_refresh_changes_nothing_and_a_retry_succeeds"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-sqlite/src/state.rs": "fe17db6cd2b9186375d7e0042e56cfb3edcea354808f2cb906bf01989121d9e3"
+    },
+    "edits_sha256": "a58be4670ae83ad8410cc9a12fdfefeeb23ff4b067b964663f9b440bf37d1d95",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "Phase 3a §5: later reads in one refresh see its earlier buffered writes",
+    "source_ledger_anchors": [
+      {
+        "original_index": 185,
+        "current_index": 185,
+        "current_line": 227,
+        "spec": "Phase 3a §5: later reads in one refresh see its earlier buffered writes",
+        "mutation": "In `state.rs`'s `BufferedArrangement::get`, delete the `overlay(…)` call"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 187,
+        "line": 247,
+        "spec": "Phase 3a §5: later reads in one refresh see its earlier buffered writes"
+      }
+    ],
+    "accepted_attempt_id": "row185-c"
+  },
+  {
+    "id": "row186",
+    "rows": [
+      186
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-sqlite/src/view.rs",
+        "old": "FROM {} WHERE {DELTA_SEQ} > ?1 ORDER BY {DELTA_SEQ}",
+        "new": "FROM {} WHERE {DELTA_SEQ} >= ?1 ORDER BY {DELTA_SEQ}",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "80b21b56ee3a87b0eeb0245e27f1c4efde08e8b325ac6d0d36abd587cdb7fc60"
+      }
+    ],
+    "primary_tests": [
+      "deltas_stay_until_every_reader_has_consumed_them"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-sqlite/src/view.rs": "80b21b56ee3a87b0eeb0245e27f1c4efde08e8b325ac6d0d36abd587cdb7fc60"
+    },
+    "edits_sha256": "aba732c79e33b2457755a8da8489af3577a635bcbe8349498fd5b8ed76a2c86a",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "§7.3 / Phase 3a §5: a refresh consumes exactly the deltas after the watermark",
+    "source_ledger_anchors": [
+      {
+        "original_index": 186,
+        "current_index": 186,
+        "current_line": 228,
+        "spec": "§7.3 / Phase 3a §5: a refresh consumes exactly the deltas after the watermark",
+        "mutation": "In `view.rs`'s `read_deltas`, the WHERE clause `{DELTA_SEQ} > ?1` (renders as `__ivm_seq > ?1`, not the brief's `seq > ?1` — the delta table's sequence column was renamed by Task 3's fix round) → `{DELTA_SEQ} >= ?1`"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 188,
+        "line": 248,
+        "spec": "§7.3 / Phase 3a §5: a refresh consumes exactly the deltas after the watermark"
+      }
+    ],
+    "accepted_attempt_id": "row186-a"
+  },
+  {
+    "id": "row229",
+    "rows": [
+      229
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-sqlite/src/view.rs",
+        "old": "        if readers(conn, t)?.is_empty() {\n            untrack(conn, t)?;\n        } else if table_exists(conn, &delta_table(t))? {\n            collect_garbage(conn, t)?;\n        }",
+        "new": "        untrack(conn, t)?;",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "80b21b56ee3a87b0eeb0245e27f1c4efde08e8b325ac6d0d36abd587cdb7fc60"
+      }
+    ],
+    "primary_tests": [
+      "dropping_views_in_any_order_leaves_the_others_correct_and_the_last_leaves_nothing"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-sqlite/src/view.rs": "80b21b56ee3a87b0eeb0245e27f1c4efde08e8b325ac6d0d36abd587cdb7fc60"
+    },
+    "edits_sha256": "4df69bbd698caea024775797f5c17bfb1f8009774642086b79afd828ed278233",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "M1b Phase 3b Task 1, spec §4: `DROP TABLE v` keeps capturing a base table that another view still reads — it must call `untrack` only when `readers` (queried after this view's own `__ivm_dep` row is already deleted) comes back empty",
+    "source_ledger_anchors": [
+      {
+        "original_index": 229,
+        "current_index": 229,
+        "current_line": 271,
+        "spec": "M1b Phase 3b Task 1, spec §4: `DROP TABLE v` keeps capturing a base table that another view still reads — it must call `untrack` only when `readers` (queried after this view's own `__ivm_dep` row is already deleted) comes back empty",
+        "mutation": "In `destroy`, replace the `if readers(conn, t)?.is_empty() { untrack(conn, t)?; }` guard with an unconditional `untrack(conn, t)?;`"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 231,
+        "line": 291,
+        "spec": "M1b Phase 3b Task 1, spec §4: `DROP TABLE v` keeps capturing a base table that another view still reads — it must call `untrack` only when `readers` (queried after this view's own `__ivm_dep` row is already deleted) comes back empty"
+      }
+    ],
+    "accepted_attempt_id": "row229-b"
+  },
+  {
+    "id": "row233",
+    "rows": [
+      233
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-sqlite/src/view.rs",
+        "old": "(SELECT MIN(applied_seq) FROM {progress} WHERE tbl = {lit})",
+        "new": "(SELECT MAX(applied_seq) FROM {progress} WHERE tbl = {lit})",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "80b21b56ee3a87b0eeb0245e27f1c4efde08e8b325ac6d0d36abd587cdb7fc60"
+      }
+    ],
+    "primary_tests": [
+      "deltas_stay_until_every_reader_has_consumed_them"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-sqlite/src/view.rs": "80b21b56ee3a87b0eeb0245e27f1c4efde08e8b325ac6d0d36abd587cdb7fc60"
+    },
+    "edits_sha256": "f7005192753875441f4019d4b3cfd785aef82d29171d8d9a8ed5ab39225c7334",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "M1b Phase 3b Task 2, spec §5: GC follows the slowest reader — the trigger's GC `DELETE` must bound by `MIN(applied_seq)` across every reader of the table, not `MAX`",
+    "source_ledger_anchors": [
+      {
+        "original_index": 233,
+        "current_index": 233,
+        "current_line": 275,
+        "spec": "M1b Phase 3b Task 2, spec §5: GC follows the slowest reader — the trigger's GC `DELETE` must bound by `MIN(applied_seq)` across every reader of the table, not `MAX`",
+        "mutation": "In the same `body.push` loop, `MIN(applied_seq)` → `MAX(applied_seq)`"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 235,
+        "line": 295,
+        "spec": "M1b Phase 3b Task 2, spec §5: GC follows the slowest reader — the trigger's GC `DELETE` must bound by `MIN(applied_seq)` across every reader of the table, not `MAX`"
+      }
+    ],
+    "accepted_attempt_id": "row233-c"
+  },
+  {
+    "id": "row270",
+    "rows": [
+      270
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-sqlite/src/view.rs",
+        "old": "\"CREATE TABLE {}({}, {WEIGHT} INTEGER NOT NULL);\n             CREATE INDEX {} ON {}({});\",",
+        "new": "\"CREATE TABLE {}({}, {WEIGHT} INTEGER NOT NULL);\",",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "80b21b56ee3a87b0eeb0245e27f1c4efde08e8b325ac6d0d36abd587cdb7fc60"
+      },
+      {
+        "file": "crates/ivmlite-sqlite/src/view.rs",
+        "old": "            main_qualified(&out_index(name)),\n            quote(&out_table(name)),\n            cols.join(\", \"),\n",
+        "new": "",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "80b21b56ee3a87b0eeb0245e27f1c4efde08e8b325ac6d0d36abd587cdb7fc60"
+      }
+    ],
+    "primary_tests": [
+      "a_view_creates_its_output_index"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-sqlite/src/view.rs": "80b21b56ee3a87b0eeb0245e27f1c4efde08e8b325ac6d0d36abd587cdb7fc60"
+    },
+    "edits_sha256": "23939fa9b8ec6bfeb323c217ebe53741350da8b4ec500d56498a7ad0bdb8b1ea",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "M1b Phase 4 Task 3, spec §4: the output table gets a non-unique index over every output column, created with the table (`out_index`), so a retraction's existence check and its `DELETE` are a search rather than a full scan; `verify` also requires the index to exist, and (fix round 1, controller ruling 4) `refresh` checks it too, so a view whose index is gone is broken — on a fresh connection or the one that already holds it — rather than silently falling back to a scan. Baseline for this row and the next four: `scripts/test-all.sh` gives **371** passed / 0 failed — 12 unchanged in the extension's own unit tests, plus 359 in the workspace invocation (`extension_lifecycle` gains `a_view_creates_its_output_index`, `the_retraction_lookup_searches_the_output_index` (rewritten in fix round 1 to read the apply trigger's own stored SQL out of `sqlite_schema`, not a hand-written copy), `null_output_values_are_retracted`, `one_retraction_removes_one_copy_of_a_duplicated_output_row` and `a_dropped_output_index_breaks_a_refresh_on_the_same_connection_and_still_drops`; the extension's own unit tests gain `the_retraction_lookup_names_every_column_by_position`, replacing the connection-based test the task brief proposed — this crate builds `rusqlite` with only the `loadable_extension` feature, never linked to a real SQLite, so `Connection::open_in_memory` there panics with \"SQLite API not initialized\"; the plan check lives in `ivmlite-test`, where a real loaded extension exists)",
+    "source_ledger_anchors": [
+      {
+        "original_index": 270,
+        "current_index": 270,
+        "current_line": 312,
+        "spec": "M1b Phase 4 Task 3, spec §4: the output table gets a non-unique index over every output column, created with the table (`out_index`), so a retraction's existence check and its `DELETE` are a search rather than a full scan; `verify` also requires the index to exist, and (fix round 1, controller ruling 4) `refresh` checks it too, so a view whose index is gone is broken — on a fresh connection or the one that already holds it — rather than silently falling back to a scan. Baseline for this row and the next four: `scripts/test-all.sh` gives **371** passed / 0 failed — 12 unchanged in the extension's own unit tests, plus 359 in the workspace invocation (`extension_lifecycle` gains `a_view_creates_its_output_index`, `the_retraction_lookup_searches_the_output_index` (rewritten in fix round 1 to read the apply trigger's own stored SQL out of `sqlite_schema`, not a hand-written copy), `null_output_values_are_retracted`, `one_retraction_removes_one_copy_of_a_duplicated_output_row` and `a_dropped_output_index_breaks_a_refresh_on_the_same_connection_and_still_drops`; the extension's own unit tests gain `the_retraction_lookup_names_every_column_by_position`, replacing the connection-based test the task brief proposed — this crate builds `rusqlite` with only the `loadable_extension` feature, never linked to a real SQLite, so `Connection::open_in_memory` there panics with \"SQLite API not initialized\"; the plan check lives in `ivmlite-test`, where a real loaded extension exists)",
+        "mutation": "Delete the `CREATE INDEX {main_qualified(out_index(name))} ON …` statement in `create_out_table`"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 272,
+        "line": 332,
+        "spec": "M1b Phase 4 Task 3, spec §4: the output table gets a non-unique index over every output column, created with the table (`out_index`), so a retraction's existence check and its `DELETE` are a search rather than a full scan; `verify` also requires the index to exist, and (fix round 1, controller ruling 4) `refresh` checks it too, so a view whose index is gone is broken — on a fresh connection or the one that already holds it — rather than silently falling back to a scan. Baseline for this row and the next four: `scripts/test-all.sh` gives **371** passed / 0 failed — 12 unchanged in the extension's own unit tests, plus 359 in the workspace invocation (`extension_lifecycle` gains `a_view_creates_its_output_index`, `the_retraction_lookup_searches_the_output_index` (rewritten in fix round 1 to read the apply trigger's own stored SQL out of `sqlite_schema`, not a hand-written copy), `null_output_values_are_retracted`, `one_retraction_removes_one_copy_of_a_duplicated_output_row` and `a_dropped_output_index_breaks_a_refresh_on_the_same_connection_and_still_drops`; the extension's own unit tests gain `the_retraction_lookup_names_every_column_by_position`, replacing the connection-based test the task brief proposed — this crate builds `rusqlite` with only the `loadable_extension` feature, never linked to a real SQLite, so `Connection::open_in_memory` there panics with \"SQLite API not initialized\"; the plan check lives in `ivmlite-test`, where a real loaded extension exists)"
+      }
+    ],
+    "accepted_attempt_id": "row270-a"
+  },
+  {
+    "id": "row272",
+    "rows": [
+      272
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-sqlite/src/view.rs",
+        "old": "    body.push(format!(\n        \"DELETE FROM {out} WHERE rowid IN \\\n         (SELECT ({lookup} LIMIT 1) FROM {stage} AS {s} WHERE {s}.op = 'out-');\"\n    ));",
+        "new": "    let bad_terms: Vec<String> = cols.iter().enumerate().map(|(i, c)| format!(\"{c} = {s}.c{i}\")).collect();\n    let bad_lookup = format!(\"SELECT rowid FROM {out} WHERE {}\", bad_terms.join(\" AND \"));\n    body.push(format!(\n        \"DELETE FROM {out} WHERE rowid IN \\\n         (SELECT ({bad_lookup} LIMIT 1) FROM {stage} AS {s} WHERE {s}.op = 'out-');\"\n    ));",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "80b21b56ee3a87b0eeb0245e27f1c4efde08e8b325ac6d0d36abd587cdb7fc60"
+      }
+    ],
+    "primary_tests": [
+      "the_retraction_lookup_searches_the_output_index"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-sqlite/src/view.rs": "80b21b56ee3a87b0eeb0245e27f1c4efde08e8b325ac6d0d36abd587cdb7fc60"
+    },
+    "edits_sha256": "45df644bcb9f8cef85d75701d24f994871ab6c60da8b44f274218df9ca642a3b",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "M1b Phase 4 Task 3, fix round 1 Important 1, spec §4: the RAISE's `NOT EXISTS (…)` and the DELETE's `rowid = (… LIMIT 1)` must embed byte-identical lookup text — both built from the one `retraction_lookup` call, never reconstructed independently at either site",
+    "source_ledger_anchors": [
+      {
+        "original_index": 272,
+        "current_index": 272,
+        "current_line": 314,
+        "spec": "M1b Phase 4 Task 3, fix round 1 Important 1, spec §4: the RAISE's `NOT EXISTS (…)` and the DELETE's `rowid = (… LIMIT 1)` must embed byte-identical lookup text — both built from the one `retraction_lookup` call, never reconstructed independently at either site",
+        "mutation": "In `create_stage`, rebuild the DELETE's `WHERE` clause inline as `{c} = NEW.c{i}` (comparing with `=` instead of `IS`) instead of reusing `lookup`, decoupling the DELETE from the RAISE's clause"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 274,
+        "line": 334,
+        "spec": "M1b Phase 4 Task 3, fix round 1 Important 1, spec §4: the RAISE's `NOT EXISTS (…)` and the DELETE's `rowid = (… LIMIT 1)` must embed byte-identical lookup text — both built from the one `retraction_lookup` call, never reconstructed independently at either site"
+      }
+    ],
+    "accepted_attempt_id": "row272-b"
+  },
+  {
+    "id": "row287",
+    "rows": [
+      287
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-sqlite/src/view.rs",
+        "old": "        body.push(format!(\n            \"DELETE FROM {t} WHERE w = 0 AND (key, val) IN \\\n             (SELECT key, val FROM {stage} WHERE op = 'state' AND arr = {i});\"\n        ));\n",
+        "new": "",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "80b21b56ee3a87b0eeb0245e27f1c4efde08e8b325ac6d0d36abd587cdb7fc60"
+      }
+    ],
+    "primary_tests": [
+      "the_extension_is_green_across_the_single_table_space"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-sqlite/src/view.rs": "80b21b56ee3a87b0eeb0245e27f1c4efde08e8b325ac6d0d36abd587cdb7fc60"
+    },
+    "edits_sha256": "fea1ec8980d4fd81fc456e1bf2c13bd3716fb2d3dd51cdb8c59d4540fd49a1f3",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "M1b Phase 5 Task 2, spec §4: after the per-arrangement upsert, every staged key whose weight reached 0 is deleted from that state table",
+    "source_ledger_anchors": [
+      {
+        "original_index": 287,
+        "current_index": 287,
+        "current_line": 329,
+        "spec": "M1b Phase 5 Task 2, spec §4: after the per-arrangement upsert, every staged key whose weight reached 0 is deleted from that state table",
+        "mutation": "In `create_stage`, delete the `body.push` of `DELETE FROM {t} WHERE w = 0 AND (key, val) IN (…)`"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 289,
+        "line": 349,
+        "spec": "M1b Phase 5 Task 2, spec §4: after the per-arrangement upsert, every staged key whose weight reached 0 is deleted from that state table"
+      }
+    ],
+    "accepted_attempt_id": "row287-c"
+  },
+  {
+    "id": "row291",
+    "rows": [
+      291
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-sqlite/src/view.rs",
+        "old": "AFTER UPDATE OF op ON {stage}",
+        "new": "AFTER INSERT ON {stage}",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "80b21b56ee3a87b0eeb0245e27f1c4efde08e8b325ac6d0d36abd587cdb7fc60"
+      }
+    ],
+    "primary_tests": [
+      "one_refresh_fires_the_apply_body_once"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-sqlite/src/view.rs": "80b21b56ee3a87b0eeb0245e27f1c4efde08e8b325ac6d0d36abd587cdb7fc60"
+    },
+    "edits_sha256": "e3fae672cfc32d9372bc94bf0c3448ce6f47162ff4c37617b2b0b202ae615959",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "M1b Phase 5 Task 2 fix round 1, spec §4 (amendment 2026-10-08): the trigger fires on `UPDATE OF op`, not on INSERT — no staging insert evaluates it, and the arming `UPDATE` does",
+    "source_ledger_anchors": [
+      {
+        "original_index": 291,
+        "current_index": 291,
+        "current_line": 333,
+        "spec": "M1b Phase 5 Task 2 fix round 1, spec §4 (amendment 2026-10-08): the trigger fires on `UPDATE OF op`, not on INSERT — no staging insert evaluates it, and the arming `UPDATE` does",
+        "mutation": "In `create_stage`, `AFTER UPDATE OF op ON {stage}` → `AFTER INSERT ON {stage}` (the `WHEN NEW.op = 'apply'` kept)"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 293,
+        "line": 353,
+        "spec": "M1b Phase 5 Task 2 fix round 1, spec §4 (amendment 2026-10-08): the trigger fires on `UPDATE OF op`, not on INSERT — no staging insert evaluates it, and the arming `UPDATE` does"
+      }
+    ],
+    "accepted_attempt_id": "row291-a"
+  },
+  {
+    "id": "row295",
+    "rows": [
+      295
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-sqlite/src/view.rs",
+        "old": "        while rows > 0 {",
+        "new": "        while false && rows > 0 {",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "80b21b56ee3a87b0eeb0245e27f1c4efde08e8b325ac6d0d36abd587cdb7fc60"
+      }
+    ],
+    "primary_tests": [
+      "a_refresh_staging_one_chunk_or_one_chunk_and_one_row_is_maintained"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-sqlite/src/view.rs": "80b21b56ee3a87b0eeb0245e27f1c4efde08e8b325ac6d0d36abd587cdb7fc60"
+    },
+    "edits_sha256": "d55d0fbf4e4d21075a6954af4ea8886f3b7669a3c0b5ee3fd69d59d8ff0caa20",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "M1b Phase 5 Task 4, spec §6 (amendments 2026-10-08): rows are staged 64 per multi-row `INSERT`, and the rows left over, fewer than one chunk, go in one remainder statement. Baseline for this row and the next three (re-measured in Task 4 fix round 1): `scripts/test-all.sh` gives **441** passed / 0 failed — 13 in the extension's own unit tests (gains `a_staging_insert_binds_at_most_999_parameters`), plus 428 in the workspace invocation (`extension_lifecycle` gains `a_refresh_staging_one_chunk_or_one_chunk_and_one_row_is_maintained`, `a_wide_view_stages_within_999_parameters` and `a_lowered_variable_limit_bounds_every_staging_insert`)",
+    "source_ledger_anchors": [
+      {
+        "original_index": 295,
+        "current_index": 295,
+        "current_line": 337,
+        "spec": "M1b Phase 5 Task 4, spec §6 (amendments 2026-10-08): rows are staged 64 per multi-row `INSERT`, and the rows left over, fewer than one chunk, go in one remainder statement. Baseline for this row and the next three (re-measured in Task 4 fix round 1): `scripts/test-all.sh` gives **441** passed / 0 failed — 13 in the extension's own unit tests (gains `a_staging_insert_binds_at_most_999_parameters`), plus 428 in the workspace invocation (`extension_lifecycle` gains `a_refresh_staging_one_chunk_or_one_chunk_and_one_row_is_maintained`, `a_wide_view_stages_within_999_parameters` and `a_lowered_variable_limit_bounds_every_staging_insert`)",
+        "mutation": "In `Stager::finish`, `if self.values.is_empty() {` → `if true {` (the remainder is never staged)"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 297,
+        "line": 357,
+        "spec": "M1b Phase 5 Task 4, spec §6 (amendments 2026-10-08): rows are staged 64 per multi-row `INSERT`, and the rows left over, fewer than one chunk, go in one remainder statement. Baseline for this row and the next three (re-measured in Task 4 fix round 1): `scripts/test-all.sh` gives **441** passed / 0 failed — 13 in the extension's own unit tests (gains `a_staging_insert_binds_at_most_999_parameters`), plus 428 in the workspace invocation (`extension_lifecycle` gains `a_refresh_staging_one_chunk_or_one_chunk_and_one_row_is_maintained`, `a_wide_view_stages_within_999_parameters` and `a_lowered_variable_limit_bounds_every_staging_insert`)"
+      }
+    ],
+    "accepted_attempt_id": "row295-b"
+  },
+  {
+    "id": "row296",
+    "rows": [
+      296
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-sqlite/src/view.rs",
+        "old": "        while rows > 0 {",
+        "new": "        if rows == 0 {\n            execute_staging(self.conn, &self.sql(0), &mut self.values, 0)?;\n        }\n        while rows > 0 {",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "80b21b56ee3a87b0eeb0245e27f1c4efde08e8b325ac6d0d36abd587cdb7fc60"
+      }
+    ],
+    "primary_tests": [
+      "a_refresh_staging_one_chunk_or_one_chunk_and_one_row_is_maintained"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-sqlite/src/view.rs": "80b21b56ee3a87b0eeb0245e27f1c4efde08e8b325ac6d0d36abd587cdb7fc60"
+    },
+    "edits_sha256": "8df649bad3f6db46174925f79d96a2fcdea207deabdd81397bee570322723a1e",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "M1b Phase 5 Task 4, spec §6: a kind whose row count is an exact multiple of the chunk, or zero, runs no remainder statement",
+    "source_ledger_anchors": [
+      {
+        "original_index": 296,
+        "current_index": 296,
+        "current_line": 338,
+        "spec": "M1b Phase 5 Task 4, spec §6: a kind whose row count is an exact multiple of the chunk, or zero, runs no remainder statement",
+        "mutation": "In `Stager::finish`, delete the `if self.values.is_empty() { return Ok(()); }` guard (an empty remainder runs `INSERT … VALUES ` with no row)"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 298,
+        "line": 358,
+        "spec": "M1b Phase 5 Task 4, spec §6: a kind whose row count is an exact multiple of the chunk, or zero, runs no remainder statement"
+      }
+    ],
+    "accepted_attempt_id": "row296-c"
+  },
+  {
+    "id": "row308",
+    "rows": [
+      308
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-sqlite/src/snapshot.rs",
+        "old": "self.verdicts.get(table)",
+        "new": "self.verdicts.get(\"\")",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "63c78f5afab7c563e91ca8f5801d714d31b52ca4b9ef25206b0855dd34ba254e"
+      },
+      {
+        "file": "crates/ivmlite-sqlite/src/snapshot.rs",
+        "old": "self.verdicts.insert(table.to_string(), verdict.clone());",
+        "new": "self.verdicts.insert(String::new(), verdict.clone());",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "63c78f5afab7c563e91ca8f5801d714d31b52ca4b9ef25206b0855dd34ba254e"
+      }
+    ],
+    "primary_tests": [
+      "a_broken_capture_on_either_table_of_a_join_breaks_it"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-sqlite/src/snapshot.rs": "63c78f5afab7c563e91ca8f5801d714d31b52ca4b9ef25206b0855dd34ba254e"
+    },
+    "edits_sha256": "2f8190a94dc36ee1ff16a7cf8568298171f05fc2befb95eb900e2449e122d8fb",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "M1b Phase 6 Task 3, spec §4: verdicts are kept by base table, so one table's verdict is never returned for another",
+    "source_ledger_anchors": [
+      {
+        "original_index": 308,
+        "current_index": 308,
+        "current_line": 350,
+        "spec": "M1b Phase 6 Task 3, spec §4: verdicts are kept by base table, so one table's verdict is never returned for another",
+        "mutation": "In `Snapshot::verdict`, look the verdict up and insert it under `\"\"` / `String::new()` instead of `table`"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 310,
+        "line": 370,
+        "spec": "M1b Phase 6 Task 3, spec §4: verdicts are kept by base table, so one table's verdict is never returned for another"
+      }
+    ],
+    "accepted_attempt_id": "row308-a"
+  },
+  {
+    "id": "row314",
+    "rows": [
+      314
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-sqlite/src/view.rs",
+        "old": "             CREATE INDEX IF NOT EXISTS {} ON {}(tbl, applied_seq);\n",
+        "new": "",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "80b21b56ee3a87b0eeb0245e27f1c4efde08e8b325ac6d0d36abd587cdb7fc60"
+      },
+      {
+        "file": "crates/ivmlite-sqlite/src/view.rs",
+        "old": "            main_qualified(PROGRESS_INDEX),\n            quote(PROGRESS),\n",
+        "new": "",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "80b21b56ee3a87b0eeb0245e27f1c4efde08e8b325ac6d0d36abd587cdb7fc60"
+      }
+    ],
+    "primary_tests": [
+      "the_gc_and_watermark_update_search_the_progress_index"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-sqlite/src/view.rs": "80b21b56ee3a87b0eeb0245e27f1c4efde08e8b325ac6d0d36abd587cdb7fc60"
+    },
+    "edits_sha256": "4839f2978cd0ce73cd400c95a44fb4948bb01c9935cd0a640cd1baa150f39964",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "M1b Phase 6 Task 4, spec §5: the global tables create `__ivm_progress_tbl` on `__ivm_progress(tbl, applied_seq)`, so the apply's garbage collection (`MIN(applied_seq) … WHERE tbl = …`) is a SEARCH, not a scan of one row per view. Baseline for this row and the next four: `scripts/test-all.sh` gives **501** passed / 0 failed (498 before this task, plus `the_gc_and_watermark_update_search_the_progress_index`, `dropping_the_progress_index_breaks_the_next_refresh` and `creating_a_view_recreates_the_progress_index_and_heals_the_broken_views`)",
+    "source_ledger_anchors": [
+      {
+        "original_index": 314,
+        "current_index": 314,
+        "current_line": 356,
+        "spec": "M1b Phase 6 Task 4, spec §5: the global tables create `__ivm_progress_tbl` on `__ivm_progress(tbl, applied_seq)`, so the apply's garbage collection (`MIN(applied_seq) … WHERE tbl = …`) is a SEARCH, not a scan of one row per view. Baseline for this row and the next four: `scripts/test-all.sh` gives **501** passed / 0 failed (498 before this task, plus `the_gc_and_watermark_update_search_the_progress_index`, `dropping_the_progress_index_breaks_the_next_refresh` and `creating_a_view_recreates_the_progress_index_and_heals_the_broken_views`)",
+        "mutation": "Delete the `CREATE INDEX IF NOT EXISTS … ON …(tbl, applied_seq);` statement from `create_global_tables` (and its two format arguments)"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 316,
+        "line": 376,
+        "spec": "M1b Phase 6 Task 4, spec §5: the global tables create `__ivm_progress_tbl` on `__ivm_progress(tbl, applied_seq)`, so the apply's garbage collection (`MIN(applied_seq) … WHERE tbl = …`) is a SEARCH, not a scan of one row per view. Baseline for this row and the next four: `scripts/test-all.sh` gives **501** passed / 0 failed (498 before this task, plus `the_gc_and_watermark_update_search_the_progress_index`, `dropping_the_progress_index_breaks_the_next_refresh` and `creating_a_view_recreates_the_progress_index_and_heals_the_broken_views`)"
+      }
+    ],
+    "accepted_attempt_id": "row314-b"
+  },
+  {
+    "id": "row342",
+    "rows": [
+      342
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-sqlite/src/view.rs",
+        "old": "progress.is_empty() && batches.iter().all(|(_, delta)| delta.is_empty())",
+        "new": "progress.len() < view.tables.len() && batches.iter().any(|(_, delta)| delta.is_empty())",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "80b21b56ee3a87b0eeb0245e27f1c4efde08e8b325ac6d0d36abd587cdb7fc60"
+      }
+    ],
+    "primary_tests": [
+      "a_write_to_one_side_of_a_join_is_not_skipped"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-sqlite/src/view.rs": "80b21b56ee3a87b0eeb0245e27f1c4efde08e8b325ac6d0d36abd587cdb7fc60"
+    },
+    "edits_sha256": "00ee456876454dc0559d700df06bf095c9114a73e393af6df1d294189c1fce8b",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "M1b Phase 7 Task 1 review, spec §4: a join view written on one side only still refreshes; the other side having nothing new does not make it skip",
+    "source_ledger_anchors": [
+      {
+        "original_index": 342,
+        "current_index": 342,
+        "current_line": 384,
+        "spec": "M1b Phase 7 Task 1 review, spec §4: a join view written on one side only still refreshes; the other side having nothing new does not make it skip",
+        "mutation": "In `view::refresh`, the early-return condition `progress.is_empty() && batches.iter().all(\\|(_, delta)\\| delta.is_empty())` → `progress.len() < view.tables.len() && batches.iter().any(\\|(_, delta)\\| delta.is_empty())` (skip when some table has nothing new; the same as before for a one-table view)"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 344,
+        "line": 404,
+        "spec": "M1b Phase 7 Task 1 review, spec §4: a join view written on one side only still refreshes; the other side having nothing new does not make it skip"
+      }
+    ],
+    "accepted_attempt_id": "row342-c"
+  },
+  {
+    "id": "row379",
+    "rows": [
+      379
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/src/query.rs",
+        "old": "            out.push(Predicate::IsNotNull { column });\n",
+        "new": "",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "a5738908218c77021d0963acb0dc08fe635b7448fb52407fd2ef19059d4a094a"
+      }
+    ],
+    "primary_tests": [
+      "query::tests::enumerate_covers_the_v0_space_and_is_nonempty"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-test/src/query.rs": "a5738908218c77021d0963acb0dc08fe635b7448fb52407fd2ef19059d4a094a"
+    },
+    "edits_sha256": "2242a72fe0c0c7de6e38fed8f25922c801e25e03aacd1820bfeeebc0aa613309",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "§6.1 every whitelisted predicate form must be enumerated: `None`, `Compare`, `IsNull`, `IsNotNull` — four, not the three (`None`/`IntGt`/`IsNotNull`) this row was first written against; `predicates` pushes `IsNull` and `IsNotNull` from one shared loop, not two separate ones",
+    "source_ledger_anchors": [
+      {
+        "original_index": 379,
+        "current_index": 379,
+        "current_line": 426,
+        "spec": "§6.1 every whitelisted predicate form must be enumerated: `None`, `Compare`, `IsNull`, `IsNotNull` — four, not the three (`None`/`IntGt`/`IsNotNull`) this row was first written against; `predicates` pushes `IsNull` and `IsNotNull` from one shared loop, not two separate ones",
+        "mutation": "In `predicates`, delete the `IsNotNull` push (keeping the `IsNull` push next to it)"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 383,
+        "line": 454,
+        "spec": "§6.1 every whitelisted predicate form must be enumerated: `None`, `Compare`, `IsNull`, `IsNotNull` — four, not the three (`None`/`IntGt`/`IsNotNull`) this row was first written against; `predicates` pushes `IsNull` and `IsNotNull` from one shared loop, not two separate ones"
+      }
+    ],
+    "accepted_attempt_id": "row379-a"
+  },
+  {
+    "id": "row388",
+    "rows": [
+      388
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/src/sql.rs",
+        "old": "Value::Text(s) => format!(\"'{}'\", s.replace('\\'', \"''\")),",
+        "new": "Value::Text(s) => s.clone(),",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "5b6eeacfe3ec6a47fc527048f7e7f5738d0704ea3ae2e71bafa1e581dda42bfd"
+      }
+    ],
+    "primary_tests": [
+      "sql::tests::to_sql_renders_every_operator_text_literals_and_is_null"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-test/src/sql.rs": "5b6eeacfe3ec6a47fc527048f7e7f5738d0704ea3ae2e71bafa1e581dda42bfd"
+    },
+    "edits_sha256": "97215ded95993e25c0af362de702f0e1085c193cc93bda51984971bf757d9c38",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "The oracle quotes TEXT literals",
+    "source_ledger_anchors": [
+      {
+        "original_index": 388,
+        "current_index": 388,
+        "current_line": 435,
+        "spec": "The oracle quotes TEXT literals",
+        "mutation": "In `sql_literal`, render `Value::Text(s)` as `s.clone()`"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 392,
+        "line": 463,
+        "spec": "The oracle quotes TEXT literals"
+      }
+    ],
+    "accepted_attempt_id": "row388-b"
+  },
+  {
+    "id": "row387",
+    "rows": [
+      387
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/src/naive.rs",
+        "old": "            if *cell == Value::Null {\n                return false;\n            }\n            let order",
+        "new": "            let order",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "939ef52d10e6330fa6236eec4834c93a94f0075f87f9665adf9fbbdee7c8b2a0"
+      }
+    ],
+    "primary_tests": [
+      "naive::tests::naive_passes_follows_three_valued_logic_for_not_equal_and_is_null"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-test/src/naive.rs": "939ef52d10e6330fa6236eec4834c93a94f0075f87f9665adf9fbbdee7c8b2a0"
+    },
+    "edits_sha256": "1d9069ff08381956cc98c6dea5210dd7fec1c68329a9c81953f7582cbb7fb53a",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "The reference implementation treats `NULL != literal` as UNKNOWN",
+    "source_ledger_anchors": [
+      {
+        "original_index": 387,
+        "current_index": 387,
+        "current_line": 434,
+        "spec": "The reference implementation treats `NULL != literal` as UNKNOWN",
+        "mutation": "In `naive.rs`'s `passes`, delete the `if *cell == Value::Null { return false; }` (M2c Task 10: same text, now ahead of `sql_cmp`)"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 391,
+        "line": 462,
+        "spec": "The reference implementation treats `NULL != literal` as UNKNOWN"
+      }
+    ],
+    "accepted_attempt_id": "row387-c"
+  },
+  {
+    "id": "row392",
+    "rows": [
+      392
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/src/naive.rs",
+        "old": "            AggFn::Sum | AggFn::Avg if self.non_null == 0 => Value::Null,",
+        "new": "            AggFn::Sum | AggFn::Avg if self.int_sum == 0 => Value::Null,",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "939ef52d10e6330fa6236eec4834c93a94f0075f87f9665adf9fbbdee7c8b2a0"
+      }
+    ],
+    "primary_tests": [
+      "naive::tests::sum_that_totals_zero_is_int_zero_not_null"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-test/src/naive.rs": "939ef52d10e6330fa6236eec4834c93a94f0075f87f9665adf9fbbdee7c8b2a0"
+    },
+    "edits_sha256": "3e9b1840e26bdd6859e0a4b71ea36e8f3cdad271f044b4a80ee6bb73aafe2d12",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "§6.1 `SUM` with no non-NULL input returns NULL, not 0",
+    "source_ledger_anchors": [
+      {
+        "original_index": 392,
+        "current_index": 392,
+        "current_line": 444,
+        "spec": "§6.1 `SUM` with no non-NULL input returns NULL, not 0",
+        "mutation": "Make the emit branch test `total == 0` (M2c Task 10: `evaluate` emits through `Slot::output`; the mutation is `AggFn::Sum \\| AggFn::Avg if self.non_null == 0` → `if self.int_sum == 0`; the reference now judges every engine, so every differential sweep goes red too)"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 400,
+        "line": 482,
+        "spec": "§6.1 `SUM` with no non-NULL input returns NULL, not 0"
+      }
+    ],
+    "accepted_attempt_id": "row392-a"
+  },
+  {
+    "id": "row405",
+    "rows": [
+      405
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/src/naive.rs",
+        "old": "        if key == Value::Null {\n            continue;\n        }\n",
+        "new": "",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "939ef52d10e6330fa6236eec4834c93a94f0075f87f9665adf9fbbdee7c8b2a0"
+      }
+    ],
+    "primary_tests": [
+      "naive::tests::null_join_keys_never_match"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-test/src/naive.rs": "939ef52d10e6330fa6236eec4834c93a94f0075f87f9665adf9fbbdee7c8b2a0"
+    },
+    "edits_sha256": "2db26aa904ea69f020eba1ec24ebbcce69d50778d045dd36685cdf6e82989f18",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "M1a Phase 3 (Task 3): `NaiveRecompute::input_rows` must skip a NULL join key — SQL's `NULL = NULL` is UNKNOWN, so a NULL key must never match, including another NULL (the semantics `JoinState` and the oracle also implement)",
+    "source_ledger_anchors": [
+      {
+        "original_index": 405,
+        "current_index": 405,
+        "current_line": 457,
+        "spec": "M1a Phase 3 (Task 3): `NaiveRecompute::input_rows` must skip a NULL join key — SQL's `NULL = NULL` is UNKNOWN, so a NULL key must never match, including another NULL (the semantics `JoinState` and the oracle also implement)",
+        "mutation": "Delete the `*key != Value::Null &&` guard in `input_rows`, joining on `key == r.get(join.right_column)` alone (M2c Task 10: join keys are canonical; the guard is `if key == Value::Null { continue; }`, deleted)"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 413,
+        "line": 495,
+        "spec": "M1a Phase 3 (Task 3): `NaiveRecompute::input_rows` must skip a NULL join key — SQL's `NULL = NULL` is UNKNOWN, so a NULL key must never match, including another NULL (the semantics `JoinState` and the oracle also implement)"
+      }
+    ],
+    "accepted_attempt_id": "row405-b"
+  },
+  {
+    "id": "row406",
+    "rows": [
+      406
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/src/naive.rs",
+        "old": "joined.update(Row::new(values), wl * wr);",
+        "new": "joined.update(Row::new(values), wl + 0 * wr);",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "939ef52d10e6330fa6236eec4834c93a94f0075f87f9665adf9fbbdee7c8b2a0"
+      }
+    ],
+    "primary_tests": [
+      "differential::tests::naive_engine_passes_every_enumerated_join_query"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-test/src/naive.rs": "939ef52d10e6330fa6236eec4834c93a94f0075f87f9665adf9fbbdee7c8b2a0"
+    },
+    "edits_sha256": "599a933526457a0fb820bb5ce29130033e2b56a02e751b2e6b128f2a9ff028da",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "M1a Phase 3 (Task 3): `NaiveRecompute::input_rows` must weight a joined row by the product `wl * wr` of its two input weights (Z-set join semantics), not just the left weight",
+    "source_ledger_anchors": [
+      {
+        "original_index": 406,
+        "current_index": 406,
+        "current_line": 458,
+        "spec": "M1a Phase 3 (Task 3): `NaiveRecompute::input_rows` must weight a joined row by the product `wl * wr` of its two input weights (Z-set join semantics), not just the left weight",
+        "mutation": "Change `joined.update(Row::new(values), wl * wr)` to `joined.update(Row::new(values), wl)` (M2c Task 10: measured as `wl + 0 * wr`, which keeps `wr` used)"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 414,
+        "line": 496,
+        "spec": "M1a Phase 3 (Task 3): `NaiveRecompute::input_rows` must weight a joined row by the product `wl * wr` of its two input weights (Z-set join semantics), not just the left weight"
+      }
+    ],
+    "accepted_attempt_id": "row406-c"
+  },
+  {
+    "id": "row409",
+    "rows": [
+      409
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/src/naive.rs",
+        "old": "                CmpOp::Le => order.is_le(),",
+        "new": "                CmpOp::Le => order.is_lt(),",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "939ef52d10e6330fa6236eec4834c93a94f0075f87f9665adf9fbbdee7c8b2a0"
+      }
+    ],
+    "primary_tests": [
+      "differential::tests::naive_engine_passes_every_enumerated_query"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-test/src/naive.rs": "939ef52d10e6330fa6236eec4834c93a94f0075f87f9665adf9fbbdee7c8b2a0"
+    },
+    "edits_sha256": "2b0e49ee5178793492ed072f17cb166d18b5bc747fb393a0bf8a940bf9aaba9c",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "The reference implementation evaluates each operator correctly",
+    "source_ledger_anchors": [
+      {
+        "original_index": 409,
+        "current_index": 409,
+        "current_line": 461,
+        "spec": "The reference implementation evaluates each operator correctly",
+        "mutation": "In `naive.rs`'s `passes`, make `CmpOp::Le => cell < value` (M2c Task 10: `passes` compares by `sql_cmp`; the mutation is `CmpOp::Le => order.is_lt()`)"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 417,
+        "line": 499,
+        "spec": "The reference implementation evaluates each operator correctly"
+      }
+    ],
+    "accepted_attempt_id": "row409-a"
+  },
+  {
+    "id": "row429",
+    "rows": [
+      429
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/src/naive.rs",
+        "old": "            rusqlite::types::Value::Integer(n) => SqliteTerm::Integer(n),",
+        "new": "            rusqlite::types::Value::Integer(n) => SqliteTerm::Approx(n as f64),",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "939ef52d10e6330fa6236eec4834c93a94f0075f87f9665adf9fbbdee7c8b2a0"
+      }
+    ],
+    "primary_tests": [
+      "a_two_table_case_runs_green_against_the_reference_engine"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-test/src/naive.rs": "939ef52d10e6330fa6236eec4834c93a94f0075f87f9665adf9fbbdee7c8b2a0"
+    },
+    "edits_sha256": "4e192536d47d625e36a156d2298497b50017020dfc158dd57f87ff1499989212",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "M2c §4: the reference takes each term's class from SQLite's `sum(?1)`",
+    "source_ledger_anchors": [
+      {
+        "original_index": 429,
+        "current_index": 429,
+        "current_line": 481,
+        "spec": "M2c §4: the reference takes each term's class from SQLite's `sum(?1)`",
+        "mutation": "Map SQLite's INTEGER answer to `SqliteTerm::Approx(n as f64)`"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 437,
+        "line": 519,
+        "spec": "M2c §4: the reference takes each term's class from SQLite's `sum(?1)`"
+      }
+    ],
+    "accepted_attempt_id": "row429-b"
+  },
+  {
+    "id": "row447",
+    "rows": [
+      447,
+      452
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/src/naive.rs",
+        "old": "        // Deliberately unmerged: merging is refresh's job; see the type's doc comment.\n",
+        "new": "        if self.view.as_ref().is_some_and(|(db, _)| table != db.tables()[0].table) {\n            return Ok(());\n        }\n        // Deliberately unmerged: merging is refresh's job; see the type's doc comment.\n",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "939ef52d10e6330fa6236eec4834c93a94f0075f87f9665adf9fbbdee7c8b2a0"
+      }
+    ],
+    "primary_tests": [
+      "a_two_table_case_runs_green_against_the_reference_engine",
+      "differential::tests::batch_invariance_holds_for_naive_engine_on_a_two_table_case"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-test/src/naive.rs": "939ef52d10e6330fa6236eec4834c93a94f0075f87f9665adf9fbbdee7c8b2a0"
+    },
+    "edits_sha256": "9ac70625b1b4265ef649966bf59da375ad7ef103da61bb594aa7d6180082cd8f",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "§8.5 `apply` must really keep non-anchor tables' deltas (found by M1a Phase 1 Task 5 review): `NaiveRecompute` keeps `base` / `pending` per table\n§9.1 `check_batch_invariance` must run on a genuinely multi-table case (I4, found by the final review: the same probe confirmed that no call site had ever fed it a genuinely multi-table case)",
+    "source_ledger_anchors": [
+      {
+        "original_index": 447,
+        "current_index": 447,
+        "current_line": 504,
+        "spec": "§8.5 `apply` must really keep non-anchor tables' deltas (found by M1a Phase 1 Task 5 review): `NaiveRecompute` keeps `base` / `pending` per table",
+        "mutation": "Make `NaiveRecompute::apply` `return Ok(())` for `table != self.anchor`, silently dropping every non-anchor delta (M2c Task 10: `self.anchor` is gone; the mutation returns early when `table != db.tables()[0].table` of the stored view)"
+      },
+      {
+        "original_index": 452,
+        "current_index": 452,
+        "current_line": 509,
+        "spec": "§9.1 `check_batch_invariance` must run on a genuinely multi-table case (I4, found by the final review: the same probe confirmed that no call site had ever fed it a genuinely multi-table case)",
+        "mutation": "Originally registered as *adding* `batch_invariance_holds_for_naive_engine_on_a_two_table_case` (a two-table `Database`), with no mutation run. Re-run in M1a Phase 3 Task 5 (join-landing item 3), with the test now on an explicit join query: make `NaiveRecompute::apply` drop non-anchor deltas (item 1's mutation), or make `run`'s `bases` skip non-anchor tables (item 2's)"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 471,
+        "line": 564,
+        "spec": "§8.5 `apply` must really keep non-anchor tables' deltas (found by M1a Phase 1 Task 5 review): `NaiveRecompute` keeps `base` / `pending` per table"
+      },
+      {
+        "index": 476,
+        "line": 569,
+        "spec": "§9.1 `check_batch_invariance` must run on a genuinely multi-table case (I4, found by the final review: the same probe confirmed that no call site had ever fed it a genuinely multi-table case)"
+      }
+    ],
+    "accepted_attempt_id": "row447-c"
+  },
+  {
+    "id": "row403",
+    "rows": [
+      403
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/src/sql.rs",
+        "old": "let name = |i: usize| format!(\"\\\"{}\\\".\\\"{}\\\"\", columns[i].0, columns[i].1);",
+        "new": "let name = |i: usize| format!(\"\\\"{}\\\"\", columns[i].1);",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "5b6eeacfe3ec6a47fc527048f7e7f5738d0704ea3ae2e71bafa1e581dda42bfd"
+      }
+    ],
+    "primary_tests": [
+      "sql::tests::to_sql_renders_a_join"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-test/src/sql.rs": "5b6eeacfe3ec6a47fc527048f7e7f5738d0704ea3ae2e71bafa1e581dda42bfd"
+    },
+    "edits_sha256": "96233d8df857bde780724266e2de7005b7ebb778639866f2c3cf4e4866712f49",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "M1a Phase 3 (Task 3): `view_query_to_sql` must qualify every column as `\"table\".\"column\"` — the harness's join tables share column names (`k`, `v`), so an unqualified `\"k\"` is ambiguous once the `FROM` clause has two tables",
+    "source_ledger_anchors": [
+      {
+        "original_index": 403,
+        "current_index": 403,
+        "current_line": 455,
+        "spec": "M1a Phase 3 (Task 3): `view_query_to_sql` must qualify every column as `\"table\".\"column\"` — the harness's join tables share column names (`k`, `v`), so an unqualified `\"k\"` is ambiguous once the `FROM` clause has two tables",
+        "mutation": "Render column names unqualified: `format!(\"\\\"{}\\\"\", columns[i].1)`"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 411,
+        "line": 493,
+        "spec": "M1a Phase 3 (Task 3): `view_query_to_sql` must qualify every column as `\"table\".\"column\"` — the harness's join tables share column names (`k`, `v`), so an unqualified `\"k\"` is ambiguous once the `FROM` clause has two tables"
+      }
+    ],
+    "accepted_attempt_id": "row403-a"
+  },
+  {
+    "id": "row404",
+    "rows": [
+      404
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/src/sql.rs",
+        "old": "name(anchor.arity() + j.right_column)",
+        "new": "name(j.right_column)",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "5b6eeacfe3ec6a47fc527048f7e7f5738d0704ea3ae2e71bafa1e581dda42bfd"
+      }
+    ],
+    "primary_tests": [
+      "sql::tests::to_sql_renders_a_join"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-test/src/sql.rs": "5b6eeacfe3ec6a47fc527048f7e7f5738d0704ea3ae2e71bafa1e581dda42bfd"
+    },
+    "edits_sha256": "6894faeb811bf16b21919fca3d22fbdcbd73cd193e1efad748c7504519dc42b7",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "M1a Phase 3 (Task 3): the join's `ON` clause must index the right table's key at `anchor.arity() + j.right_column`, not `j.right_column` — column indices in a rendered row are the anchor's columns then the right table's, and the right table's own index alone points back into the anchor",
+    "source_ledger_anchors": [
+      {
+        "original_index": 404,
+        "current_index": 404,
+        "current_line": 456,
+        "spec": "M1a Phase 3 (Task 3): the join's `ON` clause must index the right table's key at `anchor.arity() + j.right_column`, not `j.right_column` — column indices in a rendered row are the anchor's columns then the right table's, and the right table's own index alone points back into the anchor",
+        "mutation": "Render the `ON` clause's right side as `name(j.right_column)`, dropping the `anchor.arity() +` offset"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 412,
+        "line": 494,
+        "spec": "M1a Phase 3 (Task 3): the join's `ON` clause must index the right table's key at `anchor.arity() + j.right_column`, not `j.right_column` — column indices in a rendered row are the anchor's columns then the right table's, and the right table's own index alone points back into the anchor"
+      }
+    ],
+    "accepted_attempt_id": "row404-b"
+  },
+  {
+    "id": "row407",
+    "rows": [
+      407
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/src/naive.rs",
+        "old": "r.get(join.right_column)",
+        "new": "r.get(join.left_column)",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "939ef52d10e6330fa6236eec4834c93a94f0075f87f9665adf9fbbdee7c8b2a0"
+      },
+      {
+        "file": "crates/ivmlite-test/src/sql.rs",
+        "old": "name(anchor.arity() + j.right_column)",
+        "new": "name(anchor.arity() + j.left_column)",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "5b6eeacfe3ec6a47fc527048f7e7f5738d0704ea3ae2e71bafa1e581dda42bfd"
+      }
+    ],
+    "primary_tests": [
+      "incremental_engine_is_green_across_the_join_space_with_keys_at_different_positions"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-test/src/naive.rs": "939ef52d10e6330fa6236eec4834c93a94f0075f87f9665adf9fbbdee7c8b2a0",
+      "crates/ivmlite-test/src/sql.rs": "5b6eeacfe3ec6a47fc527048f7e7f5738d0704ea3ae2e71bafa1e581dda42bfd"
+    },
+    "edits_sha256": "a527c248bbb0bd4e4f51136db2f1c2f2256f02a874239dfa1dd8b28cd238c967",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "M1a Phase 3 (final review Important 1): the reference side must read the right table's join key at `right_column` — in `NaiveRecompute::input_rows` and in the oracle SQL's `ON` clause. A mistake **shared by both** is an \"oracle itself lies\" case: the reference engine and the oracle agree with each other, so only an engine that does not share the mistake can expose it",
+    "source_ledger_anchors": [
+      {
+        "original_index": 407,
+        "current_index": 407,
+        "current_line": 459,
+        "spec": "M1a Phase 3 (final review Important 1): the reference side must read the right table's join key at `right_column` — in `NaiveRecompute::input_rows` and in the oracle SQL's `ON` clause. A mistake **shared by both** is an \"oracle itself lies\" case: the reference engine and the oracle agree with each other, so only an engine that does not share the mistake can expose it",
+        "mutation": "In `NaiveRecompute::input_rows`, replace `r.get(join.right_column)` with `r.get(join.left_column)`, **and** in `view_query_to_sql`'s `ON` clause replace `name(anchor.arity() + j.right_column)` with `name(anchor.arity() + j.left_column)`"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 415,
+        "line": 497,
+        "spec": "M1a Phase 3 (final review Important 1): the reference side must read the right table's join key at `right_column` — in `NaiveRecompute::input_rows` and in the oracle SQL's `ON` clause. A mistake **shared by both** is an \"oracle itself lies\" case: the reference engine and the oracle agree with each other, so only an engine that does not share the mistake can expose it"
+      }
+    ],
+    "accepted_attempt_id": "row407-c"
+  },
+  {
+    "id": "row410",
+    "rows": [
+      410
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/src/sql.rs",
+        "old": "CmpOp::Ne => \"!=\",",
+        "new": "CmpOp::Ne => \"=\",",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "5b6eeacfe3ec6a47fc527048f7e7f5738d0704ea3ae2e71bafa1e581dda42bfd"
+      }
+    ],
+    "primary_tests": [
+      "sql::tests::to_sql_renders_every_operator_text_literals_and_is_null"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-test/src/sql.rs": "5b6eeacfe3ec6a47fc527048f7e7f5738d0704ea3ae2e71bafa1e581dda42bfd"
+    },
+    "edits_sha256": "0afb603d97a4c4010c989c573cf61d4d229676608a64de9292e4bafc79996384",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "The oracle renders each operator as its SQL symbol",
+    "source_ledger_anchors": [
+      {
+        "original_index": 410,
+        "current_index": 410,
+        "current_line": 462,
+        "spec": "The oracle renders each operator as its SQL symbol",
+        "mutation": "In `sql_op`, map `Ne` to `\"=\"`"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 418,
+        "line": 500,
+        "spec": "The oracle renders each operator as its SQL symbol"
+      }
+    ],
+    "accepted_attempt_id": "row410-a"
+  },
+  {
+    "id": "row448",
+    "rows": [
+      448,
+      452
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/src/differential.rs",
+        "old": "        for (table, raw) in &grouped {\n            let zset = bases.entry(table.clone()).or_default();",
+        "new": "        for (table, raw) in &grouped {\n            if table != &case.database.tables()[0].table { continue; }\n            let zset = bases.entry(table.clone()).or_default();",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "deaa5e430b0774535fbd4a0d4b72ea49990f9907ecacd35a8e9cda748aa77dc5"
+      }
+    ],
+    "primary_tests": [
+      "a_two_table_case_runs_green_against_the_reference_engine",
+      "differential::tests::batch_invariance_holds_for_naive_engine_on_a_two_table_case"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-test/src/differential.rs": "deaa5e430b0774535fbd4a0d4b72ea49990f9907ecacd35a8e9cda748aa77dc5"
+    },
+    "edits_sha256": "571042052b3ea33d951cdd9612d3744b9930a4dc287bae28014b4123f50ef879",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "§8.2 `run`'s own reference bookkeeping (`bases`, the state fed to the oracle) must really advance every non-anchor table (found by final review I2): the previous row registers that the engine side, `NaiveRecompute`, can silently drop non-anchor deltas; this row is its mirror — the harness's own `bases` can make the same mistake, and more dangerously, because `bases` is the oracle's input\n§9.1 `check_batch_invariance` must run on a genuinely multi-table case (I4, found by the final review: the same probe confirmed that no call site had ever fed it a genuinely multi-table case)",
+    "source_ledger_anchors": [
+      {
+        "original_index": 448,
+        "current_index": 448,
+        "current_line": 505,
+        "spec": "§8.2 `run`'s own reference bookkeeping (`bases`, the state fed to the oracle) must really advance every non-anchor table (found by final review I2): the previous row registers that the engine side, `NaiveRecompute`, can silently drop non-anchor deltas; this row is its mirror — the harness's own `bases` can make the same mistake, and more dangerously, because `bases` is the oracle's input",
+        "mutation": "At the end of `run`'s batch loop, change the per-table update passed to `bases.entry(...)` to run only when `table == anchor`, silently skipping the `bases` bookkeeping for non-anchor tables (the table names and raw deltas `apply` receives on the engine side are unchanged; only the harness's own reference bookkeeping changes)"
+      },
+      {
+        "original_index": 452,
+        "current_index": 452,
+        "current_line": 509,
+        "spec": "§9.1 `check_batch_invariance` must run on a genuinely multi-table case (I4, found by the final review: the same probe confirmed that no call site had ever fed it a genuinely multi-table case)",
+        "mutation": "Originally registered as *adding* `batch_invariance_holds_for_naive_engine_on_a_two_table_case` (a two-table `Database`), with no mutation run. Re-run in M1a Phase 3 Task 5 (join-landing item 3), with the test now on an explicit join query: make `NaiveRecompute::apply` drop non-anchor deltas (item 1's mutation), or make `run`'s `bases` skip non-anchor tables (item 2's)"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 472,
+        "line": 565,
+        "spec": "§8.2 `run`'s own reference bookkeeping (`bases`, the state fed to the oracle) must really advance every non-anchor table (found by final review I2): the previous row registers that the engine side, `NaiveRecompute`, can silently drop non-anchor deltas; this row is its mirror — the harness's own `bases` can make the same mistake, and more dangerously, because `bases` is the oracle's input"
+      },
+      {
+        "index": 476,
+        "line": 569,
+        "spec": "§9.1 `check_batch_invariance` must run on a genuinely multi-table case (I4, found by the final review: the same probe confirmed that no call site had ever fed it a genuinely multi-table case)"
+      }
+    ],
+    "accepted_attempt_id": "row448-b"
+  },
+  {
+    "id": "row449",
+    "rows": [
+      449
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/src/naive.rs",
+        "old": "        // Deliberately unmerged: merging is refresh's job; see the type's doc comment.\n",
+        "new": "        if self.view.as_ref().is_some_and(|(db, _)| table != db.tables()[0].table) {\n            return Ok(());\n        }\n        // Deliberately unmerged: merging is refresh's job; see the type's doc comment.\n",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "939ef52d10e6330fa6236eec4834c93a94f0075f87f9665adf9fbbdee7c8b2a0"
+      },
+      {
+        "file": "crates/ivmlite-test/src/differential.rs",
+        "old": "        for (table, raw) in &grouped {\n            let zset = bases.entry(table.clone()).or_default();",
+        "new": "        for (table, raw) in &grouped {\n            if table != &case.database.tables()[0].table { continue; }\n            let zset = bases.entry(table.clone()).or_default();",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "deaa5e430b0774535fbd4a0d4b72ea49990f9907ecacd35a8e9cda748aa77dc5"
+      }
+    ],
+    "primary_tests": [
+      "incremental_engine_is_green_across_the_join_space"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-test/src/naive.rs": "939ef52d10e6330fa6236eec4834c93a94f0075f87f9665adf9fbbdee7c8b2a0",
+      "crates/ivmlite-test/src/differential.rs": "deaa5e430b0774535fbd4a0d4b72ea49990f9907ecacd35a8e9cda748aa77dc5"
+    },
+    "edits_sha256": "34a605049cf04cce2388956bd775d80a8318d89c7961024062abff416e1f600d",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "§9.1 oracle independence, the \"oracle itself lies\" shape of the two rows above (join-landing checklist, the paragraph on item 2): when the reference engine and the harness's `bases` make **the same** mistake, the comparison must still fail somewhere",
+    "source_ledger_anchors": [
+      {
+        "original_index": 449,
+        "current_index": 449,
+        "current_line": 506,
+        "spec": "§9.1 oracle independence, the \"oracle itself lies\" shape of the two rows above (join-landing checklist, the paragraph on item 2): when the reference engine and the harness's `bases` make **the same** mistake, the comparison must still fail somewhere",
+        "mutation": "Apply both mutations above at once: `NaiveRecompute::apply` drops non-anchor deltas **and** `run`'s `bases` skips non-anchor tables"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 473,
+        "line": 566,
+        "spec": "§9.1 oracle independence, the \"oracle itself lies\" shape of the two rows above (join-landing checklist, the paragraph on item 2): when the reference engine and the harness's `bases` make **the same** mistake, the comparison must still fail somewhere"
+      }
+    ],
+    "accepted_attempt_id": "row449-c"
+  },
+  {
+    "id": "row390",
+    "rows": [
+      390
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/tests/harness_catches_bugs.rs",
+        "old": "    let selected: Vec<(u64, ViewQuery)> = seeds\n        .iter()\n        .map(|&seed| {\n            let s = seed as usize;\n            let func = AGGREGATE_FUNCTIONS[s % AGGREGATE_FUNCTIONS.len()];\n            let width = if s % 12 < 6 { 1 } else { 2 };\n            let candidates: Vec<&ViewQuery> = queries\n                .iter()\n                .filter(|q| {\n                    q.group_by.len() == width\n                        && q.aggs.iter().any(|a| a.func == func && a.column.is_some())\n                })\n                .collect();\n            assert!(\n                !candidates.is_empty(),\n                \"no {func:?} query grouped by {width} columns\"\n            );\n            (seed, candidates[s % candidates.len()].clone())\n        })\n        .collect();\n",
+        "new": "    let selected: Vec<(u64, ViewQuery)> = seeds.iter().map(|&seed| (seed, queries[seed as usize % queries.len()].clone())).collect();\n",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "626fe1e95ae1e8d1145dee8bd4feaaf9694d49dbcdd5e9ed6f6ab961a93b1e22"
+      }
+    ],
+    "primary_tests": [
+      "naive_engine_satisfies_batch_invariance",
+      "incremental_engine_satisfies_batch_invariance"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-test/tests/harness_catches_bugs.rs": "626fe1e95ae1e8d1145dee8bd4feaaf9694d49dbcdd5e9ed6f6ab961a93b1e22"
+    },
+    "edits_sha256": "5ad645dd8ea231b108be9e1f8ba04a47a1254a8c5c1ed69771942a5eb142b88a",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "M1b Phase 2a final review, Important 2: `naive_engine_satisfies_batch_invariance` and `incremental_engine_satisfies_batch_invariance` (`crates/ivmlite-test/tests/harness_catches_bugs.rs`) must keep exercising SUM and a two-column group-by, not silently narrow to COUNT-only, one-column-group-by queries when the enumeration changes underneath their `BATCH_INVARIANCE_QUERY_STRIDE` pick — the failure mode the M1b Phase 2a final review found: with 17 predicates innermost in `cross`, seeds 0..9 taken straight (`gen_case`'s plain `seed % len`) all land in `enumerate`'s first 51 entries, `group_by=[0]`, `aggs=[COUNT(*)]` only",
+    "source_ledger_anchors": [
+      {
+        "original_index": 390,
+        "current_index": 390,
+        "current_line": 437,
+        "spec": "M1b Phase 2a final review, Important 2: `naive_engine_satisfies_batch_invariance` and `incremental_engine_satisfies_batch_invariance` (`crates/ivmlite-test/tests/harness_catches_bugs.rs`) must keep exercising SUM and a two-column group-by, not silently narrow to COUNT-only, one-column-group-by queries when the enumeration changes underneath their `BATCH_INVARIANCE_QUERY_STRIDE` pick — the failure mode the M1b Phase 2a final review found: with 17 predicates innermost in `cross`, seeds 0..9 taken straight (`gen_case`'s plain `seed % len`) all land in `enumerate`'s first 51 entries, `group_by=[0]`, `aggs=[COUNT(*)]` only",
+        "mutation": "Set `BATCH_INVARIANCE_QUERY_STRIDE` to `1` in `harness_catches_bugs.rs` (with a stride of 1, `seed * 1 % len` is the same plain `seed % len` picks that caused the failure this row's requirement describes)"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 394,
+        "line": 465,
+        "spec": "M2c §6 / M1b Phase2a Important2: batch-invariance selections must include SUM and both one- and two-column group-bys when the enumeration changes."
+      }
+    ],
+    "accepted_attempt_id": "row390-rerun"
+  },
+  {
+    "id": "row411",
+    "rows": [
+      411
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/src/sql.rs",
+        "old": "if taken.iter().any(|t| t.eq_ignore_ascii_case(column)) {",
+        "new": "if false && taken.iter().any(|t| t.eq_ignore_ascii_case(column)) {",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "5b6eeacfe3ec6a47fc527048f7e7f5738d0704ea3ae2e71bafa1e581dda42bfd"
+      }
+    ],
+    "primary_tests": [
+      "sql::tests::to_sql_aliases_a_group_key_whose_name_is_taken"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-test/src/sql.rs": "5b6eeacfe3ec6a47fc527048f7e7f5738d0704ea3ae2e71bafa1e581dda42bfd"
+    },
+    "edits_sha256": "f370ca4bdd00dd69202de10909292094fec91df928c076a7184b00262dfb8a53",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "M1b Phase 2b (Task 3): the rendered SQL never names two result columns alike — a join grouped by `t0.k` and `t1.k` would otherwise name two result columns `k`, which `ivmlite-sql` rejects (spec Ruling 3)",
+    "source_ledger_anchors": [
+      {
+        "original_index": 411,
+        "current_index": 411,
+        "current_line": 463,
+        "spec": "M1b Phase 2b (Task 3): the rendered SQL never names two result columns alike — a join grouped by `t0.k` and `t1.k` would otherwise name two result columns `k`, which `ivmlite-sql` rejects (spec Ruling 3)",
+        "mutation": "In `view_query_to_sql`, make the collision test `false && taken.iter().any(...)`"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 419,
+        "line": 501,
+        "spec": "M1b Phase 2b (Task 3): the rendered SQL never names two result columns alike — a join grouped by `t0.k` and `t1.k` would otherwise name two result columns `k`, which `ivmlite-sql` rejects (spec Ruling 3)"
+      }
+    ],
+    "accepted_attempt_id": "row411-b"
+  },
+  {
+    "id": "row165",
+    "rows": [
+      165
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-sql/src/compile.rs",
+        "old": "        let offset = self.anchor.schema.arity();",
+        "new": "        let offset = 0;",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "fec17b6b789524699501eb16909af890d88047f73e74728e2fb598a6d0302f23"
+      }
+    ],
+    "primary_tests": [
+      "compile::tests::a_join_with_aliases_and_a_reversed_on_compiles"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-sql/src/compile.rs": "fec17b6b789524699501eb16909af890d88047f73e74728e2fb598a6d0302f23"
+    },
+    "edits_sha256": "7e7068b8ae383de9137a3b9e7ba24a04418f6cdcf7c4e3278e5ae83a6011f04c",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "Ruling 2: a column reference into the right table is offset by the anchor's arity; Ruling 6: every enumerated query compiles to the same `Plan` `lower_query` builds",
+    "source_ledger_anchors": [
+      {
+        "original_index": 165,
+        "current_index": 165,
+        "current_line": 200,
+        "spec": "Ruling 2: a column reference into the right table is offset by the anchor's arity; Ruling 6: every enumerated query compiles to the same `Plan` `lower_query` builds",
+        "mutation": "In `Scope::sources`, give the right table offset `0`"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 166,
+        "line": 213,
+        "spec": "Ruling 2: a column reference into the right table is offset by the anchor's arity; Ruling 6: every enumerated query compiles to the same `Plan` `lower_query` builds"
+      }
+    ],
+    "accepted_attempt_id": "row165-c"
+  },
+  {
+    "id": "row175",
+    "rows": [
+      175
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-sql/src/catalog.rs",
+        "old": "s.table.eq_ignore_ascii_case(name)",
+        "new": "s.table == name",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "9a0c9d5a01d68ef27273f7b43659b620ddc08064b58c2ec1932ee1f154f3840c"
+      }
+    ],
+    "primary_tests": [
+      "catalog::tests::a_database_finds_tables_case_insensitively_and_keeps_the_declared_name"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-sql/src/catalog.rs": "9a0c9d5a01d68ef27273f7b43659b620ddc08064b58c2ec1932ee1f154f3840c"
+    },
+    "edits_sha256": "0f456f3a631924aaab81b89b579fc94502f5b43484e5cd52e1155e19d261810d",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "Ruling 4 / SQLite: table names match case-insensitively and keep their declared spelling",
+    "source_ledger_anchors": [
+      {
+        "original_index": 175,
+        "current_index": 175,
+        "current_line": 210,
+        "spec": "Ruling 4 / SQLite: table names match case-insensitively and keep their declared spelling",
+        "mutation": "In `catalog.rs`, compare with `s.table == name`"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 176,
+        "line": 223,
+        "spec": "Ruling 4 / SQLite: table names match case-insensitively and keep their declared spelling"
+      }
+    ],
+    "accepted_attempt_id": "row175-a"
+  },
+  {
+    "id": "row183",
+    "rows": [
+      183
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-sql/src/compile.rs",
+        "old": "    if integral {",
+        "new": "    if false && integral {",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "fec17b6b789524699501eb16909af890d88047f73e74728e2fb598a6d0302f23"
+      }
+    ],
+    "primary_tests": [
+      "compile::tests::negative_literals_reach_i64_min"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-sql/src/compile.rs": "fec17b6b789524699501eb16909af890d88047f73e74728e2fb598a6d0302f23"
+    },
+    "edits_sha256": "94323896ca19786ff823c1cb99169d8dd41a548b2964ae757c26b5f8a6f2d279",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "M2c §5: a numeric literal is INTEGER when it has no `.` or exponent and fits `i64`, else REAL, as SQLite reads it",
+    "source_ledger_anchors": [
+      {
+        "original_index": 183,
+        "current_index": 183,
+        "current_line": 218,
+        "spec": "M2c §5: a numeric literal is INTEGER when it has no `.` or exponent and fits `i64`, else REAL, as SQLite reads it",
+        "mutation": "In `number`, `if integral {` → `if false && integral {`, so every number parses as REAL"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 184,
+        "line": 231,
+        "spec": "M2c §5: a numeric literal is INTEGER when it has no `.` or exponent and fits `i64`, else REAL, as SQLite reads it"
+      }
+    ],
+    "accepted_attempt_id": "row183-b"
+  },
+  {
+    "id": "t11_stored_form_pool",
+    "rows": [],
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/src/data.rs",
+        "old": "narrow: ints(0..=5).chain([Value::Real(2.5), text(\"v1\")]).collect(),",
+        "new": "narrow: ints(0..=5).chain([Value::Real(2.5), text(\"3\")]).collect(),",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "33333ee95755168cb08c0bc27ca2be5ee757b8c76ff002d6eba15bb5e81f065d"
+      }
+    ],
+    "primary_tests": [
+      "data::tests::every_pool_value_is_stored_unchanged"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-test/src/data.rs": "33333ee95755168cb08c0bc27ca2be5ee757b8c76ff002d6eba15bb5e81f065d"
+    },
+    "edits_sha256": "f3f9927bf2df32c99b90314a9a59ce725ab34bc2c34c4afd650a1b63681fcf32",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "M2c §6: every pool value is stored unchanged under its column affinity.",
+    "source_ledger_anchors": [],
+    "ledger_anchors": [
+      {
+        "index": 395,
+        "line": 472,
+        "spec": "M2c §6: every pool value is stored unchanged under its column affinity."
+      }
+    ],
+    "accepted_attempt_id": "t11_stored_form_pool-c"
+  },
+  {
+    "id": "t11_literal_rotation",
+    "rows": [],
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/src/query.rs",
+        "old": "all[i % all.len()].clone()",
+        "new": "all[0 * i % all.len()].clone()",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "a5738908218c77021d0963acb0dc08fe635b7448fb52407fd2ef19059d4a094a"
+      }
+    ],
+    "primary_tests": [
+      "query::tests::comparison_literals_follow_the_recorded_affinity_rotation"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-test/src/query.rs": "a5738908218c77021d0963acb0dc08fe635b7448fb52407fd2ef19059d4a094a"
+    },
+    "edits_sha256": "360210b95135753af4a8135a8174113448baa65a0281ac81a7b05788a00e9539",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "M2c §6: comparison literal classes follow the recorded affinity rotation.",
+    "source_ledger_anchors": [],
+    "ledger_anchors": [
+      {
+        "index": 396,
+        "line": 473,
+        "spec": "M2c §6: comparison literal classes follow the recorded affinity rotation."
+      }
+    ],
+    "accepted_attempt_id": "t11_literal_rotation-a"
+  },
+  {
+    "id": "t11_drop_min",
+    "rows": [],
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/src/query.rs",
+        "old": "pub const AGGREGATE_FUNCTIONS: [AggFn; 6] = [",
+        "new": "pub const AGGREGATE_FUNCTIONS: [AggFn; 5] = [",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "a5738908218c77021d0963acb0dc08fe635b7448fb52407fd2ef19059d4a094a"
+      },
+      {
+        "file": "crates/ivmlite-test/src/query.rs",
+        "old": "    AggFn::Min,\n    AggFn::Max,\n];",
+        "new": "    AggFn::Max,\n];",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "a5738908218c77021d0963acb0dc08fe635b7448fb52407fd2ef19059d4a094a"
+      }
+    ],
+    "primary_tests": [
+      "query::tests::the_enumeration_covers_every_aggregate_on_every_column"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-test/src/query.rs": "a5738908218c77021d0963acb0dc08fe635b7448fb52407fd2ef19059d4a094a"
+    },
+    "edits_sha256": "ef2765ba460114f09dd8fd19c01245d521431d084aca6da3bea882586929b339",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "M2c §6: every aggregate, including MIN, is enumerated over every single-table column and in the join space.",
+    "source_ledger_anchors": [],
+    "ledger_anchors": [
+      {
+        "index": 397,
+        "line": 474,
+        "spec": "M2c §6: every aggregate, including MIN, is enumerated over every single-table column and in the join space."
+      }
+    ],
+    "accepted_attempt_id": "t11_drop_min-b"
+  },
+  {
+    "id": "t11_numeric_declared_real",
+    "rows": [],
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/src/sql.rs",
+        "old": "ColumnType::Numeric => \"NUMERIC\",",
+        "new": "ColumnType::Numeric => \"REAL\",",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "5b6eeacfe3ec6a47fc527048f7e7f5738d0704ea3ae2e71bafa1e581dda42bfd"
+      }
+    ],
+    "primary_tests": [
+      "sql::tests::create_table_sql_declares_each_affinity_without_strict"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-test/src/sql.rs": "5b6eeacfe3ec6a47fc527048f7e7f5738d0704ea3ae2e71bafa1e581dda42bfd"
+    },
+    "edits_sha256": "db02971ac7990d7cf4b5da9f6d09e840d924b9da8fcf3ea08277fb219fe7e473",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "M2c §6: oracle table declarations preserve NUMERIC affinity and omit STRICT.",
+    "source_ledger_anchors": [],
+    "ledger_anchors": [
+      {
+        "index": 443,
+        "line": 531,
+        "spec": "M2c §6: oracle table declarations preserve NUMERIC affinity and omit STRICT."
+      }
+    ],
+    "accepted_attempt_id": "t11_numeric_declared_real-c"
+  },
+  {
+    "id": "t11_no_big_draw",
+    "rows": [],
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/src/data.rs",
+        "old": "if !pool.big.is_empty() && rng.random_range(0..BIG_ODDS) == 0 {",
+        "new": "if false && !pool.big.is_empty() && rng.random_range(0..BIG_ODDS) == 0 {",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "33333ee95755168cb08c0bc27ca2be5ee757b8c76ff002d6eba15bb5e81f065d"
+      }
+    ],
+    "primary_tests": [
+      "data::tests::rare_values_are_drawn_but_rarely"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-test/src/data.rs": "33333ee95755168cb08c0bc27ca2be5ee757b8c76ff002d6eba15bb5e81f065d"
+    },
+    "edits_sha256": "bc697307f208d5935a9b3566cba05ab0d0d8b4601a9c0d792a58f1231aef5f14",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "M2c §6 amendment 6: near-i64-boundary integers are drawn rarely, rather than excluded.",
+    "source_ledger_anchors": [],
+    "ledger_anchors": [
+      {
+        "index": 398,
+        "line": 475,
+        "spec": "M2c §6 amendment 6: near-i64-boundary integers are drawn rarely, rather than excluded."
+      }
+    ],
+    "accepted_attempt_id": "t11_no_big_draw-a"
+  },
+  {
+    "id": "t10_finite_inf_bypass_restored",
+    "rows": [],
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/src/compare.rs",
+        "old": "    match (func, ours, sqlite) {",
+        "new": "    if matches!(func, AggFn::Sum | AggFn::Total | AggFn::Avg) {\n        if let (Value::Real(a), Value::Real(b)) = (ours, sqlite) {\n            if a.is_finite() && b.is_infinite() { return Ok(()); }\n        }\n    }\n    match (func, ours, sqlite) {",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "236654fdf0c1019b2e54b7f05619afaf78ce5c82aceebc085d3302b57dd89ad9"
+      }
+    ],
+    "primary_tests": [
+      "compare::tests::sqlite_infinity_cannot_match_a_finite_exact_aggregate"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-test/src/compare.rs": "236654fdf0c1019b2e54b7f05619afaf78ce5c82aceebc085d3302b57dd89ad9"
+    },
+    "edits_sha256": "6e997871059dfdac1b1e6923e0646a1ed569af97340fed03794fcdd9dc5ba759",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "M2c §6: an ordinary-magnitude finite exact aggregate cannot agree with SQLite infinity.",
+    "source_ledger_anchors": [],
+    "ledger_anchors": [
+      {
+        "index": 444,
+        "line": 532,
+        "spec": "M2c §6: an ordinary-magnitude finite exact aggregate cannot agree with SQLite infinity."
+      }
+    ],
+    "accepted_attempt_id": "t10_finite_inf_bypass_restored-b"
+  },
+  {
+    "id": "r23_serialize_nan_accepted",
+    "rows": [],
+    "edits": [
+      {
+        "file": "crates/ivmlite-core/src/value.rs",
+        "old": "        if value.is_nan() {",
+        "new": "        if false && value.is_nan() {",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "e7bca872d8b993b1634d7d97ccce937757578d3b9dc089214a4f067c9228f031"
+      }
+    ],
+    "primary_tests": [
+      "regression::tests::real_regression_json_keeps_finite_compatibility_and_rejects_nan"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-core/src/value.rs": "e7bca872d8b993b1634d7d97ccce937757578d3b9dc089214a4f067c9228f031"
+    },
+    "edits_sha256": "bc75aa52584b8e98429d09d2466d89b94f4014a7c8f70642c97ee0ffa4f8a98d",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "M2c §2: regression serialization rejects `Value::Real(NaN)`.",
+    "source_ledger_anchors": [],
+    "ledger_anchors": [
+      {
+        "index": 483,
+        "line": 582,
+        "spec": "M2c §2: regression serialization rejects `Value::Real(NaN)`."
+      }
+    ],
+    "accepted_attempt_id": "r23_serialize_nan_accepted-c"
+  },
+  {
+    "id": "r23_serialize_inf_as_json_number",
+    "rows": [],
+    "edits": [
+      {
+        "file": "crates/ivmlite-core/src/value.rs",
+        "old": "        } else if value.is_infinite() && serializer.is_human_readable() {",
+        "new": "        } else if false && value.is_infinite() && serializer.is_human_readable() {",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "e7bca872d8b993b1634d7d97ccce937757578d3b9dc089214a4f067c9228f031"
+      }
+    ],
+    "primary_tests": [
+      "regression::tests::real_regressions_round_trip_every_bit_including_infinities"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-core/src/value.rs": "e7bca872d8b993b1634d7d97ccce937757578d3b9dc089214a4f067c9228f031"
+    },
+    "edits_sha256": "e3a6e0da402e3fbbe834cb5080a7f584fb5ac5d4c7272bf5fc51a2cc1c5fdb8e",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "M2c §2: human-readable regression JSON preserves signed infinities explicitly.",
+    "source_ledger_anchors": [],
+    "ledger_anchors": [
+      {
+        "index": 484,
+        "line": 583,
+        "spec": "M2c §2: human-readable regression JSON preserves signed infinities explicitly."
+      }
+    ],
+    "accepted_attempt_id": "r23_serialize_inf_as_json_number-a"
+  },
+  {
+    "id": "r23_deserialize_negative_inf_as_positive",
+    "rows": [],
+    "edits": [
+      {
+        "file": "crates/ivmlite-core/src/value.rs",
+        "old": "\"-Infinity\" => Ok(f64::NEG_INFINITY),",
+        "new": "\"-Infinity\" => Ok(f64::INFINITY),",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "e7bca872d8b993b1634d7d97ccce937757578d3b9dc089214a4f067c9228f031"
+      }
+    ],
+    "primary_tests": [
+      "regression::tests::real_regressions_round_trip_every_bit_including_infinities"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-core/src/value.rs": "e7bca872d8b993b1634d7d97ccce937757578d3b9dc089214a4f067c9228f031"
+    },
+    "edits_sha256": "abfdf125d2a8614db2aa370e1abbf9a8f3ac2524f1ad2580a4af44af46f56934",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "M2c §2: negative infinity keeps its sign when regression JSON is read.",
+    "source_ledger_anchors": [],
+    "ledger_anchors": [
+      {
+        "index": 485,
+        "line": 584,
+        "spec": "M2c §2: negative infinity keeps its sign when regression JSON is read."
+      }
+    ],
+    "accepted_attempt_id": "r23_deserialize_negative_inf_as_positive-b"
+  },
+  {
+    "id": "r23_deserialize_nan_string_accepted",
+    "rows": [],
+    "edits": [
+      {
+        "file": "crates/ivmlite-core/src/value.rs",
+        "old": "                    _ => Err(E::custom(\"a REAL string must be +Infinity or -Infinity\")),",
+        "new": "                    \"NaN\" => Ok(f64::NAN),\n                    _ => Err(E::custom(\"a REAL string must be +Infinity or -Infinity\")),",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "e7bca872d8b993b1634d7d97ccce937757578d3b9dc089214a4f067c9228f031"
+      }
+    ],
+    "primary_tests": [
+      "regression::tests::real_regression_json_keeps_finite_compatibility_and_rejects_nan"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-core/src/value.rs": "e7bca872d8b993b1634d7d97ccce937757578d3b9dc089214a4f067c9228f031"
+    },
+    "edits_sha256": "5cf72d40e3c8473e68fcacb89af4ce810ee73a1ffafe3ce9d966997da7cf6cea",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "M2c §2: regression JSON rejects a REAL NaN string.",
+    "source_ledger_anchors": [],
+    "ledger_anchors": [
+      {
+        "index": 486,
+        "line": 585,
+        "spec": "M2c §2: regression JSON rejects a REAL NaN string."
+      }
+    ],
+    "accepted_attempt_id": "r23_deserialize_nan_string_accepted-c"
+  },
+  {
+    "id": "r23_disable_float_roundtrip",
+    "rows": [],
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/Cargo.toml",
+        "old": "serde_json = { version = \"1\", features = [\"float_roundtrip\"] }",
+        "new": "serde_json = \"1\"",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "fe560f6fe5d2078966490e84a3be6c10230e2889cef18cb2b42aeba1181683cf"
+      },
+      {
+        "file": "crates/ivmlite-bench/Cargo.toml",
+        "old": "serde_json = { version = \"1\", features = [\"float_roundtrip\"] }",
+        "new": "serde_json = \"1\"",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "2dd0fc57ec1d99145fb1a3a0f06c94ba6e2c8eb8183f5d83b29e39a898578363"
+      }
+    ],
+    "primary_tests": [
+      "regression::tests::finite_real_json_round_trips_difficult_mantissas"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-test/Cargo.toml": "fe560f6fe5d2078966490e84a3be6c10230e2889cef18cb2b42aeba1181683cf",
+      "crates/ivmlite-bench/Cargo.toml": "2dd0fc57ec1d99145fb1a3a0f06c94ba6e2c8eb8183f5d83b29e39a898578363"
+    },
+    "edits_sha256": "ff85b42613bd38a6248431ae31c723a50434c6ce0269c42509caf319881abcc5",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "M2c §2: finite REAL regression JSON round-trips every bit, including difficult mantissas.",
+    "source_ledger_anchors": [],
+    "ledger_anchors": [
+      {
+        "index": 487,
+        "line": 586,
+        "spec": "M2c §2: finite REAL regression JSON round-trips every bit, including difficult mantissas."
+      }
+    ],
+    "accepted_attempt_id": "r23_disable_float_roundtrip-a"
+  },
+  {
+    "id": "r34_skip_sqlite_real_key_class",
+    "rows": [],
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/src/compare.rs",
+        "old": "            if matches!(theirs[key].get(column), Value::Real(_))",
+        "new": "            if false && matches!(theirs[key].get(column), Value::Real(_))",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "236654fdf0c1019b2e54b7f05619afaf78ce5c82aceebc085d3302b57dd89ad9"
+      }
+    ],
+    "primary_tests": [
+      "compare::tests::a_sqlite_real_group_key_requires_a_real_reference_key"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-test/src/compare.rs": "236654fdf0c1019b2e54b7f05619afaf78ce5c82aceebc085d3302b57dd89ad9"
+    },
+    "edits_sha256": "cdff4e1f1c23321b9d39fa3e2a45b8ccfc71f43e8ca1df9ceeccfa6ff0066130",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "M2c §2: a SQLite REAL group key requires a canonical-equivalent REAL reference key.",
+    "source_ledger_anchors": [],
+    "ledger_anchors": [
+      {
+        "index": 445,
+        "line": 533,
+        "spec": "M2c §2: a SQLite REAL group key requires a canonical-equivalent REAL reference key."
+      }
+    ],
+    "accepted_attempt_id": "r34_skip_sqlite_real_key_class-b"
+  },
+  {
+    "id": "r34_drop_overflow_magnitude_bound",
+    "rows": [],
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/src/compare.rs",
+        "old": "                && magnitude.is_some_and(|(abs, _)| abs >= f64::MAX / 4.0) =>",
+        "new": "                =>",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "236654fdf0c1019b2e54b7f05619afaf78ce5c82aceebc085d3302b57dd89ad9"
+      }
+    ],
+    "primary_tests": [
+      "compare::tests::sqlite_intermediate_real_overflow_requires_a_large_magnitude",
+      "compare::tests::sqlite_infinity_cannot_match_a_finite_exact_aggregate"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-test/src/compare.rs": "236654fdf0c1019b2e54b7f05619afaf78ce5c82aceebc085d3302b57dd89ad9"
+    },
+    "edits_sha256": "afe22ed04821ac82c80067af7526900465aa612caa0edf5c8c5747870b04f43f",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "M2c §6 intermediate REAL overflow amendment: a finite reference can excuse SQLite Inf/NULL only at magnitude ≥ MAX/4.",
+    "source_ledger_anchors": [],
+    "ledger_anchors": [
+      {
+        "index": 446,
+        "line": 534,
+        "spec": "M2c §6 intermediate REAL overflow amendment: a finite reference can excuse SQLite Inf/NULL only at magnitude ≥ MAX/4."
+      }
+    ],
+    "accepted_attempt_id": "r34_drop_overflow_magnitude_bound-c"
+  },
+  {
+    "id": "r34_require_max_instead_of_quarter_max",
+    "rows": [],
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/src/compare.rs",
+        "old": "abs >= f64::MAX / 4.0",
+        "new": "abs >= f64::MAX",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "236654fdf0c1019b2e54b7f05619afaf78ce5c82aceebc085d3302b57dd89ad9"
+      }
+    ],
+    "primary_tests": [
+      "compare::tests::sqlite_intermediate_real_overflow_requires_a_large_magnitude"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-test/src/compare.rs": "236654fdf0c1019b2e54b7f05619afaf78ce5c82aceebc085d3302b57dd89ad9"
+    },
+    "edits_sha256": "ef3fc1ddfa17a6d64444dc755f3cb06d3e2466da50247ea50fb04bd93a02d476",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "M2c §6: the overflow exception includes the exact MAX/4 threshold.",
+    "source_ledger_anchors": [],
+    "ledger_anchors": [
+      {
+        "index": 447,
+        "line": 535,
+        "spec": "M2c §6: the overflow exception includes the exact MAX/4 threshold."
+      }
+    ],
+    "accepted_attempt_id": "r34_require_max_instead_of_quarter_max-a"
+  },
+  {
+    "id": "r34_remove_large_prefix_overflow_exemption",
+    "rows": [],
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/src/compare.rs",
+        "old": "                && magnitude.is_some_and(|(abs, _)| abs >= f64::MAX / 4.0) =>",
+        "new": "                && false && magnitude.is_some_and(|(abs, _)| abs >= f64::MAX / 4.0) =>",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "236654fdf0c1019b2e54b7f05619afaf78ce5c82aceebc085d3302b57dd89ad9"
+      }
+    ],
+    "primary_tests": [
+      "compare::tests::sqlite_intermediate_real_overflow_requires_a_large_magnitude",
+      "sqlite_running_real_overflow_uses_an_explicit_finite_reference",
+      "sqlite_running_real_cancellation_uses_an_explicit_zero_reference"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-test/src/compare.rs": "236654fdf0c1019b2e54b7f05619afaf78ce5c82aceebc085d3302b57dd89ad9"
+    },
+    "edits_sha256": "8cc174099a380779fdb377f5d9db0de93b73bd684650c449655fbf4458b93c5a",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "M2c §6: qualifying intermediate SQLite REAL overflow is judged against an explicit finite exact result.",
+    "source_ledger_anchors": [],
+    "ledger_anchors": [
+      {
+        "index": 448,
+        "line": 536,
+        "spec": "M2c §6: qualifying intermediate SQLite REAL overflow is judged against an explicit finite exact result."
+      }
+    ],
+    "accepted_attempt_id": "r34_remove_large_prefix_overflow_exemption-b"
+  },
+  {
+    "id": "r34_missing_engine_overflow_wrong_failure_stage",
+    "rows": [],
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/src/differential.rs",
+        "old": "        let Some(expected) = expected else {\n            return Err(fail(\n                &format!(\"diff[{stage}]\"),",
+        "new": "        let Some(expected) = expected else {\n            return Err(fail(\n                &format!(\"reference[{stage}]\"),",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "deaa5e430b0774535fbd4a0d4b72ea49990f9907ecacd35a8e9cda748aa77dc5"
+      }
+    ],
+    "primary_tests": [
+      "differential::tests::an_overflow_the_engine_does_not_report_is_a_failure"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-test/src/differential.rs": "deaa5e430b0774535fbd4a0d4b72ea49990f9907ecacd35a8e9cda748aa77dc5"
+    },
+    "edits_sha256": "aa43c5e01455a53e2c5bc648a36d7a36a6c6a34b44b5e810c11c83815a068b10",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "M2c §6 amendment 6: a reference overflow the engine fails to report is a `diff[stage]` failure.",
+    "source_ledger_anchors": [],
+    "ledger_anchors": [
+      {
+        "index": 488,
+        "line": 587,
+        "spec": "M2c §6 amendment 6: a reference overflow the engine fails to report is a `diff[stage]` failure."
+      }
+    ],
+    "accepted_attempt_id": "r34_missing_engine_overflow_wrong_failure_stage-c"
+  },
+  {
+    "id": "r34_group_key_class_guard",
+    "rows": [],
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/src/compare.rs",
+        "old": "let key = Row::new(row.0[..keys].iter().map(Value::canonical).collect());",
+        "new": "let key = Row::new(vec![Value::Null; keys]);",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "236654fdf0c1019b2e54b7f05619afaf78ce5c82aceebc085d3302b57dd89ad9"
+      }
+    ],
+    "primary_tests": [
+      "compare::tests::a_group_key_of_another_class_is_a_failure"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-test/src/compare.rs": "236654fdf0c1019b2e54b7f05619afaf78ce5c82aceebc085d3302b57dd89ad9"
+    },
+    "edits_sha256": "230f6ca6226b6aef9557f00d960093444c3129404c2a550ee9924cc8f0beb3e8",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "M2c §2: TEXT and numeric keys with the same digits remain distinct groups.",
+    "source_ledger_anchors": [],
+    "ledger_anchors": [
+      {
+        "index": 449,
+        "line": 537,
+        "spec": "M2c §2: TEXT and numeric keys with the same digits remain distinct groups."
+      }
+    ],
+    "accepted_attempt_id": "r34_group_key_class_guard-a"
+  },
+  {
+    "id": "r33_no_null_prefix_overflow_exception",
+    "rows": [],
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/src/compare.rs",
+        "old": "|| matches!(b, Value::Null)",
+        "new": "|| false && matches!(b, Value::Null)",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "236654fdf0c1019b2e54b7f05619afaf78ce5c82aceebc085d3302b57dd89ad9"
+      }
+    ],
+    "primary_tests": [
+      "compare::tests::sqlite_intermediate_real_overflow_requires_a_large_magnitude"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-test/src/compare.rs": "236654fdf0c1019b2e54b7f05619afaf78ce5c82aceebc085d3302b57dd89ad9"
+    },
+    "edits_sha256": "b42463069f4adcbaef5f398635748c4bc009443ce682895a123ecd7fdc4b1b7e",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "M2c §6: qualifying intermediate overflow cancellation may yield SQLite NULL over a finite exact result.",
+    "source_ledger_anchors": [],
+    "ledger_anchors": [
+      {
+        "index": 450,
+        "line": 538,
+        "spec": "M2c §6: qualifying intermediate overflow cancellation may yield SQLite NULL over a finite exact result."
+      }
+    ],
+    "accepted_attempt_id": "r33_no_null_prefix_overflow_exception-b"
+  },
+  {
+    "id": "row407_naive_half",
+    "rows": [
+      407
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/src/naive.rs",
+        "old": "r.get(join.right_column)",
+        "new": "r.get(join.left_column)",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "939ef52d10e6330fa6236eec4834c93a94f0075f87f9665adf9fbbdee7c8b2a0"
+      }
+    ],
+    "primary_tests": [
+      "differential::tests::naive_engine_passes_every_join_query_with_keys_at_different_positions"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-test/src/naive.rs": "939ef52d10e6330fa6236eec4834c93a94f0075f87f9665adf9fbbdee7c8b2a0"
+    },
+    "edits_sha256": "8f1fd67d01d2f7dc43203e4f38b634d838262a4d2de79d4576e1ab7cfd2d3c08",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "M1a Phase 3 (final review Important 1): the reference side must read the right table's join key at `right_column` — in `NaiveRecompute::input_rows` and in the oracle SQL's `ON` clause. A mistake **shared by both** is an \"oracle itself lies\" case: the reference engine and the oracle agree with each other, so only an engine that does not share the mistake can expose it",
+    "source_ledger_anchors": [
+      {
+        "original_index": 407,
+        "current_index": 407,
+        "current_line": 459,
+        "spec": "M1a Phase 3 (final review Important 1): the reference side must read the right table's join key at `right_column` — in `NaiveRecompute::input_rows` and in the oracle SQL's `ON` clause. A mistake **shared by both** is an \"oracle itself lies\" case: the reference engine and the oracle agree with each other, so only an engine that does not share the mistake can expose it",
+        "mutation": "In `NaiveRecompute::input_rows`, replace `r.get(join.right_column)` with `r.get(join.left_column)`, **and** in `view_query_to_sql`'s `ON` clause replace `name(anchor.arity() + j.right_column)` with `name(anchor.arity() + j.left_column)`"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 415,
+        "line": 497,
+        "spec": "M1a Phase 3 (final review Important 1): the reference side must read the right table's join key at `right_column` — in `NaiveRecompute::input_rows` and in the oracle SQL's `ON` clause. A mistake **shared by both** is an \"oracle itself lies\" case: the reference engine and the oracle agree with each other, so only an engine that does not share the mistake can expose it"
+      }
+    ],
+    "accepted_attempt_id": "row407_naive_half-c"
+  },
+  {
+    "id": "row407_sql_half",
+    "rows": [
+      407
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/src/sql.rs",
+        "old": "name(anchor.arity() + j.right_column)",
+        "new": "name(anchor.arity() + j.left_column)",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "5b6eeacfe3ec6a47fc527048f7e7f5738d0704ea3ae2e71bafa1e581dda42bfd"
+      }
+    ],
+    "primary_tests": [
+      "differential::tests::naive_engine_passes_every_join_query_with_keys_at_different_positions"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-test/src/sql.rs": "5b6eeacfe3ec6a47fc527048f7e7f5738d0704ea3ae2e71bafa1e581dda42bfd"
+    },
+    "edits_sha256": "dab86f9d84c6c4f4511ca84391d2077088141e011ce2df5d0ceca572682a81fe",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "M1a Phase 3 (final review Important 1): the reference side must read the right table's join key at `right_column` — in `NaiveRecompute::input_rows` and in the oracle SQL's `ON` clause. A mistake **shared by both** is an \"oracle itself lies\" case: the reference engine and the oracle agree with each other, so only an engine that does not share the mistake can expose it",
+    "source_ledger_anchors": [
+      {
+        "original_index": 407,
+        "current_index": 407,
+        "current_line": 459,
+        "spec": "M1a Phase 3 (final review Important 1): the reference side must read the right table's join key at `right_column` — in `NaiveRecompute::input_rows` and in the oracle SQL's `ON` clause. A mistake **shared by both** is an \"oracle itself lies\" case: the reference engine and the oracle agree with each other, so only an engine that does not share the mistake can expose it",
+        "mutation": "In `NaiveRecompute::input_rows`, replace `r.get(join.right_column)` with `r.get(join.left_column)`, **and** in `view_query_to_sql`'s `ON` clause replace `name(anchor.arity() + j.right_column)` with `name(anchor.arity() + j.left_column)`"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 415,
+        "line": 497,
+        "spec": "M1a Phase 3 (final review Important 1): the reference side must read the right table's join key at `right_column` — in `NaiveRecompute::input_rows` and in the oracle SQL's `ON` clause. A mistake **shared by both** is an \"oracle itself lies\" case: the reference engine and the oracle agree with each other, so only an engine that does not share the mistake can expose it"
+      }
+    ],
+    "accepted_attempt_id": "row407_sql_half-a"
+  },
+  {
+    "id": "row416",
+    "rows": [
+      416
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/src/compare.rs",
+        "old": "    if got != &reference.rows {",
+        "new": "    if false && got != &reference.rows {",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "236654fdf0c1019b2e54b7f05619afaf78ce5c82aceebc085d3302b57dd89ad9"
+      }
+    ],
+    "primary_tests": [
+      "compare::tests::a_one_ulp_difference_from_the_reference_is_a_failure"
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-test/src/compare.rs": "236654fdf0c1019b2e54b7f05619afaf78ce5c82aceebc085d3302b57dd89ad9"
+    },
+    "edits_sha256": "9bbdcf51aea611b3a8fec41a4c75540434529671ebc631b56df580120f193281",
+    "baseline_id": "baseline-d5-c",
+    "intended_property": "M2c §6: compare_with_oracles rejects any bitwise engine/exact-reference difference even when SQLite comparison is unavailable; run_outcome independently duplicates the guard, so the claimed absence of differential sweep failures must be remeasured.",
+    "source_ledger_anchors": [
+      {
+        "original_index": 416,
+        "current_index": 416,
+        "current_line": 468,
+        "spec": "M2c §6: REAL results equal the reference bit for bit",
+        "mutation": "Make compare_with_oracles' got != &reference.rows check false && ...; run_outcome keeps its own check, which is why no sweep goes red"
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 424,
+        "line": 506,
+        "spec": "M2c §6: REAL results equal the reference bit for bit"
+      }
+    ],
+    "accepted_attempt_id": "row416-gap"
+  },
+  {
+    "id": "t12_round_fractional_addition",
+    "rows": [],
+    "edits": [
+      {
+        "file": "crates/ivmlite-core/src/agg.rs",
+        "old": "sum.frac.add_sum(&b.frac);",
+        "new": "let rounded = sum.frac.round() + b.frac.round(); sum.frac = ExactSum::zero(); sum.frac.add(rounded, 1);",
+        "expected_count": 1
+      }
+    ],
+    "primary_tests": [
+      "real_aggregates_are_independent_of_insert_delete_order",
+      "real_aggregates_are_order_independent_across_extreme_magnitudes"
+    ],
+    "source_commit": "84e4c07c2ebfc9db8b6bafb57378627414df5524",
+    "original_sha256": {
+      "crates/ivmlite-core/src/agg.rs": "46497f1c1df5f5556d32e5178a4b6037f42edb2da29802475978aeae5ac00860"
+    },
+    "edits_sha256": "34fe451173f65d42b4162e06a1f48e1856da737200009b0d0fbe7e52c14d7165",
+    "baseline_id": "baseline-task12",
+    "intended_property": "M2c §4/§6: REAL SUM/TOTAL/AVG depend on the final multiset, bit for bit, across insertions, retractions and shuffled reinsertion.",
+    "ledger_anchors": [
+      {
+        "index": 368,
+        "line": 434,
+        "spec": "M2c §4/§6: REAL SUM/TOTAL/AVG depend on the final multiset, bit for bit, across insertions, retractions and shuffled reinsertion."
+      }
+    ],
+    "accepted_attempt_id": "t12_round_fractional_addition-task12"
+  },
+  {
+    "id": "t12_ignore_pending_extremum_weights",
+    "rows": [],
+    "edits": [
+      {
+        "file": "crates/ivmlite-sqlite/src/state.rs",
+        "old": "if w + change(&val) > 0 {",
+        "new": "if w > 0 {",
+        "expected_count": 1
+      }
+    ],
+    "primary_tests": [
+      "min_and_max_retract_every_non_null_value_from_a_surviving_group"
+    ],
+    "source_commit": "84e4c07c2ebfc9db8b6bafb57378627414df5524",
+    "original_sha256": {
+      "crates/ivmlite-sqlite/src/state.rs": "fe17db6cd2b9186375d7e0042e56cfb3edcea354808f2cb906bf01989121d9e3"
+    },
+    "edits_sha256": "1a5ce12779b211d730ff60b7dfa9f18a506fdce06682af5ea10668ad4853038b",
+    "baseline_id": "baseline-task12",
+    "intended_property": "M2c §4 amendment 3: retracting every non-NULL value from a surviving group makes MIN/MAX NULL.",
+    "source_ledger_anchors": [
+      {
+        "original_index": 360,
+        "spec": "M2c §4, amendment3: the MIN/MAX read sees the refresh pending writes",
+        "note": "Existing row retargeted; identical production mutation, additional surviving-group NULL primary guard."
+      }
+    ],
+    "ledger_anchors": [
+      {
+        "index": 362,
+        "line": 422,
+        "spec": "M2c §4, amendment 3: the MIN/MAX read sees the refresh's pending writes (a stored extreme retracted in this refresh is skipped)"
+      }
+    ],
+    "accepted_attempt_id": "t12_ignore_pending_extremum_weights-task12"
+  },
+  {
+    "id": "t12_leave_vanished_group_extrema",
+    "rows": [],
+    "edits": [
+      {
+        "file": "crates/ivmlite-core/src/agg.rs",
+        "old": "self.extremes[slot].update(&key, &value, w)?;",
+        "new": "if new.rows != 0 { self.extremes[slot].update(&key, &value, w)?; }",
+        "expected_count": 1
+      }
+    ],
+    "primary_tests": [
+      "min_and_max_remove_every_persisted_entry_of_a_vanished_group"
+    ],
+    "source_commit": "84e4c07c2ebfc9db8b6bafb57378627414df5524",
+    "original_sha256": {
+      "crates/ivmlite-core/src/agg.rs": "46497f1c1df5f5556d32e5178a4b6037f42edb2da29802475978aeae5ac00860"
+    },
+    "edits_sha256": "a4d7b18c5b777c4ebc64a1b5b20fcae5e810fdf350746accc6080890cedf6c53",
+    "baseline_id": "baseline-task12",
+    "intended_property": "M2c §4: a vanished group leaves no retained MIN/MAX arrangement entries.",
+    "ledger_anchors": [
+      {
+        "index": 162,
+        "line": 202,
+        "spec": "M2c §4: a vanished group leaves no retained MIN/MAX arrangement entries."
+      }
+    ],
+    "accepted_attempt_id": "t12_leave_vanished_group_extrema-task12"
+  },
+  {
+    "id": "t13_fluxflow_dyadic_denominator",
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/src/fluxflow.rs",
+        "old": "amount: ((hash >> 24) % (1_u64 << 32)) as f64 / 256.0,",
+        "new": "amount: ((hash >> 24) % (1_u64 << 32)) as f64 / 1000.0,",
+        "expected_count": 1
+      }
+    ],
+    "primary_tests": [
+      "fluxflow::tests::every_generated_amount_is_a_dyadic_rational_below_two_pow_24"
+    ],
+    "source_commit": "b8207a852378031ebe0ac23a95f830338bba857c",
+    "original_sha256": {
+      "crates/ivmlite-test/src/fluxflow.rs": "89f0956a25e5af4fa22637c2cd050b6c4dd4aeba20919d71afab5d81e0c3dfa9"
+    },
+    "edits_sha256": "ffb8ec06cb9e0c425fec9e4d3372faf72187a5c7268a54ec822959a66f5f3a67",
+    "baseline_id": "baseline-task13",
+    "intended_property": "M2c §7 demo: generated FluxFlow REAL amounts are dyadic fractions with denominator 256.",
+    "ledger_anchors": [
+      {
+        "index": 451,
+        "line": 539,
+        "spec": "M2c §7 demo: generated FluxFlow REAL amounts are dyadic fractions with denominator 256."
+      }
+    ],
+    "accepted_attempt_id": "t13_fluxflow_dyadic_denominator-task13"
+  },
+  {
+    "id": "t13_fluxflow_amount_bound",
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/src/fluxflow.rs",
+        "old": "amount: ((hash >> 24) % (1_u64 << 32)) as f64 / 256.0,",
+        "new": "amount: ((hash >> 24) % (1_u64 << 40)) as f64 / 256.0,",
+        "expected_count": 1
+      }
+    ],
+    "primary_tests": [
+      "fluxflow::tests::every_generated_amount_is_a_dyadic_rational_below_two_pow_24"
+    ],
+    "source_commit": "b8207a852378031ebe0ac23a95f830338bba857c",
+    "original_sha256": {
+      "crates/ivmlite-test/src/fluxflow.rs": "89f0956a25e5af4fa22637c2cd050b6c4dd4aeba20919d71afab5d81e0c3dfa9"
+    },
+    "edits_sha256": "6cc30003e1252dd08de5250d4a49a808ac53eabb81e85f07a2bc76a8d047a9ec",
+    "baseline_id": "baseline-task13",
+    "intended_property": "M2c §7 demo: every generated FluxFlow REAL amount is below 2^24.",
+    "ledger_anchors": [
+      {
+        "index": 452,
+        "line": 540,
+        "spec": "M2c §7 demo: every generated FluxFlow REAL amount is below 2^24."
+      }
+    ],
+    "accepted_attempt_id": "t13_fluxflow_amount_bound-task13"
+  },
+  {
+    "id": "t13_fluxflow_confidence_binding",
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/src/fluxflow.rs",
+        "old": "        flow.confidence,",
+        "new": "        rusqlite::types::Null,",
+        "expected_count": 1
+      }
+    ],
+    "primary_tests": [
+      "fluxflow::tests::handwritten_rollup_tracks_both_rounds_of_mixed_changes"
+    ],
+    "source_commit": "b8207a852378031ebe0ac23a95f830338bba857c",
+    "original_sha256": {
+      "crates/ivmlite-test/src/fluxflow.rs": "89f0956a25e5af4fa22637c2cd050b6c4dd4aeba20919d71afab5d81e0c3dfa9"
+    },
+    "edits_sha256": "2bc960ffb146fb002e60a1386d87944141f1bb28340195f3244b2792cdb5c362",
+    "baseline_id": "baseline-task13",
+    "intended_property": "M2c §7 demo: FluxFlow writes bind the generated confidence used by the filtered rollup.",
+    "ledger_anchors": [
+      {
+        "index": 453,
+        "line": 541,
+        "spec": "M2c §7 demo: FluxFlow writes bind the generated confidence used by the filtered rollup."
+      }
+    ],
+    "accepted_attempt_id": "t13_fluxflow_confidence_binding-task13"
+  },
+  {
+    "id": "t13_fluxflow_update_plus_one",
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/src/fluxflow.rs",
+        "old": "                    source.amount + 1.0,",
+        "new": "                    source.amount + 7.0,",
+        "expected_count": 1
+      }
+    ],
+    "primary_tests": [
+      "fluxflow::tests::handwritten_rollup_tracks_both_rounds_of_mixed_changes"
+    ],
+    "source_commit": "b8207a852378031ebe0ac23a95f830338bba857c",
+    "original_sha256": {
+      "crates/ivmlite-test/src/fluxflow.rs": "89f0956a25e5af4fa22637c2cd050b6c4dd4aeba20919d71afab5d81e0c3dfa9"
+    },
+    "edits_sha256": "fa5a887ef01be2a8f6253915192ccaf3ffd81a179a1208ae693051b3f14bfa36",
+    "baseline_id": "baseline-task13",
+    "intended_property": "M2c §7 demo: the FluxFlow mixed-update replay increases the selected amount by exactly 1.0.",
+    "ledger_anchors": [
+      {
+        "index": 454,
+        "line": 542,
+        "spec": "M2c §7 demo: the FluxFlow mixed-update replay increases the selected amount by exactly 1.0."
+      }
+    ],
+    "accepted_attempt_id": "t13_fluxflow_update_plus_one-task13"
+  },
+  {
+    "id": "t13_kener_seed_fraction",
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/src/demand_cases.rs",
+        "old": "(20 + id % 980) as f64 + 0.25 * (id % 4) as f64",
+        "new": "(20 + id % 980) as f64",
+        "expected_count": 1
+      }
+    ],
+    "primary_tests": [
+      "demand_cases::tests::kener_generator_stores_fractional_real_quarter_milliseconds"
+    ],
+    "source_commit": "b8207a852378031ebe0ac23a95f830338bba857c",
+    "original_sha256": {
+      "crates/ivmlite-test/src/demand_cases.rs": "a96a72b43652bbdf9bb896f9f28b80c37d6c3a4c43fbfa4e8805c2025b0948f0"
+    },
+    "edits_sha256": "c9077ee67d0357d334df5bedda3e19d96ca97170bf1e7598d5f1896d8d3f5f74",
+    "baseline_id": "baseline-task13",
+    "intended_property": "M2c §7 demo: initial Kener latency rows include fractional REAL quarter milliseconds.",
+    "ledger_anchors": [
+      {
+        "index": 455,
+        "line": 543,
+        "spec": "M2c §7 demo: initial Kener latency rows include fractional REAL quarter milliseconds."
+      }
+    ],
+    "accepted_attempt_id": "t13_kener_seed_fraction-task13"
+  },
+  {
+    "id": "t13_kener_insert_fraction",
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/src/demand_cases.rs",
+        "old": "(30 + k % 700) as f64 + 0.25 * (k % 4) as f64",
+        "new": "(30 + k % 700) as i64",
+        "expected_count": 1
+      }
+    ],
+    "primary_tests": [
+      "demand_cases::tests::kener_real_aggregates_match_independent_mixed_batch_results"
+    ],
+    "source_commit": "b8207a852378031ebe0ac23a95f830338bba857c",
+    "original_sha256": {
+      "crates/ivmlite-test/src/demand_cases.rs": "a96a72b43652bbdf9bb896f9f28b80c37d6c3a4c43fbfa4e8805c2025b0948f0"
+    },
+    "edits_sha256": "5cc625b71987dc43ca3524c051162a707c096849bc834ea104d9c07cd56a06a2",
+    "baseline_id": "baseline-task13",
+    "intended_property": "M2c §7 demo: inserted Kener latency rows retain fractional REAL quarter milliseconds.",
+    "ledger_anchors": [
+      {
+        "index": 456,
+        "line": 544,
+        "spec": "M2c §7 demo: inserted Kener latency rows retain fractional REAL quarter milliseconds."
+      }
+    ],
+    "accepted_attempt_id": "t13_kener_insert_fraction-task13"
+  },
+  {
+    "id": "t13_kener_correction_plus_25",
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/src/demand_cases.rs",
+        "old": "latency_ms = latency_ms + 25.0 WHERE",
+        "new": "latency_ms = latency_ms + 26.0 WHERE",
+        "expected_count": 1
+      }
+    ],
+    "primary_tests": [
+      "demand_cases::tests::kener_real_aggregates_match_independent_mixed_batch_results"
+    ],
+    "source_commit": "b8207a852378031ebe0ac23a95f830338bba857c",
+    "original_sha256": {
+      "crates/ivmlite-test/src/demand_cases.rs": "a96a72b43652bbdf9bb896f9f28b80c37d6c3a4c43fbfa4e8805c2025b0948f0"
+    },
+    "edits_sha256": "2698057beb6de88473650f60cb64d88eb44a11041f3f2e0790de065f12c4f3da",
+    "baseline_id": "baseline-task13",
+    "intended_property": "M2c §7 demo: Kener latency correction applies exactly +25.0 milliseconds.",
+    "ledger_anchors": [
+      {
+        "index": 457,
+        "line": 545,
+        "spec": "M2c §7 demo: Kener latency correction applies exactly +25.0 milliseconds."
+      }
+    ],
+    "accepted_attempt_id": "t13_kener_correction_plus_25-task13"
+  },
+  {
+    "id": "t13_kener_all_aggregates",
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/src/demand_cases.rs",
+        "old": "AVG(latency_ms), MIN(latency_ms), MAX(latency_ms), COUNT(*)",
+        "new": "AVG(latency_ms), COUNT(*)",
+        "expected_count": 1
+      }
+    ],
+    "primary_tests": [
+      "demand_cases::tests::kener_real_aggregates_match_independent_mixed_batch_results"
+    ],
+    "source_commit": "b8207a852378031ebe0ac23a95f830338bba857c",
+    "original_sha256": {
+      "crates/ivmlite-test/src/demand_cases.rs": "a96a72b43652bbdf9bb896f9f28b80c37d6c3a4c43fbfa4e8805c2025b0948f0"
+    },
+    "edits_sha256": "bc612daf8ca8ab6b2595c114a9794b7ef0e0f57f0a6d772b4b34efb534ea946e",
+    "baseline_id": "baseline-task13",
+    "intended_property": "M2c §7 demo: the maintained REAL latency query includes AVG, MIN, MAX and COUNT.",
+    "ledger_anchors": [
+      {
+        "index": 458,
+        "line": 546,
+        "spec": "M2c §7 demo: the maintained REAL latency query includes AVG, MIN, MAX and COUNT."
+      }
+    ],
+    "accepted_attempt_id": "t13_kener_all_aggregates-task13"
+  },
+  {
+    "id": "t14_current_aggregate_diagnostic",
+    "edits": [
+      {
+        "file": "crates/ivmlite-sql/src/compile.rs",
+        "old": "the function `{func_name}` (ivmlite's aggregates are COUNT, SUM, TOTAL, AVG, MIN and MAX)",
+        "new": "the function `{func_name}` (v0's aggregates are COUNT, SUM, TOTAL, AVG, MIN and MAX)",
+        "expected_count": 1
+      }
+    ],
+    "primary_tests": [
+      "compile::tests::unsupported_aggregate_diagnostic_lists_current_functions"
+    ],
+    "source_commit": "aba0fd730ddd52e2a3700ff6381a17c40e2bdf29",
+    "original_sha256": {
+      "crates/ivmlite-sql/src/compile.rs": "5526fbac0ac966b016f1fb9b671bc035e804a1d35e62314c21952c2c2da59336"
+    },
+    "edits_sha256": "5a693ce4b4176e4d415c509b5c0c85812a841a977aed28fcf1f4a280241cb845",
+    "baseline_id": "baseline-task14",
+    "intended_property": "M2c §7 / R31: unsupported-aggregate diagnostics name the current supported functions without the obsolete v0 qualifier.",
+    "ledger_anchors": [
+      {
+        "index": 185,
+        "line": 238,
+        "spec": "M2c §7 / R31: unsupported-aggregate diagnostics name the current supported functions without the obsolete v0 qualifier."
+      }
+    ],
+    "accepted_attempt_id": "t14_current_aggregate_diagnostic-task14"
+  },
+  {
+    "id": "t14_artifact_exact_mean",
+    "edits": [
+      {
+        "file": "crates/ivmlite-core/src/agg.rs",
+        "old": "AggFn::Avg => acc.approx_value(|s| s.div_round(acc.non_null)),",
+        "new": "AggFn::Avg => acc.approx_value(|s| s.round() / acc.non_null as f64),",
+        "expected_count": 1
+      }
+    ],
+    "primary_tests": [
+      "alpha6_artifact_features_survive_retraction_rollback_and_reopen"
+    ],
+    "source_commit": "aba0fd730ddd52e2a3700ff6381a17c40e2bdf29",
+    "original_sha256": {
+      "crates/ivmlite-core/src/agg.rs": "46497f1c1df5f5556d32e5178a4b6037f42edb2da29802475978aeae5ac00860"
+    },
+    "edits_sha256": "0d9150df42f96d15da4b5b8b9468e6700c79012cae80bee66b4a9f30c58b974a",
+    "baseline_id": "baseline-task14",
+    "intended_property": "M2c §7: the native artifact feature smoke reaches exact-once AVG maintenance through a non-STRICT REAL view.",
+    "ledger_anchors": [
+      {
+        "index": 369,
+        "line": 435,
+        "spec": "M2c §7: the native artifact feature smoke reaches exact-once AVG maintenance through a non-STRICT REAL view."
+      }
+    ],
+    "accepted_attempt_id": "t14_artifact_exact_mean-task14"
+  },
+  {
+    "id": "row381",
+    "rows": [
+      381
+    ],
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/src/query.rs",
+        "old": "            if l.ty != r.ty {\n                continue;\n            }\n",
+        "new": "",
+        "expected_count": 1,
+        "observed_count": 1,
+        "source_sha256": "a5738908218c77021d0963acb0dc08fe635b7448fb52407fd2ef19059d4a094a"
+      }
+    ],
+    "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+    "original_sha256": {
+      "crates/ivmlite-test/src/query.rs": "a5738908218c77021d0963acb0dc08fe635b7448fb52407fd2ef19059d4a094a"
+    },
+    "edits_sha256": "136e42575cae96480df73c391a1c0a1e6120763dbd815b6dd7c289a2830b0347",
+    "baseline_id": "baseline-d5-c",
+    "primary_tests": [
+      "query::tests::enumerate_join_pairs_only_same_typed_keys"
+    ],
+    "source_ledger_anchors": [
+      {
+        "original_index": 381,
+        "current_index": 381,
+        "current_line": 428,
+        "spec": "M1a Phase 3 (Task 3): `enumerate_join` must only pair same-typed key columns — SQLite compares TEXT and INTEGER under numeric affinity, a comparison `lower` rejects at the boundary, so a mismatched-type join is a shape `create_view` never legally sees",
+        "mutation": "Delete the `if l.ty != r.ty { continue; }` skip in `enumerate_join`"
+      }
+    ],
+    "intended_property": "M2c §5/§6 / Task11 Step7: enumerate_join pairs only key columns with the same declared affinity, so bounded sweeps generate joins lower accepts.",
+    "accepted_attempt_id": "row381-required",
+    "ledger_anchors": [
+      {
+        "index": 385,
+        "line": 456,
+        "spec": "M2c §5/§6 / Task11 Step7: `enumerate_join` only pairs key columns with the same declared affinity; generated joins must remain inside lower's accepted subset."
+      }
+    ]
+  }
+]

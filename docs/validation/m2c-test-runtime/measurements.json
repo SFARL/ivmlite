@@ -1,0 +1,1798 @@
+{
+  "measurement_date": "2026-10-19",
+  "profile": "debug workspace and dev-profile loaded extension",
+  "whole_script": [
+    {
+      "id": "before-debug-baseline",
+      "rows": [],
+      "command": [
+        "scripts/test-all.sh"
+      ],
+      "started_at": "2026-10-19T02:28:19Z",
+      "head": "4d9a8b31fb6941682dd753a6f759702293fe0fdc",
+      "source_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "original_sha256": {},
+      "edits_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "untracked_sha256": {},
+      "returncode": 0,
+      "restored": true,
+      "wall_seconds": 121.89803741700598,
+      "passed": 811,
+      "failed": 0,
+      "ignored": 0,
+      "suite_count": 26,
+      "red": [],
+      "compiled": true,
+      "label": "before",
+      "log": {
+        "file": "logs/before-full-script.log.gz",
+        "raw_log_sha256": "5e42dae88946d53e2b1c1854bb463770700efd4f850190ea29640069d4ff4379",
+        "published_log_sha256": "53464852aebb3d68fdf46dc05bbefa9dee6fb6f2915e21594b0d707b841c380c",
+        "published_log_gzip_sha256": "a91cd69782f27ebde7530f362088e26f8562c520aaeab18407f11df867a3607c"
+      }
+    },
+    {
+      "id": "after-debug-baseline",
+      "head": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "caffeinate",
+        "-i",
+        "scripts/test-all.sh"
+      ],
+      "load_start": [
+        4.3564453125,
+        14.048828125,
+        12.884765625
+      ],
+      "started_at": "2026-10-19T22:12:08Z",
+      "warmup_log_sha256": "9219af380945e51e66c44c25fc0b12576df0e6a8ccad89c865ae09817be429a5",
+      "returncode": 0,
+      "wall_seconds": 183.58119529200485,
+      "load_end": [
+        9.37158203125,
+        14.04345703125,
+        13.35400390625
+      ],
+      "passed": 830,
+      "failed": 0,
+      "ignored": 0,
+      "suite_count": 28,
+      "label": "after",
+      "log": {
+        "file": "logs/after-full-script.log.gz",
+        "raw_log_sha256": "e91a9d7d0c669679457c614a171e84c915ecebf8637472bbf2579b8eb52ed610",
+        "published_log_sha256": "1134e42503dbc292d3f01e96d16633d30e2fcd12f540dd73e944ceab6541056f",
+        "published_log_gzip_sha256": "bf426abc6490a75f33bddc700dbd9ff7df0e027fb911fbbabeef7910924868f8"
+      }
+    }
+  ],
+  "sweeps": [
+    {
+      "target": "lib",
+      "test": "differential::tests::naive_engine_passes_every_enumerated_query",
+      "repeat": 1,
+      "test_seconds": 8.43,
+      "wall_seconds": 13.613,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--lib",
+        "differential::tests::naive_engine_passes_every_enumerated_query",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        9.37158203125,
+        14.04345703125,
+        13.35400390625
+      ],
+      "load_end": [
+        7.8056640625,
+        13.46875,
+        13.16064453125
+      ],
+      "log": {
+        "file": "logs/sweep-01.log.gz",
+        "raw_log_sha256": "557873c9326255ea994e22dd13c90650ccf792b5f23d62e90c92aab3deaa8e09",
+        "published_log_sha256": "b2d89561b5faa23196141c7b11fac7ecd94026dfeb51c3c9765c76d20f2bb430",
+        "published_log_gzip_sha256": "18c592baf94abb26847eb05bcd717c3188012f624ec71610fbea411629ceb788"
+      }
+    },
+    {
+      "target": "lib",
+      "test": "differential::tests::naive_engine_passes_every_enumerated_query",
+      "repeat": 2,
+      "test_seconds": 8.32,
+      "wall_seconds": 8.425,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--lib",
+        "differential::tests::naive_engine_passes_every_enumerated_query",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        7.8056640625,
+        13.46875,
+        13.16064453125
+      ],
+      "load_end": [
+        7.42041015625,
+        13.294921875,
+        13.10107421875
+      ],
+      "log": {
+        "file": "logs/sweep-02.log.gz",
+        "raw_log_sha256": "eef508ae92ef523773d57e2075227369d84935ab7bc64e862abb9d33c62bd46f",
+        "published_log_sha256": "eef508ae92ef523773d57e2075227369d84935ab7bc64e862abb9d33c62bd46f",
+        "published_log_gzip_sha256": "b51076171db20a273ab4b3985f9c8174da32fd91ade39a9e8d1023e865d6b028"
+      }
+    },
+    {
+      "target": "lib",
+      "test": "differential::tests::naive_engine_passes_every_enumerated_query",
+      "repeat": 3,
+      "test_seconds": 8.4,
+      "wall_seconds": 8.458,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--lib",
+        "differential::tests::naive_engine_passes_every_enumerated_query",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        7.42041015625,
+        13.294921875,
+        13.10107421875
+      ],
+      "load_end": [
+        6.97412109375,
+        13.0048828125,
+        13.0
+      ],
+      "log": {
+        "file": "logs/sweep-03.log.gz",
+        "raw_log_sha256": "73c6329afb8073ed8f8a1eb3a16f1c9a4334f572ae22834dc3f5b766c5465875",
+        "published_log_sha256": "73c6329afb8073ed8f8a1eb3a16f1c9a4334f572ae22834dc3f5b766c5465875",
+        "published_log_gzip_sha256": "7dba48f48a52da4ec1415fe92bb1342bc993e0b44197bd2a07133a2b14553335"
+      }
+    },
+    {
+      "target": "lib",
+      "test": "differential::tests::naive_engine_passes_every_enumerated_query_over_real_and_numeric_columns",
+      "repeat": 1,
+      "test_seconds": 8.4,
+      "wall_seconds": 8.456,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--lib",
+        "differential::tests::naive_engine_passes_every_enumerated_query_over_real_and_numeric_columns",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        6.97412109375,
+        13.0048828125,
+        13.0
+      ],
+      "load_end": [
+        6.6640625,
+        12.740234375,
+        12.90625
+      ],
+      "log": {
+        "file": "logs/sweep-04.log.gz",
+        "raw_log_sha256": "cde96b56445aafa2a87fda02cf1e3c8317ba2f3787dabea21a350e13702985ea",
+        "published_log_sha256": "cde96b56445aafa2a87fda02cf1e3c8317ba2f3787dabea21a350e13702985ea",
+        "published_log_gzip_sha256": "fdba073d07b25188251a18b0c3ee7b8b5b798147178aa87af3124bd0884712b6"
+      }
+    },
+    {
+      "target": "lib",
+      "test": "differential::tests::naive_engine_passes_every_enumerated_query_over_real_and_numeric_columns",
+      "repeat": 2,
+      "test_seconds": 8.42,
+      "wall_seconds": 8.479,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--lib",
+        "differential::tests::naive_engine_passes_every_enumerated_query_over_real_and_numeric_columns",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        6.6640625,
+        12.740234375,
+        12.90625
+      ],
+      "load_end": [
+        6.37060546875,
+        12.578125,
+        12.84814453125
+      ],
+      "log": {
+        "file": "logs/sweep-05.log.gz",
+        "raw_log_sha256": "4401ce5bd670b056d6fa7f6bcaab6852b1bdcb4399d3cc8c2cac1fd892e7e82c",
+        "published_log_sha256": "4401ce5bd670b056d6fa7f6bcaab6852b1bdcb4399d3cc8c2cac1fd892e7e82c",
+        "published_log_gzip_sha256": "5b5ae17372907d4aec387f7883c86b663e9a6d8b2c6575d2c235334d6b2ffae6"
+      }
+    },
+    {
+      "target": "lib",
+      "test": "differential::tests::naive_engine_passes_every_enumerated_query_over_real_and_numeric_columns",
+      "repeat": 3,
+      "test_seconds": 8.34,
+      "wall_seconds": 8.395,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--lib",
+        "differential::tests::naive_engine_passes_every_enumerated_query_over_real_and_numeric_columns",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        6.37060546875,
+        12.578125,
+        12.84814453125
+      ],
+      "load_end": [
+        5.69189453125,
+        12.22900390625,
+        12.720703125
+      ],
+      "log": {
+        "file": "logs/sweep-06.log.gz",
+        "raw_log_sha256": "a5937540de6765f09f0b6f9e51ea56710da6a82bee1d5f6bb721decf6bb4d2c8",
+        "published_log_sha256": "a5937540de6765f09f0b6f9e51ea56710da6a82bee1d5f6bb721decf6bb4d2c8",
+        "published_log_gzip_sha256": "6627362a362d2129dacdb8f3fa0a710fa52f78fc78747e966a10e943f0477f14"
+      }
+    },
+    {
+      "target": "lib",
+      "test": "differential::tests::naive_engine_passes_every_enumerated_join_query",
+      "repeat": 1,
+      "test_seconds": 12.26,
+      "wall_seconds": 12.312,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--lib",
+        "differential::tests::naive_engine_passes_every_enumerated_join_query",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        5.69189453125,
+        12.22900390625,
+        12.720703125
+      ],
+      "load_end": [
+        5.4248046875,
+        11.95751953125,
+        12.6181640625
+      ],
+      "log": {
+        "file": "logs/sweep-07.log.gz",
+        "raw_log_sha256": "b207fad707facf9574ffe1000b9e9234d54c4dc4a3dfd590e77cfc1d5c49916c",
+        "published_log_sha256": "b207fad707facf9574ffe1000b9e9234d54c4dc4a3dfd590e77cfc1d5c49916c",
+        "published_log_gzip_sha256": "3f42ace643d95fa1fe2347b9aba897716f2e40f763887774f1a5c9485340e116"
+      }
+    },
+    {
+      "target": "lib",
+      "test": "differential::tests::naive_engine_passes_every_enumerated_join_query",
+      "repeat": 2,
+      "test_seconds": 12.24,
+      "wall_seconds": 12.356,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--lib",
+        "differential::tests::naive_engine_passes_every_enumerated_join_query",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        5.4248046875,
+        11.95751953125,
+        12.6181640625
+      ],
+      "load_end": [
+        4.96728515625,
+        11.53466796875,
+        12.455078125
+      ],
+      "log": {
+        "file": "logs/sweep-08.log.gz",
+        "raw_log_sha256": "e59712eb678980ad20641772486adb11cbbd79a8ead0f98bb10b2c763c04282c",
+        "published_log_sha256": "e59712eb678980ad20641772486adb11cbbd79a8ead0f98bb10b2c763c04282c",
+        "published_log_gzip_sha256": "9fe6a97679b42e38f9b33af7fa2e8de6e973c7a58c714fb4d6a2f10ca716a8ca"
+      }
+    },
+    {
+      "target": "lib",
+      "test": "differential::tests::naive_engine_passes_every_enumerated_join_query",
+      "repeat": 3,
+      "test_seconds": 12.18,
+      "wall_seconds": 12.295,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--lib",
+        "differential::tests::naive_engine_passes_every_enumerated_join_query",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        4.96728515625,
+        11.53466796875,
+        12.455078125
+      ],
+      "load_end": [
+        4.4306640625,
+        11.20361328125,
+        12.32666015625
+      ],
+      "log": {
+        "file": "logs/sweep-09.log.gz",
+        "raw_log_sha256": "6543c9d61232665fbf18e0067a1258195a2e1b28cfb540932eedf43773b46bfc",
+        "published_log_sha256": "6543c9d61232665fbf18e0067a1258195a2e1b28cfb540932eedf43773b46bfc",
+        "published_log_gzip_sha256": "4b9c4a172c93099f3d92365f4d7927dd3170c8b0466f3558b2e5559395dda1ca"
+      }
+    },
+    {
+      "target": "lib",
+      "test": "differential::tests::naive_engine_passes_every_join_query_with_keys_at_different_positions",
+      "repeat": 1,
+      "test_seconds": 12.21,
+      "wall_seconds": 12.322,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--lib",
+        "differential::tests::naive_engine_passes_every_join_query_with_keys_at_different_positions",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        4.4306640625,
+        11.20361328125,
+        12.32666015625
+      ],
+      "load_end": [
+        3.87939453125,
+        10.75146484375,
+        12.1455078125
+      ],
+      "log": {
+        "file": "logs/sweep-10.log.gz",
+        "raw_log_sha256": "7f827ff9c3b64b5e2d655241b400f3318b975d3da7b1669cc552422e3fb4d43b",
+        "published_log_sha256": "7f827ff9c3b64b5e2d655241b400f3318b975d3da7b1669cc552422e3fb4d43b",
+        "published_log_gzip_sha256": "da371f16f0144f6778995796fb91eb7792a95f4002a833a41ee5d1e1d6068ea6"
+      }
+    },
+    {
+      "target": "lib",
+      "test": "differential::tests::naive_engine_passes_every_join_query_with_keys_at_different_positions",
+      "repeat": 2,
+      "test_seconds": 12.25,
+      "wall_seconds": 12.355,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--lib",
+        "differential::tests::naive_engine_passes_every_join_query_with_keys_at_different_positions",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        3.87939453125,
+        10.75146484375,
+        12.1455078125
+      ],
+      "load_end": [
+        4.10546875,
+        10.5771484375,
+        12.0673828125
+      ],
+      "log": {
+        "file": "logs/sweep-11.log.gz",
+        "raw_log_sha256": "021714f51e8d3b8346ccb574230286375ac8a2e97387c619647319d5dd7e1ad8",
+        "published_log_sha256": "021714f51e8d3b8346ccb574230286375ac8a2e97387c619647319d5dd7e1ad8",
+        "published_log_gzip_sha256": "f9b643e2df51b042b35da6322d2d0259a07d952a7150ca7c50688c7d5653161f"
+      }
+    },
+    {
+      "target": "lib",
+      "test": "differential::tests::naive_engine_passes_every_join_query_with_keys_at_different_positions",
+      "repeat": 3,
+      "test_seconds": 12.35,
+      "wall_seconds": 12.474,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--lib",
+        "differential::tests::naive_engine_passes_every_join_query_with_keys_at_different_positions",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        4.10546875,
+        10.5771484375,
+        12.0673828125
+      ],
+      "load_end": [
+        3.71826171875,
+        10.1728515625,
+        11.896484375
+      ],
+      "log": {
+        "file": "logs/sweep-12.log.gz",
+        "raw_log_sha256": "cf0e5a9e892c65cc84235baf75f534d67c6399c0ad9b9e3c78761f383c7f2031",
+        "published_log_sha256": "cf0e5a9e892c65cc84235baf75f534d67c6399c0ad9b9e3c78761f383c7f2031",
+        "published_log_gzip_sha256": "2f2556b3774325eec4a91b34e78a84423eed0e5f91e72efcdb6b832435c13d34"
+      }
+    },
+    {
+      "target": "lib",
+      "test": "differential::tests::naive_engine_passes_every_join_query_over_real_and_numeric_keys",
+      "repeat": 1,
+      "test_seconds": 11.66,
+      "wall_seconds": 11.713,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--lib",
+        "differential::tests::naive_engine_passes_every_join_query_over_real_and_numeric_keys",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        3.71826171875,
+        10.1728515625,
+        11.896484375
+      ],
+      "load_end": [
+        4.33154296875,
+        10.09912109375,
+        11.8505859375
+      ],
+      "log": {
+        "file": "logs/sweep-13.log.gz",
+        "raw_log_sha256": "8379e4a35c6dab343386d3025b57f2b9e09f750d53c6f3a1a637ac2da9340c7a",
+        "published_log_sha256": "8379e4a35c6dab343386d3025b57f2b9e09f750d53c6f3a1a637ac2da9340c7a",
+        "published_log_gzip_sha256": "61b5e09484dedbe8bf1d1e391160ad81b3dd7706b2b6588c02a28d97c2772ba7"
+      }
+    },
+    {
+      "target": "lib",
+      "test": "differential::tests::naive_engine_passes_every_join_query_over_real_and_numeric_keys",
+      "repeat": 2,
+      "test_seconds": 11.99,
+      "wall_seconds": 12.092,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--lib",
+        "differential::tests::naive_engine_passes_every_join_query_over_real_and_numeric_keys",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        4.33154296875,
+        10.09912109375,
+        11.8505859375
+      ],
+      "load_end": [
+        5.19140625,
+        10.0107421875,
+        11.7880859375
+      ],
+      "log": {
+        "file": "logs/sweep-14.log.gz",
+        "raw_log_sha256": "c5a6a07978b602d520cccdcdc9cbd664b1d956b8802618602bea593e55028213",
+        "published_log_sha256": "c5a6a07978b602d520cccdcdc9cbd664b1d956b8802618602bea593e55028213",
+        "published_log_gzip_sha256": "e4676354ad7faf040ef99436f574347d98f6ca913bc32efe387f604ab7dce1c4"
+      }
+    },
+    {
+      "target": "lib",
+      "test": "differential::tests::naive_engine_passes_every_join_query_over_real_and_numeric_keys",
+      "repeat": 3,
+      "test_seconds": 11.61,
+      "wall_seconds": 11.718,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--lib",
+        "differential::tests::naive_engine_passes_every_join_query_over_real_and_numeric_keys",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        5.19140625,
+        10.0107421875,
+        11.7880859375
+      ],
+      "load_end": [
+        4.85400390625,
+        9.779296875,
+        11.68505859375
+      ],
+      "log": {
+        "file": "logs/sweep-15.log.gz",
+        "raw_log_sha256": "298d1e1aa6fcfb65e108e1fb5719099eff73a52818e3e1468864d3fe6230c77a",
+        "published_log_sha256": "298d1e1aa6fcfb65e108e1fb5719099eff73a52818e3e1468864d3fe6230c77a",
+        "published_log_gzip_sha256": "0717be57b77982cd3da11c38382afdab5bdf2e378ee3720f4e73625e150b3374"
+      }
+    },
+    {
+      "target": "harness_catches_bugs",
+      "test": "incremental_engine_is_green_across_the_enumerated_space",
+      "repeat": 1,
+      "test_seconds": 3.31,
+      "wall_seconds": 6.078,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--test",
+        "harness_catches_bugs",
+        "incremental_engine_is_green_across_the_enumerated_space",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        4.85400390625,
+        9.779296875,
+        11.68505859375
+      ],
+      "load_end": [
+        4.625,
+        9.64990234375,
+        11.6279296875
+      ],
+      "log": {
+        "file": "logs/sweep-16.log.gz",
+        "raw_log_sha256": "bad4a377ecb1056f3d9fd0b0bb5f828d861d2e4a138ee68639e5aba1dd588457",
+        "published_log_sha256": "4c5522b222ccf792ae5d14470f1ae72fe3ab64ea83c1b79157178484e4ab0776",
+        "published_log_gzip_sha256": "d7529c80ff51470301e992ce6acaddfd77742ecda2bfd11ee20cd297a16f7d74"
+      }
+    },
+    {
+      "target": "harness_catches_bugs",
+      "test": "incremental_engine_is_green_across_the_enumerated_space",
+      "repeat": 2,
+      "test_seconds": 3.3,
+      "wall_seconds": 3.352,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--test",
+        "harness_catches_bugs",
+        "incremental_engine_is_green_across_the_enumerated_space",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        4.625,
+        9.64990234375,
+        11.6279296875
+      ],
+      "load_end": [
+        4.57470703125,
+        9.5556640625,
+        11.5830078125
+      ],
+      "log": {
+        "file": "logs/sweep-17.log.gz",
+        "raw_log_sha256": "ae61f8ec12a9d3e7d0f3c5fe374e3888ad014830538aa1c1701e4f1ed091fda7",
+        "published_log_sha256": "ae61f8ec12a9d3e7d0f3c5fe374e3888ad014830538aa1c1701e4f1ed091fda7",
+        "published_log_gzip_sha256": "ebaab63bfba42b8e6176f2c022d234885484f9526bbe735d714c7a6d253f0c81"
+      }
+    },
+    {
+      "target": "harness_catches_bugs",
+      "test": "incremental_engine_is_green_across_the_enumerated_space",
+      "repeat": 3,
+      "test_seconds": 3.28,
+      "wall_seconds": 3.33,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--test",
+        "harness_catches_bugs",
+        "incremental_engine_is_green_across_the_enumerated_space",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        4.57470703125,
+        9.5556640625,
+        11.5830078125
+      ],
+      "load_end": [
+        4.57470703125,
+        9.5556640625,
+        11.5830078125
+      ],
+      "log": {
+        "file": "logs/sweep-18.log.gz",
+        "raw_log_sha256": "99e5f39cd7ad5b94b8b9169d2e431fbe86def671556928f2bca7b8a3f170451e",
+        "published_log_sha256": "99e5f39cd7ad5b94b8b9169d2e431fbe86def671556928f2bca7b8a3f170451e",
+        "published_log_gzip_sha256": "d59d0d811f94c0cac92aa82e1afa591c04ea0aabba7c1aca3ce98a1cb08b3709"
+      }
+    },
+    {
+      "target": "harness_catches_bugs",
+      "test": "incremental_engine_is_green_across_the_enumerated_space_over_real_and_numeric_columns",
+      "repeat": 1,
+      "test_seconds": 3.41,
+      "wall_seconds": 3.462,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--test",
+        "harness_catches_bugs",
+        "incremental_engine_is_green_across_the_enumerated_space_over_real_and_numeric_columns",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        4.57470703125,
+        9.5556640625,
+        11.5830078125
+      ],
+      "load_end": [
+        4.8486328125,
+        9.52978515625,
+        11.56201171875
+      ],
+      "log": {
+        "file": "logs/sweep-19.log.gz",
+        "raw_log_sha256": "3cb4f8defcf0be4817c704c7878242650bb99a47dc5784b7d06aa547aa0b47fd",
+        "published_log_sha256": "3cb4f8defcf0be4817c704c7878242650bb99a47dc5784b7d06aa547aa0b47fd",
+        "published_log_gzip_sha256": "92b36d75fd5f7c291d8c3ae771e6253bc54133e5cccd634e6140fcd31bd3d8df"
+      }
+    },
+    {
+      "target": "harness_catches_bugs",
+      "test": "incremental_engine_is_green_across_the_enumerated_space_over_real_and_numeric_columns",
+      "repeat": 2,
+      "test_seconds": 3.37,
+      "wall_seconds": 3.428,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--test",
+        "harness_catches_bugs",
+        "incremental_engine_is_green_across_the_enumerated_space_over_real_and_numeric_columns",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        4.8486328125,
+        9.52978515625,
+        11.56201171875
+      ],
+      "load_end": [
+        4.7001953125,
+        9.4208984375,
+        11.51171875
+      ],
+      "log": {
+        "file": "logs/sweep-20.log.gz",
+        "raw_log_sha256": "958803506ea90dbd1a9874eafaefe32962217f7e7d8da94628f377560769c1e3",
+        "published_log_sha256": "958803506ea90dbd1a9874eafaefe32962217f7e7d8da94628f377560769c1e3",
+        "published_log_gzip_sha256": "ebbb70645664ab3f7b1b29cfcbc912aef8d3a39016eb4166dc77c2ba4f0f51e8"
+      }
+    },
+    {
+      "target": "harness_catches_bugs",
+      "test": "incremental_engine_is_green_across_the_enumerated_space_over_real_and_numeric_columns",
+      "repeat": 3,
+      "test_seconds": 3.37,
+      "wall_seconds": 3.426,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--test",
+        "harness_catches_bugs",
+        "incremental_engine_is_green_across_the_enumerated_space_over_real_and_numeric_columns",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        4.7001953125,
+        9.4208984375,
+        11.51171875
+      ],
+      "load_end": [
+        4.96435546875,
+        9.39697265625,
+        11.49072265625
+      ],
+      "log": {
+        "file": "logs/sweep-21.log.gz",
+        "raw_log_sha256": "958803506ea90dbd1a9874eafaefe32962217f7e7d8da94628f377560769c1e3",
+        "published_log_sha256": "958803506ea90dbd1a9874eafaefe32962217f7e7d8da94628f377560769c1e3",
+        "published_log_gzip_sha256": "ebbb70645664ab3f7b1b29cfcbc912aef8d3a39016eb4166dc77c2ba4f0f51e8"
+      }
+    },
+    {
+      "target": "harness_catches_bugs",
+      "test": "incremental_engine_is_green_across_the_join_space",
+      "repeat": 1,
+      "test_seconds": 10.58,
+      "wall_seconds": 10.644,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--test",
+        "harness_catches_bugs",
+        "incremental_engine_is_green_across_the_join_space",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        4.96435546875,
+        9.39697265625,
+        11.49072265625
+      ],
+      "load_end": [
+        4.98828125,
+        9.25244140625,
+        11.41455078125
+      ],
+      "log": {
+        "file": "logs/sweep-22.log.gz",
+        "raw_log_sha256": "c10879b257d050165c067b22995632a9527c8bcbe4d8db21c006c83598bc608c",
+        "published_log_sha256": "c10879b257d050165c067b22995632a9527c8bcbe4d8db21c006c83598bc608c",
+        "published_log_gzip_sha256": "c748a6af01a13f84bc59ae0d59c11daef3afa7ade26978cc324442a9dc58b852"
+      }
+    },
+    {
+      "target": "harness_catches_bugs",
+      "test": "incremental_engine_is_green_across_the_join_space",
+      "repeat": 2,
+      "test_seconds": 10.56,
+      "wall_seconds": 10.668,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--test",
+        "harness_catches_bugs",
+        "incremental_engine_is_green_across_the_join_space",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        4.98828125,
+        9.25244140625,
+        11.41455078125
+      ],
+      "load_end": [
+        5.11767578125,
+        9.14404296875,
+        11.35107421875
+      ],
+      "log": {
+        "file": "logs/sweep-23.log.gz",
+        "raw_log_sha256": "8ba59b32886f15c72b35e8d4e52d95c3551daa28facb627f396fd243de07235f",
+        "published_log_sha256": "8ba59b32886f15c72b35e8d4e52d95c3551daa28facb627f396fd243de07235f",
+        "published_log_gzip_sha256": "f4c45212c1f0d61b4b128f7272c070970ea4a83f6695f41a1f64759b39742fc2"
+      }
+    },
+    {
+      "target": "harness_catches_bugs",
+      "test": "incremental_engine_is_green_across_the_join_space",
+      "repeat": 3,
+      "test_seconds": 10.56,
+      "wall_seconds": 10.66,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--test",
+        "harness_catches_bugs",
+        "incremental_engine_is_green_across_the_join_space",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        5.11767578125,
+        9.14404296875,
+        11.35107421875
+      ],
+      "load_end": [
+        5.39990234375,
+        9.07275390625,
+        11.2998046875
+      ],
+      "log": {
+        "file": "logs/sweep-24.log.gz",
+        "raw_log_sha256": "8ba59b32886f15c72b35e8d4e52d95c3551daa28facb627f396fd243de07235f",
+        "published_log_sha256": "8ba59b32886f15c72b35e8d4e52d95c3551daa28facb627f396fd243de07235f",
+        "published_log_gzip_sha256": "f4c45212c1f0d61b4b128f7272c070970ea4a83f6695f41a1f64759b39742fc2"
+      }
+    },
+    {
+      "target": "harness_catches_bugs",
+      "test": "incremental_engine_is_green_across_the_join_space_with_keys_at_different_positions",
+      "repeat": 1,
+      "test_seconds": 10.65,
+      "wall_seconds": 10.758,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--test",
+        "harness_catches_bugs",
+        "incremental_engine_is_green_across_the_join_space_with_keys_at_different_positions",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        5.39990234375,
+        9.07275390625,
+        11.2998046875
+      ],
+      "load_end": [
+        5.1171875,
+        8.88916015625,
+        11.20849609375
+      ],
+      "log": {
+        "file": "logs/sweep-25.log.gz",
+        "raw_log_sha256": "f6410c99636f944518747fcb17386b48b87eb42bdf7c38ae01a168a643881691",
+        "published_log_sha256": "f6410c99636f944518747fcb17386b48b87eb42bdf7c38ae01a168a643881691",
+        "published_log_gzip_sha256": "9fbf2f551a83d5cc0841d5e2e84fec965fa6125728bb65d8714012584f3eeda4"
+      }
+    },
+    {
+      "target": "harness_catches_bugs",
+      "test": "incremental_engine_is_green_across_the_join_space_with_keys_at_different_positions",
+      "repeat": 2,
+      "test_seconds": 10.81,
+      "wall_seconds": 10.916,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--test",
+        "harness_catches_bugs",
+        "incremental_engine_is_green_across_the_join_space_with_keys_at_different_positions",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        5.1171875,
+        8.88916015625,
+        11.20849609375
+      ],
+      "load_end": [
+        6.47607421875,
+        9.056640625,
+        11.24072265625
+      ],
+      "log": {
+        "file": "logs/sweep-26.log.gz",
+        "raw_log_sha256": "31ab528a45ad3f215d23ccb4317f634a7fe73f4f1a4dc3fa0f37afeb81a97b5f",
+        "published_log_sha256": "31ab528a45ad3f215d23ccb4317f634a7fe73f4f1a4dc3fa0f37afeb81a97b5f",
+        "published_log_gzip_sha256": "f318e062d9afea627ed5ff9c4b848815d1ce0db87ef5bb7a9ffb870b5c369d1f"
+      }
+    },
+    {
+      "target": "harness_catches_bugs",
+      "test": "incremental_engine_is_green_across_the_join_space_with_keys_at_different_positions",
+      "repeat": 3,
+      "test_seconds": 10.72,
+      "wall_seconds": 10.822,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--test",
+        "harness_catches_bugs",
+        "incremental_engine_is_green_across_the_join_space_with_keys_at_different_positions",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        6.47607421875,
+        9.056640625,
+        11.24072265625
+      ],
+      "load_end": [
+        6.943359375,
+        9.0712890625,
+        11.22021484375
+      ],
+      "log": {
+        "file": "logs/sweep-27.log.gz",
+        "raw_log_sha256": "2354ca0996c7102fb1830a5cb700dcf7db2c62e83ef85a6a3195a9bfd81d634a",
+        "published_log_sha256": "2354ca0996c7102fb1830a5cb700dcf7db2c62e83ef85a6a3195a9bfd81d634a",
+        "published_log_gzip_sha256": "981b99ea025bf126da1f706d64cbe678a560350de66700dd26774417f781cb05"
+      }
+    },
+    {
+      "target": "harness_catches_bugs",
+      "test": "incremental_engine_is_green_across_the_join_space_over_real_and_numeric_keys",
+      "repeat": 1,
+      "test_seconds": 10.11,
+      "wall_seconds": 10.21,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--test",
+        "harness_catches_bugs",
+        "incremental_engine_is_green_across_the_join_space_over_real_and_numeric_keys",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        6.943359375,
+        9.0712890625,
+        11.22021484375
+      ],
+      "load_end": [
+        7.03173828125,
+        9.01904296875,
+        11.17626953125
+      ],
+      "log": {
+        "file": "logs/sweep-28.log.gz",
+        "raw_log_sha256": "922119c592639f74a925c2d1aac86c51d98c602ed9289c529bf70edf41c6bdc8",
+        "published_log_sha256": "922119c592639f74a925c2d1aac86c51d98c602ed9289c529bf70edf41c6bdc8",
+        "published_log_gzip_sha256": "668984d8e57d4476621df8ac419951ecef7c7c8c36f8df9677d9c211de888a7b"
+      }
+    },
+    {
+      "target": "harness_catches_bugs",
+      "test": "incremental_engine_is_green_across_the_join_space_over_real_and_numeric_keys",
+      "repeat": 2,
+      "test_seconds": 10.1,
+      "wall_seconds": 10.152,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--test",
+        "harness_catches_bugs",
+        "incremental_engine_is_green_across_the_join_space_over_real_and_numeric_keys",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        7.03173828125,
+        9.01904296875,
+        11.17626953125
+      ],
+      "load_end": [
+        7.10009765625,
+        8.96826171875,
+        11.1328125
+      ],
+      "log": {
+        "file": "logs/sweep-29.log.gz",
+        "raw_log_sha256": "0e540904470acc69e7dcf122c38a91485e26d5dbb5c5309f303055b19a181c39",
+        "published_log_sha256": "0e540904470acc69e7dcf122c38a91485e26d5dbb5c5309f303055b19a181c39",
+        "published_log_gzip_sha256": "c5b8fb0546d9181689b95990f3b315eb594579834ede73247166d5181d050a30"
+      }
+    },
+    {
+      "target": "harness_catches_bugs",
+      "test": "incremental_engine_is_green_across_the_join_space_over_real_and_numeric_keys",
+      "repeat": 3,
+      "test_seconds": 10.1,
+      "wall_seconds": 10.161,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--test",
+        "harness_catches_bugs",
+        "incremental_engine_is_green_across_the_join_space_over_real_and_numeric_keys",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        7.10009765625,
+        8.96826171875,
+        11.1328125
+      ],
+      "load_end": [
+        7.22509765625,
+        8.935546875,
+        11.095703125
+      ],
+      "log": {
+        "file": "logs/sweep-30.log.gz",
+        "raw_log_sha256": "0e540904470acc69e7dcf122c38a91485e26d5dbb5c5309f303055b19a181c39",
+        "published_log_sha256": "0e540904470acc69e7dcf122c38a91485e26d5dbb5c5309f303055b19a181c39",
+        "published_log_gzip_sha256": "c5b8fb0546d9181689b95990f3b315eb594579834ede73247166d5181d050a30"
+      }
+    },
+    {
+      "target": "extension_differential",
+      "test": "the_extension_is_green_across_the_single_table_space",
+      "repeat": 1,
+      "test_seconds": 3.47,
+      "wall_seconds": 4.765,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--test",
+        "extension_differential",
+        "the_extension_is_green_across_the_single_table_space",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        7.22509765625,
+        8.935546875,
+        11.095703125
+      ],
+      "load_end": [
+        7.20703125,
+        8.9033203125,
+        11.0712890625
+      ],
+      "log": {
+        "file": "logs/sweep-31.log.gz",
+        "raw_log_sha256": "2b1403e0108b13e8a95cb4eb3e1d10ae5eb47a2658abac20246ad82f90bf581c",
+        "published_log_sha256": "ecbb3cbf36d751bf56144e643448e81ac22e0c96393c3846b139067509c3318d",
+        "published_log_gzip_sha256": "0ef99b7aabdc076defc4d8d0b066a2990644e8d87d9bb47ca24bdf6f71980a75"
+      }
+    },
+    {
+      "target": "extension_differential",
+      "test": "the_extension_is_green_across_the_single_table_space",
+      "repeat": 2,
+      "test_seconds": 3.43,
+      "wall_seconds": 3.487,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--test",
+        "extension_differential",
+        "the_extension_is_green_across_the_single_table_space",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        7.20703125,
+        8.9033203125,
+        11.0712890625
+      ],
+      "load_end": [
+        7.1103515625,
+        8.85498046875,
+        11.04150390625
+      ],
+      "log": {
+        "file": "logs/sweep-32.log.gz",
+        "raw_log_sha256": "a7c78ad70f0177cd46de57efab64e8ea142e626231b2378cdf265e0c8a9e9a1f",
+        "published_log_sha256": "a7c78ad70f0177cd46de57efab64e8ea142e626231b2378cdf265e0c8a9e9a1f",
+        "published_log_gzip_sha256": "0f6358ba28dc34f6c7d708cb0afb16dc406a396bc5ce8c6b73ff29ae2b1530d4"
+      }
+    },
+    {
+      "target": "extension_differential",
+      "test": "the_extension_is_green_across_the_single_table_space",
+      "repeat": 3,
+      "test_seconds": 3.44,
+      "wall_seconds": 3.49,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--test",
+        "extension_differential",
+        "the_extension_is_green_across_the_single_table_space",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        7.1103515625,
+        8.85498046875,
+        11.04150390625
+      ],
+      "load_end": [
+        7.02099609375,
+        8.80712890625,
+        11.01171875
+      ],
+      "log": {
+        "file": "logs/sweep-33.log.gz",
+        "raw_log_sha256": "e9751dcc8c5b9f11ce3127173c3d5aada23a8f878729d5fe8e8afb08acc75d88",
+        "published_log_sha256": "e9751dcc8c5b9f11ce3127173c3d5aada23a8f878729d5fe8e8afb08acc75d88",
+        "published_log_gzip_sha256": "0bbcf363d42ff1f71bb5c59a457409df35f9b1157862df509c840ebac1fe9501"
+      }
+    },
+    {
+      "target": "extension_differential",
+      "test": "the_extension_is_green_across_the_join_space",
+      "repeat": 1,
+      "test_seconds": 10.15,
+      "wall_seconds": 10.204,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--test",
+        "extension_differential",
+        "the_extension_is_green_across_the_join_space",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        7.02099609375,
+        8.80712890625,
+        11.01171875
+      ],
+      "load_end": [
+        6.8701171875,
+        8.71435546875,
+        10.95263671875
+      ],
+      "log": {
+        "file": "logs/sweep-34.log.gz",
+        "raw_log_sha256": "eca7cab7e6e77db7ce46d25f92b3c61b82ad6e42fc22cb6c4ac501705c342f65",
+        "published_log_sha256": "eca7cab7e6e77db7ce46d25f92b3c61b82ad6e42fc22cb6c4ac501705c342f65",
+        "published_log_gzip_sha256": "c9fc754f6873a55c4add6b88481859952bb43559bc4cb15119fb8916af46cfd4"
+      }
+    },
+    {
+      "target": "extension_differential",
+      "test": "the_extension_is_green_across_the_join_space",
+      "repeat": 2,
+      "test_seconds": 10.16,
+      "wall_seconds": 10.23,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--test",
+        "extension_differential",
+        "the_extension_is_green_across_the_join_space",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        6.8701171875,
+        8.71435546875,
+        10.95263671875
+      ],
+      "load_end": [
+        6.8896484375,
+        8.6572265625,
+        10.90576171875
+      ],
+      "log": {
+        "file": "logs/sweep-35.log.gz",
+        "raw_log_sha256": "42818f46dd20061d2f750f46ed03b9b17a02d045e1b3023c4a6185d5b8f1c7c7",
+        "published_log_sha256": "42818f46dd20061d2f750f46ed03b9b17a02d045e1b3023c4a6185d5b8f1c7c7",
+        "published_log_gzip_sha256": "bb123a398fc7cfa2cc05ff921402735a53b7c5849a702357ca6c01df342574e8"
+      }
+    },
+    {
+      "target": "extension_differential",
+      "test": "the_extension_is_green_across_the_join_space",
+      "repeat": 3,
+      "test_seconds": 10.11,
+      "wall_seconds": 10.179,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--test",
+        "extension_differential",
+        "the_extension_is_green_across_the_join_space",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        6.8896484375,
+        8.6572265625,
+        10.90576171875
+      ],
+      "load_end": [
+        6.60546875,
+        8.53662109375,
+        10.83642578125
+      ],
+      "log": {
+        "file": "logs/sweep-36.log.gz",
+        "raw_log_sha256": "ee3e50b230078665744e10603682c3d9eb072bb65d1d890f4838951c10773f5a",
+        "published_log_sha256": "ee3e50b230078665744e10603682c3d9eb072bb65d1d890f4838951c10773f5a",
+        "published_log_gzip_sha256": "5a964aebe45156db9313feb58fea1da82bbdde820e208e9032a7b0deeb630339"
+      }
+    },
+    {
+      "target": "extension_differential",
+      "test": "the_extension_resumes_from_persisted_state_on_every_refresh",
+      "repeat": 1,
+      "test_seconds": 20.73,
+      "wall_seconds": 20.813,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--test",
+        "extension_differential",
+        "the_extension_resumes_from_persisted_state_on_every_refresh",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        6.60546875,
+        8.53662109375,
+        10.83642578125
+      ],
+      "load_end": [
+        11.55517578125,
+        9.44677734375,
+        11.10302734375
+      ],
+      "log": {
+        "file": "logs/sweep-37.log.gz",
+        "raw_log_sha256": "7ab589bc0f3b1e852aeec2c77b3de72a32b18e307a6aff79a73971dd38cd0c9d",
+        "published_log_sha256": "7ab589bc0f3b1e852aeec2c77b3de72a32b18e307a6aff79a73971dd38cd0c9d",
+        "published_log_gzip_sha256": "5aab51233d38610416ac7646ba3f939fc9c25dd08ebedd689b45733e2451d3c7"
+      }
+    },
+    {
+      "target": "extension_differential",
+      "test": "the_extension_resumes_from_persisted_state_on_every_refresh",
+      "repeat": 2,
+      "test_seconds": 17.87,
+      "wall_seconds": 18.028,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--test",
+        "extension_differential",
+        "the_extension_resumes_from_persisted_state_on_every_refresh",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        11.55517578125,
+        9.44677734375,
+        11.10302734375
+      ],
+      "load_end": [
+        16.24755859375,
+        10.609375,
+        11.478515625
+      ],
+      "log": {
+        "file": "logs/sweep-38.log.gz",
+        "raw_log_sha256": "a4da4beb8b3af11d41ba8175b0a26e3e1ab4c56c70cd5dd162bed399e1826a20",
+        "published_log_sha256": "a4da4beb8b3af11d41ba8175b0a26e3e1ab4c56c70cd5dd162bed399e1826a20",
+        "published_log_gzip_sha256": "c4dc60fc1bd50a9c5e56660202ddb7aa58b7db82b5a3a3628e7015fc15db34a1"
+      }
+    },
+    {
+      "target": "extension_differential",
+      "test": "the_extension_resumes_from_persisted_state_on_every_refresh",
+      "repeat": 3,
+      "test_seconds": 17.21,
+      "wall_seconds": 17.32,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--test",
+        "extension_differential",
+        "the_extension_resumes_from_persisted_state_on_every_refresh",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        16.24755859375,
+        10.609375,
+        11.478515625
+      ],
+      "load_end": [
+        14.78955078125,
+        10.5625,
+        11.4462890625
+      ],
+      "log": {
+        "file": "logs/sweep-39.log.gz",
+        "raw_log_sha256": "803118b0855e861a47c1c370c8b15bf0b78a7f8a547402557c3dda9203cbb2f2",
+        "published_log_sha256": "803118b0855e861a47c1c370c8b15bf0b78a7f8a547402557c3dda9203cbb2f2",
+        "published_log_gzip_sha256": "6852571b6baf33403f582e0a6a2973da699741551fdc4b663cc2c81928b2a5f4"
+      }
+    },
+    {
+      "target": "extension_differential",
+      "test": "sibling_views_share_capture_across_the_single_table_space",
+      "repeat": 1,
+      "test_seconds": 3.72,
+      "wall_seconds": 3.831,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--test",
+        "extension_differential",
+        "sibling_views_share_capture_across_the_single_table_space",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        14.78955078125,
+        10.5625,
+        11.4462890625
+      ],
+      "load_end": [
+        14.40576171875,
+        10.552734375,
+        11.4375
+      ],
+      "log": {
+        "file": "logs/sweep-40.log.gz",
+        "raw_log_sha256": "0f426fe5a8158a3d6d10a541bea33f8de34f8ae88f1922b175d3926a3582eadd",
+        "published_log_sha256": "0f426fe5a8158a3d6d10a541bea33f8de34f8ae88f1922b175d3926a3582eadd",
+        "published_log_gzip_sha256": "ce390baf085824afb4b851a125acce0bda57d566c6f04ece9c99815426cc876a"
+      }
+    },
+    {
+      "target": "extension_differential",
+      "test": "sibling_views_share_capture_across_the_single_table_space",
+      "repeat": 2,
+      "test_seconds": 3.72,
+      "wall_seconds": 3.765,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--test",
+        "extension_differential",
+        "sibling_views_share_capture_across_the_single_table_space",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        14.40576171875,
+        10.552734375,
+        11.4375
+      ],
+      "load_end": [
+        13.892578125,
+        10.51025390625,
+        11.4169921875
+      ],
+      "log": {
+        "file": "logs/sweep-41.log.gz",
+        "raw_log_sha256": "82b30f4dd2ac0c9455f49b295db6913be84a730fb71defc9f6ddc005aa6bbfb7",
+        "published_log_sha256": "82b30f4dd2ac0c9455f49b295db6913be84a730fb71defc9f6ddc005aa6bbfb7",
+        "published_log_gzip_sha256": "2f8e8cf1ebacdab4f7a23e89140e89e270db6900dea6b18ddf9f08fa3cdf3749"
+      }
+    },
+    {
+      "target": "extension_differential",
+      "test": "sibling_views_share_capture_across_the_single_table_space",
+      "repeat": 3,
+      "test_seconds": 3.71,
+      "wall_seconds": 3.767,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--test",
+        "extension_differential",
+        "sibling_views_share_capture_across_the_single_table_space",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        13.892578125,
+        10.51025390625,
+        11.4169921875
+      ],
+      "load_end": [
+        13.892578125,
+        10.51025390625,
+        11.4169921875
+      ],
+      "log": {
+        "file": "logs/sweep-42.log.gz",
+        "raw_log_sha256": "4ea67958f798463795cc2cb9b7625b260fba44796154f69b7aa27f9426ceaceb",
+        "published_log_sha256": "4ea67958f798463795cc2cb9b7625b260fba44796154f69b7aa27f9426ceaceb",
+        "published_log_gzip_sha256": "ad1fed9030ab081e786f61a1ed804cf0c3ef4367d87b149b3b32be7078d16376"
+      }
+    },
+    {
+      "target": "extension_differential",
+      "test": "sibling_views_share_capture_across_the_join_space",
+      "repeat": 1,
+      "test_seconds": 8.76,
+      "wall_seconds": 8.811,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--test",
+        "extension_differential",
+        "sibling_views_share_capture_across_the_join_space",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        13.892578125,
+        10.51025390625,
+        11.4169921875
+      ],
+      "load_end": [
+        12.826171875,
+        10.39404296875,
+        11.36474609375
+      ],
+      "log": {
+        "file": "logs/sweep-43.log.gz",
+        "raw_log_sha256": "d6b03278d92a37572459ab4991e54f2af5b5ae3b7a3a4d54c7d8d078efc6b9fb",
+        "published_log_sha256": "d6b03278d92a37572459ab4991e54f2af5b5ae3b7a3a4d54c7d8d078efc6b9fb",
+        "published_log_gzip_sha256": "db3ba2cc726a3e4be4d3abde02d232cd648170b4fa89014c1d9bc811c4eb51ee"
+      }
+    },
+    {
+      "target": "extension_differential",
+      "test": "sibling_views_share_capture_across_the_join_space",
+      "repeat": 2,
+      "test_seconds": 8.76,
+      "wall_seconds": 8.825,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--test",
+        "extension_differential",
+        "sibling_views_share_capture_across_the_join_space",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        12.826171875,
+        10.39404296875,
+        11.36474609375
+      ],
+      "load_end": [
+        14.40576171875,
+        10.7958984375,
+        11.49462890625
+      ],
+      "log": {
+        "file": "logs/sweep-44.log.gz",
+        "raw_log_sha256": "fc470932deadaad568c94ddc6612525f6ee54eefdcebc45e3c3b9b10408148d6",
+        "published_log_sha256": "fc470932deadaad568c94ddc6612525f6ee54eefdcebc45e3c3b9b10408148d6",
+        "published_log_gzip_sha256": "ff11111f3d6169072df11e0e3f5bfe96148b89bfce4cff9d8cecd68212de26bc"
+      }
+    },
+    {
+      "target": "extension_differential",
+      "test": "sibling_views_share_capture_across_the_join_space",
+      "repeat": 3,
+      "test_seconds": 8.72,
+      "wall_seconds": 8.768,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--test",
+        "extension_differential",
+        "sibling_views_share_capture_across_the_join_space",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        14.40576171875,
+        10.7958984375,
+        11.49462890625
+      ],
+      "load_end": [
+        12.95263671875,
+        10.60400390625,
+        11.41845703125
+      ],
+      "log": {
+        "file": "logs/sweep-45.log.gz",
+        "raw_log_sha256": "e700a930eae34c5d48e10e1f60d5fff470029e267d3289d5b47888b065b239bd",
+        "published_log_sha256": "e700a930eae34c5d48e10e1f60d5fff470029e267d3289d5b47888b065b239bd",
+        "published_log_gzip_sha256": "faf94ce4c43474c4a4746883527f6973e1ce2ef6d63107901e5fb57ccdf5fd3d"
+      }
+    },
+    {
+      "target": "extension_differential",
+      "test": "sibling_views_resume_from_persisted_state",
+      "repeat": 1,
+      "test_seconds": 14.11,
+      "wall_seconds": 14.166,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--test",
+        "extension_differential",
+        "sibling_views_resume_from_persisted_state",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        12.95263671875,
+        10.60400390625,
+        11.41845703125
+      ],
+      "load_end": [
+        12.1376953125,
+        10.54052734375,
+        11.38134765625
+      ],
+      "log": {
+        "file": "logs/sweep-46.log.gz",
+        "raw_log_sha256": "5ce68e383eaadd72e6a67d6f2d0ffe791e1853302678171a008d6bef6e3073fb",
+        "published_log_sha256": "5ce68e383eaadd72e6a67d6f2d0ffe791e1853302678171a008d6bef6e3073fb",
+        "published_log_gzip_sha256": "556a188d76ad2df18fdcde2cc6413d0bd564686ffb2702724984433ca1ddd337"
+      }
+    },
+    {
+      "target": "extension_differential",
+      "test": "sibling_views_resume_from_persisted_state",
+      "repeat": 2,
+      "test_seconds": 14.08,
+      "wall_seconds": 14.147,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--test",
+        "extension_differential",
+        "sibling_views_resume_from_persisted_state",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        12.1376953125,
+        10.54052734375,
+        11.38134765625
+      ],
+      "load_end": [
+        11.1328125,
+        10.37451171875,
+        11.3125
+      ],
+      "log": {
+        "file": "logs/sweep-47.log.gz",
+        "raw_log_sha256": "54c1a3d0d27b858cfe1a7dfcfbbeb99340278e0ea83c0c5ee7493311be5babb8",
+        "published_log_sha256": "54c1a3d0d27b858cfe1a7dfcfbbeb99340278e0ea83c0c5ee7493311be5babb8",
+        "published_log_gzip_sha256": "6b0310f4aba7224f564303bdc16291e47f13877ddeb32ac67980c09da3540880"
+      }
+    },
+    {
+      "target": "extension_differential",
+      "test": "sibling_views_resume_from_persisted_state",
+      "repeat": 3,
+      "test_seconds": 14.6,
+      "wall_seconds": 14.707,
+      "source_commit": "d5dd2b9518319ddcc6e85efb1cb28bb3aadbb73d",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ivmlite-test",
+        "--locked",
+        "--test",
+        "extension_differential",
+        "sibling_views_resume_from_persisted_state",
+        "--",
+        "--exact"
+      ],
+      "load_start": [
+        11.1328125,
+        10.37451171875,
+        11.3125
+      ],
+      "load_end": [
+        10.4453125,
+        10.25830078125,
+        11.25390625
+      ],
+      "log": {
+        "file": "logs/sweep-48.log.gz",
+        "raw_log_sha256": "653f5b3a539553e381c669d6a24819569668351a1548fddd4adcd40d22770a11",
+        "published_log_sha256": "653f5b3a539553e381c669d6a24819569668351a1548fddd4adcd40d22770a11",
+        "published_log_gzip_sha256": "413fddb3cacd40e0ad7dc204aba7b0aea3050352594d96f151bd2488eca5bb99"
+      }
+    }
+  ],
+  "historical_sweep_medians": {
+    "date": "2026-09-24",
+    "source": "docs/superpowers/specs/2026-09-18-ivmlite-design.md section 9.2 item 4",
+    "kind": "Previously documented medians, not rebuilt or measured in this run",
+    "seconds": {
+      "naive_engine_passes_every_enumerated_query": 0.93,
+      "naive_engine_passes_every_enumerated_join_query": 5.07,
+      "naive_engine_passes_every_join_query_with_keys_at_different_positions": 5.13,
+      "incremental_engine_is_green_across_the_enumerated_space": 0.57,
+      "incremental_engine_is_green_across_the_join_space": 4.13,
+      "incremental_engine_is_green_across_the_join_space_with_keys_at_different_positions": 4.14
+    }
+  },
+  "log_normalization": "Only local checkout root prefixes become ${WORKTREE}; raw and published checksums intentionally differ."
+}

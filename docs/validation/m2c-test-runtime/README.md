@@ -1,0 +1,11 @@
+# M2c test runtime evidence
+
+These are correctness-suite costs, separate from the integer application performance budget. `measurements.json` records one warmed full-script run per source snapshot and three isolated debug runs for each of sixteen sweeps at `d5dd2b9`. Both cargo invocations in the full script are included. The loaded extension uses its dev profile; workspace tests use debug. No ignored or failed test is counted as a successful sample.
+
+The before full script is `4d9a8b3`: 811 passed, 26 result binaries. The after is `d5dd2b9`: 830 passed, 28 binaries. These source inventories precede the later 841-test alpha.6 preparation. Before load readings were not captured. After per-run and per-sweep load readings are retained; load during a running test includes the test itself. Native measurements were serialized, rather than overlapped with mutation tests or builds.
+
+The six old per-sweep medians are historical figures documented on 2026-09-24 in the parent design, not fresh before measurements. No earlier extension/REAL-NUMERIC medians are invented. The [dated parent amendment](../../superpowers/specs/2026-09-18-ivmlite-design.md#92-key-generator-design-decisions) presents medians and ranges and adopts the restricted three-column cross.
+
+To reproduce, use a clean checkout of the recorded source on a quiet native host. Run `scripts/test-all.sh` once to warm the binaries and rebuild the correct extension, then time one further complete invocation. The `sweeps` array contains three entries per named test, each with its exact cargo argument vector. Replay these 48 commands from `d5dd2b9`, retaining each terminal result's `finished in` value and wall time. Preserve the full script rather than using bare extension tests against an older library. Reproduction timings will depend on host conditions.
+
+The compressed logs preserve all terminal results. Only local checkout prefixes are normalized to `${WORKTREE}`. `raw_log_sha256` identifies the untouched capture, `published_log_sha256` the decompressed normalized bytes, and `published_log_gzip_sha256` the deterministic gzip file. The original logs remain unchanged. `manifest.json` checksums the published files; it is an integrity index, not an external attestation.
