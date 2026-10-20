@@ -1660,3 +1660,190 @@ Raw data:
 ## M2a: non-uniform workload validation
 
 The 32-cell Zipf, hot-update and join-fanout matrix has its own page, [`m2a.md`](m2a.md). In short, ivmlite wins every batch-10 cell by 10× to 57×; at batch 1,000 it loses on the single table and at join fanout 1 and 8 (0.36× to 0.71×), and holds 1.12× to 1.24× at fanout 64. Skew and hot updates flip no verdict.
+
+---
+
+## M2c: column types and aggregates
+
+Task 13 native application measurements ran on 2026-10-19–20 on a 10-core
+Apple M2 Pro with 16 GiB RAM, macOS 27.0.1, Rust 1.95.0 and bundled SQLite
+3.53.2. Ablation and its write-amplification capture ran on October 19;
+confirmation, the eight unchanged integer demos, and the changed FluxFlow and
+Kener demos ran on October 20. These are local, in-memory synthetic workloads.
+They establish neither production performance nor application adoption.
+
+Every figure below is derived from the captured CSVs by
+[`m2c_tables.py`](m2c_tables.py), or directly from their page counters. Run:
+
+```sh
+python3 -B docs/bench/m2c_tables.py --self-check
+python3 -B docs/bench/m2c_tables.py > docs/bench/m2c-report.md
+```
+
+The [complete generated report](m2c-report.md) retains every measured timing,
+range, original flag and follow-up comparison. Its inventory validation covers
+all **100 ablation, 240 confirmation, 92 demo and 48 write-amplification rows**;
+the separate follow-up adds 40 rows. The inputs are
+[ablation](m2c-ablation.csv), [confirmation before](m2c-confirm-before.csv),
+[confirmation after](m2c-confirm-after.csv), [demos](m2c-demos.csv), and
+[write amplification](m2c-ablation-write-amp.csv). Scope-specific source and
+harness identities are in [benchmark builds](m2c-ablation-builds.csv) and
+[demo builds](m2c-demos-builds.csv).
+
+### Source, protocol and measurement limits
+
+The frozen extension sources are before
+`b647bcba9fa5f8eb583b162f87f7dfd79a10f7fa` and after
+`84e4c07c2ebfc9db8b6bafb57378627414df5524`. Ablation, write amplification and
+the eight unchanged integer demos use the shared clean harness
+`aba0fd730ddd52e2a3700ff6381a17c40e2bdf29`. Confirmation uses each frozen
+build's own clean harness. The changed FluxFlow/Kener before captures use the
+original `b647bcb` integer harness; their after captures use `aba0fd7` with the
+new REAL/aggregate workload. These scope distinctions are part of the build
+CSVs and must be preserved when reproducing the comparison.
+
+Ablation and confirmation use five independent runs per label/cell/engine,
+one warm-up batch then five measured batches per run. The demos use five
+independent runs and ten measured batches after warm-up. Each timing is the
+median of the run medians, with the minimum and maximum run median in square
+brackets. Combined cost is the median of each batch's own `apply + maintain`,
+not the sum of separately computed medians. Bootstrap and first refresh are
+reported separately. Correctness checks compare each materialized result with
+SQLite after mutations; they are outside the timed regions.
+
+The [capture bundle](m2c-capture/README.md) records machine details, commands,
+UTC timestamps, actual start/end load averages, original and normalized hashes,
+and raw changed-demo output. The machine was not isolated: the one-minute
+load ranged from 1.896 to 3.811 across successful original runs' endpoints.
+This limits small-effect and cross-run causal claims. The retained October 19
+confirmation attempt exited 101; the successful recovery ran on October 20
+and supplied the complete confirmation CSV. It was a failed execution, not an
+extra timing observation discarded from a completed cell.
+
+### Matching integer workload comparisons
+
+Ratios are **after/before**; values above 1 are slower. The unchanged 1.05
+acceptance check applies to steady `maintain_ms` and
+`apply_plus_maintain_ms`, not bootstrap, first refresh, or a correctness suite's
+wall time. The following rows summarize ivmlite; all engines and costs remain
+in the complete report.
+
+| Source; views/base rows/batch/groups | Maintain before → after (ms) | Ratio | Apply + maintain before → after (ms) | Ratio |
+|---|---:|---:|---:|---:|
+| ablation; 10/100000/1000/1000 | 58.051 [55.412, 61.055] → 56.669 [53.555, 57.194] | 0.976 | 66.513 [63.568, 68.691] → 64.628 [61.155, 65.965] | 0.972 |
+| ablation; 10/100000/1000/100000 | 95.617 [90.535, 100.935] → 93.776 [89.823, 96.296] | 0.981 | 103.823 [98.178, 109.017] → 101.591 [97.599, 104.392] | 0.979 |
+| ablation; 200/100000/1/1000 | 6.155 [5.702, 7.220] → 5.822 [5.793, 7.099] | 0.946 | 6.160 [5.708, 7.226] → 5.828 [5.799, 7.111] | 0.946 |
+| ablation; 200/100000/100/100000 | 232.089 [182.356, 258.269] → 196.353 [149.724, 201.382] | 0.846 | 236.504 [186.207, 262.910] → 200.716 [153.783, 205.766] | 0.849 |
+| ablation; 200/100000/1000/1000 | 962.505 [912.251, 980.843] → 953.161 [940.946, 976.416] | 0.990 | 1001.162 [950.708, 1030.906] → 995.168 [993.424, 1018.442] | 0.994 |
+| confirm; 1/10000/100/1000 | 0.848 [0.798, 1.078] → 0.856 [0.785, 1.064] | 1.009 | 1.395 [1.336, 1.818] → 1.403 [1.329, 1.766] | 1.006 |
+| confirm; 1/100000/1000/1000 | 5.857 [5.593, 5.911] → 5.605 [5.567, 5.861] | 0.957 | 11.564 [11.217, 11.752] → 11.215 [11.073, 11.691] | 0.970 |
+| confirm; 10/10000/100/1000 | 7.047 [6.950, 7.221] → 6.893 [6.856, 7.177] | 0.978 | 7.795 [7.701, 8.025] → 7.640 [7.595, 7.923] | 0.980 |
+| confirm; 10/10000/1000/10 | 6.668 [6.429, 6.816] → 6.920 [6.497, 7.001] | 1.038 | 14.020 [13.709, 14.080] → 14.223 [13.695, 14.303] | 1.014 |
+| confirm; 50/10000/100/1000 | 30.323 [29.564, 30.662] → 29.951 [28.869, 31.137] | 0.988 | 31.990 [30.967, 32.057] → 31.401 [30.329, 32.709] | 0.982 |
+| confirm; 200/10000/100/1000 | 123.128 [116.438, 124.084] → 115.659 [115.177, 118.044] | 0.939 | 126.993 [120.415, 128.116] → 119.674 [119.088, 121.745] | 0.942 |
+
+| Unchanged integer demo (base rows; batch) | Maintain before → after (ms) | Ratio | Apply + maintain before → after (ms) | Ratio |
+|---|---:|---:|---:|---:|
+| nicti_facet_counts (2,000,000; 200) | 4.816 [4.807, 4.886] → 4.849 [4.833, 4.885] | 1.0069 | 7.129 [7.105, 7.182] → 7.131 [7.112, 7.195] | 1.0003 |
+| noop_gravity_witness (518,400; 200) | 0.462 [0.454, 0.465] → 0.438 [0.432, 0.447] | 0.9481 | 2.320 [2.287, 2.343] → 2.294 [2.278, 2.306] | 0.9888 |
+| openwhispr_speaker_words (2,000,000; 200) | 11.168 [11.141, 11.201] → 11.578 [11.367, 12.059] | 1.0367 | 12.996 [12.965, 13.019] → 13.389 [13.192, 13.917] | 1.0302 |
+| phoenix_token_rollup (4,952,148; 200) | 5.575 [5.571, 5.634] → 5.720 [5.702, 5.749] | 1.0260 | 7.403 [7.386, 7.467] → 7.559 [7.525, 7.566] | 1.0211 |
+| pocketbase_author_counts (18,000; 40) | 0.364 [0.351, 0.390] → 0.364 [0.358, 0.371] | 1.0000 | 0.620 [0.603, 0.657] → 0.620 [0.610, 0.632] | 1.0000 |
+| postio_mailbox_footprint (81,000; 200) | 0.247 [0.243, 0.250] → 0.238 [0.237, 0.244] | 0.9636 | 1.815 [1.813, 1.841] → 1.771 [1.767, 1.828] | 0.9758 |
+| zcash_transparent_balance (500,000; 500) | 2.375 [2.352, 2.515] → 2.407 [2.395, 2.442] | 1.0135 | 6.909 [6.832, 7.198] → 6.855 [6.818, 6.946] | 0.9922 |
+| zenod_usage_totals (1,760,000; 200) | 1.077 [1.064, 1.086] → 1.071 [1.056, 1.085] | 0.9944 | 2.728 [2.684, 2.737] → 2.680 [2.651, 2.740] | 0.9824 |
+
+All original ivmlite steady ratios are at most 1.038 (ablation maximum 0.994);
+the eight unchanged integer demos' maximum is 1.0367. This is bounded evidence
+for preserving these integer workloads while widening types and aggregates,
+not an engine-wide speedup claim.
+
+### Original flags and one follow-up
+
+The original confirmation cell `views=1, base_rows=10000, batch_size=100,
+group_cardinality=1000` flagged naive recomputation: maintenance
+2.194 [2.171, 2.546] → 2.328 [2.237, 2.773] ms, ratio **1.061**, and combined
+2.232 [2.229, 2.601] → 2.370 [2.272, 2.815] ms, ratio **1.062**.
+Those raw observations remain published. Exactly one
+[follow-up bundle](m2c-confirm-rerun/README.md) repeated that cell with all four
+engines, five fresh runs per label and the same 1.05 threshold:
+
+| Engine; metric | Before (ms) | After (ms) | After/before |
+|---|---:|---:|---:|
+| naive recompute; maintain | 2.184 [2.168, 2.235] | 2.243 [2.222, 2.304] | 1.027 |
+| naive recompute; apply + maintain | 2.221 [2.202, 2.271] | 2.284 [2.260, 2.339] | 1.028 |
+| ivmlite; maintain | 0.838 [0.835, 0.848] | 0.851 [0.824, 0.887] | 1.016 |
+| ivmlite; apply + maintain | 1.360 [1.350, 1.386] | 1.417 [1.371, 1.480] | 1.042 |
+| hand-written trigger; apply + maintain | 0.170 [0.168, 0.174] | 0.179 [0.169, 0.182] | **1.053** |
+
+Neither original naive-recompute flag reproduced above 1.05. A new trigger
+control flag remains visible, a 0.009 ms increase; its original ratio was
+1.022 (0.180 → 0.184 ms), so it is not a persistent flag. No further rerun was
+selected to seek a passing result. The original flags do not establish a
+persistent regression; this conclusion does **not** assert that every raw
+comparison is below 5%. No spec waiver is needed for the observed,
+non-reproducing original flags. The non-isolated host and overlapping ranges
+still limit attribution.
+
+### Bootstrap, space and write costs
+
+Wider support has costs outside the steady integer gate. For example, the
+200-view/100k-group ablation bootstrap rose from 64,978.075
+[64,224.424, 65,422.074] to 66,681.364 [66,241.986, 69,229.497] ms (1.026x).
+The full report preserves bootstrap and first-refresh ranges even when their
+ratios exceed 1.05; the CSVs also retain base, bootstrapped, written and
+maintained page/free-page counters.
+
+Maintained allocation below is `maintained_pages × page_size / 1024`, including
+free pages and base/database structures, with medians [minimum, maximum] over
+the five captures. It is a total allocation measure, not retained-state bytes
+or RSS. Raw free-page counters remain available for a separate live-page
+calculation.
+
+| Ablation views/base/batch/groups | Bootstrap before → after (ms) | Maintained database pages before → after (KiB) |
+|---|---:|---:|
+| 10/100000/1000/1000 | 1,132.701 [942.094, 1,170.745] → 960.327 [880.693, 1,067.087] | 4,436 [4,436, 4,436] → 4,008 [4,008, 4,008] |
+| 10/100000/1000/100000 | 4,330.966 [4,260.791, 4,445.009] → 4,599.014 [4,562.872, 4,648.475] | 100,524 [100,524, 100,524] → 83,732 [83,732, 83,732] |
+| 200/100000/1/1000 | 15,350.819 [15,024.347, 16,424.307] → 15,436.897 [15,398.727, 15,814.632] | 27,320 [27,320, 27,320] → 24,100 [24,100, 24,100] |
+| 200/100000/100/100000 | 64,978.075 [64,224.424, 65,422.074] → 66,681.364 [66,241.986, 69,229.497] | 1,397,920 [1,397,920, 1,397,920] → 1,159,040 [1,159,040, 1,159,040] |
+| 200/100000/1000/1000 | 16,843.284 [15,324.853, 17,948.990] → 16,745.188 [16,289.080, 17,513.081] | 52,628 [52,628, 52,628] → 44,988 [44,988, 44,988] |
+
+The [write-amplification CSV](m2c-ablation-write-amp.csv) covers 10 and 200
+views, six operations and both `recursive_triggers` settings, for both
+labels. Each cell is one capture, so it has no repeat range and does not enter
+the integer maintenance gate. One thousand base operations make `apply_ms`
+numerically equal to µs per base operation. For example, 10 views with recursive
+triggers and updates cost 16.306 → 18.344 µs per operation (1.125x); incremental
+cost above the corresponding no-maintenance run was 15.420 → 17.204 µs
+(1.116x). At 200 views with inserts and recursive triggers disabled, total
+cost was 62.861 → 62.929 µs (1.001x), with 61.697 → 61.770 µs extra cost.
+These observations must not be hidden by the steady maintenance result.
+
+### Changed REAL/aggregate demos
+
+[FluxFlow](../demos/fluxflow.md#m2c-source-scale-result-2026-10-20) now uses a
+non-STRICT table with native REAL amounts and direct SUM. Its current combined
+cost is 6.052 [6.015, 6.368] ms versus indexed recomputation's 135.890
+[135.769, 137.335] ms; its specialized trigger remains cheaper at 1.286
+[1.276, 1.299] ms. Including reads, ivmlite costs 8.347 [8.304, 8.710] ms.
+
+[Kener](../demos/kener.md#m2c-source-scale-result-2026-10-20) now uses REAL
+latency and native AVG/MIN/MAX/COUNT. Current combined cost is 11.072
+[11.033, 12.648] ms versus indexed recomputation's 572.612
+[571.511, 576.074] ms, but draining all result groups adds a 155.472
+[155.102, 159.344] ms read: end to end is 166.546 [166.160, 171.359] ms.
+Its bootstrap is 30,638.833 [29,687.721, 31,928.525] ms, versus the October 20
+old-shape capture's 6,016.495 [5,900.298, 6,221.211] ms. Database page allocation
+rises from 255,436 to **1,760,784 KiB (6.893x)**, versus 237,728 KiB for current
+indexed recomputation. Retractable extrema keep live value multiplicities;
+this richer query's state and bootstrap costs are material.
+
+These before/after demo shapes differ, so their ratios measure the cost of
+changed adaptations, **not an engine speedup or an integer regression gate**.
+Page allocation includes base tables, indexes, captured deltas and shadow
+state; it is neither process RSS nor pure operator-state size. Correctness
+suite runtime is recorded separately in
+[validation evidence](../validation/m2c-test-runtime/README.md) and is not
+application performance. The October 10 alpha.3 demo tables remain explicitly
+historical. On-disk, concurrent and production workloads, other hosts and other
+platforms require separate measurements.

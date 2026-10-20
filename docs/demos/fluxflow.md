@@ -29,15 +29,14 @@ The pinned upstream sources are:
 No production database is public. This repository therefore creates a
 deterministic synthetic fixture with the same important categorical shape:
 approximately 45% buying, 44% selling and 11% p2p, seven exchange values,
-three counterparty kinds and integer satoshi amounts. Each day bucket holds
+three counterparty kinds and native REAL amounts in the current adaptation. Each day bucket holds
 10,000 flows, so the 1.5-million-row run has 150 day buckets.
 
 ## Adaptation
 
 The upstream `flows` table is not `STRICT` and contains a `REAL confidence`
-column. Current ivmlite accepts only `STRICT` base tables whose columns are
-`INTEGER`, `TEXT` or nullable variants. The demo uses a narrow fact table and
-precomputes the day and counterparty grouping dimensions:
+column. M2c accepts this table class and REAL values. The demo still uses a
+narrow fact table and precomputes the day and counterparty grouping dimensions:
 
 ```sql
 CREATE TABLE flow_facts (
@@ -46,8 +45,9 @@ CREATE TABLE flow_facts (
   day_bucket INTEGER NOT NULL,
   counterparty_kind TEXT NOT NULL,
   exchange_key TEXT NOT NULL,
-  sat INTEGER NOT NULL
-) STRICT;
+  amount REAL NOT NULL,
+  confidence REAL
+);
 ```
 
 It maintains exactly this query:
@@ -58,7 +58,7 @@ SELECT
   day_bucket,
   counterparty_kind,
   exchange_key,
-  SUM(sat),
+  SUM(amount),
   COUNT(*)
 FROM flow_facts
 GROUP BY flow_type, day_bucket, counterparty_kind, exchange_key;
@@ -101,14 +101,15 @@ The output is CSV, preceded by `#` provenance lines, and includes five modes:
 `handwritten_trigger` and `ivmlite`. The protocol, the modes and every column
 are described in the [demos README](README.md#benchmark-protocol). Here, the
 covering index of `indexed_recompute` is
-`flow_facts(flow_type, day_bucket, counterparty_kind, exchange_key, sat)`, and
+`flow_facts(flow_type, day_bucket, counterparty_kind, exchange_key, amount)`, and
 `handwritten_trigger` is a correct rollup table maintained inside each base
 write transaction, using FluxFlow's subtract-old/add-new strategy for this one
 adapted view rather than copying both upstream rollup levels.
 
-## Source-scale result
+## Historical alpha.3 source-scale result (2026-10-10)
 
-This run, on 2026-10-10, used an Apple M2 Pro, macOS 26.2, Rust 1.95.0,
+The following unchanged historical table measures the earlier STRICT integer
+`sat` adaptation, not the current REAL query. This run, on 2026-10-10, used an Apple M2 Pro, macOS 26.2, Rust 1.95.0,
 SQLite 3.53.2, the `0.1.0-alpha.3` extension, an in-memory database, 1.5 million
 base rows, a 500-operation mixed batch and five independent repetitions.
 Apply, maintain and read are each a repetition's median over its ten measured
@@ -155,6 +156,56 @@ scripts/build-extension.sh
 cargo test --locked -p ivmlite-test \
   fluxflow_grouped_rollup_tracks_insert_update_and_reorg_delete
 ```
+
+## M2c source-scale result (2026-10-20)
+
+The current non-STRICT fixture stores `amount = ((hash >> 24) % 2^32) / 256`
+and `confidence = (hash % 1000) / 1000`. Amount corrections add 1.0, and the
+covering index includes `amount`. Amounts are exact dyadic fractions (multiples
+of 1/256); group sums remain exactly representable at this recorded scale.
+The SQLite multiset oracle therefore checks exact results here despite the
+more general exact-summation differences documented in the
+[alpha.6 numerical notes](../releases/v0.1.0-alpha.6.md#differences-from-sqlite).
+Confidence is captured but is not aggregated by this query.
+
+This October 20 run used an Apple M2 Pro (10 cores, 16 GiB), macOS 27.0.1,
+Rust 1.95.0, bundled SQLite 3.53.2, 1.5 million base rows and 500-operation
+mixed batches. Five independent runs each measured ten steady batches after
+warm-up. Values below are medians [minimum, maximum] over runs; combined times
+are measured batch sums. The after extension is `84e4c07`, with clean harness
+`aba0fd7`; the same-day before capture used `b647bcb` and its original integer
+workload. Full source hashes and commands are in the
+[build CSV](../bench/m2c-demos-builds.csv) and
+[capture provenance](../bench/m2c-capture/README.md).
+
+| Mode | Bootstrap (ms) | First refresh (ms) | Apply (ms) | Maintain (ms) | Read (ms) | Apply + maintain (ms) | End to end (ms) | SQLite pages (KiB) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| no_maintenance | 0.000 [0.000, 0.000] | 0.000 [0.000, 0.000] | 0.197 [0.193, 0.201] | 0.000 [0.000, 0.000] | 0.000 [0.000, 0.000] | 0.198 [0.193, 0.201] | 0.198 [0.193, 0.201] | 77,224 |
+| unindexed_recompute | 0.000 [0.000, 0.000] | 1217.760 [1206.021, 1237.943] | 0.222 [0.215, 0.232] | 1210.346 [1201.575, 1233.281] | 0.000 [0.000, 0.000] | 1210.569 [1201.801, 1233.507] | 1210.569 [1201.801, 1233.507] | 77,224 |
+| indexed_recompute | 1297.668 [1279.306, 1335.844] | 134.839 [134.469, 140.226] | 1.168 [1.137, 1.254] | 134.743 [134.605, 136.052] | 0.000 [0.000, 0.000] | 135.890 [135.769, 137.335] | 135.890 [135.769, 137.335] | 141,028 |
+| handwritten_trigger | 1200.204 [1191.149, 1231.629] | 0.000 [0.000, 0.000] | 1.286 [1.276, 1.299] | 0.000 [0.000, 0.000] | 0.475 [0.474, 0.475] | 1.286 [1.276, 1.299] | 1.760 [1.754, 1.775] | 77,544 |
+| ivmlite | 2834.756 [2640.757, 3013.083] | 3.989 [3.720, 6.244] | 3.921 [3.893, 4.082] | 2.128 [2.097, 2.288] | 2.301 [2.295, 2.354] | 6.052 [6.015, 6.368] | 8.347 [8.304, 8.710] | 83,872 |
+
+Current ivmlite write plus refresh is 22.45x faster than indexed recomputation
+and 200.03x faster than unindexed recomputation, but 4.71x slower than the
+specialized trigger. Including reads, the respective ivmlite/trigger times
+are 8.347 and 1.760 ms. Bootstrap costs 2,834.756 ms and total SQLite database
+page allocation is 83,872 KiB, versus the covering index's 1,297.668 ms and
+141,028 KiB. Page allocation includes the base table and all database
+structures; it is neither RSS nor pure ivmlite state.
+
+The October 20 old-shape ivmlite capture had maintain 1.739 [1.720, 1.839] ms
+and combined 5.619 [5.584, 5.901] ms, versus the current 2.128 [2.097, 2.288]
+and 6.052 [6.015, 6.368] ms. The schema, values and capture payload changed;
+these ratios describe the changed adaptation's cost, not an engine speedup
+or an integer-workload regression check. The
+[raw before/after results](results/2026-10-20-fluxflow-m2c.txt),
+[complete comparison](../bench/m2c-report.md) and
+[matching integer comparisons](../bench/README.md#m2c-column-types-and-aggregates)
+retain those distinctions. The captures ran 09:41–09:46 EDT (13:41–13:46 UTC),
+with one-minute load 2.883 → 2.882 for before and 2.882 → 2.250 for after;
+the host was not isolated. These are synthetic measurements, not production
+or adoption evidence.
 
 ## Boundaries
 

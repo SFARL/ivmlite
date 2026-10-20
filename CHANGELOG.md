@@ -7,7 +7,7 @@ SQL subset and persisted shadow-table format without migration.
 
 ## [Unreleased]
 
-## [0.1.0-alpha.6] - 2026-10-19
+## [0.1.0-alpha.6] - 2026-10-20
 
 ### Breaking
 
@@ -29,6 +29,14 @@ SQL subset and persisted shadow-table format without migration.
 - An [After M2c census](docs/census/2026-10-17/README.md#after-m2c)
   compatibility projection: ten adapted application candidates, including
   low-confidence fits; this is not upstream execution or adoption.
+- Task 13 native application measurements (2026-10-19–20): all original
+  ivmlite steady integer ratios were at most 1.038; eight unchanged demos
+  were at most 1.0367. Original naive-recompute 1.061/1.062 flags did not
+  reproduce in the one allowed follow-up (1.027/1.028); a new trigger-control
+  1.053 flag remains explicit. This is not a claim that all raw comparisons
+  are below 5%. [Results and complete evidence](docs/bench/README.md#m2c-column-types-and-aggregates)
+  also report write amplification and changed REAL demo costs, including
+  Kener's 1,760,784 KiB database page allocation and 30.64-second bootstrap.
 
 ### Changed
 
