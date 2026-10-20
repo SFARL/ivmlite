@@ -1,0 +1,18 @@
+{
+  "cpu": "Apple M2 Pro",
+  "logical_cpus": "10",
+  "memory_bytes": "17179869184",
+  "macos": "27.0.1",
+  "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
+  "cargo": "cargo 1.95.0 (f2d3ce0bd 2026-03-21)",
+  "recorded_at": "2026-10-19T22:06:07Z",
+  "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+  "main_harness_commit": "aba0fd730ddd52e2a3700ff6381a17c40e2bdf29",
+  "load": [
+    32.4453125,
+    27.77587890625,
+    14.939453125
+  ],
+  "sqlite_version": "3.53.2",
+  "sqlite_version_evidence": "Actual # sqlite provenance lines in all four raw demo captures and scoped build CSVs."
+}

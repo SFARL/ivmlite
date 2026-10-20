@@ -1,0 +1,12 @@
+# command: ${AFTER_HARNESS_TREE}/target/release/examples/fluxflow_demo 1500000 500 --extension ${AFTER_EXTENSION_TREE}/crates/ivmlite-sqlite/target/release/libivmlite_sqlite.dylib
+# commit: aba0fd730ddd52e2a3700ff6381a17c40e2bdf29; uncommitted changes under crates/, Cargo.toml or Cargo.lock: no
+# sqlite: 3.53.2 (bundled by rusqlite in this harness, which hosts the extension)
+# ivmlite extension: ${AFTER_EXTENSION_TREE}/crates/ivmlite-sqlite/target/release/libivmlite_sqlite.dylib; given by --extension, staleness check skipped, so its version is not verified (this tree's ivmlite-sqlite is 0.1.0-alpha.6)
+# workload: fluxflow_grouped_flow_rollup, 1500000 base rows, 500-operation mixed batches, 5 repeats; rows report the median and min-max over the repeats
+# rounds: one warm-up batch, then 10 measured batches per run; apply_ms, maintain_ms and read_ms are each a run's median over its measured batches, and apply_plus_maintain_ms and end_to_end_ms the median of each batch's own sum
+case,mode,base_rows,batch_size,repeats,bootstrap_ms,bootstrap_min_ms,bootstrap_max_ms,first_refresh_ms,first_refresh_min_ms,first_refresh_max_ms,apply_ms,apply_min_ms,apply_max_ms,maintain_ms,maintain_min_ms,maintain_max_ms,read_ms,read_min_ms,read_max_ms,apply_plus_maintain_ms,apply_plus_maintain_min_ms,apply_plus_maintain_max_ms,end_to_end_ms,end_to_end_min_ms,end_to_end_max_ms,database_kib,database_kib_min,database_kib_max
+fluxflow_grouped_flow_rollup,no_maintenance,1500000,500,5,0.000,0.000,0.000,0.000,0.000,0.000,0.197,0.193,0.201,0.000,0.000,0.000,0.000,0.000,0.000,0.198,0.193,0.201,0.198,0.193,0.201,77224.0,77224.0,77224.0
+fluxflow_grouped_flow_rollup,unindexed_recompute,1500000,500,5,0.000,0.000,0.000,1217.760,1206.021,1237.943,0.222,0.215,0.232,1210.346,1201.575,1233.281,0.000,0.000,0.000,1210.569,1201.801,1233.507,1210.569,1201.801,1233.507,77224.0,77224.0,77224.0
+fluxflow_grouped_flow_rollup,indexed_recompute,1500000,500,5,1297.668,1279.306,1335.844,134.839,134.469,140.226,1.168,1.137,1.254,134.743,134.605,136.052,0.000,0.000,0.000,135.890,135.769,137.335,135.890,135.769,137.335,141028.0,141028.0,141028.0
+fluxflow_grouped_flow_rollup,handwritten_trigger,1500000,500,5,1200.204,1191.149,1231.629,0.000,0.000,0.000,1.286,1.276,1.299,0.000,0.000,0.000,0.475,0.474,0.475,1.286,1.276,1.299,1.760,1.754,1.775,77544.0,77544.0,77544.0
+fluxflow_grouped_flow_rollup,ivmlite,1500000,500,5,2834.756,2640.757,3013.083,3.989,3.720,6.244,3.921,3.893,4.082,2.128,2.097,2.288,2.301,2.295,2.354,6.052,6.015,6.368,8.347,8.304,8.710,83872.0,83872.0,83872.0

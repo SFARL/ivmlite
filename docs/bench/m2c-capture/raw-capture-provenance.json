@@ -1,0 +1,38 @@
+[
+  {
+    "name": "fluxflow-before",
+    "raw_sha256": "c72300df17720f6dfd6fcfdf6e0ac87f7e369018a0847cbe71fbe9297b3de04b",
+    "published_paths_normalized": {
+      "${BEFORE_TREE}": "${BEFORE_TREE}",
+      "${AFTER_EXTENSION_TREE}": "${AFTER_EXTENSION_TREE}",
+      "${AFTER_HARNESS_TREE}": "${AFTER_HARNESS_TREE}"
+    }
+  },
+  {
+    "name": "fluxflow-after",
+    "raw_sha256": "5c957cac9d6b2f6db514ecae43593f40ee78a3ba121aacbf891de209751374a3",
+    "published_paths_normalized": {
+      "${BEFORE_TREE}": "${BEFORE_TREE}",
+      "${AFTER_EXTENSION_TREE}": "${AFTER_EXTENSION_TREE}",
+      "${AFTER_HARNESS_TREE}": "${AFTER_HARNESS_TREE}"
+    }
+  },
+  {
+    "name": "kener-before",
+    "raw_sha256": "1ffc16fe26baffe64514183c8a353154fb601ec5e39849158ce002b773c11e89",
+    "published_paths_normalized": {
+      "${BEFORE_TREE}": "${BEFORE_TREE}",
+      "${AFTER_EXTENSION_TREE}": "${AFTER_EXTENSION_TREE}",
+      "${AFTER_HARNESS_TREE}": "${AFTER_HARNESS_TREE}"
+    }
+  },
+  {
+    "name": "kener-after",
+    "raw_sha256": "b359cbae550ab5b25e419deecb30d50797850be88be3be150a59e476dae1525a",
+    "published_paths_normalized": {
+      "${BEFORE_TREE}": "${BEFORE_TREE}",
+      "${AFTER_EXTENSION_TREE}": "${AFTER_EXTENSION_TREE}",
+      "${AFTER_HARNESS_TREE}": "${AFTER_HARNESS_TREE}"
+    }
+  }
+]
