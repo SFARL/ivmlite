@@ -19,3 +19,11 @@ ivmlite-sql.workspace = true
 [[example]]
 name = "release_smoke"
 test = true
+
+[[example]]
+name = "selective_read_driver"
+test = true
+
+[[example]]
+name = "selective_read_bench"
+test = true

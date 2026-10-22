@@ -1,0 +1,576 @@
+{
+  "source_latency_ms": {
+    "before": {
+      "begin": {
+        "median": 0.0011250000000000001,
+        "min": 0.000979,
+        "max": 0.0012705,
+        "repeat_medians": [
+          0.001146,
+          0.000979,
+          0.0012705,
+          0.001021,
+          0.0011250000000000001
+        ]
+      },
+      "commit": {
+        "median": 0.35875,
+        "min": 0.31831200000000004,
+        "max": 0.3938545,
+        "repeat_medians": [
+          0.31831200000000004,
+          0.3433545,
+          0.3938545,
+          0.35875,
+          0.387459
+        ]
+      },
+      "end_to_end_full": {
+        "median": 205.8765215,
+        "min": 202.344646,
+        "max": 206.5789585,
+        "repeat_medians": [
+          202.344646,
+          203.39575050000002,
+          205.8765215,
+          206.187188,
+          206.5789585
+        ]
+      },
+      "end_to_end_monitor": {
+        "median": 155.964292,
+        "min": 154.2027495,
+        "max": 157.43866599999998,
+        "repeat_medians": [
+          154.2027495,
+          154.48616749999997,
+          157.43866599999998,
+          155.964292,
+          157.3407285
+        ]
+      },
+      "end_to_end_window": {
+        "median": 155.78635400000002,
+        "min": 154.3935625,
+        "max": 159.063625,
+        "repeat_medians": [
+          155.6827705,
+          154.3935625,
+          157.4555835,
+          155.78635400000002,
+          159.063625
+        ]
+      },
+      "full": {
+        "median": 192.08599999999998,
+        "min": 188.6980005,
+        "max": 193.00900000000001,
+        "repeat_medians": [
+          188.6980005,
+          190.2169375,
+          192.08599999999998,
+          192.6574165,
+          193.00900000000001
+        ]
+      },
+      "monitor": {
+        "median": 142.19989600000002,
+        "min": 141.26804199999998,
+        "max": 143.455917,
+        "repeat_medians": [
+          141.290396,
+          141.26804199999998,
+          143.455917,
+          142.19989600000002,
+          142.830333
+        ]
+      },
+      "refresh": {
+        "median": 8.8562705,
+        "min": 8.7819375,
+        "max": 9.231166,
+        "repeat_medians": [
+          8.8562705,
+          8.824207999999999,
+          9.231166,
+          8.7819375,
+          9.1044375
+        ]
+      },
+      "window": {
+        "median": 142.640687,
+        "min": 140.6691455,
+        "max": 144.50293749999997,
+        "repeat_medians": [
+          140.6691455,
+          141.191812,
+          143.6315415,
+          142.640687,
+          144.50293749999997
+        ]
+      },
+      "write": {
+        "median": 4.1774375,
+        "min": 4.125,
+        "max": 4.245416499999999,
+        "repeat_medians": [
+          4.125,
+          4.1437919999999995,
+          4.245416499999999,
+          4.2190625,
+          4.1774375
+        ]
+      },
+      "write_plus_refresh": {
+        "median": 13.002729,
+        "min": 12.902479,
+        "max": 13.463541,
+        "repeat_medians": [
+          12.902479,
+          12.927208,
+          13.463541,
+          13.002729,
+          13.246229
+        ]
+      },
+      "write_refresh_read_commit_full": {
+        "median": 205.875459,
+        "min": 202.343896,
+        "max": 206.577771,
+        "repeat_medians": [
+          202.343896,
+          203.3949795,
+          205.875459,
+          206.1861255,
+          206.577771
+        ]
+      },
+      "write_refresh_read_commit_monitor": {
+        "median": 155.96337549999998,
+        "min": 154.2019995,
+        "max": 157.4359575,
+        "repeat_medians": [
+          154.2019995,
+          154.48527149999998,
+          157.4359575,
+          155.96337549999998,
+          157.3389785
+        ]
+      },
+      "write_refresh_read_commit_window": {
+        "median": 155.7853125,
+        "min": 154.392417,
+        "max": 159.0625,
+        "repeat_medians": [
+          155.681354,
+          154.392417,
+          157.4544375,
+          155.7853125,
+          159.0625
+        ]
+      }
+    },
+    "after": {
+      "begin": {
+        "median": 0.001062,
+        "min": 0.0010414999999999999,
+        "max": 0.0011250000000000001,
+        "repeat_medians": [
+          0.0010835,
+          0.0010414999999999999,
+          0.0011250000000000001,
+          0.001062,
+          0.0010414999999999999
+        ]
+      },
+      "commit": {
+        "median": 0.38506250000000003,
+        "min": 0.37745799999999996,
+        "max": 0.44554150000000003,
+        "repeat_medians": [
+          0.38506250000000003,
+          0.3805,
+          0.37745799999999996,
+          0.44554150000000003,
+          0.403
+        ]
+      },
+      "end_to_end_full": {
+        "median": 204.659291,
+        "min": 203.74562550000002,
+        "max": 206.47699999999998,
+        "repeat_medians": [
+          203.74562550000002,
+          204.84002099999998,
+          206.47699999999998,
+          204.659291,
+          204.63595750000002
+        ]
+      },
+      "end_to_end_monitor": {
+        "median": 14.6636465,
+        "min": 14.29973,
+        "max": 15.5799175,
+        "repeat_medians": [
+          14.7912915,
+          14.29973,
+          15.5799175,
+          14.560083500000001,
+          14.6636465
+        ]
+      },
+      "end_to_end_window": {
+        "median": 13.713605000000001,
+        "min": 13.427729500000002,
+        "max": 14.7342095,
+        "repeat_medians": [
+          13.887625,
+          13.427729500000002,
+          14.7342095,
+          13.704875000000001,
+          13.713605000000001
+        ]
+      },
+      "full": {
+        "median": 190.798042,
+        "min": 190.146646,
+        "max": 191.619458,
+        "repeat_medians": [
+          190.146646,
+          191.4894165,
+          191.619458,
+          190.3805625,
+          190.798042
+        ]
+      },
+      "monitor": {
+        "median": 1.0859169999999998,
+        "min": 1.0574789999999998,
+        "max": 1.1015625,
+        "repeat_medians": [
+          1.058125,
+          1.094271,
+          1.0859169999999998,
+          1.0574789999999998,
+          1.1015625
+        ]
+      },
+      "refresh": {
+        "median": 8.922541500000001,
+        "min": 8.718104499999999,
+        "max": 9.618645999999998,
+        "repeat_medians": [
+          9.1669375,
+          8.718104499999999,
+          9.618645999999998,
+          8.922541500000001,
+          8.8216665
+        ]
+      },
+      "window": {
+        "median": 0.13243749999999999,
+        "min": 0.12745800000000002,
+        "max": 0.149542,
+        "repeat_medians": [
+          0.13879200000000003,
+          0.13243749999999999,
+          0.149542,
+          0.12745800000000002,
+          0.12929200000000002
+        ]
+      },
+      "write": {
+        "median": 4.233542,
+        "min": 4.212125,
+        "max": 4.325229,
+        "repeat_medians": [
+          4.2261665,
+          4.212125,
+          4.325229,
+          4.249770999999999,
+          4.233542
+        ]
+      },
+      "write_plus_refresh": {
+        "median": 13.1741665,
+        "min": 12.897313,
+        "max": 14.104916999999999,
+        "repeat_medians": [
+          13.3279585,
+          12.897313,
+          14.104916999999999,
+          13.1257705,
+          13.1741665
+        ]
+      },
+      "write_refresh_read_commit_full": {
+        "median": 204.65810399999998,
+        "min": 203.73964650000002,
+        "max": 206.47362499999997,
+        "repeat_medians": [
+          203.73964650000002,
+          204.83906249999998,
+          206.47362499999997,
+          204.65810399999998,
+          204.6348745
+        ]
+      },
+      "write_refresh_read_commit_monitor": {
+        "median": 14.6626875,
+        "min": 14.298792500000001,
+        "max": 15.578959,
+        "repeat_medians": [
+          14.790270999999999,
+          14.298792500000001,
+          15.578959,
+          14.558896,
+          14.6626875
+        ]
+      },
+      "write_refresh_read_commit_window": {
+        "median": 13.712646,
+        "min": 13.426792,
+        "max": 14.733251,
+        "repeat_medians": [
+          13.8866045,
+          13.426792,
+          14.733251,
+          13.703687500000001,
+          13.712646
+        ]
+      }
+    }
+  },
+  "source_work": {
+    "before": {
+      "full": {
+        "outer_rows": {
+          "min": 550150,
+          "median": 550489.5,
+          "max": 550828
+        },
+        "nested_candidates": {
+          "min": 550150,
+          "median": 550489.5,
+          "max": 550828
+        },
+        "nested_fullscan_steps": {
+          "min": 550149,
+          "median": 550488.5,
+          "max": 550827
+        },
+        "nested_vm_steps": {
+          "min": 5501506,
+          "median": 5504901.0,
+          "max": 5508286
+        },
+        "whole_query_progress_callbacks": {
+          "min": 104529,
+          "median": 104593.0,
+          "max": 104657
+        }
+      },
+      "monitor": {
+        "outer_rows": {
+          "min": 2558,
+          "median": 2560.5,
+          "max": 2562
+        },
+        "nested_candidates": {
+          "min": 550150,
+          "median": 550489.5,
+          "max": 550828
+        },
+        "nested_fullscan_steps": {
+          "min": 550149,
+          "median": 550488.5,
+          "max": 550827
+        },
+        "nested_vm_steps": {
+          "min": 5501506,
+          "median": 5504901.0,
+          "max": 5508286
+        },
+        "whole_query_progress_callbacks": {
+          "min": 71724,
+          "median": 71768.0,
+          "max": 71812
+        }
+      },
+      "window": {
+        "outer_rows": {
+          "min": 10,
+          "median": 11.5,
+          "max": 13
+        },
+        "nested_candidates": {
+          "min": 550150,
+          "median": 550489.5,
+          "max": 550828
+        },
+        "nested_fullscan_steps": {
+          "min": 550149,
+          "median": 550488.5,
+          "max": 550827
+        },
+        "nested_vm_steps": {
+          "min": 5501506,
+          "median": 5504901.0,
+          "max": 5508286
+        },
+        "whole_query_progress_callbacks": {
+          "min": 71623,
+          "median": 71666.5,
+          "max": 71710
+        }
+      },
+      "nonleading": {
+        "outer_rows": {
+          "min": 2270,
+          "median": 2542.0,
+          "max": 2813
+        },
+        "nested_candidates": {
+          "min": 550150,
+          "median": 550489.5,
+          "max": 550828
+        },
+        "nested_fullscan_steps": {
+          "min": 550149,
+          "median": 550488.5,
+          "max": 550827
+        },
+        "nested_vm_steps": {
+          "min": 5501506,
+          "median": 5504901.0,
+          "max": 5508286
+        },
+        "whole_query_progress_callbacks": {
+          "min": 82704,
+          "median": 82776.5,
+          "max": 82849
+        }
+      }
+    },
+    "after": {
+      "full": {
+        "outer_rows": {
+          "min": 550150,
+          "median": 550489.5,
+          "max": 550828
+        },
+        "nested_candidates": {
+          "min": 550150,
+          "median": 550489.5,
+          "max": 550828
+        },
+        "nested_fullscan_steps": {
+          "min": 550149,
+          "median": 550488.5,
+          "max": 550827
+        },
+        "nested_vm_steps": {
+          "min": 5501506,
+          "median": 5504901.0,
+          "max": 5508286
+        },
+        "whole_query_progress_callbacks": {
+          "min": 104529,
+          "median": 104593.0,
+          "max": 104657
+        }
+      },
+      "monitor": {
+        "outer_rows": {
+          "min": 2558,
+          "median": 2560.5,
+          "max": 2562
+        },
+        "nested_candidates": {
+          "min": 2558,
+          "median": 2560.5,
+          "max": 2562
+        },
+        "nested_fullscan_steps": {
+          "min": 0,
+          "median": 0.0,
+          "max": 0
+        },
+        "nested_vm_steps": {
+          "min": 28150,
+          "median": 28177.5,
+          "max": 28194
+        },
+        "whole_query_progress_callbacks": {
+          "min": 562,
+          "median": 563.0,
+          "max": 563
+        }
+      },
+      "window": {
+        "outer_rows": {
+          "min": 10,
+          "median": 11.5,
+          "max": 13
+        },
+        "nested_candidates": {
+          "min": 10,
+          "median": 11.5,
+          "max": 13
+        },
+        "nested_fullscan_steps": {
+          "min": 0,
+          "median": 0.0,
+          "max": 0
+        },
+        "nested_vm_steps": {
+          "min": 15437,
+          "median": 15462.5,
+          "max": 15482
+        },
+        "whole_query_progress_callbacks": {
+          "min": 156,
+          "median": 156.0,
+          "max": 156
+        }
+      },
+      "nonleading": {
+        "outer_rows": {
+          "min": 2270,
+          "median": 2542.0,
+          "max": 2813
+        },
+        "nested_candidates": {
+          "min": 2270,
+          "median": 2542.0,
+          "max": 2813
+        },
+        "nested_fullscan_steps": {
+          "min": 550149,
+          "median": 550488.5,
+          "max": 550827
+        },
+        "nested_vm_steps": {
+          "min": 3866950,
+          "median": 3871230.5,
+          "max": 3875497
+        },
+        "whole_query_progress_callbacks": {
+          "min": 38964,
+          "median": 39042.5,
+          "max": 39120
+        }
+      }
+    }
+  },
+  "input_sha256": {
+    "quick-before-latency.json": "dcea0599896264e8186290791ccb951d6127fb8593ee790185491ba51cf8d6dc",
+    "quick-after-latency.json": "1f5593edde28583fa37b1b320442e15ae3f2d302218d2c52fa298630f03bf830",
+    "quick-before-work.json": "8d6a702b764b710dedd62e515a9dc1c9e91698647613a2da692b47e2e44d1062",
+    "quick-after-work.json": "9f1a831e853bb0ddade6ef1cf19b6cddaae59b3efaf773b63a3dc7ff12825b47",
+    "source-before-latency.json": "417ff22cf7912c5a4fd8ad230a0b662db1b1d96983a87328941f4285a774dd7e",
+    "source-after-latency.json": "d1b6c76ddeacde342c3ca9b70b34522332759c65d4384ee0a4cdb3d58d88bd1b",
+    "source-before-work.json": "6af5552e8792c8237f48e0d526b57cc4c09f698903abc5ca898384f487423f9f",
+    "source-after-work.json": "74abf9fd28dbe3de716d039108a09c8a9fefa87b29840dfb7d03c1e993a3be91"
+  }
+}

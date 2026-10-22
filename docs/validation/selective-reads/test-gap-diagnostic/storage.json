@@ -1,0 +1,65 @@
+{
+  "encoding": "gzip; decompression preserves the previously published normalized bytes exactly",
+  "files": [
+    {
+      "original_path": "fmt-check.log",
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "gzip_path": "fmt-check.log.gz",
+      "gzip_sha256": "f1b651238a58fe290baec6c5e32f3bdb1943dd2bd582f02569231f7a757c7837"
+    },
+    {
+      "original_path": "focused-clippy.log",
+      "original_sha256": "0950eb6fd321e13b6ae9dce04ea409d2adafbd0bf0ba4ceafac4fe1b1d72cdc4",
+      "gzip_path": "focused-clippy.log.gz",
+      "gzip_sha256": "731d282a269b4dd86b8d70e6bf5bc61a94e756c10531884c237d788a79d6055e"
+    },
+    {
+      "original_path": "focused-integration-green.log",
+      "original_sha256": "b95c0cef37cfc7ec707bbba7cd06da744cab2081f757f02f14be1fef21268425",
+      "gzip_path": "focused-integration-green.log.gz",
+      "gzip_sha256": "83034aea9ff02f066f7d5e77d43fed1247c2cb32527088156d3c601696f5e2c0"
+    },
+    {
+      "original_path": "green-build.log",
+      "original_sha256": "c533710761fca05e93fe4cbf2af82d027c632221e821838d230e6cd89c6518c5",
+      "gzip_path": "green-build.log.gz",
+      "gzip_sha256": "a59d199be418336766c229a04cdde1960ea8ad6e03105c3edca897f81d96e127"
+    },
+    {
+      "original_path": "new-test-clean-green.log",
+      "original_sha256": "9482a9853b668151507a102674220caef00b8b1ad8af70ae48cc7e8bf24ecbda",
+      "gzip_path": "new-test-clean-green.log.gz",
+      "gzip_sha256": "7051f30c28d85aba22f14146ec034f5f14ba2c7470a57f8dd65dd0704fa3b7b5"
+    },
+    {
+      "original_path": "new-test-exact-mutant-red.log",
+      "original_sha256": "cfccc8ab76ab36fd0eb3c0274a1b8b9e0c811b6b7bcf41ad685f5833b792a63e",
+      "gzip_path": "new-test-exact-mutant-red.log.gz",
+      "gzip_sha256": "c925b0ab93ab0fdcb3140f0dd234cc1c24a1008bd0bb3a8083230f48d89841db"
+    },
+    {
+      "original_path": "old-test-exact-mutant.log",
+      "original_sha256": "993919b8ec22a2d6186c81a90814681cee4f1ff5167677f6f168da0d6e22a582",
+      "gzip_path": "old-test-exact-mutant.log.gz",
+      "gzip_sha256": "ffe2c99633848356fde9396938655bead753a041901d116736b3cbd02f9c125d"
+    },
+    {
+      "original_path": "old-test-existing-mutant.log",
+      "original_sha256": "48a302b0d3193cc9748036cfa24a812cdaef20ec2e882a2dc173cece7f8c7bc2",
+      "gzip_path": "old-test-existing-mutant.log.gz",
+      "gzip_sha256": "c99a5bb8aa2ae08981a13bf6aca56e460ace073fadbec741fdee65221d5b493e"
+    },
+    {
+      "original_path": "red-build.log",
+      "original_sha256": "d88903087fb75d25dbbabd2fd5384e4850e8c179f21479ef0454acde72243f15",
+      "gzip_path": "red-build.log.gz",
+      "gzip_sha256": "de9ff914566e72d867e53a453b0bb6ee9cc31337181a83a5b8c17e97aa6e473c"
+    },
+    {
+      "original_path": "test-only.patch",
+      "original_sha256": "78008c8507c7a3265b3e660b9678870ce5c9193e61a9529a594fa68ba63f801c",
+      "gzip_path": "test-only.patch.gz",
+      "gzip_sha256": "85af6b8e51814912faedb7f700b78f9c8e821c9e41bcdf0edd9e2d37ee9b4df3"
+    }
+  ]
+}

@@ -17,6 +17,7 @@ use rusqlite::vtab::{
 use rusqlite::{ffi, Connection, Error};
 
 use crate::names::{main_qualified, out_table, quote};
+use crate::read_plan::{Op, ReadPlan, Term};
 use crate::snapshot;
 use crate::view::{self, Checked};
 
@@ -117,6 +118,16 @@ impl IvmTab {
     fn view(&self) -> Result<&CompiledView, String> {
         self.view.as_ref().map_err(Clone::clone)
     }
+
+    fn key_count(&self) -> usize {
+        match &self.view {
+            Ok(CompiledView {
+                plan: ivmlite_core::Plan::Aggregate { group_by, .. },
+                ..
+            }) => group_by.len(),
+            _ => 0,
+        }
+    }
 }
 
 // SAFETY: `IvmTab` is `#[repr(C)]` with `base: ffi::sqlite3_vtab` as its first
@@ -141,8 +152,39 @@ unsafe impl<'vtab> VTab<'vtab> for IvmTab {
 
     fn best_index(&self, info: &mut IndexInfo) -> rusqlite::Result<bool> {
         guard(|| {
-            // Only full scans: v0 reads the whole output table.
-            info.set_estimated_cost(1_000_000.0);
+            let keys = self.key_count();
+            let mut selected = Vec::new();
+            for (index, constraint) in info.constraints().enumerate() {
+                let Some(column) = usize::try_from(constraint.column()).ok() else {
+                    continue;
+                };
+                if !constraint.is_usable() || column >= keys {
+                    continue;
+                }
+                let Some(op) = Op::from_constraint(constraint.operator()) else {
+                    continue;
+                };
+                if info
+                    .collation(index)
+                    .map_err(|e| e.to_string())?
+                    .eq_ignore_ascii_case("BINARY")
+                {
+                    selected.push((index, Term { column, op }));
+                }
+            }
+            for (arg, (constraint, _)) in selected.iter().enumerate() {
+                let mut usage = info.constraint_usage(*constraint);
+                usage.set_argv_index(i32::try_from(arg + 1).map_err(|e| e.to_string())?);
+                usage.set_omit(false);
+            }
+            let plan = ReadPlan {
+                terms: selected.into_iter().map(|(_, term)| term).collect(),
+            };
+            if !plan.terms.is_empty() {
+                info.set_idx_num(1);
+                info.set_idx_str(&plan.encode());
+            }
+            info.set_estimated_cost(plan.estimate());
             Ok(true)
         })
     }
@@ -163,6 +205,7 @@ unsafe impl<'vtab> VTab<'vtab> for IvmTab {
             conn: Rc::clone(&self.conn),
             out_table: out_table(&self.name),
             cols,
+            keys: self.key_count(),
             rows: Vec::new(),
             at: 0,
         })
@@ -303,6 +346,7 @@ pub struct IvmCursor {
     /// everything it needs from here on and holds no reference into the
     /// table it was opened from.
     cols: Result<Vec<String>, String>,
+    keys: usize,
     rows: Vec<(i64, Vec<SqlValue>)>,
     at: usize,
 }
@@ -312,23 +356,48 @@ pub struct IvmCursor {
 unsafe impl VTabCursor for IvmCursor {
     fn filter(
         &mut self,
-        _idx: c_int,
-        _idx_str: Option<&str>,
-        _args: &Filters<'_>,
+        idx: c_int,
+        idx_str: Option<&str>,
+        args: &Filters<'_>,
     ) -> rusqlite::Result<()> {
         guard(|| {
             let cols = self.cols.as_ref().map_err(|e| e.clone())?;
+            let mut plan = ReadPlan::decode(idx, idx_str, self.keys, args.len())?;
+            let values = match (0..args.len())
+                .map(|i| args.get::<SqlValue>(i))
+                .collect::<rusqlite::Result<Vec<_>>>()
+            {
+                Ok(values) => values,
+                // SQLite TEXT may contain invalid UTF-8. Owned SqlValue
+                // cannot represent it; preserve the old full snapshot and
+                // let SQLite evaluate every original residual comparison.
+                Err(Error::Utf8Error(_, _)) => {
+                    plan = ReadPlan::default();
+                    Vec::new()
+                }
+                Err(error) => return Err(error.to_string()),
+            };
             let n = cols.len();
-            let mut stmt = self
-                .conn
-                .prepare(&format!(
-                    "SELECT rowid, {} FROM {}",
-                    cols.join(", "),
-                    main_qualified(&self.out_table)
-                ))
-                .map_err(|e| e.to_string())?;
+            let select = format!(
+                "SELECT rowid, {} FROM {}",
+                cols.join(", "),
+                main_qualified(&self.out_table)
+            );
+            let sql = plan
+                .predicates(cols, &values)
+                .into_iter()
+                .map(|predicate| {
+                    if predicate.is_empty() {
+                        select.clone()
+                    } else {
+                        format!("{select} WHERE {predicate}")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" UNION ALL ");
+            let mut stmt = self.conn.prepare(&sql).map_err(|e| e.to_string())?;
             let rows = stmt
-                .query_map([], |r| {
+                .query_map(rusqlite::params_from_iter(values.iter()), |r| {
                     let mut values = Vec::with_capacity(n);
                     for i in 1..=n {
                         values.push(r.get::<_, SqlValue>(i)?);

@@ -1,0 +1,774 @@
+{
+  "metadata": {
+    "base_rows": 100000,
+    "batch": 500,
+    "bucket_end_exclusive": 9000,
+    "bucket_start_inclusive": 0,
+    "command_arguments": [
+      "${ARTIFACT_ROOT}/acceptance-benchmark/selective_read_bench",
+      "${ARTIFACT_ROOT}/baseline/libivmlite_sqlite.dylib",
+      "latency",
+      "100000",
+      "1"
+    ],
+    "command_arguments_os": [
+      {
+        "Unix": [
+          36,
+          123,
+          65,
+          82,
+          84,
+          73,
+          70,
+          65,
+          67,
+          84,
+          95,
+          82,
+          79,
+          79,
+          84,
+          125,
+          47,
+          97,
+          99,
+          99,
+          101,
+          112,
+          116,
+          97,
+          110,
+          99,
+          101,
+          45,
+          98,
+          101,
+          110,
+          99,
+          104,
+          109,
+          97,
+          114,
+          107,
+          47,
+          115,
+          101,
+          108,
+          101,
+          99,
+          116,
+          105,
+          118,
+          101,
+          95,
+          114,
+          101,
+          97,
+          100,
+          95,
+          98,
+          101,
+          110,
+          99,
+          104
+        ]
+      },
+      {
+        "Unix": [
+          36,
+          123,
+          65,
+          82,
+          84,
+          73,
+          70,
+          65,
+          67,
+          84,
+          95,
+          82,
+          79,
+          79,
+          84,
+          125,
+          47,
+          98,
+          97,
+          115,
+          101,
+          108,
+          105,
+          110,
+          101,
+          47,
+          108,
+          105,
+          98,
+          105,
+          118,
+          109,
+          108,
+          105,
+          116,
+          101,
+          95,
+          115,
+          113,
+          108,
+          105,
+          116,
+          101,
+          46,
+          100,
+          121,
+          108,
+          105,
+          98
+        ]
+      },
+      {
+        "Unix": [
+          108,
+          97,
+          116,
+          101,
+          110,
+          99,
+          121
+        ]
+      },
+      {
+        "Unix": [
+          49,
+          48,
+          48,
+          48,
+          48,
+          48
+        ]
+      },
+      {
+        "Unix": [
+          49
+        ]
+      }
+    ],
+    "configuration_sql": "PRAGMA journal_mode=MEMORY; PRAGMA synchronous=OFF; PRAGMA temp_store=MEMORY; PRAGMA cache_size=-2000; PRAGMA foreign_keys=OFF; PRAGMA recursive_triggers=OFF;",
+    "executable": "${ARTIFACT_ROOT}/acceptance-benchmark/selective_read_bench",
+    "host_source_head_observed_at_run": "48884807127c70df705596fd7a718002cca77a52",
+    "library_argument": "${ARTIFACT_ROOT}/baseline/libivmlite_sqlite.dylib",
+    "library_canonical_path": "${ARTIFACT_ROOT}/baseline/libivmlite_sqlite.dylib",
+    "measured_rounds": 10,
+    "monitor_id": 123,
+    "oracle": "independent ordinary connection seeded freshly per repeat; replay same workload schedule after actual COMMIT outside timers; ordered streaming base storage-class/REAL-bit equality and reference GROUP BY full multisets initial/after warmup/final; actual prepared/bound selected statements reexecuted and compared with independent reference predicates after every round; all timed read counts compared with reference GROUP BY counts each round",
+    "platform": "Darwin MacBook-Pro-8.local 27.0.0 Darwin Kernel Version 27.0.0: Tue Aug 11 21:20:40 PDT 2026; root:xnu-13432.1.9~1/RELEASE_ARM64_T6020 arm64",
+    "read_consumption": "fully drain; get_ref and black_box all seven columns; no retained timed rows",
+    "repeat_index_origin": 0,
+    "repeats": 1,
+    "round_index_origin": 0,
+    "rustc_observed_at_run": "rustc 1.95.0 (59807616e 2026-04-14)\nbinary: rustc\ncommit-hash: 59807616e1fa2540724bfbac14d7976d7e4a3860\ncommit-date: 2026-04-14\nhost: aarch64-apple-darwin\nrelease: 1.95.0\nLLVM version: 22.1.2",
+    "source_identity_note": "observed HEAD/compiler are run metadata; externally record binary, harness source and each library SHA256 and actual build command",
+    "sqlite_compile_options": [
+      "ATOMIC_INTRINSICS=1",
+      "COMPILER=clang-17.0.0",
+      "DEFAULT_AUTOVACUUM",
+      "DEFAULT_CACHE_SIZE=-2000",
+      "DEFAULT_FILE_FORMAT=4",
+      "DEFAULT_FOREIGN_KEYS",
+      "DEFAULT_JOURNAL_SIZE_LIMIT=-1",
+      "DEFAULT_MMAP_SIZE=0",
+      "DEFAULT_PAGE_SIZE=4096",
+      "DEFAULT_PCACHE_INITSZ=20",
+      "DEFAULT_RECURSIVE_TRIGGERS",
+      "DEFAULT_SECTOR_SIZE=4096",
+      "DEFAULT_SYNCHRONOUS=2",
+      "DEFAULT_WAL_AUTOCHECKPOINT=1000",
+      "DEFAULT_WAL_SYNCHRONOUS=2",
+      "DEFAULT_WORKER_THREADS=0",
+      "DIRECT_OVERFLOW_READ",
+      "ENABLE_API_ARMOR",
+      "ENABLE_COLUMN_METADATA",
+      "ENABLE_DBSTAT_VTAB",
+      "ENABLE_FTS3",
+      "ENABLE_FTS3_PARENTHESIS",
+      "ENABLE_FTS5",
+      "ENABLE_LOAD_EXTENSION",
+      "ENABLE_MEMORY_MANAGEMENT",
+      "ENABLE_RTREE",
+      "ENABLE_STAT4",
+      "HAVE_ISNAN",
+      "MALLOC_SOFT_LIMIT=1024",
+      "MAX_ATTACHED=10",
+      "MAX_COLUMN=2000",
+      "MAX_COMPOUND_SELECT=500",
+      "MAX_DEFAULT_PAGE_SIZE=8192",
+      "MAX_EXPR_DEPTH=1000",
+      "MAX_FUNCTION_ARG=1000",
+      "MAX_LENGTH=1000000000",
+      "MAX_LIKE_PATTERN_LENGTH=50000",
+      "MAX_MMAP_SIZE=0x7fff0000",
+      "MAX_PAGE_COUNT=0xfffffffe",
+      "MAX_PAGE_SIZE=65536",
+      "MAX_SQL_LENGTH=1000000000",
+      "MAX_TRIGGER_DEPTH=1000",
+      "MAX_VARIABLE_NUMBER=32766",
+      "MAX_VDBE_OP=250000000",
+      "MAX_WORKER_THREADS=8",
+      "MUTEX_PTHREADS",
+      "SOUNDEX",
+      "SYSTEM_MALLOC",
+      "TEMP_STORE=1",
+      "THREADSAFE=1",
+      "USE_URI"
+    ],
+    "sqlite_source_id": "2026-06-03 19:12:13 d6e03d8c777cfa2d35e3b60d8ec3e0187f3e9f99d8e2ee9cac695fd6fcdf1a24",
+    "sqlite_version": "3.53.2",
+    "warmup_rounds": 1,
+    "working_directory": "${WORKTREE}"
+  },
+  "mode": "latency",
+  "repeats": [
+    {
+      "allocation_after_bootstrap": {
+        "allocated_page_bytes": 43712512,
+        "page_count": 10672,
+        "page_size": 4096
+      },
+      "allocation_before_bootstrap": {
+        "allocated_page_bytes": 2867200,
+        "page_count": 700,
+        "page_size": 4096
+      },
+      "allocation_final": {
+        "allocated_page_bytes": 43712512,
+        "page_count": 10672,
+        "page_size": 4096
+      },
+      "bootstrap_ms": 635.384541,
+      "configuration_observed": {
+        "journal_mode": "memory",
+        "synchronous": 0,
+        "temp_store": 2
+      },
+      "initial_groups": 13414,
+      "measured_round_summary_ms": {
+        "begin": {
+          "max": 0.00075,
+          "median": 0.0005,
+          "min": 0.000334
+        },
+        "commit": {
+          "max": 0.267167,
+          "median": 0.23845850000000002,
+          "min": 0.19279200000000002
+        },
+        "end_to_end_full": {
+          "max": 15.998458000000001,
+          "median": 15.657124500000002,
+          "min": 15.259543
+        },
+        "end_to_end_monitor": {
+          "max": 14.481542999999999,
+          "median": 14.0750215,
+          "min": 13.599542
+        },
+        "end_to_end_window": {
+          "max": 14.594125000000002,
+          "median": 13.912792,
+          "min": 13.692751
+        },
+        "full": {
+          "max": 4.7853330000000005,
+          "median": 4.6907084999999995,
+          "min": 4.550375
+        },
+        "monitor": {
+          "max": 3.307958,
+          "median": 3.1167085,
+          "min": 2.933167
+        },
+        "refresh": {
+          "max": 7.029667,
+          "median": 6.5914375,
+          "min": 6.161417
+        },
+        "window": {
+          "max": 3.311417,
+          "median": 3.0867915000000004,
+          "min": 2.988041
+        },
+        "write": {
+          "max": 4.188416999999999,
+          "median": 4.131187499999999,
+          "min": 4.038708000000001
+        },
+        "write_plus_refresh": {
+          "max": 11.099584,
+          "median": 10.654646,
+          "min": 10.349834
+        },
+        "write_refresh_read_commit_full": {
+          "max": 15.997958,
+          "median": 15.656499500000002,
+          "min": 15.259126
+        },
+        "write_refresh_read_commit_monitor": {
+          "max": 14.480917999999999,
+          "median": 14.0746255,
+          "min": 13.599124999999999
+        },
+        "write_refresh_read_commit_window": {
+          "max": 14.593625000000001,
+          "median": 13.912188,
+          "min": 13.692333999999999
+        }
+      },
+      "oracle_checks_passed": true,
+      "repeat": 0,
+      "rounds": [
+        {
+          "read_order": [
+            "full",
+            "monitor",
+            "window"
+          ],
+          "reads": [
+            {
+              "outer_rows": 13488,
+              "shape": "full"
+            },
+            {
+              "outer_rows": 62,
+              "shape": "monitor"
+            },
+            {
+              "outer_rows": 10,
+              "shape": "window"
+            }
+          ],
+          "repeat": 0,
+          "round": 0,
+          "timings_ms": {
+            "begin": 0.001333,
+            "commit": 0.347125,
+            "end_to_end_full": 16.310874000000002,
+            "end_to_end_monitor": 14.576458000000002,
+            "end_to_end_window": 14.582207000000002,
+            "full": 4.743333,
+            "monitor": 3.008917,
+            "refresh": 7.1526250000000005,
+            "window": 3.014666,
+            "write": 4.066458,
+            "write_plus_refresh": 11.219083000000001,
+            "write_refresh_read_commit_full": 16.309541,
+            "write_refresh_read_commit_monitor": 14.575125000000002,
+            "write_refresh_read_commit_window": 14.580874000000001
+          },
+          "warmup": true
+        },
+        {
+          "read_order": [
+            "monitor",
+            "window",
+            "full"
+          ],
+          "reads": [
+            {
+              "outer_rows": 63,
+              "shape": "monitor"
+            },
+            {
+              "outer_rows": 10,
+              "shape": "window"
+            },
+            {
+              "outer_rows": 13564,
+              "shape": "full"
+            }
+          ],
+          "repeat": 0,
+          "round": 1,
+          "timings_ms": {
+            "begin": 0.0006670000000000001,
+            "commit": 0.26679200000000003,
+            "end_to_end_full": 15.332835,
+            "end_to_end_monitor": 13.798168,
+            "end_to_end_window": 13.85296,
+            "full": 4.589167,
+            "monitor": 3.0545,
+            "refresh": 6.2953339999999995,
+            "window": 3.109292,
+            "write": 4.1808749999999995,
+            "write_plus_refresh": 10.476208999999999,
+            "write_refresh_read_commit_full": 15.332168,
+            "write_refresh_read_commit_monitor": 13.797500999999999,
+            "write_refresh_read_commit_window": 13.852293
+          },
+          "warmup": false
+        },
+        {
+          "read_order": [
+            "window",
+            "full",
+            "monitor"
+          ],
+          "reads": [
+            {
+              "outer_rows": 10,
+              "shape": "window"
+            },
+            {
+              "outer_rows": 13639,
+              "shape": "full"
+            },
+            {
+              "outer_rows": 63,
+              "shape": "monitor"
+            }
+          ],
+          "repeat": 0,
+          "round": 2,
+          "timings_ms": {
+            "begin": 0.000417,
+            "commit": 0.243625,
+            "end_to_end_full": 15.259543,
+            "end_to_end_monitor": 13.599542,
+            "end_to_end_window": 13.692751,
+            "full": 4.665667,
+            "monitor": 3.005666,
+            "refresh": 6.161417,
+            "window": 3.098875,
+            "write": 4.188416999999999,
+            "write_plus_refresh": 10.349834,
+            "write_refresh_read_commit_full": 15.259126,
+            "write_refresh_read_commit_monitor": 13.599124999999999,
+            "write_refresh_read_commit_window": 13.692333999999999
+          },
+          "warmup": false
+        },
+        {
+          "read_order": [
+            "full",
+            "monitor",
+            "window"
+          ],
+          "reads": [
+            {
+              "outer_rows": 13716,
+              "shape": "full"
+            },
+            {
+              "outer_rows": 63,
+              "shape": "monitor"
+            },
+            {
+              "outer_rows": 10,
+              "shape": "window"
+            }
+          ],
+          "repeat": 0,
+          "round": 3,
+          "timings_ms": {
+            "begin": 0.000625,
+            "commit": 0.224834,
+            "end_to_end_full": 15.866333000000001,
+            "end_to_end_monitor": 14.249125,
+            "end_to_end_window": 14.315583,
+            "full": 4.550375,
+            "monitor": 2.933167,
+            "refresh": 6.9252080000000005,
+            "window": 2.999625,
+            "write": 4.165291,
+            "write_plus_refresh": 11.090499000000001,
+            "write_refresh_read_commit_full": 15.865708,
+            "write_refresh_read_commit_monitor": 14.248500000000002,
+            "write_refresh_read_commit_window": 14.314958
+          },
+          "warmup": false
+        },
+        {
+          "read_order": [
+            "monitor",
+            "window",
+            "full"
+          ],
+          "reads": [
+            {
+              "outer_rows": 63,
+              "shape": "monitor"
+            },
+            {
+              "outer_rows": 10,
+              "shape": "window"
+            },
+            {
+              "outer_rows": 13791,
+              "shape": "full"
+            }
+          ],
+          "repeat": 0,
+          "round": 4,
+          "timings_ms": {
+            "begin": 0.000375,
+            "commit": 0.207,
+            "end_to_end_full": 15.420207000000001,
+            "end_to_end_monitor": 13.895915000000002,
+            "end_to_end_window": 13.818957000000001,
+            "full": 4.7853330000000005,
+            "monitor": 3.261041,
+            "refresh": 6.320666,
+            "window": 3.1840829999999998,
+            "write": 4.106833,
+            "write_plus_refresh": 10.427499000000001,
+            "write_refresh_read_commit_full": 15.419832000000003,
+            "write_refresh_read_commit_monitor": 13.895540000000002,
+            "write_refresh_read_commit_window": 13.818582000000001
+          },
+          "warmup": false
+        },
+        {
+          "read_order": [
+            "window",
+            "full",
+            "monitor"
+          ],
+          "reads": [
+            {
+              "outer_rows": 10,
+              "shape": "window"
+            },
+            {
+              "outer_rows": 13866,
+              "shape": "full"
+            },
+            {
+              "outer_rows": 63,
+              "shape": "monitor"
+            }
+          ],
+          "repeat": 0,
+          "round": 5,
+          "timings_ms": {
+            "begin": 0.000625,
+            "commit": 0.24933399999999997,
+            "end_to_end_full": 15.990585,
+            "end_to_end_monitor": 14.481542999999999,
+            "end_to_end_window": 14.424250999999998,
+            "full": 4.641042,
+            "monitor": 3.1319999999999997,
+            "refresh": 7.029667,
+            "window": 3.074708,
+            "write": 4.069917,
+            "write_plus_refresh": 11.099584,
+            "write_refresh_read_commit_full": 15.989959999999998,
+            "write_refresh_read_commit_monitor": 14.480917999999999,
+            "write_refresh_read_commit_window": 14.423626
+          },
+          "warmup": false
+        },
+        {
+          "read_order": [
+            "full",
+            "monitor",
+            "window"
+          ],
+          "reads": [
+            {
+              "outer_rows": 13941,
+              "shape": "full"
+            },
+            {
+              "outer_rows": 66,
+              "shape": "monitor"
+            },
+            {
+              "outer_rows": 13,
+              "shape": "window"
+            }
+          ],
+          "repeat": 0,
+          "round": 6,
+          "timings_ms": {
+            "begin": 0.0005,
+            "commit": 0.22037500000000002,
+            "end_to_end_full": 15.648124000000003,
+            "end_to_end_monitor": 13.875000000000002,
+            "end_to_end_window": 13.857249000000003,
+            "full": 4.778916000000001,
+            "monitor": 3.005792,
+            "refresh": 6.609625,
+            "window": 2.988041,
+            "write": 4.038708000000001,
+            "write_plus_refresh": 10.648333000000001,
+            "write_refresh_read_commit_full": 15.647624000000002,
+            "write_refresh_read_commit_monitor": 13.874500000000001,
+            "write_refresh_read_commit_window": 13.856749
+          },
+          "warmup": false
+        },
+        {
+          "read_order": [
+            "monitor",
+            "window",
+            "full"
+          ],
+          "reads": [
+            {
+              "outer_rows": 66,
+              "shape": "monitor"
+            },
+            {
+              "outer_rows": 13,
+              "shape": "window"
+            },
+            {
+              "outer_rows": 14016,
+              "shape": "full"
+            }
+          ],
+          "repeat": 0,
+          "round": 7,
+          "timings_ms": {
+            "begin": 0.000458,
+            "commit": 0.19279200000000002,
+            "end_to_end_full": 15.424959000000001,
+            "end_to_end_monitor": 13.970001,
+            "end_to_end_window": 13.904959000000002,
+            "full": 4.57075,
+            "monitor": 3.115792,
+            "refresh": 6.57325,
+            "window": 3.0507500000000003,
+            "write": 4.087709,
+            "write_plus_refresh": 10.660959,
+            "write_refresh_read_commit_full": 15.424501000000001,
+            "write_refresh_read_commit_monitor": 13.969543000000002,
+            "write_refresh_read_commit_window": 13.904501000000002
+          },
+          "warmup": false
+        },
+        {
+          "read_order": [
+            "window",
+            "full",
+            "monitor"
+          ],
+          "reads": [
+            {
+              "outer_rows": 13,
+              "shape": "window"
+            },
+            {
+              "outer_rows": 14091,
+              "shape": "full"
+            },
+            {
+              "outer_rows": 66,
+              "shape": "monitor"
+            }
+          ],
+          "repeat": 0,
+          "round": 8,
+          "timings_ms": {
+            "begin": 0.000334,
+            "commit": 0.233292,
+            "end_to_end_full": 15.783042000000002,
+            "end_to_end_monitor": 14.180042,
+            "end_to_end_window": 14.114084000000002,
+            "full": 4.783041,
+            "monitor": 3.180041,
+            "refresh": 6.610833,
+            "window": 3.114083,
+            "write": 4.155542,
+            "write_plus_refresh": 10.766375,
+            "write_refresh_read_commit_full": 15.782708000000001,
+            "write_refresh_read_commit_monitor": 14.179708,
+            "write_refresh_read_commit_window": 14.113750000000001
+          },
+          "warmup": false
+        },
+        {
+          "read_order": [
+            "full",
+            "monitor",
+            "window"
+          ],
+          "reads": [
+            {
+              "outer_rows": 14167,
+              "shape": "full"
+            },
+            {
+              "outer_rows": 66,
+              "shape": "monitor"
+            },
+            {
+              "outer_rows": 13,
+              "shape": "window"
+            }
+          ],
+          "repeat": 0,
+          "round": 9,
+          "timings_ms": {
+            "begin": 0.0005,
+            "commit": 0.267167,
+            "end_to_end_full": 15.998458000000001,
+            "end_to_end_monitor": 14.400333000000002,
+            "end_to_end_window": 14.594125000000002,
+            "full": 4.71575,
+            "monitor": 3.1176250000000003,
+            "refresh": 6.960375,
+            "window": 3.311417,
+            "write": 4.054666,
+            "write_plus_refresh": 11.015041,
+            "write_refresh_read_commit_full": 15.997958,
+            "write_refresh_read_commit_monitor": 14.399833000000001,
+            "write_refresh_read_commit_window": 14.593625000000001
+          },
+          "warmup": false
+        },
+        {
+          "read_order": [
+            "monitor",
+            "window",
+            "full"
+          ],
+          "reads": [
+            {
+              "outer_rows": 67,
+              "shape": "monitor"
+            },
+            {
+              "outer_rows": 13,
+              "shape": "window"
+            },
+            {
+              "outer_rows": 14242,
+              "shape": "full"
+            }
+          ],
+          "repeat": 0,
+          "round": 10,
+          "timings_ms": {
+            "begin": 0.00075,
+            "commit": 0.263583,
+            "end_to_end_full": 15.666125000000001,
+            "end_to_end_monitor": 14.204374999999999,
+            "end_to_end_window": 13.920625,
+            "full": 4.7697080000000005,
+            "monitor": 3.307958,
+            "refresh": 6.4455420000000005,
+            "window": 3.0242080000000002,
+            "write": 4.186541999999999,
+            "write_plus_refresh": 10.632083999999999,
+            "write_refresh_read_commit_full": 15.665375000000001,
+            "write_refresh_read_commit_monitor": 14.203624999999999,
+            "write_refresh_read_commit_window": 13.919875
+          },
+          "warmup": false
+        }
+      ]
+    }
+  ],
+  "schema_version": 1
+}

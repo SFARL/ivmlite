@@ -1,0 +1,14 @@
+{
+  "crates/ivmlite-test/tests/extension_selective_reads.rs": {
+    "sha256": "842b35b8d5ba4456547df485398f7f9f809a719de76562af16af5f89998252d5",
+    "bytes": 34306
+  },
+  "crates/ivmlite-sqlite/src/vtab.rs": {
+    "sha256": "894c8b60f55b05fbcb7267a78bf901c58a69492dccd4d02112a9445570edbf15",
+    "bytes": 17417
+  },
+  "crates/ivmlite-sqlite/target/debug/libivmlite_sqlite.dylib": {
+    "sha256": "8d03fa2834f8ad018eb42b0400930a8928908622c5cf7b0c3d8e2ae33d5fa424",
+    "bytes": 12775672
+  }
+}

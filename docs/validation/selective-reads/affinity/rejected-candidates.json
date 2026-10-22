@@ -1,0 +1,68 @@
+{
+  "sqlite_version": "3.53.0",
+  "results": [
+    {
+      "name": "old3 generic misses RHS conversion",
+      "lhs_mode": "typeless_column",
+      "rhs_affinity": "NUMERIC",
+      "columns": [
+        "lhs",
+        "lhs_type",
+        "rhs",
+        "rhs_type",
+        "original_eq",
+        "rejected_candidate"
+      ],
+      "row": [
+        "1",
+        "integer",
+        "'01'",
+        "text",
+        1,
+        0
+      ]
+    },
+    {
+      "name": "old TEXT equality specialization misses NUMERIC RHS affinity",
+      "lhs_mode": "typeless_column",
+      "rhs_affinity": "NUMERIC",
+      "columns": [
+        "lhs",
+        "lhs_type",
+        "rhs",
+        "rhs_type",
+        "original_eq",
+        "rejected_candidate"
+      ],
+      "row": [
+        "1",
+        "integer",
+        "'01'",
+        "text",
+        1,
+        0
+      ]
+    },
+    {
+      "name": "old REAL equality specialization misses TEXT RHS affinity when LHS has no affinity",
+      "lhs_mode": "no_affinity_expression",
+      "rhs_affinity": "TEXT",
+      "columns": [
+        "lhs",
+        "lhs_type",
+        "rhs",
+        "rhs_type",
+        "original_eq",
+        "rejected_candidate"
+      ],
+      "row": [
+        "'Inf'",
+        "text",
+        "9.0e+999",
+        "real",
+        1,
+        0
+      ]
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "source_diff_sha256": "cef403604d33da537cb409a41077d080471f85569d5c56d966f49184a46111aa",
+  "untracked_sha256": {
+    "crates/ivmlite-sqlite/src/read_plan.rs": "cc0bfe4cf0d250f62c9c30c83a4d42357570f2f2619d471cdf57dd0a8977132d",
+    "crates/ivmlite-test/examples/selective_read_bench.rs": "b24b6c17478f39d16d25a1a38a98194f3bb4d72e0a8776ca97f9c99da7cdf4ac",
+    "crates/ivmlite-test/examples/selective_read_driver.rs": "848ef28b8aaf8648574a955fd1a8c2fb9bbcd80ccbbeccd2a54bb49bfeb5de19",
+    "crates/ivmlite-test/src/read_work.rs": "904d8cc1be2ed9306d2daceb98bc6ed88fb6490573ad468b60f0d66670a6a947",
+    "crates/ivmlite-test/tests/extension_selective_reads.rs": "ded0583292f9ae7b23528d3b263ef4563bb90239329767dd166728e0336d1899",
+    "docs/demos/selective-reads.md": "64942940f9d1d857608210573ca9d687e992c6e9267ff6d86dc17a82dcdcab18",
+    "docs/superpowers/plans/2026-10-21-selective-reads.md": "bdd88d6ea847ac7432577d97dcf1ee6c756422482d9139c9f7d938b89ac7e66e",
+    "docs/superpowers/specs/2026-10-21-selective-reads-design.md": "6fcf06295a3da255f1e30690a282d715d4c4b81879f9d74ccbfa0298fd94f32e"
+  }
+}

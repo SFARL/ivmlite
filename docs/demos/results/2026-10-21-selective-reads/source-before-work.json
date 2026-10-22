@@ -1,0 +1,1502 @@
+{
+  "metadata": {
+    "base_rows": 4100000,
+    "batch": 500,
+    "bucket_end_exclusive": 9000,
+    "bucket_start_inclusive": 0,
+    "command_arguments": [
+      "${ARTIFACT_ROOT}/acceptance-benchmark/selective_read_bench",
+      "${ARTIFACT_ROOT}/baseline/libivmlite_sqlite.dylib",
+      "work",
+      "4100000",
+      "1"
+    ],
+    "command_arguments_os": [
+      {
+        "Unix": [
+          36,
+          123,
+          65,
+          82,
+          84,
+          73,
+          70,
+          65,
+          67,
+          84,
+          95,
+          82,
+          79,
+          79,
+          84,
+          125,
+          47,
+          97,
+          99,
+          99,
+          101,
+          112,
+          116,
+          97,
+          110,
+          99,
+          101,
+          45,
+          98,
+          101,
+          110,
+          99,
+          104,
+          109,
+          97,
+          114,
+          107,
+          47,
+          115,
+          101,
+          108,
+          101,
+          99,
+          116,
+          105,
+          118,
+          101,
+          95,
+          114,
+          101,
+          97,
+          100,
+          95,
+          98,
+          101,
+          110,
+          99,
+          104
+        ]
+      },
+      {
+        "Unix": [
+          36,
+          123,
+          65,
+          82,
+          84,
+          73,
+          70,
+          65,
+          67,
+          84,
+          95,
+          82,
+          79,
+          79,
+          84,
+          125,
+          47,
+          98,
+          97,
+          115,
+          101,
+          108,
+          105,
+          110,
+          101,
+          47,
+          108,
+          105,
+          98,
+          105,
+          118,
+          109,
+          108,
+          105,
+          116,
+          101,
+          95,
+          115,
+          113,
+          108,
+          105,
+          116,
+          101,
+          46,
+          100,
+          121,
+          108,
+          105,
+          98
+        ]
+      },
+      {
+        "Unix": [
+          119,
+          111,
+          114,
+          107
+        ]
+      },
+      {
+        "Unix": [
+          52,
+          49,
+          48,
+          48,
+          48,
+          48,
+          48
+        ]
+      },
+      {
+        "Unix": [
+          49
+        ]
+      }
+    ],
+    "configuration_sql": "PRAGMA journal_mode=MEMORY; PRAGMA synchronous=OFF; PRAGMA temp_store=MEMORY; PRAGMA cache_size=-2000; PRAGMA foreign_keys=OFF; PRAGMA recursive_triggers=OFF;",
+    "executable": "${ARTIFACT_ROOT}/acceptance-benchmark/selective_read_bench",
+    "host_source_head_observed_at_run": "48884807127c70df705596fd7a718002cca77a52",
+    "library_argument": "${ARTIFACT_ROOT}/baseline/libivmlite_sqlite.dylib",
+    "library_canonical_path": "${ARTIFACT_ROOT}/baseline/libivmlite_sqlite.dylib",
+    "measured_rounds": 10,
+    "monitor_id": 123,
+    "oracle": "independent ordinary connection seeded freshly per repeat; replay same workload schedule after actual COMMIT outside timers; ordered streaming base storage-class/REAL-bit equality and reference GROUP BY full multisets initial/after warmup/final; actual prepared/bound selected statements reexecuted and compared with independent reference predicates after every round; all timed read counts compared with reference GROUP BY counts each round",
+    "platform": "Darwin MacBook-Pro-8.local 27.0.0 Darwin Kernel Version 27.0.0: Tue Aug 11 21:20:40 PDT 2026; root:xnu-13432.1.9~1/RELEASE_ARM64_T6020 arm64",
+    "read_consumption": "fully drain; get_ref and black_box all seven columns; no retained timed rows",
+    "repeat_index_origin": 0,
+    "repeats": 1,
+    "round_index_origin": 0,
+    "rustc_observed_at_run": "rustc 1.95.0 (59807616e 2026-04-14)\nbinary: rustc\ncommit-hash: 59807616e1fa2540724bfbac14d7976d7e4a3860\ncommit-date: 2026-04-14\nhost: aarch64-apple-darwin\nrelease: 1.95.0\nLLVM version: 22.1.2",
+    "source_identity_note": "observed HEAD/compiler are run metadata; externally record binary, harness source and each library SHA256 and actual build command",
+    "sqlite_compile_options": [
+      "ATOMIC_INTRINSICS=1",
+      "COMPILER=clang-17.0.0",
+      "DEFAULT_AUTOVACUUM",
+      "DEFAULT_CACHE_SIZE=-2000",
+      "DEFAULT_FILE_FORMAT=4",
+      "DEFAULT_FOREIGN_KEYS",
+      "DEFAULT_JOURNAL_SIZE_LIMIT=-1",
+      "DEFAULT_MMAP_SIZE=0",
+      "DEFAULT_PAGE_SIZE=4096",
+      "DEFAULT_PCACHE_INITSZ=20",
+      "DEFAULT_RECURSIVE_TRIGGERS",
+      "DEFAULT_SECTOR_SIZE=4096",
+      "DEFAULT_SYNCHRONOUS=2",
+      "DEFAULT_WAL_AUTOCHECKPOINT=1000",
+      "DEFAULT_WAL_SYNCHRONOUS=2",
+      "DEFAULT_WORKER_THREADS=0",
+      "DIRECT_OVERFLOW_READ",
+      "ENABLE_API_ARMOR",
+      "ENABLE_COLUMN_METADATA",
+      "ENABLE_DBSTAT_VTAB",
+      "ENABLE_FTS3",
+      "ENABLE_FTS3_PARENTHESIS",
+      "ENABLE_FTS5",
+      "ENABLE_LOAD_EXTENSION",
+      "ENABLE_MEMORY_MANAGEMENT",
+      "ENABLE_RTREE",
+      "ENABLE_STAT4",
+      "HAVE_ISNAN",
+      "MALLOC_SOFT_LIMIT=1024",
+      "MAX_ATTACHED=10",
+      "MAX_COLUMN=2000",
+      "MAX_COMPOUND_SELECT=500",
+      "MAX_DEFAULT_PAGE_SIZE=8192",
+      "MAX_EXPR_DEPTH=1000",
+      "MAX_FUNCTION_ARG=1000",
+      "MAX_LENGTH=1000000000",
+      "MAX_LIKE_PATTERN_LENGTH=50000",
+      "MAX_MMAP_SIZE=0x7fff0000",
+      "MAX_PAGE_COUNT=0xfffffffe",
+      "MAX_PAGE_SIZE=65536",
+      "MAX_SQL_LENGTH=1000000000",
+      "MAX_TRIGGER_DEPTH=1000",
+      "MAX_VARIABLE_NUMBER=32766",
+      "MAX_VDBE_OP=250000000",
+      "MAX_WORKER_THREADS=8",
+      "MUTEX_PTHREADS",
+      "SOUNDEX",
+      "SYSTEM_MALLOC",
+      "TEMP_STORE=1",
+      "THREADSAFE=1",
+      "USE_URI"
+    ],
+    "sqlite_source_id": "2026-06-03 19:12:13 d6e03d8c777cfa2d35e3b60d8ec3e0187f3e9f99d8e2ee9cac695fd6fcdf1a24",
+    "sqlite_version": "3.53.2",
+    "warmup_rounds": 1,
+    "working_directory": "${WORKTREE}"
+  },
+  "mode": "work",
+  "repeats": [
+    {
+      "allocation_after_bootstrap": {
+        "allocated_page_bytes": 1803042816,
+        "page_count": 440196,
+        "page_size": 4096
+      },
+      "allocation_before_bootstrap": {
+        "allocated_page_bytes": 122314752,
+        "page_count": 29862,
+        "page_size": 4096
+      },
+      "allocation_final": {
+        "allocated_page_bytes": 1803042816,
+        "page_count": 440196,
+        "page_size": 4096
+      },
+      "configuration_observed": {
+        "journal_mode": "memory",
+        "synchronous": 0,
+        "temp_store": 2
+      },
+      "initial_groups": 550000,
+      "oracle_checks_passed": true,
+      "repeat": 0,
+      "rounds": [
+        {
+          "read_order": [
+            "full",
+            "monitor",
+            "window",
+            "nonleading"
+          ],
+          "reads": [
+            {
+              "outer_rows": 550074,
+              "shape": "full",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 550073,
+                    "rows_returned": 550074,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 5500746
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 4950674,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 550074,
+                "whole_query_progress_callbacks_separate_pass": 104514
+              }
+            },
+            {
+              "outer_rows": 2558,
+              "shape": "monitor",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 550073,
+                    "rows_returned": 550074,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 5500746
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 1670695,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 2558,
+                "whole_query_progress_callbacks_separate_pass": 71714
+              }
+            },
+            {
+              "outer_rows": 10,
+              "shape": "window",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 550073,
+                    "rows_returned": 550074,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 5500746
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 1660545,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 10,
+                "whole_query_progress_callbacks_separate_pass": 71612
+              }
+            },
+            {
+              "outer_rows": 2209,
+              "shape": "nonleading",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 550073,
+                    "rows_returned": 550074,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 5500746
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 2768052,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 2209,
+                "whole_query_progress_callbacks_separate_pass": 82688
+              }
+            }
+          ],
+          "repeat": 0,
+          "round": 0,
+          "warmup": true
+        },
+        {
+          "read_order": [
+            "monitor",
+            "window",
+            "nonleading",
+            "full"
+          ],
+          "reads": [
+            {
+              "outer_rows": 2558,
+              "shape": "monitor",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 550149,
+                    "rows_returned": 550150,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 5501506
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 1670923,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 2558,
+                "whole_query_progress_callbacks_separate_pass": 71724
+              }
+            },
+            {
+              "outer_rows": 10,
+              "shape": "window",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 550149,
+                    "rows_returned": 550150,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 5501506
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 1660773,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 10,
+                "whole_query_progress_callbacks_separate_pass": 71623
+              }
+            },
+            {
+              "outer_rows": 2270,
+              "shape": "nonleading",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 550149,
+                    "rows_returned": 550150,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 5501506
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 2768920,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 2270,
+                "whole_query_progress_callbacks_separate_pass": 82704
+              }
+            },
+            {
+              "outer_rows": 550150,
+              "shape": "full",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 550149,
+                    "rows_returned": 550150,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 5501506
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 4951358,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 550150,
+                "whole_query_progress_callbacks_separate_pass": 104529
+              }
+            }
+          ],
+          "repeat": 0,
+          "round": 1,
+          "warmup": false
+        },
+        {
+          "read_order": [
+            "window",
+            "nonleading",
+            "full",
+            "monitor"
+          ],
+          "reads": [
+            {
+              "outer_rows": 10,
+              "shape": "window",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 550224,
+                    "rows_returned": 550225,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 5502256
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 1660998,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 10,
+                "whole_query_progress_callbacks_separate_pass": 71632
+              }
+            },
+            {
+              "outer_rows": 2330,
+              "shape": "nonleading",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 550224,
+                    "rows_returned": 550225,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 5502256
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 2769775,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 2330,
+                "whole_query_progress_callbacks_separate_pass": 82720
+              }
+            },
+            {
+              "outer_rows": 550225,
+              "shape": "full",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 550224,
+                    "rows_returned": 550225,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 5502256
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 4952033,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 550225,
+                "whole_query_progress_callbacks_separate_pass": 104542
+              }
+            },
+            {
+              "outer_rows": 2558,
+              "shape": "monitor",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 550224,
+                    "rows_returned": 550225,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 5502256
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 1671148,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 2558,
+                "whole_query_progress_callbacks_separate_pass": 71733
+              }
+            }
+          ],
+          "repeat": 0,
+          "round": 2,
+          "warmup": false
+        },
+        {
+          "read_order": [
+            "nonleading",
+            "full",
+            "monitor",
+            "window"
+          ],
+          "reads": [
+            {
+              "outer_rows": 2392,
+              "shape": "nonleading",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 550301,
+                    "rows_returned": 550302,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 5503026
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 2770656,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 2392,
+                "whole_query_progress_callbacks_separate_pass": 82737
+              }
+            },
+            {
+              "outer_rows": 550302,
+              "shape": "full",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 550301,
+                    "rows_returned": 550302,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 5503026
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 4952726,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 550302,
+                "whole_query_progress_callbacks_separate_pass": 104557
+              }
+            },
+            {
+              "outer_rows": 2559,
+              "shape": "monitor",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 550301,
+                    "rows_returned": 550302,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 5503026
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 1671387,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 2559,
+                "whole_query_progress_callbacks_separate_pass": 71744
+              }
+            },
+            {
+              "outer_rows": 10,
+              "shape": "window",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 550301,
+                    "rows_returned": 550302,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 5503026
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 1661233,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 10,
+                "whole_query_progress_callbacks_separate_pass": 71642
+              }
+            }
+          ],
+          "repeat": 0,
+          "round": 3,
+          "warmup": false
+        },
+        {
+          "read_order": [
+            "full",
+            "monitor",
+            "window",
+            "nonleading"
+          ],
+          "reads": [
+            {
+              "outer_rows": 550377,
+              "shape": "full",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 550376,
+                    "rows_returned": 550377,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 5503776
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 4953401,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 550377,
+                "whole_query_progress_callbacks_separate_pass": 104571
+              }
+            },
+            {
+              "outer_rows": 2559,
+              "shape": "monitor",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 550376,
+                    "rows_returned": 550377,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 5503776
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 1671612,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 2559,
+                "whole_query_progress_callbacks_separate_pass": 71753
+              }
+            },
+            {
+              "outer_rows": 10,
+              "shape": "window",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 550376,
+                    "rows_returned": 550377,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 5503776
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 1661458,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 10,
+                "whole_query_progress_callbacks_separate_pass": 71652
+              }
+            },
+            {
+              "outer_rows": 2452,
+              "shape": "nonleading",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 550376,
+                    "rows_returned": 550377,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 5503776
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 2771511,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 2452,
+                "whole_query_progress_callbacks_separate_pass": 82752
+              }
+            }
+          ],
+          "repeat": 0,
+          "round": 4,
+          "warmup": false
+        },
+        {
+          "read_order": [
+            "monitor",
+            "window",
+            "nonleading",
+            "full"
+          ],
+          "reads": [
+            {
+              "outer_rows": 2559,
+              "shape": "monitor",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 550451,
+                    "rows_returned": 550452,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 5504526
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 1671837,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 2559,
+                "whole_query_progress_callbacks_separate_pass": 71763
+              }
+            },
+            {
+              "outer_rows": 10,
+              "shape": "window",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 550451,
+                    "rows_returned": 550452,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 5504526
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 1661683,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 10,
+                "whole_query_progress_callbacks_separate_pass": 71662
+              }
+            },
+            {
+              "outer_rows": 2512,
+              "shape": "nonleading",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 550451,
+                    "rows_returned": 550452,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 5504526
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 2772366,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 2512,
+                "whole_query_progress_callbacks_separate_pass": 82769
+              }
+            },
+            {
+              "outer_rows": 550452,
+              "shape": "full",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 550451,
+                    "rows_returned": 550452,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 5504526
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 4954076,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 550452,
+                "whole_query_progress_callbacks_separate_pass": 104586
+              }
+            }
+          ],
+          "repeat": 0,
+          "round": 5,
+          "warmup": false
+        },
+        {
+          "read_order": [
+            "window",
+            "nonleading",
+            "full",
+            "monitor"
+          ],
+          "reads": [
+            {
+              "outer_rows": 13,
+              "shape": "window",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 550526,
+                    "rows_returned": 550527,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 5505276
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 1661944,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 13,
+                "whole_query_progress_callbacks_separate_pass": 71671
+              }
+            },
+            {
+              "outer_rows": 2572,
+              "shape": "nonleading",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 550526,
+                    "rows_returned": 550527,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 5505276
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 2773221,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 2572,
+                "whole_query_progress_callbacks_separate_pass": 82784
+              }
+            },
+            {
+              "outer_rows": 550527,
+              "shape": "full",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 550526,
+                    "rows_returned": 550527,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 5505276
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 4954751,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 550527,
+                "whole_query_progress_callbacks_separate_pass": 104600
+              }
+            },
+            {
+              "outer_rows": 2562,
+              "shape": "monitor",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 550526,
+                    "rows_returned": 550527,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 5505276
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 1672086,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 2562,
+                "whole_query_progress_callbacks_separate_pass": 71773
+              }
+            }
+          ],
+          "repeat": 0,
+          "round": 6,
+          "warmup": false
+        },
+        {
+          "read_order": [
+            "nonleading",
+            "full",
+            "monitor",
+            "window"
+          ],
+          "reads": [
+            {
+              "outer_rows": 2632,
+              "shape": "nonleading",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 550601,
+                    "rows_returned": 550602,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 5506026
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 2774076,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 2632,
+                "whole_query_progress_callbacks_separate_pass": 82801
+              }
+            },
+            {
+              "outer_rows": 550602,
+              "shape": "full",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 550601,
+                    "rows_returned": 550602,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 5506026
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 4955426,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 550602,
+                "whole_query_progress_callbacks_separate_pass": 104614
+              }
+            },
+            {
+              "outer_rows": 2562,
+              "shape": "monitor",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 550601,
+                    "rows_returned": 550602,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 5506026
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 1672311,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 2562,
+                "whole_query_progress_callbacks_separate_pass": 71783
+              }
+            },
+            {
+              "outer_rows": 13,
+              "shape": "window",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 550601,
+                    "rows_returned": 550602,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 5506026
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 1662169,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 13,
+                "whole_query_progress_callbacks_separate_pass": 71682
+              }
+            }
+          ],
+          "repeat": 0,
+          "round": 7,
+          "warmup": false
+        },
+        {
+          "read_order": [
+            "full",
+            "monitor",
+            "window",
+            "nonleading"
+          ],
+          "reads": [
+            {
+              "outer_rows": 550677,
+              "shape": "full",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 550676,
+                    "rows_returned": 550677,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 5506776
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 4956101,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 550677,
+                "whole_query_progress_callbacks_separate_pass": 104628
+              }
+            },
+            {
+              "outer_rows": 2562,
+              "shape": "monitor",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 550676,
+                    "rows_returned": 550677,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 5506776
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 1672536,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 2562,
+                "whole_query_progress_callbacks_separate_pass": 71792
+              }
+            },
+            {
+              "outer_rows": 13,
+              "shape": "window",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 550676,
+                    "rows_returned": 550677,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 5506776
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 1662394,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 13,
+                "whole_query_progress_callbacks_separate_pass": 71691
+              }
+            },
+            {
+              "outer_rows": 2692,
+              "shape": "nonleading",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 550676,
+                    "rows_returned": 550677,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 5506776
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 2774931,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 2692,
+                "whole_query_progress_callbacks_separate_pass": 82816
+              }
+            }
+          ],
+          "repeat": 0,
+          "round": 8,
+          "warmup": false
+        },
+        {
+          "read_order": [
+            "monitor",
+            "window",
+            "nonleading",
+            "full"
+          ],
+          "reads": [
+            {
+              "outer_rows": 2562,
+              "shape": "monitor",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 550752,
+                    "rows_returned": 550753,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 5507536
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 1672764,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 2562,
+                "whole_query_progress_callbacks_separate_pass": 71803
+              }
+            },
+            {
+              "outer_rows": 13,
+              "shape": "window",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 550752,
+                    "rows_returned": 550753,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 5507536
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 1662622,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 13,
+                "whole_query_progress_callbacks_separate_pass": 71701
+              }
+            },
+            {
+              "outer_rows": 2753,
+              "shape": "nonleading",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 550752,
+                    "rows_returned": 550753,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 5507536
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 2775799,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 2753,
+                "whole_query_progress_callbacks_separate_pass": 82833
+              }
+            },
+            {
+              "outer_rows": 550753,
+              "shape": "full",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 550752,
+                    "rows_returned": 550753,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 5507536
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 4956785,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 550753,
+                "whole_query_progress_callbacks_separate_pass": 104643
+              }
+            }
+          ],
+          "repeat": 0,
+          "round": 9,
+          "warmup": false
+        },
+        {
+          "read_order": [
+            "window",
+            "nonleading",
+            "full",
+            "monitor"
+          ],
+          "reads": [
+            {
+              "outer_rows": 13,
+              "shape": "window",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 550827,
+                    "rows_returned": 550828,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 5508286
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 1662847,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 13,
+                "whole_query_progress_callbacks_separate_pass": 71710
+              }
+            },
+            {
+              "outer_rows": 2813,
+              "shape": "nonleading",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 550827,
+                    "rows_returned": 550828,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 5508286
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 2776654,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 2813,
+                "whole_query_progress_callbacks_separate_pass": 82849
+              }
+            },
+            {
+              "outer_rows": 550828,
+              "shape": "full",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 550827,
+                    "rows_returned": 550828,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 5508286
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 4957460,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 550828,
+                "whole_query_progress_callbacks_separate_pass": 104657
+              }
+            },
+            {
+              "outer_rows": 2562,
+              "shape": "monitor",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 550827,
+                    "rows_returned": 550828,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 5508286
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 1672989,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 2562,
+                "whole_query_progress_callbacks_separate_pass": 71812
+              }
+            }
+          ],
+          "repeat": 0,
+          "round": 10,
+          "warmup": false
+        }
+      ]
+    }
+  ],
+  "schema_version": 1
+}

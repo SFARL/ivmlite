@@ -1,0 +1,17 @@
+START quick-before-latency
+PASS quick-before-latency (1.954s)
+START quick-after-latency
+PASS quick-after-latency (1.510s)
+START quick-before-work
+PASS quick-before-work (1.988s)
+START quick-after-work
+PASS quick-after-work (1.657s)
+START source-before-latency
+PASS source-before-latency (366.767s)
+START source-after-latency
+PASS source-after-latency (336.808s)
+START source-before-work
+PASS source-before-work (85.437s)
+START source-after-work
+PASS source-after-work (70.662s)
+COMPLETE quick and source-scale runs; identical artifact hashes retained

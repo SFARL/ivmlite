@@ -1,0 +1,240 @@
+[
+  {
+    "id": "remove-all-pushdown",
+    "edits": [
+      {
+        "file": "crates/ivmlite-sqlite/src/vtab.rs",
+        "old": "selected.push((index, Term { column, op }));",
+        "new": "if false { selected.push((index, Term { column, op })); }"
+      }
+    ],
+    "primary_tests": [
+      "actual_nested_work_distinguishes_seek_scan_and_candidate_materialization"
+    ],
+    "rationale": "Constraint selection disabled with type-checking retained. Full-scan result semantics remain correct; actual candidate/work acceptance must fail."
+  },
+  {
+    "id": "drop-usable-check",
+    "edits": [
+      {
+        "file": "crates/ivmlite-sqlite/src/vtab.rs",
+        "old": "if !constraint.is_usable() || column >= keys {",
+        "new": "if column >= keys {"
+      }
+    ],
+    "primary_tests": [
+      "in_or_and_order_limit_match_independent_typeless_materialization"
+    ],
+    "rationale": " Initial full attempt failed two related IN/join tests but not the anticipated collation guard; rejected and retained. Corrected registration uses the actual unusable-join rejection guard; rerun required."
+  },
+  {
+    "id": "drop-binary-gate",
+    "edits": [
+      {
+        "file": "crates/ivmlite-sqlite/src/vtab.rs",
+        "old": "if info\n                    .collation(index)\n                    .map_err(|e| e.to_string())?\n                    .eq_ignore_ascii_case(\"BINARY\")",
+        "new": "if true"
+      }
+    ],
+    "primary_tests": [
+      "collations_remain_residual_and_unsupported_terms_do_not_enter_nested_sql"
+    ],
+    "rationale": ""
+  },
+  {
+    "id": "omit-outer-residual",
+    "edits": [
+      {
+        "file": "crates/ivmlite-sqlite/src/vtab.rs",
+        "old": "usage.set_omit(false);",
+        "new": "usage.set_omit(true);"
+      }
+    ],
+    "primary_tests": [
+      "bound_storage_classes_and_numeric_boundaries_match_ordinary_sqlite"
+    ],
+    "rationale": ""
+  },
+  {
+    "id": "naive-numeric-direct-affinity",
+    "edits": [
+      {
+        "file": "crates/ivmlite-sqlite/src/read_plan.rs",
+        "old": "fn numeric_branches(column: &str, parameter: &str, op: Op) -> [String; 2] {\n    let op = op.sql();\n    [\n        format!(\"({column} COLLATE BINARY {op} {parameter})\"),\n        format!(\n            \"({column} COLLATE BINARY >= '' AND \\\n              {column} COLLATE BINARY < x'' AND \\\n              +CAST({column} AS NUMERIC) COLLATE BINARY {op} {parameter})\"\n        ),\n    ]\n}",
+        "new": "fn numeric_branches(column: &str, parameter: &str, op: Op) -> [String; 2] {\n    [\n        format!(\"({column} COLLATE BINARY {} {parameter})\", op.sql()),\n        format!(\"({parameter} IS NOT NULL AND 0)\"),\n    ]\n}"
+      }
+    ],
+    "primary_tests": [
+      "join_rhs_affinity_keeps_numeric_text_matches"
+    ],
+    "rationale": "Direct numeric RHS loses TEXT numeric matches under numeric RHS-column affinity."
+  },
+  {
+    "id": "naive-text-direct-affinity",
+    "edits": [
+      {
+        "file": "crates/ivmlite-sqlite/src/read_plan.rs",
+        "old": "SqlValue::Text(_) => comparisons(column, parameter, op),",
+        "new": "SqlValue::Text(_) => format!(\"({column} COLLATE BINARY {} {parameter})\", op.sql()),"
+      }
+    ],
+    "primary_tests": [
+      "compound_rhs_affinity_can_differ_from_value_class"
+    ],
+    "rationale": "Foreign NUMERIC declaration yields TEXT42 deterministically; raw direct branch loses converted numeric LHS."
+  },
+  {
+    "id": "reject-invalid-utf8-rhs",
+    "edits": [
+      {
+        "file": "crates/ivmlite-sqlite/src/vtab.rs",
+        "old": "Err(Error::Utf8Error(_, _)) => {\n                    plan = ReadPlan::default();\n                    Vec::new()\n                }",
+        "new": "Err(Error::Utf8Error(_, _)) => return Err(\"mutant invalid UTF-8 RHS\".to_string()),"
+      }
+    ],
+    "primary_tests": [
+      "invalid_utf8_rhs_keeps_sqlite_residual_comparisons"
+    ],
+    "rationale": ""
+  },
+  {
+    "id": "estimated-rows-million",
+    "edits": [
+      {
+        "file": "crates/ivmlite-sqlite/src/vtab.rs",
+        "old": "info.set_estimated_cost(plan.estimate());",
+        "new": "info.set_estimated_cost(plan.estimate());\n            info.set_estimated_rows(1_000_000);"
+      }
+    ],
+    "primary_tests": [
+      "ordinary_join_keeps_sqlites_default_virtual_row_estimate"
+    ],
+    "rationale": "Completed actual nested executions must remain1 on a one-group/1000RHS fixture."
+  },
+  {
+    "id": "shift-argument-index",
+    "edits": [
+      {
+        "file": "crates/ivmlite-sqlite/src/vtab.rs",
+        "old": "i32::try_from(arg + 1)",
+        "new": "i32::try_from(arg + 2)"
+      }
+    ],
+    "primary_tests": [
+      "multikey_output_prefix_quoted_names_and_rebinding_match_base_group_by"
+    ],
+    "rationale": ""
+  },
+  {
+    "id": "ge-becomes-gt",
+    "edits": [
+      {
+        "file": "crates/ivmlite-sqlite/src/read_plan.rs",
+        "old": "Self::Ge => \">=\",",
+        "new": "Self::Ge => \">\","
+      }
+    ],
+    "primary_tests": [
+      "bound_storage_classes_and_numeric_boundaries_match_ordinary_sqlite"
+    ],
+    "rationale": ""
+  },
+  {
+    "id": "aggregate-columns-eligible",
+    "edits": [
+      {
+        "file": "crates/ivmlite-sqlite/src/vtab.rs",
+        "old": "Ok(CompiledView {\n                plan: ivmlite_core::Plan::Aggregate { group_by, .. },\n                ..\n            }) => group_by.len(),",
+        "new": "Ok(view) => view.columns.len(),"
+      }
+    ],
+    "primary_tests": [
+      "collations_remain_residual_and_unsupported_terms_do_not_enter_nested_sql"
+    ],
+    "rationale": "A correct result alone cannot detect aggregate pushdown: captured nestedSQL must remain unfiltered for aggregate-only predicates."
+  },
+  {
+    "id": "accept-noncanonical-descriptor",
+    "edits": [
+      {
+        "file": "crates/ivmlite-sqlite/src/read_plan.rs",
+        "old": "(column.len() > 1 && column.starts_with('0'))",
+        "new": "false"
+      }
+    ],
+    "primary_tests": [
+      "read_plan::tests::descriptor_rejects_noncanonical_or_inconsistent_metadata"
+    ],
+    "rationale": ""
+  },
+  {
+    "id": "restore-or-instead-of-union-seek-anchor",
+    "edits": [
+      {
+        "file": "crates/ivmlite-sqlite/src/read_plan.rs",
+        "old": "        let anchor = self\n            .terms\n            .iter()\n            .enumerate()\n            .position(|(i, term)| leading_numeric(i, term) && term.op == Op::Eq)\n            .or_else(|| {\n                self.terms.iter().enumerate().position(|(i, term)| {\n                    leading_numeric(i, term) && matches!(term.op, Op::Lt | Op::Le)\n                })\n            });",
+        "new": "        let anchor: Option<usize> = None;"
+      }
+    ],
+    "primary_tests": [
+      "actual_nested_work_distinguishes_seek_scan_and_candidate_materialization"
+    ],
+    "rationale": "Correct candidates remain, but leading numeric EQ/LT/LE regress to scanning OR predicates on the seven-column20k-group fixture. No mutation run has occurred."
+  },
+  {
+    "id": "overlap-union-branches",
+    "edits": [
+      {
+        "file": "crates/ivmlite-sqlite/src/read_plan.rs",
+        "old": "{column} COLLATE BINARY >= '' AND",
+        "new": "{column} COLLATE BINARY >= 0 AND"
+      }
+    ],
+    "primary_tests": [
+      "bound_storage_classes_and_numeric_boundaries_match_ordinary_sqlite"
+    ],
+    "rationale": "Broaden the anchor second branch beyond TEXT, duplicating numeric candidate rowids under UNION ALL."
+  },
+  {
+    "id": "skip-actual-harness-apply",
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/examples/selective_read_bench.rs",
+        "old": "        step(&mut timings, \"write\", || {\n            Ok((KENER.apply_fn())(\n                &mut mutations,\n                args.base_rows,\n                BATCH,\n                round,\n            )?)\n        })?;",
+        "new": "        step(&mut timings, \"write\", || {\n            Ok(())\n        })?;"
+      }
+    ],
+    "primary_tests": [
+      "tests::native_fixture_run_checks_real_mutation_and_read_calls_in_both_modes"
+    ],
+    "rationale": "Skip real timed mutation call while independent reference replay still advances."
+  },
+  {
+    "id": "wrong-timed-latency-statement",
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/examples/selective_read_bench.rs",
+        "old": "Ok(consume(&mut statements[index])?)",
+        "new": "Ok(consume(&mut statements[0])?)"
+      }
+    ],
+    "primary_tests": [
+      "tests::native_fixture_run_checks_real_mutation_and_read_calls_in_both_modes"
+    ],
+    "rationale": "Execute full scan for selective latency shapes; recorded count must fail independent reference guard."
+  },
+  {
+    "id": "wrong-instrumented-work-statement",
+    "edits": [
+      {
+        "file": "crates/ivmlite-test/examples/selective_read_bench.rs",
+        "old": "measure_work(&connection, &mut statements[index])?",
+        "new": "measure_work(&connection, &mut statements[0])?"
+      }
+    ],
+    "primary_tests": [
+      "tests::native_fixture_run_checks_real_mutation_and_read_calls_in_both_modes"
+    ],
+    "rationale": "Instrument the wrong full statement for selective work shapes; actual result guard must fail."
+  }
+]

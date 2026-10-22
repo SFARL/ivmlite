@@ -1,0 +1,52 @@
+{
+  "status": "rejected-semantic-green-test-gap",
+  "reason": "The equality-join test did not exercise the historical Cartesian join plan regression. Full suite stayed green; existing test is being strengthened before restarting the complete campaign.",
+  "mapping": {
+    "id": "estimated-rows-million",
+    "edits": [
+      {
+        "file": "crates/ivmlite-sqlite/src/vtab.rs",
+        "old": "info.set_estimated_cost(plan.estimate());",
+        "new": "info.set_estimated_cost(plan.estimate());\n            info.set_estimated_rows(1_000_000);"
+      }
+    ],
+    "primary_tests": [
+      "ordinary_join_keeps_sqlites_default_virtual_row_estimate"
+    ],
+    "rationale": "Completed actual nested executions must remain1 on a one-group/1000RHS fixture."
+  },
+  "result": {
+    "id": "estimated-rows-million",
+    "rows": [],
+    "command": [
+      "scripts/test-all.sh"
+    ],
+    "started_at": "2026-10-22T04:41:11Z",
+    "head": "48884807127c70df705596fd7a718002cca77a52",
+    "source_diff_sha256": "cef403604d33da537cb409a41077d080471f85569d5c56d966f49184a46111aa",
+    "original_sha256": {
+      "crates/ivmlite-sqlite/src/vtab.rs": "894c8b60f55b05fbcb7267a78bf901c58a69492dccd4d02112a9445570edbf15"
+    },
+    "edits_sha256": "4023d12fed0b821cb1182f6380226f8174f4038a12a2bde9277f0aab76133e96",
+    "untracked_sha256": {
+      "crates/ivmlite-sqlite/src/read_plan.rs": "cc0bfe4cf0d250f62c9c30c83a4d42357570f2f2619d471cdf57dd0a8977132d",
+      "crates/ivmlite-test/examples/selective_read_bench.rs": "b24b6c17478f39d16d25a1a38a98194f3bb4d72e0a8776ca97f9c99da7cdf4ac",
+      "crates/ivmlite-test/examples/selective_read_driver.rs": "848ef28b8aaf8648574a955fd1a8c2fb9bbcd80ccbbeccd2a54bb49bfeb5de19",
+      "crates/ivmlite-test/src/read_work.rs": "904d8cc1be2ed9306d2daceb98bc6ed88fb6490573ad468b60f0d66670a6a947",
+      "crates/ivmlite-test/tests/extension_selective_reads.rs": "842b35b8d5ba4456547df485398f7f9f809a719de76562af16af5f89998252d5",
+      "docs/demos/selective-reads.md": "64942940f9d1d857608210573ca9d687e992c6e9267ff6d86dc17a82dcdcab18",
+      "docs/superpowers/plans/2026-10-21-selective-reads.md": "88a7ea2371d656b52e987f941b266d876025fc2a502eb4121e26571aa174f1c3",
+      "docs/superpowers/specs/2026-10-21-selective-reads-design.md": "6fcf06295a3da255f1e30690a282d715d4c4b81879f9d74ccbfa0298fd94f32e"
+    },
+    "returncode": 0,
+    "restored": true,
+    "wall_seconds": 188.98510637501022,
+    "passed": 876,
+    "failed": 0,
+    "ignored": 3,
+    "suite_count": 34,
+    "red": [],
+    "compiled": true,
+    "log_sha256": "c1b189f89555878e3c8b7d132626a18ba8f23813aa6476aba5acb76f6b75e0c0"
+  }
+}

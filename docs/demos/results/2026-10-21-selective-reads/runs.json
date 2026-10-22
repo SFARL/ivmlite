@@ -1,0 +1,98 @@
+[
+  {
+    "name": "quick-before-latency",
+    "command": [
+      "${ARTIFACT_ROOT}/acceptance-benchmark/selective_read_bench",
+      "${ARTIFACT_ROOT}/baseline/libivmlite_sqlite.dylib",
+      "latency",
+      "100000",
+      "1"
+    ],
+    "returncode": 0,
+    "wall_seconds": 1.9541989999706857
+  },
+  {
+    "name": "quick-after-latency",
+    "command": [
+      "${ARTIFACT_ROOT}/acceptance-benchmark/selective_read_bench",
+      "${ARTIFACT_ROOT}/after/libivmlite_sqlite.dylib",
+      "latency",
+      "100000",
+      "1"
+    ],
+    "returncode": 0,
+    "wall_seconds": 1.5096037500188686
+  },
+  {
+    "name": "quick-before-work",
+    "command": [
+      "${ARTIFACT_ROOT}/acceptance-benchmark/selective_read_bench",
+      "${ARTIFACT_ROOT}/baseline/libivmlite_sqlite.dylib",
+      "work",
+      "100000",
+      "1"
+    ],
+    "returncode": 0,
+    "wall_seconds": 1.9881597500061616
+  },
+  {
+    "name": "quick-after-work",
+    "command": [
+      "${ARTIFACT_ROOT}/acceptance-benchmark/selective_read_bench",
+      "${ARTIFACT_ROOT}/after/libivmlite_sqlite.dylib",
+      "work",
+      "100000",
+      "1"
+    ],
+    "returncode": 0,
+    "wall_seconds": 1.6572972920257598
+  },
+  {
+    "name": "source-before-latency",
+    "command": [
+      "${ARTIFACT_ROOT}/acceptance-benchmark/selective_read_bench",
+      "${ARTIFACT_ROOT}/baseline/libivmlite_sqlite.dylib",
+      "latency",
+      "4100000",
+      "5"
+    ],
+    "returncode": 0,
+    "wall_seconds": 366.76707862503827
+  },
+  {
+    "name": "source-after-latency",
+    "command": [
+      "${ARTIFACT_ROOT}/acceptance-benchmark/selective_read_bench",
+      "${ARTIFACT_ROOT}/after/libivmlite_sqlite.dylib",
+      "latency",
+      "4100000",
+      "5"
+    ],
+    "returncode": 0,
+    "wall_seconds": 336.8077956669731
+  },
+  {
+    "name": "source-before-work",
+    "command": [
+      "${ARTIFACT_ROOT}/acceptance-benchmark/selective_read_bench",
+      "${ARTIFACT_ROOT}/baseline/libivmlite_sqlite.dylib",
+      "work",
+      "4100000",
+      "1"
+    ],
+    "returncode": 0,
+    "wall_seconds": 85.43712395901093
+  },
+  {
+    "name": "source-after-work",
+    "command": [
+      "${ARTIFACT_ROOT}/acceptance-benchmark/selective_read_bench",
+      "${ARTIFACT_ROOT}/after/libivmlite_sqlite.dylib",
+      "work",
+      "4100000",
+      "1"
+    ],
+    "returncode": 0,
+    "wall_seconds": 70.66220283298753
+  }
+]

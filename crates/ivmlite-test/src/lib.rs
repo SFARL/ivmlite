@@ -14,6 +14,7 @@ mod naive;
 mod ops;
 mod oracle;
 mod query;
+pub mod read_work;
 mod regression;
 mod shrink;
 mod sql;
