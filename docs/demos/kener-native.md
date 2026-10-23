@@ -165,6 +165,14 @@ capture state makes extension availability a dependency of future writes, even
 when reads fall back. Deployment, migration and connection ownership need an
 explicit host policy.
 
+The standalone harness has no active worker `AsyncLocalStorage` context. In
+Kener background jobs, [the repository getter](https://github.com/rajnandan1/kener/blob/5bc658b771d44f48b61a514cfdb5037468c5aa36/src/lib/server/db/repositories/base.ts#L38-L56)
+prefers the worker context over the constructor's Knex argument. A host must
+bind that context to its transaction (for example with upstream
+`runWithWorkerKnex(trx, ...)`); passing `trx` to the constructor alone is
+insufficient there. This experiment does not validate the application worker
+context or its queue lifecycle. That remains part of I01 integration work.
+
 | Acceptance boundary | Local evidence |
 | --- | --- |
 | Native migrations, TEXT/REAL/NULL, shipped index, source/runtime ownership | Actual Knex/better-sqlite3 driver, eight ownership checks |
@@ -174,7 +182,7 @@ explicit host policy.
 | Transaction lifecycle | Explicit refresh/visibility, repeated refresh, caller rollback, nested savepoint rollback, forced real SUM-overflow atomic failure and reopen |
 | Numeric limitation | Actual raw AVG `0.19999999999999998` versus merged `0.20000000000000004`; strict remains raw |
 | Final access path | Both batched methods assert numeric-window-only xFilter plus outer TEXT membership |
-| Platform coverage | Local macOS native driver; Linux/macOS native CI workflow added, remote result reported separately |
+| Platform coverage | Local macOS native driver; Linux x64 and macOS ARM64 native CI passed at source commit `3a17bc5` |
 
 The finite decimal acceptance bound `1e-12 * max(1,abs(expected))` applies only
 to fixture sums/averages; timestamps, counts and extrema stay exact. It is not a
@@ -221,8 +229,13 @@ installs only the owned locked dependency closure, runs ownership plus full
 acceptance, and uploads JSON/logs on success or failure. Benchmarks remain local;
 path filters exclude documentation, while a PR's changed-file comparison may
 still include earlier code changes. The unchanged Rust core uses
-PR #7's previously passing Linux/macOS 876-test validation; this work adds no new
-claim of an unchanged-core local rerun.
+PR #7's Linux/macOS 876-test validation; this work adds no new claim of an
+unchanged-core local rerun. At source commit `3a17bc5`, both
+[native driver jobs](https://github.com/SFARL/ivmlite/actions/runs/39961750299) and
+both [core regression jobs](https://github.com/SFARL/ivmlite/actions/runs/39961750396)
+passed. [CI provenance](results/2026-10-22-kener-native/ci.json) records the exact
+commit, jobs, runtime identities and assertions; the two platforms' complete
+acceptance and ownership JSONs are archived losslessly with manifest hashes.
 
 The measured host burden makes **I01 host integration** the immediate practical
 priority: extension loading, pool lifecycle and transaction-final refresh need

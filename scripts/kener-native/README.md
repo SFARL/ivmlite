@@ -132,6 +132,13 @@ const reader = createReader(db, new MonitoringRepository(db)); // strict default
 const rows = await reader.getStatusCountsByInterval(tags, start, interval, points);
 ```
 
+This harness runs without an active Kener worker `AsyncLocalStorage` context.
+Upstream `BaseRepository.knex` prefers `getWorkerKnex()` over its constructor
+argument. Inside a real background job, passing `trx` to the constructor alone
+does not bind its queries to that transaction: the host must scope the work with
+upstream `runWithWorkerKnex(trx, ...)` or provide equivalent context ownership.
+Worker-context integration is outside this standalone repository acceptance.
+
 For explicit control use `refreshAdapter(trx)` inside the caller's transaction;
 read-after-write experimental queries need that call before reading. Never
 refresh through the pool while holding a transaction connection. Caller errors,

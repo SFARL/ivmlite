@@ -77,9 +77,15 @@ is 1.524 GB and the file is 2.323 GB; one-day retention costs 6.43x baseline by
 paired median. Every mutation/retention has an additional untimed exact changed-
 window audit. The interrupted pre-audit run and both pilots are diagnostic only.
 Final October 23 checks pass seven syntax checks, eight ownership checks and full
-native acceptance. Readable summaries/rounds and 13 lossless gzip archives bind
+native acceptance. Readable summaries/rounds and 17 lossless gzip archives bind
 raw bytes, code, source and dependency identities through a SHA-256 manifest.
-Task 3 reviews, push and remote native-driver CI remain pending.
+Task 3 spec, quality and final integration reviews are approved. PR #7 was pushed
+at source commit `3a17bc5d50de76652b8f54666376fec08c1c194e`. Native Linux x64 and
+macOS ARM64 acceptance passed in run `39961750299`; core Linux/macOS regression
+passed in run `39961750396`. Source-bound job metadata and full native CI JSONs
+are retained in `docs/demos/results/2026-10-22-kener-native/ci.json` and the
+manifest archives. The final documentation checkpoint narrows worker-context
+claims and changes no runtime, workflow or benchmark source bytes.
 
 ## Completion criteria
 

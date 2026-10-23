@@ -131,6 +131,42 @@
       "compressedSHA256": "a0927c706ff95f991d8567656f15b165c1e8778c312c4728f90d6c391cbfa6d1",
       "uncompressedBytes": 117748,
       "uncompressedSHA256": "291c5299ede376e8c5c33a2bbeb90e1c0b190512063a95852fc8f65bf2c694f5"
+    },
+    {
+      "file": "ci-linux-acceptance.json.gz",
+      "role": "Passed linux native CI acceptance at source commit 3a17bc5d50de76652b8f54666376fec08c1c194e",
+      "externalSource": "ci-39961750299/linux/acceptance.json",
+      "compressedBytes": 8651,
+      "compressedSHA256": "ce64393179149ffbaf4163ea84cd406e8570f45d8954b07e7764bdaf37e8d1c2",
+      "uncompressedBytes": 61350,
+      "uncompressedSHA256": "7dde3065f21780c8bfaf00d4c31de6db03590aba2469600ec026b1813d9870ff"
+    },
+    {
+      "file": "ci-linux-ownership.json.gz",
+      "role": "Passed linux native CI ownership at source commit 3a17bc5d50de76652b8f54666376fec08c1c194e",
+      "externalSource": "ci-39961750299/linux/ownership.json",
+      "compressedBytes": 197,
+      "compressedSHA256": "90ace0c64cafc8fe5b97fcaa0919201ba33df46e609f70ea4cb7f999e5534e9b",
+      "uncompressedBytes": 773,
+      "uncompressedSHA256": "cb3a0c5ba13b32e5eed15817c9f817b02b2108a41f81310aa14a21e47a69d1ce"
+    },
+    {
+      "file": "ci-macos-acceptance.json.gz",
+      "role": "Passed macos native CI acceptance at source commit 3a17bc5d50de76652b8f54666376fec08c1c194e",
+      "externalSource": "ci-39961750299/macos/acceptance.json",
+      "compressedBytes": 8691,
+      "compressedSHA256": "37e687ce1ed79ccda1e25d253e7b2600760abb58cf435b3ad78f7269954121f3",
+      "uncompressedBytes": 61843,
+      "uncompressedSHA256": "85c5b78228b7d59e422fd50404375129171a6ab103f956d8da229ba57d05d157"
+    },
+    {
+      "file": "ci-macos-ownership.json.gz",
+      "role": "Passed macos native CI ownership at source commit 3a17bc5d50de76652b8f54666376fec08c1c194e",
+      "externalSource": "ci-39961750299/macos/ownership.json",
+      "compressedBytes": 197,
+      "compressedSHA256": "90ace0c64cafc8fe5b97fcaa0919201ba33df46e609f70ea4cb7f999e5534e9b",
+      "uncompressedBytes": 773,
+      "uncompressedSHA256": "cb3a0c5ba13b32e5eed15817c9f817b02b2108a41f81310aa14a21e47a69d1ce"
     }
   ],
   "readableFiles": [
@@ -143,6 +179,11 @@
       "file": "rounds.json",
       "bytes": 48837,
       "sha256": "eeeafe8975691e463aac9b3b01f39b51575c7eaa22d2d33152342d664cfb76d4"
+    },
+    {
+      "file": "ci.json",
+      "bytes": 2902,
+      "sha256": "19dfe4e29bbef5cf766c160963c168a141bb9f96203fb995d9b41f6195f7b8ec"
     }
   ]
 }
