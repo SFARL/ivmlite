@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { inside, options, validateUpstream, writeJson } from './prepare.mjs';
 import { COVERING_INDEX, loadRuntime, MIGRATIONS } from './runtime.mjs';
+import { adapterAcceptance } from './adapter-acceptance.mjs';
 
 export async function driverSmoke(args) {
   args = { ...args, upstream: validateUpstream(args.upstream) };
@@ -127,9 +128,11 @@ async function main() {
   const output = existsSync(args.output) ? realpathSync(args.output) : path.join(realpathSync(path.dirname(args.output)), path.basename(args.output));
   assert(!inside(args.upstream, output) && !inside(repository, output), 'Evidence must be external to source checkouts');
   try {
-    const evidence = await driverSmoke(args);
+    const smoke = await driverSmoke(args);
+    const adapter = await adapterAcceptance(args);
+    const evidence = { status: 'passed', driverSmoke: smoke, adapter };
     writeJson(args.output, evidence);
-    console.log(JSON.stringify({ status: evidence.status, output: args.output, sqlite: evidence.sqlite.version, lifecycle: evidence.lifecycle }));
+    console.log(JSON.stringify({ status: evidence.status, output: args.output, sqlite: smoke.sqlite.version, assertions: adapter.assertions, mutations: adapter.mutations.map(({ mutation, status }) => ({ mutation, status })) }));
   } catch (error) {
     writeJson(args.output, { status: 'failed', error: error.stack });
     throw error;
