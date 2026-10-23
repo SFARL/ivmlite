@@ -1,0 +1,148 @@
+{
+  "format": "Deterministic gzip (mtime=0, no filename, compression level 9); every archive decompresses to exact original external bytes.",
+  "measurementDate": "2026-10-22",
+  "finalAcceptanceDate": "2026-10-23",
+  "scriptAndWorkflowSHA256": {
+    "scripts/kener-native/acceptance.mjs": "67a291ce80ecbf77e1bd69b2c97f2fecae763fe3548120908cd14a449666e621",
+    "scripts/kener-native/adapter-acceptance.mjs": "8ff385a1a8bd364a344458c4915d8b71dc6a91d4fab1f0ddbc087c39dc18f045",
+    "scripts/kener-native/adapter.mjs": "83b90b828e2e35d7831cdc361be472e2167fd62ba36b49f1efa7ad774955f430",
+    "scripts/kener-native/benchmark.mjs": "c37060a733e5ca1fd80548ea42bf73f973461ac275f8856eef51de2fcc9d149c",
+    "scripts/kener-native/prepare.mjs": "4cf10bc75cc6363275e751ecff5361e55a70925d5022e038cf85b840c27a08b3",
+    "scripts/kener-native/prepare.test.mjs": "99f02c72974ddc4e429abce45bd55b23bceea2bd81b3db2dcd0c7a6e33a0957d",
+    "scripts/kener-native/runtime.mjs": "5a34794a5a222265cee67838afb821dbcb1008b4b6a746bf9a62933dab6d2a9c",
+    "scripts/kener-native/pilot.json": "9d590db29d1192919b0c1f1cf5becbe2dfeece69606e15a85cfce7b0de86996a",
+    "scripts/kener-native/source-scale.json": "4c69bf51bfc3f5c6d4b0177332bcfc22ecc3507fe4dd9b60edc51267f4b8d0e3",
+    ".github/workflows/kener-native.yml": "fa1b731d907e5939587c1358f8c7c397b781519d43183cd1aaf4da50b80fe36d"
+  },
+  "archives": [
+    {
+      "file": "benchmark.json.gz",
+      "role": "final 3 audited source-scale repeats, including raw timings, plans and VDBE",
+      "externalSource": "benchmark.json",
+      "compressedBytes": 39876,
+      "compressedSHA256": "09e607d01b604b826d134f3eb111a8558f1da1d5e54ab0af862b94f73ab0fa39",
+      "uncompressedBytes": 673583,
+      "uncompressedSHA256": "4760457a6973a00ae9a33f34a678066a37c64624552dc8a6d601123806167beb"
+    },
+    {
+      "file": "benchmark.log.gz",
+      "role": "final benchmark stdout/stderr",
+      "externalSource": "benchmark.log",
+      "compressedBytes": 1253,
+      "compressedSHA256": "8ff39c58a958019fe4853bcc6e1a51eecb4555be9586cefff05a95ed7609d49a",
+      "uncompressedBytes": 3568,
+      "uncompressedSHA256": "69bb88d23bbe3e69272b36ace4eccd89e6de3cc23d7bb2f19da805d6c6eee0ca"
+    },
+    {
+      "file": "acceptance.json.gz",
+      "role": "final full native repository/adapter acceptance",
+      "externalSource": "final-acceptance.json",
+      "compressedBytes": 8748,
+      "compressedSHA256": "3647c87456335215b91680ee5a5dd867d05ec3066ab7d5bd53d8231c8cc43b85",
+      "uncompressedBytes": 62403,
+      "uncompressedSHA256": "6637dd137be5749e4cc2f8a5d26c9900a3043b28dd255e8844bd04e0f216169d"
+    },
+    {
+      "file": "acceptance.log.gz",
+      "role": "final acceptance stdout/stderr",
+      "externalSource": "final-acceptance.log",
+      "compressedBytes": 410,
+      "compressedSHA256": "7dd8285580b4f01433937f43412e727cf1839739a45d94f6b4c57305f98724f4",
+      "uncompressedBytes": 683,
+      "uncompressedSHA256": "87e062cf11fd59e60e52059deaf4af8a26577dad43b9d651129f86bab1e55e69"
+    },
+    {
+      "file": "ownership.json.gz",
+      "role": "final eight ownership checks",
+      "externalSource": "final-ownership.json",
+      "compressedBytes": 197,
+      "compressedSHA256": "1767450c85389b3065dedbd79d94769cb1708d07b951d469113ed111bfde3a53",
+      "uncompressedBytes": 773,
+      "uncompressedSHA256": "cb3a0c5ba13b32e5eed15817c9f817b02b2108a41f81310aa14a21e47a69d1ce"
+    },
+    {
+      "file": "ownership.log.gz",
+      "role": "final ownership stdout/stderr",
+      "externalSource": "final-ownership.log",
+      "compressedBytes": 64,
+      "compressedSHA256": "ce6b6d4c722ab49393b7ad2cb7dfce159594741af8016311bdf2a888217e5482",
+      "uncompressedBytes": 44,
+      "uncompressedSHA256": "c576d7e663f78995fb32ef59f7d5dd7d4eeca4741dde8e115508eb6802ed9ffa"
+    },
+    {
+      "file": "pilot-original.json.gz",
+      "role": "superseded diagnostic plain-IN pilot; storage categorization bug retained",
+      "externalSource": "pilot.json",
+      "compressedBytes": 55494,
+      "compressedSHA256": "cff69fb028b8cd370991133a088d6d05a81900d92461d44da81df160e2fc7598",
+      "uncompressedBytes": 1131571,
+      "uncompressedSHA256": "e5c07dd8cde951fff4a3aaecc065ba1b2698053996b3ebee62069c27cae68dfc"
+    },
+    {
+      "file": "pilot-original.log.gz",
+      "role": "original pilot stdout/stderr",
+      "externalSource": "pilot.log",
+      "compressedBytes": 815,
+      "compressedSHA256": "262695d77c15d174995b0fe0bac5cf1ae86106c139d7ca604f5b2b974c881f97",
+      "uncompressedBytes": 1787,
+      "uncompressedSHA256": "28330271fb2879d4f1d49b06bf9d6c9ca966badabd3581c647be51dbf7941767"
+    },
+    {
+      "file": "pilot-optimized.json.gz",
+      "role": "optimized diagnostic pilot; not the final source-scale run",
+      "externalSource": "optimized-pilot.json",
+      "compressedBytes": 55512,
+      "compressedSHA256": "a1970a21b5d30204c9fba70bb89b925f1150ea68886bcdb07c282196517985fc",
+      "uncompressedBytes": 1128621,
+      "uncompressedSHA256": "d1166beef37c3ae42fbc16ead85c9eb393e1446f651997883cb2a4426b8c96b2"
+    },
+    {
+      "file": "pilot-optimized.log.gz",
+      "role": "optimized pilot stdout/stderr",
+      "externalSource": "optimized-pilot.log",
+      "compressedBytes": 868,
+      "compressedSHA256": "6c57c48a151d1ab760cfc4b8822ebf987405835593378490be5575a9b4b89911",
+      "uncompressedBytes": 1782,
+      "uncompressedSHA256": "377ffeba54de1b91d603f61d71d43b154ad1f65b11abd87291bac2d529e55fd3"
+    },
+    {
+      "file": "benchmark-superseded.json.gz",
+      "role": "interrupted pre-audit source-scale diagnostic; status running, not a completed final run",
+      "externalSource": "benchmark-superseded.json",
+      "compressedBytes": 30746,
+      "compressedSHA256": "aeede454d173fde3b61623241752fc73000094195412f84babe891d8da1086ec",
+      "uncompressedBytes": 580907,
+      "uncompressedSHA256": "a1f525feb26c9bd4fae270689665356e2d34dea4fb95eb3bbbefd1cf9f53f934"
+    },
+    {
+      "file": "benchmark-superseded.log.gz",
+      "role": "interrupted pre-audit diagnostic stdout/stderr",
+      "externalSource": "benchmark-superseded.log",
+      "compressedBytes": 674,
+      "compressedSHA256": "4dae1e01d2ac7c6783bdc59368dd30902b33c0ba565cca8e926d6a1925385feb",
+      "uncompressedBytes": 1357,
+      "uncompressedSHA256": "3c6f0649101f920fbc9c27266659ef6b0dccc10925d80a5dc7fea27aa4813b23"
+    },
+    {
+      "file": "diagnostic-sources.json.gz",
+      "role": "exact hash-verified source/config snapshots for both pilots and interrupted run",
+      "externalSource": "diagnostic-sources.json",
+      "compressedBytes": 33182,
+      "compressedSHA256": "a0927c706ff95f991d8567656f15b165c1e8778c312c4728f90d6c391cbfa6d1",
+      "uncompressedBytes": 117748,
+      "uncompressedSHA256": "291c5299ede376e8c5c33a2bbeb90e1c0b190512063a95852fc8f65bf2c694f5"
+    }
+  ],
+  "readableFiles": [
+    {
+      "file": "summary.json",
+      "bytes": 36467,
+      "sha256": "1e59777135039f49c499fbda82f6f4fda2a0d6df9c506d461d7a24e5c2cfdd85"
+    },
+    {
+      "file": "rounds.json",
+      "bytes": 48837,
+      "sha256": "eeeafe8975691e463aac9b3b01f39b51575c7eaa22d2d33152342d664cfb76d4"
+    }
+  ]
+}

@@ -177,3 +177,68 @@ from the Rust mutation ledger. No endpoint, response builder, cache or UI is
 executed: the original response builder imports the application singleton and
 remains outside this repository-only experiment. Setup/storage/write costs and
 performance measurement are a separate task.
+
+## Native measurement
+
+Run the small pilot before the source-scale run. The checked-in configurations
+declare 7 days/one repeat and 90 days/three repeats, respectively; both use 32
+native TEXT tags, nullable dyadic REAL latency and three timed rounds per read
+case. The source-scale template has 4,147,200 REALTIME rows. SIGNAL second rows
+are covered by acceptance and are not added to this performance fixture.
+
+```sh
+node --check scripts/kener-native/benchmark.mjs
+node scripts/kener-native/benchmark.mjs \
+  --upstream /external/kener/upstream \
+  --runtime /external/kener/runtime \
+  --extension /absolute/path/to/libivmlite_sqlite.dylib \
+  --scratch /external/kener/scratch \
+  --output /external/kener/pilot.json \
+  --config scripts/kener-native/pilot.json
+node scripts/kener-native/benchmark.mjs \
+  --upstream /external/kener/upstream \
+  --runtime /external/kener/runtime \
+  --extension /absolute/path/to/libivmlite_sqlite.dylib \
+  --scratch /external/kener/scratch \
+  --output /external/kener/benchmark.json \
+  --config scripts/kener-native/source-scale.json
+```
+
+All commands run serially. The template is created by actual migrations with the
+shipped covering index, seeded in a single native prepared-statement transaction
+and closed. Seeding is setup, not an application write benchmark. Fresh baseline
+and adapter database copies are made for every repeat. Adapter installation
+includes projection backfill, trigger creation and full IVM bootstrap. Copying,
+setup, query preparation/capture, warmup, exact comparisons and base hashes stay
+outside measured read intervals. Each path is warmed once; timed path order
+reverses across rounds/repeats. OS cache is shared and is not evicted. Results
+describe warm repository calls without application caches or HTTP work.
+
+The original repository executes the baseline and strict paths. Experimental
+queries use the public virtual table with numeric bucket-window constraints;
+`+monitor_tag IN (...)` keeps native TEXT membership in outer SQLite SQL and
+avoids repeated xFilter candidate scans per tag. The pilot records both plain
+and unary-plus SQL, EQP, VDBE and raw timings. No internal IVM contents are used
+for application reads. `dbstat` reports allocated pages by base/index,
+projection and internal diagnostic state; this is storage accounting only.
+
+Write measurements use actual original insert/upsert, inclusive range update and
+confirmation methods; adapter writes capture and refresh in the same Knex
+transaction before commit. End-to-end timings include commit and a grouped
+recent-day read. Every batch verifies independently constructed changed rows,
+query results and whole-base ordered SHA-256 identities. An additional untimed
+all-history-plus-next-day query checks the changed old/new aggregate windows,
+which are deliberately outside the timed recent-day request. Actual `background()`
+retention runs with a frozen clock at seed start + days + 1, deleting one day
+through the upstream strict-less-than cutoff. It reports repository deletion,
+host refresh and total transaction times separately. No-op refresh is reported
+separately from warm reads. This benchmark is not a general REAL-number parity
+test; its dyadic fixture requires exact equality, while decimal limitations are
+recorded by acceptance.
+
+See [the native report](../../docs/demos/kener-native.md) for measured tradeoffs.
+The separate `kener-native` Linux/macOS workflow executes ownership and full
+real-driver acceptance with Node 24.19.0/Rust 1.95.0, uploads JSON/logs on every
+outcome, and deliberately omits benchmarks. Its path filters select code,
+configuration and workflow files, excluding documentation paths. GitHub's PR
+changed-file comparison can still include earlier code changes in the PR.

@@ -49,7 +49,7 @@ afterCreate(connection, done) {
 - [x] Replay the same original calls against independent baseline and adapter databases: insert/upsert, inclusive range update, both confirmation branches, filtered/open-ended/all deletes and retention. Compare ordered base rows after each batch and compare all result fields. Use integer and dyadic fixtures for exact acceptance, plus 0.1/0.2/0.3 and rounding-boundary decimal fixtures to expose numerical limitations. Include zero/negative/NULL latency and SIGNAL second timestamps.
 - [x] Exercise transaction visibility, explicit refresh, repeated refresh, caller rollback, nested savepoint rollback, forced refresh failure and reopen. Refresh happens before the same transaction commits; failures must not silently expose stale results. Verify original response computation where import boundaries permit without singleton evaluation; if only repository results are exercised, state that explicitly and do not claim endpoint/UI parity.
 - [x] Add discriminating checks: disable an update/delete projection trigger and ensure replay fails; skip refresh and ensure stale-result test fails. Record these small focused mutations separately from the full Rust mutation ledger.
-- [ ] Run acceptance serially with actual driver and extension. Review spec then quality; fix all material findings before the next task. Commit only task files and updated plan.
+- [x] Run acceptance serially with actual driver and extension. Review spec then quality; fix all material findings before the next task. Commit only task files and updated plan.
 
 Task 2 implementation evidence: `adapter-acceptance.json` nests the retained Task 1
 driver smoke and independent adapter acceptance. Local native replay, forced SUM
@@ -58,15 +58,28 @@ uses the original query; status-split 0.1/0.2/0.3 exposes a real exact AVG
 difference in experimental mode. Endpoint/response-builder parity is explicitly
 outside scope. Local Node syntax checks, eight ownership regressions, 24 base/
 projection/view comparisons and 5,362 exact result comparisons pass; all three
-focused mutants are killed with green counterparts. Spec and quality reviews
-remain pending before Task 3.
+focused mutants are killed with green counterparts. Task 2 spec and quality
+reviews are complete; Task 3 proceeds with the approved bounded contract.
 
 ## Task 3: Native workload measurement and report
 
-- [ ] Add deterministic TEXT-tag workload; include nonnumeric and numeric-looking tags. Time original methods with covering index, adapter numerical reads, strict fallback, base writes and adapter writes plus refresh separately. Prepare data and queries outside each timed interval. Use at least three fresh repeats and state row/tag/group counts and journal/synchronous/cache settings. Capture EQP and raw timings; make no endpoint/cache/adoption claim.
-- [ ] Report bootstrap/backfill time, base/projection/IVM allocated size and retention/correction batch cost. A TEXT-bound scan or disappointing result is a valid finding; do not change core affinity semantics to manufacture a win. Include the actual earlier INTEGER benchmark boundary.
-- [ ] Write exact commands, pinned source/dependency/extension identities, acceptance matrix, numeric differences, lifecycle evidence and next capability priorities in the report. Source evidence and unchanged-upstream boundary must be independently reviewable.
-- [ ] Add a Linux/macOS native-driver workflow: checkout ivmlite, Node 24.19.0, Rust 1.95, build the locked extension, clone/checkout the pinned Kener commit into runner temporary storage, prepare the exact locked runtime, then run ownership tests and acceptance. Upload acceptance evidence; omit benchmarks from CI. Run Node syntax/acceptance checks, `git diff --check`, inspect measurements and upstream cleanliness. Rust core unchanged: retain PR #7's passing Linux/macOS suite as existing core validation, and distinguish any pending native-driver CI from completed local evidence. Request final spec/evidence and quality reviews. Commit descriptive evidence changes with specific paths; push the authorized feature branch and update PR description for final scope if integration is included there.
+- [x] Add deterministic TEXT-tag workload; include nonnumeric and numeric-looking tags. Time original methods with covering index, adapter numerical reads, strict fallback, base writes and adapter writes plus refresh separately. Prepare data and requests outside each timed interval; actual repository method construction remains part of each call. Use at least three fresh repeats and state row/tag/group counts and journal/synchronous/cache settings. Capture EQP and raw timings; make no endpoint/cache/adoption claim.
+- [x] Report bootstrap/backfill time, base/projection/IVM allocated size and retention/correction batch cost. A TEXT-bound scan or disappointing result is a valid finding; do not change core affinity semantics to manufacture a win. Include the actual earlier INTEGER benchmark boundary.
+- [x] Write exact commands, pinned source/dependency/extension identities, acceptance matrix, numeric differences, lifecycle evidence and next capability priorities in the report. Source evidence and unchanged-upstream boundary must be independently reviewable.
+- [x] Add a Linux/macOS native-driver workflow: checkout ivmlite, Node 24.19.0, Rust 1.95, build the locked extension, fetch/checkout the pinned Kener commit into runner temporary storage, prepare the exact locked runtime, then run ownership tests and acceptance. Upload acceptance evidence; omit benchmarks from CI. Run Node syntax/acceptance checks, `git diff --check`, inspect measurements and upstream cleanliness. Rust core unchanged: retain PR #7's passing Linux/macOS suite as existing core validation, and distinguish pending native-driver CI from completed local evidence.
+- [ ] Complete final Task 3 spec/evidence review, then quality review; fix any material findings. Push the authorized feature branch, update PR scope and inspect the new native workflow result. No merge/release/tag or upstream post is authorized.
+
+Task 3 local evidence is complete: three audited fresh repeats each seeded
+4,147,200 rows and built 337,379 groups. Paired batch read ratios are 6.04x
+merged history, 6.36x grouped history and 3.66x recent grouped day; one-tag reads
+lose to the covering index. Bootstrap takes 35.58–39.54 s, live dbstat allocation
+is 1.524 GB and the file is 2.323 GB; one-day retention costs 6.43x baseline by
+paired median. Every mutation/retention has an additional untimed exact changed-
+window audit. The interrupted pre-audit run and both pilots are diagnostic only.
+Final October 23 checks pass seven syntax checks, eight ownership checks and full
+native acceptance. Readable summaries/rounds and 13 lossless gzip archives bind
+raw bytes, code, source and dependency identities through a SHA-256 manifest.
+Task 3 reviews, push and remote native-driver CI remain pending.
 
 ## Completion criteria
 

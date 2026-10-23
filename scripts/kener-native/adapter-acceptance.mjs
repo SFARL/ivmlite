@@ -294,9 +294,23 @@ export async function adapterAcceptance(args) {
     }
     const sampleQuery = emittedAdapterQueries[0];
     const adapterPlan = sampleQuery ? await db.raw(`EXPLAIN QUERY PLAN ${sampleQuery.sql}`, sampleQuery.bindings) : [];
+    // Keep tag membership in ordinary SQL: a pushed IN equality makes SQLite
+    // invoke xFilter per TEXT tag and repeat its coercion-safe candidate scan.
+    // Existing result checks exercise both methods and all native TEXT fixtures.
+    const plannedQueries = [false, true].map((grouped) => emittedAdapterQueries.find(({ sql, bindings }) =>
+      sql.includes(grouped ? 'SELECT monitor_tag,' : 'SELECT \n') && bindings.includes('002') && bindings.includes('api/east')));
+    const tagMembershipPlans = [];
+    for (const query of plannedQueries) {
+      assert(query, 'Both methods must execute batched TEXT membership');
+      assert(query.sql.includes('AND +monitor_tag IN ('), 'Tag membership must stay in outer SQL');
+      const plan = await db.raw(`EXPLAIN QUERY PLAN ${query.sql}`, query.bindings);
+      const virtual = plan.find((row) => row.detail.includes('VIRTUAL TABLE'));
+      assert(virtual?.detail.includes('0=ge,0=lt') && !virtual.detail.includes('1=eq'), 'Only numeric window constraints may enter xFilter');
+      tagMembershipPlans.push({ query, plan });
+    }
     return { status: 'passed', scope: 'SQLite repository adapter only; no endpoint/UI/response-builder or performance acceptance',
       identity: runtime.identity(extension), scratch, batches, assertions, reads, storageClasses, lifecycleChecks, refreshFailure,
       decimalReport, numericalDifferences, numericContract: 'Finite fixtures only; only latency_sum and avgLatency allow 1e-12 * max(1,abs(expected)); timestamps/counts/extrema exact; no general REAL parity guarantee',
-      retention: { frozenNow, cutoff, deleted: retentionResult }, mutations, adapterPlan, sampleAdapterQuery: sampleQuery, lifecycle };
+      retention: { frozenNow, cutoff, deleted: retentionResult }, mutations, adapterPlan, tagMembershipPlans, sampleAdapterQuery: sampleQuery, lifecycle };
   } finally { for (const connection of opened) await connection.destroy(); runtime.close(); }
 }

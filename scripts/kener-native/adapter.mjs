@@ -66,6 +66,9 @@ export function createReader(db, repository, { mode = 'strict', onRead = () => {
       const selected = Array.isArray(tags) ? tags : [tags];
       if (selected.length === 0) rows = [];
       else {
+        // Unary plus preserves this no-affinity view column's TEXT membership
+        // semantics while keeping IN out of xFilter. Otherwise SQLite repeats
+        // the coercion-safe candidate scan for every selected tag.
         const sql = `SELECT ${grouped ? 'monitor_tag,' : ''}
           CAST((bucket_ts - ?) / ? AS INT) * ? + ? AS ts,
           SUM(CASE WHEN status = 'UP' THEN sample_count ELSE 0 END) AS count_of_up,
@@ -75,7 +78,7 @@ export function createReader(db, repository, { mode = 'strict', onRead = () => {
           SUM(latency_sum) * 1.0 / SUM(latency_count) AS avg_latency,
           MAX(max_latency) AS max_latency, MIN(min_latency) AS min_latency
           FROM ${VIEW} WHERE bucket_ts >= ? AND bucket_ts < ?
-          AND monitor_tag IN (${selected.map(() => '?').join(',')})
+          AND +monitor_tag IN (${selected.map(() => '?').join(',')})
           GROUP BY ${grouped ? 'monitor_tag,' : ''} ts ORDER BY ${grouped ? 'monitor_tag ASC,' : ''} ts ASC`;
         const result = await db.raw(sql, [start, interval, interval, start, start, start + points * interval, ...selected]);
         rows = result.map((row) => ({
