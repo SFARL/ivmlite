@@ -1,0 +1,118 @@
+{
+  "status": "passed",
+  "date": "2026-10-23",
+  "scope": "Exact artifact identity and per-native-handle busy timeout; bounded one-file independent writer acceptance, with serialized SQLite commits and explicit caller retry",
+  "sourceSHA": "5bc658b771d44f48b61a514cfdb5037468c5aa36",
+  "node": {
+    "version": "v24.22.1",
+    "modules": "137",
+    "platform": "darwin",
+    "arch": "arm64"
+  },
+  "sqlite": {
+    "version": "3.51.2",
+    "source_id": "2026-01-09 17:27:48 b270f8339eb13b504d0b2ba154ebca966b7dde08e40c3ed7d559749818cb2075"
+  },
+  "dependencies": {
+    "knex": "3.1.0",
+    "better-sqlite3": "12.6.2",
+    "dotenv": "17.2.4"
+  },
+  "addon": {
+    "filename": "better_sqlite3.node",
+    "sha256": "f4ab8ddc57768a1342fad1a948c7ff943fe553ebd73671054cd58c1f7cd33021"
+  },
+  "extension": {
+    "filename": "libivmlite_sqlite.dylib",
+    "sha256": "4bc5f14e81f786f3d3644fffbc9d8fc8c44ac0d768fc4eebc541312cbb589f20"
+  },
+  "connectionAssertions": {
+    "invalidPolicies": 26,
+    "nativeTimeouts": 11,
+    "baseComparisons": 13,
+    "projectionComparisons": 13,
+    "viewComparisons": 13,
+    "contextComparisons": 10,
+    "nativeQueryIdentities": 28
+  },
+  "connectionChecks": [
+    "malformed policy rejects synchronously before Knex/pool creation",
+    "valid exact artifact pin and configured timeout on initial native handle and reopen",
+    "replacement native handle after explicit pool recreation rechecks identity and timeout",
+    "timeout zero (including normalized negative zero), maximum integer boundary and legacy unpinned 5000ms default applied natively",
+    "mismatched/missing pinned artifact rejected at identity stage, before load/writes, with raw handle closed",
+    "artifact replacement between native handles is detected; restoring exact bytes allows a fresh valid handle",
+    "one file/two independent native writers: held lock produces SQLITE_BUSY once; rollback preserves state/context; explicit new transaction retry succeeds",
+    "child event loop timed release permits synchronous waiting writer; same-key corrections, clean refresh and reopen preserve independent base/projection/group facts"
+  ],
+  "policy": {
+    "expectedExtensionSHA256": "4bc5f14e81f786f3d3644fffbc9d8fc8c44ac0d768fc4eebc541312cbb589f20",
+    "busyTimeoutMs": 40
+  },
+  "policySource": "Acceptance derives a valid positive-control hash from the supplied artifact. Deployment must obtain its expected hash from an approved artifact manifest.",
+  "contention": {
+    "busyFailure": {
+      "code": "SQLITE_BUSY",
+      "message": "insert into `monitoring_data` (`error_message`, `latency`, `monitor_tag`, `raw_status`, `status`, `timestamp`, `type`) values (NULL, 4.5, 'shared', 'DEGRADED', 'DEGRADED', 901, 'REALTIME') on conflict (`monitor_tag`, `timestamp`) do update set `status` = 'DEGRADED',`latency` = 4.5,`type` = 'REALTIME',`error_message` = NULL,`raw_status` = 'DEGRADED' - database is locked"
+    },
+    "failedElapsedMs": 48.14274999999998,
+    "waitingElapsedMs": 212.12316699999997,
+    "shortBusyTimeoutMs": 40,
+    "waitingBusyTimeoutMs": 4000,
+    "childTimedReleaseMs": 200
+  },
+  "journalMode": "delete",
+  "adapterAssertions": {
+    "baseComparisons": 24,
+    "projectionComparisons": 24,
+    "viewComparisons": 24,
+    "exactResultComparisons": 5362
+  },
+  "workerAssertions": {
+    "baseComparisons": 13,
+    "projectionComparisons": 13,
+    "viewComparisons": 13,
+    "contextComparisons": 37,
+    "nativeQueryIdentities": 95,
+    "transactionIdentities": 15
+  },
+  "mutations": [
+    {
+      "mutation": "disable UPDATE trigger",
+      "status": "killed",
+      "intact": "passed"
+    },
+    {
+      "mutation": "disable DELETE trigger",
+      "status": "killed",
+      "intact": "passed"
+    },
+    {
+      "mutation": "skip refresh",
+      "status": "killed",
+      "intact": "passed"
+    },
+    {
+      "mutation": "omit-actual-worker-scope-binding",
+      "status": "detected",
+      "intact": "passed"
+    },
+    {
+      "mutation": "omit-artifact-pin-check",
+      "status": "detected",
+      "intact": "passed"
+    },
+    {
+      "mutation": "omit-native-timeout-configuration",
+      "status": "detected",
+      "intact": "passed"
+    }
+  ],
+  "limits": [
+    "Exact artifact identity only; no semantic-version/ABI negotiation or format migration.",
+    "No implicit work callback retry; independent writer commits remain serialized by SQLite.",
+    "Default rollback journal only; no WAL acceptance or application queue/cache/UI boot.",
+    "Elapsed times are diagnostics, not timeout or latency guarantees.",
+    "Historical source-scale timings and worker-only acceptance retain their original source snapshots."
+  ]
+}

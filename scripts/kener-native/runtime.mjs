@@ -57,16 +57,46 @@ export async function loadRuntime({ upstream, runtime, database }) {
       runWithWorkerKnex,
       getWorkerKnex,
       migrate: async (db) => { for (const migration of migrations) await migration.up(db); },
-      createDatabase(filename, extension, lifecycle = []) {
+      createDatabase(filename, extension, lifecycle = [], policy = {}) {
+        // Validate before constructing Knex/Tarn, including for a lazy pool.
+        if (!policy || typeof policy !== 'object' || Array.isArray(policy) ||
+            ![Object.prototype, null].includes(Object.getPrototypeOf(policy)) ||
+            Reflect.ownKeys(policy).some((key) => !['expectedExtensionSHA256', 'busyTimeoutMs'].includes(key))) {
+          throw new TypeError('Invalid connection policy');
+        }
+        const { expectedExtensionSHA256, busyTimeoutMs: requestedBusyTimeoutMs = 5000 } = policy;
+        const busyTimeoutMs = requestedBusyTimeoutMs === 0 ? 0 : requestedBusyTimeoutMs;
+        if (expectedExtensionSHA256 !== undefined &&
+            (typeof expectedExtensionSHA256 !== 'string' || expectedExtensionSHA256.length !== 64 || !/^[a-f0-9]{64}$/.test(expectedExtensionSHA256))) {
+          throw new TypeError('expectedExtensionSHA256 must be a lowercase 64-digit SHA-256');
+        }
+        if (!Number.isInteger(busyTimeoutMs) || busyTimeoutMs < 0 || busyTimeoutMs > 2147483647) {
+          throw new TypeError('busyTimeoutMs must be an integer from 0 to 2147483647');
+        }
+        const observedPolicy = { ...(expectedExtensionSHA256 === undefined ? {} : { expectedExtensionSHA256 }), busyTimeoutMs };
         return knex({
           client: 'better-sqlite3', connection: { filename }, useNullAsDefault: true,
           acquireConnectionTimeout: 2000,
           pool: {
             min: 0, max: 1, propagateCreateError: true,
             afterCreate(connection, done) {
+              let stage = 'identity';
               try {
+                let extensionSHA256;
+                if (expectedExtensionSHA256 !== undefined) {
+                  extensionSHA256 = sha256(extension);
+                  if (extensionSHA256 !== expectedExtensionSHA256) {
+                    throw new Error(`Extension artifact identity mismatch: expected ${expectedExtensionSHA256}, observed ${extensionSHA256}`);
+                  }
+                }
+                stage = 'load';
                 connection.loadExtension(extension, 'sqlite3_ivmlite_init');
-                lifecycle.push({ event: 'extension-loaded', filename });
+                stage = 'configure';
+                connection.pragma(`busy_timeout = ${busyTimeoutMs}`);
+                const nativeBusyTimeoutMs = connection.pragma('busy_timeout', { simple: true });
+                assert.equal(nativeBusyTimeoutMs, busyTimeoutMs, 'Native SQLite busy_timeout differs from connection policy');
+                lifecycle.push({ event: 'extension-loaded', filename, policy: observedPolicy, nativeBusyTimeoutMs,
+                  ...(extensionSHA256 === undefined ? {} : { extensionSHA256 }) });
                 done(null, connection);
               } catch (error) {
                 // Knex has not handed this connection to Tarn yet, so pool
@@ -74,7 +104,7 @@ export async function loadRuntime({ upstream, runtime, database }) {
                 let closeError;
                 try { connection.close(); }
                 catch (failure) { closeError = failure.message; }
-                lifecycle.push({ event: 'extension-load-failed', filename, message: error.message, open: connection.open, ...(closeError ? { closeError } : {}) });
+                lifecycle.push({ event: 'extension-load-failed', filename, stage, policy: observedPolicy, message: error.message, open: connection.open, ...(closeError ? { closeError } : {}) });
                 done(error, connection);
               }
             },

@@ -200,6 +200,31 @@ adapter and worker acceptance passed locally on Node 24.22.1/SQLite 3.51.2.
 The new [worker evidence](results/2026-10-23-kener-worker/) has its own source and
 byte hashes, separate from the historical benchmark artifacts.
 
+The connection policy adds an optional expected extension SHA-256 and explicit
+per-handle SQLite `busy_timeout`. A supplied hash rejects an unexpected artifact
+before loading; without it, loading remains unpinned. This is exact file identity,
+not semantic-version/ABI negotiation or database format migration. The host owns
+an immutable approved artifact path for the process lifetime and a process restart
+when deploying another build. Initialization failures close the native
+handle before pool handoff. SQLite lock waiting and Knex pool acquisition use
+separate timeouts, and the host transaction helper never retries a work callback.
+The synchronous driver blocks its Node event loop while waiting for a lock;
+independent-process writers are needed to test release during that wait. These
+checks keep SQLite's default rollback journal and do not claim concurrent writer
+commits, WAL coverage or general retry safety.
+
+The [connection acceptance evidence](results/2026-10-23-kener-connection/)
+records 26 invalid-policy checks, 11 native timeout checks, 13 comparisons per
+state layer, 10 context checks and 28 SQL connection identity checks. Independent
+processes share one database: a held writer causes actual `SQLITE_BUSY` and a
+clean rollback; an explicit new caller transaction succeeds after release. A
+child timer armed by the parent's actual INSERT permits a waiting writer to
+succeed. Same-key corrections, pool recreation, per-handle artifact replacement
+rejection, subsequent refresh and reopen preserve independently expected facts.
+Both new source-mutation controls are detected, with intact counterparts passing.
+The complete four-section local acceptance also retains the previous adapter and
+worker results. Elapsed lock-wait observations are diagnostic, not latency bounds.
+
 The finite decimal acceptance bound `1e-12 * max(1,abs(expected))` applies only
 to fixture sums/averages; timestamps, counts and extrema stay exact. It is not a
 general guarantee for arbitrary REAL magnitude, cancellation, overflow or

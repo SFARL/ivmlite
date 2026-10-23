@@ -65,10 +65,44 @@ corrupt directories, installs an empty runtime, then reinstalls the valid owned
 runtime. `runtime.mjs` exports `loadRuntime`
 and migration/covering-index constants for further independent replay tests.
 
+### Connection policy
+
+The loader accepts an explicit fourth argument on `createDatabase`:
+
+```js
+const db = runtime.createDatabase(filename, extension, lifecycle, {
+  expectedExtensionSHA256: approvedExtensionSHA256,
+  busyTimeoutMs: 5000,
+});
+```
+
+`approvedExtensionSHA256` comes from the host's trusted deployment artifact
+manifest, using the hash for its platform. If supplied, it must be a lowercase
+64-digit SHA-256. Invalid policy values and unknown keys are rejected before
+creating the pool. Each new native connection checks the extension file against
+it before loading. A mismatch rejects initialization and closes that native
+handle before it reaches the pool. Omitting the hash preserves unpinned loading.
+The extension has no semantic-version query function: this policy enforces exact
+artifact identity, not version-range/ABI negotiation or database format migration.
+Use an immutable approved artifact path for the process lifetime and restart to
+deploy another build. A path hash does not protect against concurrent file
+replacement during native loading or attest an already loaded native image.
+
+`busyTimeoutMs` is SQLite's per-connection lock wait, a nonnegative integer up
+to 2147483647, defaulting to 5000 ms. Initialization sets and verifies
+`PRAGMA busy_timeout` on every native handle; zero means no waiting. The separate
+Knex `acquireConnectionTimeout` remains 2000 ms and governs waiting for a pool
+connection. Neither setting retries a failed host callback. A busy error must
+roll back the transaction; any new attempt is an explicit caller decision.
+SQLite still serializes writers. With this synchronous driver, lock waiting
+blocks the calling Node event loop, so another connection's timer on that same
+event loop cannot release a lock while the call waits.
+
 
 The acceptance JSON contains `driverSmoke` (the original compatibility checks),
 `adapter` (independent replay, lifecycle, numeric and focused mutation results),
-and `worker` (the actual upstream async context and host transaction boundary).
+`worker` (the actual upstream async context and host transaction boundary), and
+`connection` (artifact policy and independent-process writer contention).
 Run this command serially after preparation/ownership checks:
 
 ```sh
