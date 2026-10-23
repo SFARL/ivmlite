@@ -9,7 +9,7 @@
     "scripts/kener-native/adapter-acceptance.mjs": "8ff385a1a8bd364a344458c4915d8b71dc6a91d4fab1f0ddbc087c39dc18f045",
     "scripts/kener-native/adapter.mjs": "83b90b828e2e35d7831cdc361be472e2167fd62ba36b49f1efa7ad774955f430",
     "scripts/kener-native/benchmark.mjs": "c37060a733e5ca1fd80548ea42bf73f973461ac275f8856eef51de2fcc9d149c",
-    "scripts/kener-native/connection-acceptance.mjs": "fcd5cfdb8a814af1aede2637c23d7c6754c8fa4ab50565fe8eaee8cdd3dbec70",
+    "scripts/kener-native/connection-acceptance.mjs": "8e4841e6f98c74e840f4e585bcd0e81ccb97711f0e9c2618f2937576cdafdf03",
     "scripts/kener-native/host.mjs": "ef6acc57d758c1d5551e0ecf8ba474469922c5f8d87bc322a2d02bbd289c9e30",
     "scripts/kener-native/lock-holder.mjs": "ea06b08ce42e1a7a140ff109eb0fc3ca75c4ecdb78067b7deb95fd28fc64a922",
     "scripts/kener-native/prepare.mjs": "4cf10bc75cc6363275e751ecff5361e55a70925d5022e038cf85b840c27a08b3",
@@ -21,25 +21,25 @@
     {
       "file": "acceptance.json.gz",
       "role": "Full serial driver/adapter/worker/connection acceptance",
-      "externalSource": "connection-policy-2026-10-23/acceptance-final.json",
-      "compressedBytes": 20489,
-      "compressedSHA256": "3417a1952ad8fa37560050e80d0f9b56f42b6c56df680245c4b260018b3cd264",
-      "uncompressedBytes": 250515,
-      "uncompressedSHA256": "0ebcf5ae44f6a338c5b06ee8995a05b45807dd03a8c108791fe299bb53d1862c"
+      "externalSource": "connection-policy-2026-10-23/acceptance-clean.json",
+      "compressedBytes": 20480,
+      "compressedSHA256": "d9422e8773f7ab7a62405514b0df90a62c18043f89d022cecdbc1b39337e56fb",
+      "uncompressedBytes": 250508,
+      "uncompressedSHA256": "8007719ef4a804381a8dd66a9bf50464475904bc44525cdc01ce66d525f2af8d"
     },
     {
       "file": "acceptance.stdout.log.gz",
       "role": "Final guarded CLI stdout",
-      "externalSource": "connection-policy-2026-10-23/acceptance-final.stdout.log",
-      "compressedBytes": 582,
-      "compressedSHA256": "adff5730de5e26e910f7baf3ba1d2210059caae811cce0121f9fd0285d2440ad",
-      "uncompressedBytes": 1269,
-      "uncompressedSHA256": "f2d48621353749fb5650e6e17b3d20efe036b2b269892b55619e8d37ed1221b3"
+      "externalSource": "connection-policy-2026-10-23/acceptance-clean.stdout.log",
+      "compressedBytes": 555,
+      "compressedSHA256": "cfbcb427fff6cc486a9e7f9a1523db06f2ba710e943e941ed0147e72053edc74",
+      "uncompressedBytes": 1257,
+      "uncompressedSHA256": "f9567286ac7fee14387074a2c25358ed27b887ffeb9613766677b80f5ba7bd56"
     },
     {
       "file": "acceptance.stderr.log.gz",
       "role": "Final guarded CLI stderr; empty",
-      "externalSource": "connection-policy-2026-10-23/acceptance-final.stderr.log",
+      "externalSource": "connection-policy-2026-10-23/acceptance-clean.stderr.log",
       "compressedBytes": 20,
       "compressedSHA256": "f1b651238a58fe290baec6c5e32f3bdb1943dd2bd582f02569231f7a757c7837",
       "uncompressedBytes": 0,
@@ -49,8 +49,8 @@
   "readableFiles": [
     {
       "file": "summary.json",
-      "bytes": 4668,
-      "sha256": "7ece9e337dd1703fa8d7d91f8c9e78baa7a79b50f20650b92bac8b2cfec94917"
+      "bytes": 4667,
+      "sha256": "b687bfaafdcc8bd52931b7a6d06483ca1337811a9844dd93b8f4d8902ac16b23"
     }
   ]
 }

@@ -54,7 +54,7 @@ changes to the historical adapter/benchmark source belong in this task.
   counts, independent expected rows and clean subsequent refresh/reopen.
 - [x] Complete independent spec and quality review, fix findings, run complete
   serial native acceptance and archive exact evidence with new source hashes.
-- [ ] Update docs, commit specific files, push PR #7, and verify latest-head
+- [x] Update docs, commit specific files, push PR #7, and inspect latest-head
   Linux/macOS core/native CI. No merge, release or tag.
 
 Local completion: all four serial acceptance sections passed on Node 24.22.1 /
@@ -66,6 +66,13 @@ quality and final integrated reviews approved the implementation and evidence.
 Only the unified guarded acceptance CLI writes evidence; the connection runner
 is an exported function. Historical archives and measured adapter/benchmark code
 remain unchanged.
+
+Implementation source was pushed as `dc2417d`. The final checkpoint removes an
+extra EOF blank line and refreshes the evidence from another complete guarded
+acceptance run, preserving exact source/byte provenance. The current
+[PR #7 checks](https://github.com/SFARL/ivmlite/pull/7/checks) track both workflows
+for each pushed revision. Source/runtime semantics match the independently
+reviewed implementation; no release, tag or upstream application change is made.
 
 ## Validation commands
 

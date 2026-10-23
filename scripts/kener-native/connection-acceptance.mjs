@@ -400,4 +400,3 @@ export async function connectionAcceptance(args) {
     if (cleanupErrors.length) throw new AggregateError(cleanupErrors, 'Connection acceptance cleanup failed');
   }
 }
-

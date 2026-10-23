@@ -55,8 +55,8 @@
       "code": "SQLITE_BUSY",
       "message": "insert into `monitoring_data` (`error_message`, `latency`, `monitor_tag`, `raw_status`, `status`, `timestamp`, `type`) values (NULL, 4.5, 'shared', 'DEGRADED', 'DEGRADED', 901, 'REALTIME') on conflict (`monitor_tag`, `timestamp`) do update set `status` = 'DEGRADED',`latency` = 4.5,`type` = 'REALTIME',`error_message` = NULL,`raw_status` = 'DEGRADED' - database is locked"
     },
-    "failedElapsedMs": 48.14274999999998,
-    "waitingElapsedMs": 212.12316699999997,
+    "failedElapsedMs": 54.64158300000008,
+    "waitingElapsedMs": 212.7927920000002,
     "shortBusyTimeoutMs": 40,
     "waitingBusyTimeoutMs": 4000,
     "childTimedReleaseMs": 200
