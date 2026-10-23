@@ -30,7 +30,20 @@ adapter and measured benchmark code unchanged.
   historical benchmark manifests. Update usage/report documentation with the
   tested boundary and remaining application lifecycle work. Independently check
   evidence hashes.
-- [ ] Commit specific files, push PR #7, and inspect CI.
+- [x] Commit specific files, push PR #7, and inspect CI.
+
+## Completion checkpoint
+
+Source and local evidence are committed as `41bd49f` and pushed to
+[PR #7](https://github.com/SFARL/ivmlite/pull/7). Independent spec, quality and
+integrated evidence reviews approved the change. The complete serial native
+acceptance passed: existing 5,362 exact result comparisons plus worker 13
+comparisons per state layer, 37 context checks and 95 SQL connection identity
+checks across 15 transactions. Four focused mutants were detected, with intact
+counterparts passing. Historical benchmark artifacts and measured adapter code
+remain unchanged. The PR's checks track the Linux/macOS core and native workflows
+for each pushed revision; the worker checks run through the existing native
+acceptance command.
 
 ## Validation and provenance
 
