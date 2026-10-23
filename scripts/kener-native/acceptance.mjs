@@ -102,6 +102,7 @@ export async function driverSmoke(args) {
     } finally { await broken.destroy(); }
     assert.equal(lifecycle.filter((event) => event.event === 'extension-loaded').length, 2);
     assert.equal(lifecycle.filter((event) => event.event === 'extension-load-failed').length, 1);
+    assert.equal(lifecycle.find((event) => event.event === 'extension-load-failed').open, false, 'Failed initialization must close the unowned native connection');
     const identity = runtime.identity(extension);
     assert(!Object.keys(identity.sourceHashes).some((file) => file.endsWith('/dbimpl.ts')), 'App singleton must not be evaluated');
     validateUpstream(args.upstream);

@@ -66,7 +66,12 @@ export async function loadRuntime({ upstream, runtime, database }) {
                 lifecycle.push({ event: 'extension-loaded', filename });
                 done(null, connection);
               } catch (error) {
-                lifecycle.push({ event: 'extension-load-failed', filename, message: error.message });
+                // Knex has not handed this connection to Tarn yet, so pool
+                // destruction cannot release a failed afterCreate connection.
+                let closeError;
+                try { connection.close(); }
+                catch (failure) { closeError = failure.message; }
+                lifecycle.push({ event: 'extension-load-failed', filename, message: error.message, open: connection.open, ...(closeError ? { closeError } : {}) });
                 done(error, connection);
               }
             },

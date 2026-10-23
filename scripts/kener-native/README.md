@@ -28,13 +28,20 @@ node scripts/kener-native/acceptance.mjs \
   --extension /absolute/path/to/libivmlite_sqlite.dylib \
   --scratch /external/kener/scratch \
   --output /external/kener/driver-smoke.json
+node scripts/kener-native/prepare.test.mjs \
+  --upstream /external/kener/upstream \
+  --runtime /external/kener/runtime \
+  --output /external/kener/ownership-tests.json
 ```
 
 Use the host's `.so`/`.dylib` extension path. `prepare.mjs` derives the exact
 dependency closure of upstream's locked Knex 3.1.0, better-sqlite3 12.6.2 and
 dotenv, preserving complete package records including nested dependencies,
 integrity, resolved URLs and metadata. It uses `npm ci` in the owned external
-runtime. Repeating preparation reinstalls that runtime; it never installs into
+runtime. Repeating preparation accepts an empty directory or a runtime with a
+valid ownership marker, matching manifest and exact lock; other nonempty
+directories are rejected before writing or installing. Repeating preparation
+reinstalls that runtime; it never installs into
 upstream. Peer database drivers are optional and are not required by SQLite.
 The run checks installed package versions and rejects manifest/lock drift.
 
@@ -51,5 +58,8 @@ index errors are compensated by schema and actual plan assertions.
 Run native preparation/acceptance serially. The JSON records failure and the
 command exits nonzero if a check fails. The SQLite runtime uses one Knex pool
 connection and loads `sqlite3_ivmlite_init` on every newly opened connection;
-load failure rejects connection creation. `runtime.mjs` exports `loadRuntime`
+load failure closes the native handle and rejects connection creation. The
+ownership regression command checks byte-preserving rejection of unowned and
+corrupt directories, installs an empty runtime, then reinstalls the valid owned
+runtime. `runtime.mjs` exports `loadRuntime`
 and migration/covering-index constants for further independent replay tests.

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -71,13 +71,20 @@ export function minimalLock(upstream) {
   return { manifest, lock: { name: manifest.name, version: manifest.version, lockfileVersion: 3, requires: true, packages } };
 }
 
-export function validateRuntime(upstream, runtime) {
+function validateOwnership(upstream, runtime) {
   const expected = minimalLock(upstream);
   assert.deepEqual(readJson(path.join(runtime, 'package.json')), expected.manifest, 'Runtime manifest drift');
   assert.deepEqual(readJson(path.join(runtime, 'package-lock.json')), expected.lock, 'Runtime lock drift');
   const identity = readJson(path.join(runtime, 'kener-runtime.json'));
   assert.equal(identity.sourceSHA, SOURCE_SHA);
   assert.equal(identity.sourceLockSHA256, sha256(path.join(upstream, 'package-lock.json')));
+  assert.equal(identity.packageCount, Object.keys(expected.lock.packages).length - 1, 'Runtime ownership marker count drift');
+  assert.match(identity.node, /^v\d+\.\d+\.\d+$/, 'Runtime ownership marker lacks Node version');
+  return { expected, identity };
+}
+
+export function validateRuntime(upstream, runtime) {
+  const { expected, identity } = validateOwnership(upstream, runtime);
   for (const [key, record] of Object.entries(expected.lock.packages)) {
     if (key) assert.equal(readJson(path.join(runtime, key, 'package.json')).version, record.version, `Installed version drift: ${key}`);
   }
@@ -91,8 +98,9 @@ function prepare() {
   const runtime = realpathSync(args.runtime);
   const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
   assert(!inside(upstream, runtime) && !inside(repository, runtime), 'Runtime must be outside upstream and ivmlite checkouts');
-  if (existsSync(path.join(runtime, 'package.json'))) {
+  if (readdirSync(runtime).length !== 0) {
     assert(existsSync(path.join(runtime, 'kener-runtime.json')), 'Refusing to overwrite an unowned runtime');
+    validateOwnership(upstream, runtime);
   }
   const { manifest, lock } = minimalLock(upstream);
   writeJson(path.join(runtime, 'package.json'), manifest);
