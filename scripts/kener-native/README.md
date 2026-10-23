@@ -66,9 +66,10 @@ runtime. `runtime.mjs` exports `loadRuntime`
 and migration/covering-index constants for further independent replay tests.
 
 
-The acceptance JSON contains `driverSmoke` (the original compatibility checks)
-and `adapter` (independent replay, lifecycle, numeric and focused mutation
-results). Run this command serially after preparation/ownership checks:
+The acceptance JSON contains `driverSmoke` (the original compatibility checks),
+`adapter` (independent replay, lifecycle, numeric and focused mutation results),
+and `worker` (the actual upstream async context and host transaction boundary).
+Run this command serially after preparation/ownership checks:
 
 ```sh
 node --check scripts/kener-native/adapter.mjs
@@ -119,25 +120,36 @@ are raw fallbacks. Timezones with :30/:45 offsets are tested as aligned offsets;
 this does not replace upstream timezone/day-boundary logic.
 
 The host must explicitly refresh. Queries alone do not refresh and can return
-stale experimental results after a write. Use the original repository bound to
-the same Knex transaction, then refresh before that transaction commits:
+stale experimental results after a write. For Kener worker code, use the host
+entry point with the context functions returned by `loadRuntime()`:
 
 ```js
-import { adapterTransaction, createReader } from './adapter.mjs';
-await adapterTransaction(db, MonitoringRepository, async (repository, trx) => {
+import { kenerTransaction } from './host.mjs';
+await kenerTransaction(db, runtime, async ({ repository, reader, refresh }) => {
   await repository.insertMonitoringData(sample);
-  // More original repository writes can occur here, including nested savepoints.
-}); // SELECT ivm_refresh_all() ran inside this transaction before commit.
-const reader = createReader(db, new MonitoringRepository(db)); // strict default
-const rows = await reader.getStatusCountsByInterval(tags, start, interval, points);
+  await refresh(); // Required before reading pending writes through the IVM view.
+  const rows = await reader.getStatusCountsByInterval(tags, start, interval, points);
+  return rows;
+}); // Also refreshes inside this transaction before commit; strict reader is default.
 ```
 
-This harness runs without an active Kener worker `AsyncLocalStorage` context.
 Upstream `BaseRepository.knex` prefers `getWorkerKnex()` over its constructor
 argument. Inside a real background job, passing `trx` to the constructor alone
-does not bind its queries to that transaction: the host must scope the work with
-upstream `runWithWorkerKnex(trx, ...)` or provide equivalent context ownership.
-Worker-context integration is outside this standalone repository acceptance.
+does not bind its queries to that transaction. `kenerTransaction` scopes work
+with the actual upstream `runWithWorkerKnex(trx, ...)`, overriding an ambient
+worker pool for the callback and restoring it afterwards. Its first argument
+explicitly selects the caller-owned pool or transaction; it never silently
+adopts the ambient pool. Pass `{ mode: 'experimental-numeric' }` as the fourth
+argument to opt in to maintained reads and their numeric limits. Await all work
+inside the callback; do not retain its transaction-bound objects for later use.
+The callback also exposes `connection`; pass it as the first argument to a nested
+`kenerTransaction` call to create a savepoint.
+
+The lower-level `adapterTransaction` remains available for callers without a
+worker context. It only passes `trx` to the constructor and does not bind an
+ambient Kener context. The original benchmark uses that standalone path. The
+host acceptance uses the pinned upstream async context, without starting the
+application singleton or BullMQ queue lifecycle.
 
 For explicit control use `refreshAdapter(trx)` inside the caller's transaction;
 read-after-write experimental queries need that call before reading. Never
@@ -244,6 +256,9 @@ test; its dyadic fixture requires exact equality, while decimal limitations are
 recorded by acceptance.
 
 See [the native report](../../docs/demos/kener-native.md) for measured tradeoffs.
+The October 22 benchmark evidence remains pinned to source commit `3a17bc5` and
+its recorded helper hashes. The subsequent worker integration has separate
+acceptance evidence; those timings do not measure the worker entry point.
 The separate `kener-native` Linux/macOS workflow executes ownership and full
 real-driver acceptance with Node 24.19.0/Rust 1.95.0, uploads JSON/logs on every
 outcome, and deliberately omits benchmarks. Its path filters select code,

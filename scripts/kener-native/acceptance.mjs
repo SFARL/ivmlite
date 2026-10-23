@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { inside, options, validateUpstream, writeJson } from './prepare.mjs';
 import { COVERING_INDEX, loadRuntime, MIGRATIONS } from './runtime.mjs';
 import { adapterAcceptance } from './adapter-acceptance.mjs';
+import { workerAcceptance } from './worker-acceptance.mjs';
 
 export async function driverSmoke(args) {
   args = { ...args, upstream: validateUpstream(args.upstream) };
@@ -130,9 +131,10 @@ async function main() {
   try {
     const smoke = await driverSmoke(args);
     const adapter = await adapterAcceptance(args);
-    const evidence = { status: 'passed', driverSmoke: smoke, adapter };
+    const worker = await workerAcceptance(args);
+    const evidence = { status: 'passed', driverSmoke: smoke, adapter, worker };
     writeJson(args.output, evidence);
-    console.log(JSON.stringify({ status: evidence.status, output: args.output, sqlite: smoke.sqlite.version, assertions: adapter.assertions, mutations: adapter.mutations.map(({ mutation, status }) => ({ mutation, status })) }));
+    console.log(JSON.stringify({ status: evidence.status, output: args.output, sqlite: smoke.sqlite.version, assertions: adapter.assertions, workerAssertions: worker.assertions, mutations: [...adapter.mutations, ...worker.mutations].map(({ mutation, status }) => ({ mutation, status })) }));
   } catch (error) {
     writeJson(args.output, { status: 'failed', error: error.stack });
     throw error;

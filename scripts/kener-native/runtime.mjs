@@ -48,11 +48,14 @@ export async function loadRuntime({ upstream, runtime, database }) {
   });
   try {
     const { MonitoringRepository } = await import(sourceURL(path.join(upstream, 'src/lib/server/db/repositories/monitoring.ts')));
+    const { runWithWorkerKnex, getWorkerKnex } = await import(sourceURL(path.join(upstream, 'src/lib/server/db/poolContext.ts')));
     const migrations = [];
     for (const name of MIGRATIONS) migrations.push(await import(sourceURL(path.join(upstream, 'migrations', name))));
     const knex = require('knex');
     return {
       MonitoringRepository,
+      runWithWorkerKnex,
+      getWorkerKnex,
       migrate: async (db) => { for (const migration of migrations) await migration.up(db); },
       createDatabase(filename, extension, lifecycle = []) {
         return knex({

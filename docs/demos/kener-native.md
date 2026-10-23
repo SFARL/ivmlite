@@ -165,13 +165,18 @@ capture state makes extension availability a dependency of future writes, even
 when reads fall back. Deployment, migration and connection ownership need an
 explicit host policy.
 
-The standalone harness has no active worker `AsyncLocalStorage` context. In
-Kener background jobs, [the repository getter](https://github.com/rajnandan1/kener/blob/5bc658b771d44f48b61a514cfdb5037468c5aa36/src/lib/server/db/repositories/base.ts#L38-L56)
-prefers the worker context over the constructor's Knex argument. A host must
-bind that context to its transaction (for example with upstream
-`runWithWorkerKnex(trx, ...)`); passing `trx` to the constructor alone is
-insufficient there. This experiment does not validate the application worker
-context or its queue lifecycle. That remains part of I01 integration work.
+The original standalone benchmark has no active worker `AsyncLocalStorage`
+context. In Kener background jobs,
+[the repository getter](https://github.com/rajnandan1/kener/blob/5bc658b771d44f48b61a514cfdb5037468c5aa36/src/lib/server/db/repositories/base.ts#L38-L56)
+prefers the worker context over the constructor's Knex argument. Passing `trx`
+to the constructor alone is insufficient there. The subsequent
+[`kenerTransaction` host entry point](../../scripts/kener-native/host.mjs)
+binds the actual upstream `runWithWorkerKnex(trx, ...)` for repository work,
+uses the caller-selected connection, and refreshes before commit. It exposes
+an explicit refresh for reads of pending writes and keeps strict reads as the
+default. Nested calls pass the outer transaction explicitly to use a savepoint.
+It does not start Kener's application singleton, queue processors, cache or UI;
+their deployment and lifecycle remain outside this experiment.
 
 | Acceptance boundary | Local evidence |
 | --- | --- |
@@ -183,6 +188,17 @@ context or its queue lifecycle. That remains part of I01 integration work.
 | Numeric limitation | Actual raw AVG `0.19999999999999998` versus merged `0.20000000000000004`; strict remains raw |
 | Final access path | Both batched methods assert numeric-window-only xFilter plus outer TEXT membership |
 | Platform coverage | Local macOS native driver; Linux x64 and macOS ARM64 native CI passed at source commit `3a17bc5` |
+
+The October 23 worker acceptance adds 13 independent comparisons of each state
+layer, 37 context checks and 95 native query identity checks across 15 host
+transactions. It exercises caller and real precommit refresh failure, both
+savepoint rollback directions, controlled overlapping async contexts, explicit
+numeric read freshness and native reopen. Removing the actual worker binding
+routes a repository write to the ambient database; the independent state oracle
+detects that mutant, and the intact counterpart passes. Complete serial driver,
+adapter and worker acceptance passed locally on Node 24.22.1/SQLite 3.51.2.
+The new [worker evidence](results/2026-10-23-kener-worker/) has its own source and
+byte hashes, separate from the historical benchmark artifacts.
 
 The finite decimal acceptance bound `1e-12 * max(1,abs(expected))` applies only
 to fixture sums/averages; timestamps, counts and extrema stay exact. It is not a
@@ -216,6 +232,12 @@ script identities. The manifest binds both compressed bytes and exact
 uncompressed bytes to their SHA-256 and size. Raw evidence retains machine paths
 as execution provenance; use the generic reproduction paths in the README.
 
+Those measurements and their historical manifests remain pinned to source
+commit `3a17bc5`, including its runtime/helper hashes. The later host transaction
+entry point has separate acceptance evidence and has not been timed by that
+source-scale benchmark. Changing the current loader does not rebind historical
+measurements to the new source.
+
 ```sh
 gzip -dc docs/demos/results/2026-10-22-kener-native/benchmark.json.gz > /external/kener/benchmark-decoded.json
 gzip -dc docs/demos/results/2026-10-22-kener-native/acceptance.json.gz > /external/kener/acceptance-decoded.json
@@ -238,8 +260,10 @@ commit, jobs, runtime identities and assertions; the two platforms' complete
 acceptance and ownership JSONs are archived losslessly with manifest hashes.
 
 The measured host burden makes **I01 host integration** the immediate practical
-priority: extension loading, pool lifecycle and transaction-final refresh need
-a small explicit integration surface. **F02 computed expressions** would remove
+priority. The experimental loader and host entry point cover connection loading
+and transaction-final refresh at the repository boundary. Application queue
+startup/shutdown, deployment/migration policy and cache invalidation still need
+host integration. **F02 computed expressions** would remove
 some application-owned bucket projection work only after the supported floor,
 nullable REAL and grouping semantics are proved. **F01 composite filters** are a
 separate maintained-query capability; outer SQLite CASE/IN/AND used here already

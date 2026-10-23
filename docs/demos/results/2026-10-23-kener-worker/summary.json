@@ -1,0 +1,81 @@
+{
+  "status": "passed",
+  "date": "2026-10-23",
+  "scope": "Explicit worker transaction host integration using actual pinned AsyncLocalStorage; no queue, singleton, endpoint or Redis boot",
+  "sourceSHA": "5bc658b771d44f48b61a514cfdb5037468c5aa36",
+  "node": {
+    "version": "v24.22.1",
+    "modules": "137",
+    "platform": "darwin",
+    "arch": "arm64"
+  },
+  "sqlite": {
+    "version": "3.51.2",
+    "source_id": "2026-01-09 17:27:48 b270f8339eb13b504d0b2ba154ebca966b7dde08e40c3ed7d559749818cb2075"
+  },
+  "dependencies": {
+    "knex": "3.1.0",
+    "better-sqlite3": "12.6.2",
+    "dotenv": "17.2.4"
+  },
+  "addon": {
+    "filename": "better_sqlite3.node",
+    "sha256": "f4ab8ddc57768a1342fad1a948c7ff943fe553ebd73671054cd58c1f7cd33021"
+  },
+  "extension": {
+    "filename": "libivmlite_sqlite.dylib",
+    "sha256": "4bc5f14e81f786f3d3644fffbc9d8fc8c44ac0d768fc4eebc541312cbb589f20"
+  },
+  "workerAssertions": {
+    "baseComparisons": 13,
+    "projectionComparisons": 13,
+    "viewComparisons": 13,
+    "contextComparisons": 37,
+    "nativeQueryIdentities": 95,
+    "transactionIdentities": 15
+  },
+  "workerChecks": [
+    "actual constructor transaction loses to ambient worker pool",
+    "explicit caller connection overrides different ambient pool; strict default and caller result",
+    "experimental numeric opt-in stays stale until explicit refresh",
+    "caller failure propagates same error and rolls back base/projection/public view",
+    "real automatic precommit SUM overflow rolls back and leaves clean pending state",
+    "inner refreshed rollback then outer commit; inner commit then outer rollback; actual repository nested savepoint",
+    "controlled overlapping AsyncLocalStorage contexts isolate native repositories and restore parent",
+    "extension reload on native reopen; persisted state reused without bootstrap"
+  ],
+  "adapterAssertions": {
+    "baseComparisons": 24,
+    "projectionComparisons": 24,
+    "viewComparisons": 24,
+    "exactResultComparisons": 5362
+  },
+  "mutations": [
+    {
+      "mutation": "disable UPDATE trigger",
+      "status": "killed",
+      "intact": "passed"
+    },
+    {
+      "mutation": "disable DELETE trigger",
+      "status": "killed",
+      "intact": "passed"
+    },
+    {
+      "mutation": "skip refresh",
+      "status": "killed",
+      "intact": "passed"
+    },
+    {
+      "mutation": "omit-actual-worker-scope-binding",
+      "status": "detected",
+      "intact": "passed"
+    }
+  ],
+  "extensionLoadFailureCoverage": "driverSmoke in the same serial acceptance command",
+  "limits": [
+    "Repository and actual upstream async context only; no singleton, queue, endpoint, cache or UI boot.",
+    "No new benchmark; historical timings remain bound to source commit 3a17bc5.",
+    "Local Node 24.22.1; CI remains pinned to 24.19.0."
+  ]
+}
