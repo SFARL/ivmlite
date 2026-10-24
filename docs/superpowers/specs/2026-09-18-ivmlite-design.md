@@ -1015,6 +1015,17 @@ TanStack DB is a browser-side JS library, with a different runtime and audience 
 
 ## 13. Known limitations (v0)
 
+**M2d amendment (2026-10-24, unreleased source builds):** Items 1, 7, 8 and 11
+below describe the original contract. Source builds additionally support row
+bags, recursive static AND, arithmetic aggregate arguments and final SELECT
+expressions, including reordered/omitted group keys. Bare group keys, at least
+one aggregate for grouped queries, unique output names and the remaining
+function/join restrictions are retained. Format 7 adds typed duplicate-preserving
+output. Result aliases also reserve `__ivm_identity` case-insensitively. The precise
+bounded grammar and evaluation/persistence contract are in the
+[M2d design](2026-10-24-m2d-query-shapes-design.md); this does not retroactively
+change published alpha.6 artifacts or historical measurements.
+
 1. **The root operator must be an Aggregate with a non-empty GROUP BY**; views without aggregation and global aggregates are not supported (§5.2)
 2. STRICT tables only, with **`ANY` columns rejected** (STRICT alone does not exclude `ANY`; see §7.1); the column-type whitelist is `INTEGER` / `TEXT` **Amended 2026-10-19 (M2c):** Non-STRICT tables and every declared type are accepted by SQLite affinity, including STRICT ANY. The BINARY collation restriction and conservative COLLATE refusal in item 3 remain.
 3. BINARY collation only; detected by fetching the table's CREATE statement from `sqlite_master` and matching `COLLATE`, a conservative over-rejection (see §7.1)

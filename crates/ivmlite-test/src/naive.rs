@@ -273,6 +273,7 @@ fn affinity_literal(ty: ColumnType, literal: &Value) -> Value {
 fn passes(predicate: &Predicate, row: &Row, columns: &[&Column]) -> bool {
     match predicate {
         Predicate::None => true,
+        Predicate::And(l, r) => passes(l, row, columns) && passes(r, row, columns),
         Predicate::Compare { column, op, value } => {
             let cell = row.get(*column);
             // NULL <op> anything is UNKNOWN (spec §6.1), for `!=` too.

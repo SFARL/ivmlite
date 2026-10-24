@@ -1,6 +1,6 @@
 //! Untimed, independent diagnostics for the two fixed M2a query shapes.
 //!
-//! The extension's format-6 codec is deliberately private. This reader pins its
+//! The extension's format-6/7 legacy aggregate codec is deliberately private. This reader pins its
 //! documented layout and the exact persisted plan, then compares decoded rows
 //! against SQL projections of the live bases. It shares no incremental code.
 
@@ -269,7 +269,7 @@ fn verify_layout(conn: &Connection, join: bool, view: &str) -> Result<Vec<String
     } else {
         "aggregate([0],[count,sum(1)],project([1,2],scan(6:events,[0,1,2])))"
     };
-    if format != 6 || plan != expected_plan {
+    if !matches!(format, 6 | 7) || plan != expected_plan {
         return Err(format!(
             "M2a unsupported persisted diagnostic layout: format={format}, plan={plan}"
         ));
@@ -648,6 +648,25 @@ mod tests {
         assert!(after.stage_rows > 0);
         assert_eq!(after.stage_operation_counts["apply"], 1);
         validate_idle(&after, &idle).unwrap();
+    }
+
+    #[test]
+    fn legacy_plan_format7_keeps_the_pinned_diagnostic_layout() {
+        let conn = fixture(false);
+        let format: i64 = conn
+            .query_row(
+                "SELECT format FROM __ivm_view WHERE name=?1",
+                [VIEW],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(format, 7);
+        validate_snapshot(&conn, false, VIEW).unwrap();
+        conn.execute("UPDATE __ivm_view SET format=8 WHERE name=?1", [VIEW])
+            .unwrap();
+        assert!(capture_snapshot(&conn, false, VIEW)
+            .unwrap_err()
+            .contains("unsupported persisted diagnostic layout"));
     }
 
     #[test]

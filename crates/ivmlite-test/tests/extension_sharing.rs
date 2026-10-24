@@ -165,14 +165,14 @@ fn a_database_in_an_older_format_is_refused_by_create_and_by_connect() {
             .unwrap();
         let err = create(&c, "counts", COUNTS).expect_err("format 5");
         assert!(
-            err.to_string().contains("format 5") && err.to_string().contains("reads format 6"),
+            err.to_string().contains("format 5") && err.to_string().contains("reads format 7"),
             "{err}"
         );
     }
     let c = open_with_extension(Some(file.path())).unwrap();
     let err = c.execute_batch("SELECT * FROM sums").expect_err("format 5");
     assert!(
-        err.to_string().contains("format 5") && err.to_string().contains("reads format 6"),
+        err.to_string().contains("format 5") && err.to_string().contains("reads format 7"),
         "{err}"
     );
     c.execute_batch("DROP TABLE sums").unwrap();

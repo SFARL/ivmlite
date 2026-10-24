@@ -73,12 +73,13 @@ impl CmpOp {
     }
 }
 
-/// A view's filter: spec §6.1's whitelist, at most one per view (M1b Phase 2a,
-/// Ruling 1 — no `AND`).
+/// A static filter: whitelisted comparison/null leaves joined by AND.
+/// FALSE and UNKNOWN both exclude a row; this is not a Boolean SELECT AST.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Predicate {
     None,
+    And(Box<Predicate>, Box<Predicate>),
     /// `column <op> value`. `lower` requires `value` to have the column's
     /// declared type — `Int` for INTEGER, `Text` for TEXT — and rejects NULL.
     Compare {

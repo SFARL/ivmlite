@@ -166,18 +166,23 @@ pub fn view_query_to_sql(query: &ViewQuery, db: &Database) -> String {
         _ => format!("\"{}\"", anchor.table),
     };
 
-    let where_clause = match &query.predicate {
-        Predicate::None => String::new(),
-        Predicate::Compare { column, op, value } => {
-            format!(
-                " WHERE {} {} {}",
-                name(*column),
-                sql_op(*op),
-                sql_literal(value)
-            )
+    fn condition(p: &Predicate, name: &impl Fn(usize) -> String) -> String {
+        match p {
+            Predicate::None => "1".into(),
+            Predicate::And(l, r) => {
+                format!("({}) AND ({})", condition(l, name), condition(r, name))
+            }
+            Predicate::Compare { column, op, value } => {
+                format!("{} {} {}", name(*column), sql_op(*op), sql_literal(value))
+            }
+            Predicate::IsNull { column } => format!("{} IS NULL", name(*column)),
+            Predicate::IsNotNull { column } => format!("{} IS NOT NULL", name(*column)),
         }
-        Predicate::IsNull { column } => format!(" WHERE {} IS NULL", name(*column)),
-        Predicate::IsNotNull { column } => format!(" WHERE {} IS NOT NULL", name(*column)),
+    }
+    let where_clause = if query.predicate == Predicate::None {
+        String::new()
+    } else {
+        format!(" WHERE {}", condition(&query.predicate, &name))
     };
 
     let group = query

@@ -129,6 +129,14 @@ pub fn out_index(view: &str) -> String {
     format!("__ivm_outidx_{view}")
 }
 
+/// Bag-only objects have their own namespace, disjoint from all existing owners.
+pub fn bag_index(view: &str) -> String {
+    format!("__ivm_bagidx_{view}")
+}
+pub fn bag_trigger(view: &str) -> String {
+    format!("__ivm_bagretract_{view}")
+}
+
 /// One table per `(node, role)` (spec §7). The role is a fixed string, never
 /// the enum's `Debug` output, so renaming a variant cannot rename a table. A
 /// MIN or MAX's table is named by its aggregate's index (M2c spec §4).
@@ -137,6 +145,7 @@ pub fn state_table(view: &str, id: ArrangementId) -> String {
         ArrangementRole::JoinLeft => "join_left".to_string(),
         ArrangementRole::JoinRight => "join_right".to_string(),
         ArrangementRole::AggregateGroups => "agg_groups".to_string(),
+        ArrangementRole::AggregateRepresentatives => "agg_representatives".to_string(),
         ArrangementRole::AggregateExtremum(agg) => format!("agg_extremum_{agg}"),
     };
     format!("__ivm_state_{view}_{}_{role}", id.node)

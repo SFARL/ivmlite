@@ -20,14 +20,22 @@ the [upstream source at `ed66ded`](https://github.com/darktunnelmika/dark-xray/b
 
 ## Adaptation and oracle
 
-The source table is not `STRICT`, and ivmlite cannot maintain
-`SUM(up_bytes+down_bytes)` directly. The demo uses a narrow `STRICT`
+The measured alpha.5 demo predates support for the non-STRICT source and
+`SUM(up_bytes+down_bytes)`. It uses a narrow `STRICT`
 `traffic_ledger` projection with an integer `total_bytes` stored alongside
 `up_bytes` and `down_bytes`. A `CHECK` constraint enforces
 `total_bytes = up_bytes + down_bytes` on every row. A test additionally
 compares both grouped queries and source-shaped point reads against SQLite's
 original expression after every append batch. This projection would require
 an atomic migration/write-path change in the application.
+
+Unreleased M2d source builds accept `SUM(up_bytes + down_bytes)` directly,
+including static AND filters, and alpha.6 already accepts non-STRICT tables.
+For example, a grouped owner/period view can now retain both byte columns and
+sum their per-row expression. Global aggregates still require lifting the owner
+into a group key. The historical fixture and timings below continue to use
+stored `total_bytes`; they do not measure the new expression path or establish
+its cost on the upstream database.
 
 The two maintained relations are:
 

@@ -1,6 +1,6 @@
 use ivmlite_core::{
-    lower, Agg, AggFn, CmpOp, Column, ColumnType, Plan, PlanError, Predicate, ResolvedJoin,
-    ResolvedView, Schema, Value,
+    lower, lower_source, Agg, AggFn, BinaryOp, CmpOp, Column, ColumnType, Plan, PlanError,
+    Predicate, ResolvedJoin, ResolvedView, ScalarExpr, Schema, UnaryOp, Value,
 };
 use sqlparser::ast::{
     BinaryOperator, Distinct, Expr, Function, FunctionArg, FunctionArgExpr, FunctionArgumentList,
@@ -18,8 +18,8 @@ use crate::{Catalog, CatalogError};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompiledView {
     pub plan: Plan,
-    /// The view's output columns in SELECT order — its group-by columns, then
-    /// its aggregates — with the names SQLite would give them.
+    /// The view's output columns in actual SELECT order, independently of
+    /// internal group keys and aggregate argument slots.
     pub columns: Vec<Column>,
     /// The base tables the view reads, the anchor (the FROM table) first:
     /// the view's rows in `__ivm_dep` (spec §7).
@@ -82,7 +82,7 @@ fn reject_if(present: bool, what: &str) -> Result<(), SqlError> {
 /// or `SUM`, `TOTAL`, `AVG`, `MIN` or `MAX` of a column (M2c spec §4),
 /// `<op>` is one of `>` `>=` `<` `<=` `=` `!=` `<>`, and a literal is a
 /// number, a single-quoted string or `X'…'`. Anything else is an error.
-pub fn compile(sql: &str, catalog: &dyn Catalog) -> Result<CompiledView, SqlError> {
+fn compile_legacy(sql: &str, catalog: &dyn Catalog) -> Result<CompiledView, SqlError> {
     let statements = Parser::parse_sql(&SQLiteDialect {}, sql)
         .map_err(|e| SqlError(format!("cannot parse the view's SQL: {e}")))?;
     let [Statement::Query(query)] = statements.as_slice() else {
@@ -90,7 +90,7 @@ pub fn compile(sql: &str, catalog: &dyn Catalog) -> Result<CompiledView, SqlErro
     };
     let select = plain_select(query)?;
     let (anchor, join) = from_clause(select, catalog)?;
-    let scope = Scope::new(&anchor, join.as_ref().map(|j| &j.table));
+    let scope = Scope::new(&anchor, join.as_ref().map(|j| &j.table), catalog);
     let join = match &join {
         None => None,
         Some(j) => Some(join_on(&scope, j)?),
@@ -125,6 +125,365 @@ pub fn compile(sql: &str, catalog: &dyn Catalog) -> Result<CompiledView, SqlErro
     })
 }
 
+/// Preserve the canonical encoding of every formerly accepted SQL definition.
+pub fn compile(sql: &str, catalog: &dyn Catalog) -> Result<CompiledView, SqlError> {
+    let statements = Parser::parse_sql(&SQLiteDialect {}, sql)
+        .map_err(|e| SqlError(format!("cannot parse the view's SQL: {e}")))?;
+    if let [Statement::Query(query)] = statements.as_slice() {
+        if let SetExpr::Select(select) = query.body.as_ref() {
+            for item in &select.projection {
+                if let SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. } = item
+                {
+                    check_depth(e, 0)?;
+                }
+            }
+            if let Some(e) = &select.selection {
+                check_depth(e, 0)?;
+            }
+            if let GroupByExpr::Expressions(exprs, _) = &select.group_by {
+                for e in exprs {
+                    check_depth(e, 0)?;
+                }
+            }
+            for source in &select.from {
+                for join in &source.joins {
+                    if let JoinOperator::Join(JoinConstraint::On(e))
+                    | JoinOperator::Inner(JoinConstraint::On(e)) = &join.join_operator
+                    {
+                        check_depth(e, 0)?;
+                    }
+                }
+            }
+        }
+    }
+    if let Ok(view) = compile_legacy(sql, catalog) {
+        return Ok(view);
+    }
+    compile_shapes(sql, catalog)
+}
+
+fn check_depth(expr: &Expr, depth: usize) -> Result<(), SqlError> {
+    if depth > ivmlite_core::MAX_EXPRESSION_DEPTH {
+        return Err(SqlError(
+            "expression or conjunction exceeds depth limit 64".into(),
+        ));
+    }
+    match expr {
+        Expr::Nested(e) | Expr::UnaryOp { expr: e, .. } | Expr::IsNull(e) | Expr::IsNotNull(e) => {
+            check_depth(e, depth + 1)?
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            check_depth(left, depth + 1)?;
+            check_depth(right, depth + 1)?;
+        }
+        Expr::Function(call) => {
+            if let FunctionArguments::List(args) = &call.args {
+                for arg in &args.args {
+                    if let FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) = arg {
+                        check_depth(e, depth + 1)?;
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn compile_shapes(sql: &str, catalog: &dyn Catalog) -> Result<CompiledView, SqlError> {
+    let statements = Parser::parse_sql(&SQLiteDialect {}, sql)
+        .map_err(|e| SqlError(format!("cannot parse the view's SQL: {e}")))?;
+    let [Statement::Query(query)] = statements.as_slice() else {
+        return Err(unsupported("anything but exactly one SELECT statement"));
+    };
+    let select = plain_select(query)?;
+    let (anchor, joining) = from_clause(select, catalog)?;
+    let scope = Scope::new(&anchor, joining.as_ref().map(|j| &j.table), catalog);
+    let join = joining.as_ref().map(|j| join_on(&scope, j)).transpose()?;
+    let keys = shape_group_by(&scope, &select.group_by, &select.projection)?;
+    let mut expressions = Vec::new();
+    let mut aggs = Vec::new();
+    let mut arguments: Vec<ScalarExpr> = keys.iter().copied().map(ScalarExpr::Column).collect();
+    let pieces = select_list_pieces(sql, select.projection.len())?;
+    let mut columns: Vec<Column> = Vec::new();
+    for (item, piece) in select.projection.iter().zip(pieces) {
+        let mut push = |expr: ScalarExpr,
+                        name: String,
+                        ty: ColumnType,
+                        nullable: bool|
+         -> Result<(), SqlError> {
+            if name.eq_ignore_ascii_case("__ivm_identity") {
+                return Err(SqlError(
+                    "a result column is named __ivm_identity, which ivmlite reserves".into(),
+                ));
+            }
+            if columns.iter().any(|c| c.name.eq_ignore_ascii_case(&name)) {
+                return Err(SqlError(format!(
+                    "two result columns are named {name}; give one an alias"
+                )));
+            }
+            columns.push(Column { name, ty, nullable });
+            expressions.push(expr);
+            Ok(())
+        };
+        let (expr, alias) = match item {
+            SelectItem::UnnamedExpr(e) => (e, None),
+            SelectItem::ExprWithAlias { expr, alias } => (expr, Some(alias)),
+            SelectItem::Wildcard(options) | SelectItem::QualifiedWildcard(_, options) => {
+                if !keys.is_empty() {
+                    return Err(unsupported("SELECT * in a grouped query"));
+                }
+                if options != &Default::default() {
+                    return Err(unsupported("wildcard options"));
+                }
+                let qualifier = match item {
+                    SelectItem::QualifiedWildcard(
+                        sqlparser::ast::SelectItemQualifiedWildcardKind::ObjectName(name),
+                        _,
+                    ) => Some(single_ident(name)?.value.as_str()),
+                    SelectItem::Wildcard(_) => None,
+                    _ => return Err(unsupported("an expression-qualified wildcard")),
+                };
+                let mut found = false;
+                for (source, offset) in scope.sources() {
+                    if qualifier.is_none_or(|q| q.eq_ignore_ascii_case(&source.qualifier)) {
+                        found = true;
+                        for (i, c) in source.schema.columns.iter().enumerate() {
+                            push(
+                                ScalarExpr::Column(offset + i),
+                                c.name.clone(),
+                                c.ty,
+                                c.nullable,
+                            )?;
+                        }
+                    }
+                }
+                if !found {
+                    return Err(SqlError(format!(
+                        "no such table: {}",
+                        qualifier.unwrap_or_default()
+                    )));
+                }
+                continue;
+            }
+            _ => return Err(unsupported("multi-name aliases")),
+        };
+        let resolved = shape_expr(
+            &scope,
+            expr,
+            if keys.is_empty() { None } else { Some(&keys) },
+            &mut aggs,
+            &mut arguments,
+            0,
+        )?;
+        let (ty, nullable) = match &resolved {
+            ScalarExpr::Column(c) if keys.is_empty() => {
+                let col = scope.column_at(*c);
+                (col.ty, col.nullable)
+            }
+            ScalarExpr::Column(c) if *c < keys.len() => {
+                let col = scope.column_at(keys[*c]);
+                (col.ty, col.nullable)
+            }
+            ScalarExpr::Column(c) => {
+                let a = &aggs[*c - keys.len()];
+                (
+                    match a.func {
+                        AggFn::Count => ColumnType::Integer,
+                        AggFn::Sum => ColumnType::Numeric,
+                        AggFn::Total | AggFn::Avg => ColumnType::Real,
+                        AggFn::Min | AggFn::Max => {
+                            match &arguments[a.column.expect("extremum argument")] {
+                                ScalarExpr::Column(i) => scope.column_at(*i).ty,
+                                _ => ColumnType::Numeric,
+                            }
+                        }
+                    },
+                    a.func != AggFn::Count,
+                )
+            }
+            _ => (ColumnType::Numeric, true),
+        };
+        let name = alias
+            .map(|a| a.value.clone())
+            .unwrap_or_else(|| match scope.column(expr) {
+                Ok(Some(c)) => scope.column_at(c).name.clone(),
+                _ => piece,
+            });
+        push(resolved, name, ty, nullable)?;
+    }
+    if keys.is_empty() && !aggs.is_empty() {
+        return Err(unsupported("global aggregates without GROUP BY"));
+    }
+    if !keys.is_empty() && aggs.is_empty() {
+        return Err(unsupported("GROUP BY with no aggs"));
+    }
+    let predicate = select
+        .selection
+        .as_ref()
+        .map(|e| predicate(&scope, e))
+        .transpose()?
+        .unwrap_or(Predicate::None);
+    let mut plan = lower_source(&anchor.schema, join.as_ref(), &predicate)?;
+    if keys.is_empty() {
+        plan = Plan::Map {
+            input: Box::new(plan),
+            expressions,
+        };
+    } else {
+        let arity = scope.sources().map(|(s, _)| s.schema.arity()).sum();
+        for expr in &arguments {
+            expr.validate(arity).map_err(|e| SqlError(e.0))?;
+        }
+        plan = Plan::Map {
+            input: Box::new(plan),
+            expressions: arguments,
+        };
+        plan = Plan::AggregateCoherent {
+            input: Box::new(plan),
+            group_by: (0..keys.len()).collect(),
+            aggs,
+        };
+        plan = Plan::Map {
+            input: Box::new(plan),
+            expressions,
+        };
+    }
+    let mut tables = vec![anchor.schema.table.clone()];
+    tables.extend(scope.right.map(|r| r.schema.table.clone()));
+    plan.validate_projections().map_err(|e| SqlError(e.0))?;
+    Ok(CompiledView {
+        plan,
+        columns,
+        tables,
+    })
+}
+
+fn shape_group_by(
+    scope: &Scope,
+    clause: &GroupByExpr,
+    outputs: &[SelectItem],
+) -> Result<Vec<usize>, SqlError> {
+    let GroupByExpr::Expressions(exprs, modifiers) = clause else {
+        return Err(unsupported("GROUP BY ALL"));
+    };
+    reject_if(
+        !modifiers.is_empty(),
+        "GROUP BY modifiers (ROLLUP, CUBE, …)",
+    )?;
+    let mut keys = Vec::new();
+    for expr in exprs {
+        let c=scope.require_column(expr,"the GROUP BY term").map_err(|e| {
+            if outputs.iter().any(|o|matches!(o,SelectItem::ExprWithAlias{alias,..} if expr.to_string().eq_ignore_ascii_case(&alias.value))) {SqlError(format!("{e} (GROUP BY must name the column, not the alias)"))} else {e}
+        })?;
+        if keys.contains(&c) {
+            return Err(SqlError(format!(
+                "column {} appears twice in GROUP BY",
+                scope.column_at(c).name
+            )));
+        }
+        keys.push(c);
+    }
+    Ok(keys)
+}
+
+fn shape_expr(
+    scope: &Scope,
+    expr: &Expr,
+    keys: Option<&[usize]>,
+    aggs: &mut Vec<Agg>,
+    arguments: &mut Vec<ScalarExpr>,
+    depth: usize,
+) -> Result<ScalarExpr, SqlError> {
+    if depth > ivmlite_core::MAX_EXPRESSION_DEPTH {
+        return Err(SqlError("scalar expression exceeds depth limit 64".into()));
+    }
+    if let Some(c) = scope.column(expr)? {
+        return Ok(ScalarExpr::Column(match keys {
+            None => c,
+            Some(keys) => keys.iter().position(|k| *k == c).ok_or_else(|| {
+                SqlError(format!(
+                    "column {} is in the SELECT list but neither in GROUP BY nor aggregated",
+                    scope.column_at(c).name
+                ))
+            })?,
+        }));
+    }
+    let recurse = |e, aggs: &mut Vec<Agg>, arguments: &mut Vec<ScalarExpr>| {
+        shape_expr(scope, e, keys, aggs, arguments, depth + 1)
+    };
+    match expr {
+        Expr::Nested(e) => recurse(e, aggs, arguments),
+        Expr::Value(_) => Ok(ScalarExpr::Literal(literal(scope, expr)?)),
+        Expr::UnaryOp {
+            op: UnaryOperator::Minus,
+            expr: inner,
+        } if matches!(strip_parens(inner),Expr::Value(v) if matches!(v.value,SqlValue::Number(_, _))) => {
+            Ok(ScalarExpr::Literal(literal(scope, expr)?))
+        }
+        Expr::UnaryOp { op, expr } => Ok(ScalarExpr::Unary {
+            op: match op {
+                UnaryOperator::Plus => UnaryOp::Plus,
+                UnaryOperator::Minus => UnaryOp::Minus,
+                _ => return Err(unsupported("this scalar unary operator")),
+            },
+            expr: Box::new(recurse(expr, aggs, arguments)?),
+        }),
+        Expr::BinaryOp { left, op, right } => Ok(ScalarExpr::Binary {
+            op: match op {
+                BinaryOperator::Plus => BinaryOp::Add,
+                BinaryOperator::Minus => BinaryOp::Subtract,
+                BinaryOperator::Multiply => BinaryOp::Multiply,
+                BinaryOperator::Divide => BinaryOp::Divide,
+                BinaryOperator::Modulo => BinaryOp::Remainder,
+                _ => return Err(unsupported("this scalar binary operator")),
+            },
+            left: Box::new(recurse(left, aggs, arguments)?),
+            right: Box::new(recurse(right, aggs, arguments)?),
+        }),
+        Expr::Function(call) => {
+            let (func, arg) = aggregate_parts(call)?;
+            if keys.is_none() {
+                return Err(unsupported("nested or global aggregates without GROUP BY"));
+            }
+            let column = match arg {
+                None => None,
+                Some(arg) => {
+                    let value = shape_expr(
+                        scope,
+                        arg,
+                        None,
+                        &mut Vec::new(),
+                        &mut Vec::new(),
+                        depth + 1,
+                    )?;
+                    Some(match arguments.iter().position(|x| *x == value) {
+                        Some(i) => i,
+                        None => {
+                            let i = arguments.len();
+                            arguments.push(value);
+                            i
+                        }
+                    })
+                }
+            };
+            let agg = Agg { func, column };
+            let i = match aggs.iter().position(|a| *a == agg) {
+                Some(i) => i,
+                None => {
+                    let i = aggs.len();
+                    aggs.push(agg);
+                    i
+                }
+            };
+            Ok(ScalarExpr::Column(
+                keys.expect("grouped aggregate").len() + i,
+            ))
+        }
+        _ => Err(unsupported(&format!("the SELECT expression `{expr}`"))),
+    }
+}
+
 /// A table in the FROM clause, and the name the query uses for it.
 struct Source {
     schema: Schema,
@@ -141,13 +500,18 @@ struct JoinClause<'a> {
 /// The tables a query's column names resolve against. Column `i` of the
 /// joined row is the anchor's column `i`, then the right table's.
 struct Scope<'a> {
+    catalog: &'a dyn Catalog,
     anchor: &'a Source,
     right: Option<&'a Source>,
 }
 
 impl<'a> Scope<'a> {
-    fn new(anchor: &'a Source, right: Option<&'a Source>) -> Self {
-        Scope { anchor, right }
+    fn new(anchor: &'a Source, right: Option<&'a Source>, catalog: &'a dyn Catalog) -> Self {
+        Scope {
+            anchor,
+            right,
+            catalog,
+        }
     }
 
     fn sources(&self) -> impl Iterator<Item = (&'a Source, usize)> {
@@ -556,6 +920,16 @@ fn projection(sql: &str, scope: &Scope, items: &[SelectItem]) -> Result<Vec<Name
 
 /// `COUNT(*)`, or `COUNT`, `SUM`, `TOTAL` or `AVG` of a column.
 fn aggregate(scope: &Scope, call: &Function) -> Result<Agg, SqlError> {
+    let (func, arg) = aggregate_parts(call)?;
+    Ok(Agg {
+        func,
+        column: arg
+            .map(|e| scope.require_column(e, &format!("{} over", func.sql_name())))
+            .transpose()?,
+    })
+}
+
+fn aggregate_parts(call: &Function) -> Result<(AggFn, Option<&Expr>), SqlError> {
     let Function {
         name,
         uses_odbc_syntax,
@@ -606,13 +980,8 @@ fn aggregate(scope: &Scope, call: &Function) -> Result<Agg, SqlError> {
         }
     };
     match (func, args.as_slice()) {
-        (AggFn::Count, [FunctionArg::Unnamed(FunctionArgExpr::Wildcard)]) => {
-            Ok(Agg { func, column: None })
-        }
-        (_, [FunctionArg::Unnamed(FunctionArgExpr::Expr(e))]) => Ok(Agg {
-            func,
-            column: Some(scope.require_column(e, &format!("{} over", func.sql_name()))?),
-        }),
+        (AggFn::Count, [FunctionArg::Unnamed(FunctionArgExpr::Wildcard)]) => Ok((func, None)),
+        (_, [FunctionArg::Unnamed(FunctionArgExpr::Expr(e))]) => Ok((func, Some(e))),
         _ => Err(unsupported(&format!("`{call}`"))),
     }
 }
@@ -687,6 +1056,12 @@ fn group_by(
 /// WHERE: one comparison between a column and a literal, or IS [NOT] NULL
 /// (spec §6.1).
 fn predicate(scope: &Scope, expr: &Expr) -> Result<Predicate, SqlError> {
+    predicate_at(scope, expr, 0)
+}
+fn predicate_at(scope: &Scope, expr: &Expr, depth: usize) -> Result<Predicate, SqlError> {
+    if depth > ivmlite_core::MAX_EXPRESSION_DEPTH {
+        return Err(SqlError("WHERE conjunction exceeds depth limit 64".into()));
+    }
     let not_supported = || {
         unsupported(&format!(
             "the WHERE clause `{expr}` (a v0 view filters on one comparison between a column \
@@ -702,9 +1077,11 @@ fn predicate(scope: &Scope, expr: &Expr) -> Result<Predicate, SqlError> {
         }),
         Expr::BinaryOp {
             op: BinaryOperator::And,
-            ..
-        } => Err(unsupported(
-            "AND in WHERE (a v0 view has at most one predicate)",
+            left,
+            right,
+        } => Ok(Predicate::And(
+            Box::new(predicate_at(scope, left, depth + 1)?),
+            Box::new(predicate_at(scope, right, depth + 1)?),
         )),
         Expr::BinaryOp {
             op: BinaryOperator::Or,
@@ -720,12 +1097,12 @@ fn predicate(scope: &Scope, expr: &Expr) -> Result<Predicate, SqlError> {
                 (Some(column), None) => Ok(Predicate::Compare {
                     column,
                     op,
-                    value: literal(right)?,
+                    value: literal(scope, right)?,
                 }),
                 (None, Some(column)) => Ok(Predicate::Compare {
                     column,
                     op: flip(op),
-                    value: literal(left)?,
+                    value: literal(scope, left)?,
                 }),
                 (Some(_), Some(_)) => Err(unsupported(
                     "a comparison between two columns (v0 compares a column with a literal)",
@@ -772,7 +1149,7 @@ fn long_literal(text: &str) -> SqlError {
 
 /// A numeric token as SQLite reads it: INTEGER when it has no `.` or
 /// exponent and fits `i64`, else REAL (M2c spec §5).
-fn number(text: &str) -> Result<Value, SqlError> {
+fn number(scope: &Scope, text: &str) -> Result<Value, SqlError> {
     let integral = !text.contains(['.', 'e', 'E']);
     if integral {
         if let Ok(n) = text.parse::<i64>() {
@@ -780,8 +1157,12 @@ fn number(text: &str) -> Result<Value, SqlError> {
         }
     }
     text.parse::<f64>()
+        .map_err(|_| unsupported(&format!("the literal {text}")))?;
+    scope
+        .catalog
+        .parse_real_literal(text)
         .map(Value::Real)
-        .map_err(|_| unsupported(&format!("the literal {text}")))
+        .map_err(SqlError::from)
 }
 
 /// A BLOB literal `X'…'`: an even number of hex digits.
@@ -801,10 +1182,10 @@ fn blob(hex: &str) -> Result<Value, SqlError> {
 
 /// A number, a single-quoted string, a BLOB literal `X'…'`, or NULL (which
 /// `lower` rejects with a pointer to IS NULL).
-fn literal(expr: &Expr) -> Result<Value, SqlError> {
+fn literal(scope: &Scope, expr: &Expr) -> Result<Value, SqlError> {
     match strip_parens(expr) {
         Expr::Value(v) => match &v.value {
-            SqlValue::Number(text, false) => number(text),
+            SqlValue::Number(text, false) => number(scope, text),
             SqlValue::Number(text, true) => Err(long_literal(text)),
             SqlValue::SingleQuotedString(s) => Ok(Value::Text(s.clone())),
             SqlValue::HexStringLiteral(hex) => blob(hex),
@@ -816,7 +1197,7 @@ fn literal(expr: &Expr) -> Result<Value, SqlError> {
             expr: inner,
         } => match strip_parens(inner) {
             Expr::Value(v) => match &v.value {
-                SqlValue::Number(text, false) => number(&format!("-{text}")),
+                SqlValue::Number(text, false) => number(scope, &format!("-{text}")),
                 SqlValue::Number(text, true) => Err(long_literal(text)),
                 _ => Err(unsupported(&format!("the literal `{expr}`"))),
             },
@@ -1245,19 +1626,15 @@ mod tests {
             ("SELECT region, COUNT(*) FROM orders o JOIN regions o ON o.region = o.name GROUP BY region", "both tables"),
             ("SELECT region, COUNT(*) FROM orders JOIN regions ON region = name JOIN regions r2 ON region = r2.name GROUP BY region", "more than two tables"),
             ("SELECT * FROM orders GROUP BY region", "SELECT *"),
-            ("SELECT region, amount + 1, COUNT(*) FROM orders GROUP BY region", "SELECT expression"),
+            ("SELECT region, amount + 1, COUNT(*) FROM orders GROUP BY region", "neither in GROUP BY"),
             ("SELECT region, COUNT(DISTINCT amount) FROM orders GROUP BY region", "DISTINCT"),
-            ("SELECT region, SUM(amount + 1) FROM orders GROUP BY region", "SUM over"),
             ("SELECT region, SUM(amount) OVER () FROM orders GROUP BY region", "window"),
-            ("SELECT COUNT(*), region FROM orders GROUP BY region", "after an aggregate"),
-            ("SELECT region, region, COUNT(*) FROM orders GROUP BY region", "twice in the SELECT list"),
+            ("SELECT region, region, COUNT(*) FROM orders GROUP BY region", "two result columns"),
             ("SELECT region, COUNT(*) AS region FROM orders GROUP BY region", "named region"),
             ("SELECT region, amount, COUNT(*) FROM orders GROUP BY region", "neither in GROUP BY"),
-            ("SELECT region, COUNT(*) FROM orders GROUP BY region, amount", "not in the SELECT list"),
             ("SELECT region, COUNT(*) FROM orders GROUP BY region, region", "twice in GROUP BY"),
             ("SELECT region, COUNT(*) FROM orders GROUP BY 1", "GROUP BY term"),
             ("SELECT region, COUNT(*) FROM orders GROUP BY lower(region)", "GROUP BY term"),
-            ("SELECT region, COUNT(*) FROM orders WHERE amount > 1 AND amount < 5 GROUP BY region", "at most one predicate"),
             ("SELECT region, COUNT(*) FROM orders WHERE amount > 1 OR amount < 5 GROUP BY region", "OR in WHERE"),
             ("SELECT region, COUNT(*) FROM orders WHERE NOT amount > 1 GROUP BY region", "NOT in WHERE"),
             ("SELECT region, COUNT(*) FROM orders WHERE region LIKE 'a%' GROUP BY region", "WHERE clause"),
@@ -1270,7 +1647,6 @@ mod tests {
             ("SELECT region, COUNT(*) FROM orders WHERE amount + 1 > 2 GROUP BY region", "WHERE clause"),
             ("SELECT region, COUNT(*) FROM orders WHERE nope > 1 GROUP BY region", "no such column"),
             ("SELECT region, COUNT(*) FROM orders JOIN regions ON region = name WHERE x.region > 'a' GROUP BY region", "no such table"),
-            ("SELECT region, COUNT(*) FROM orders o JOIN regions r ON o.region = r.name GROUP BY o.region, r.name", "not in the SELECT list"),
             ("SELECT k, COUNT(*) FROM orders JOIN regions ON region = name GROUP BY k", "no such column"),
         ];
         for (sql, expected) in cases {

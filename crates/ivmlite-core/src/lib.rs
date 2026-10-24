@@ -9,6 +9,7 @@ mod numeric;
 mod plan;
 mod query;
 mod row;
+mod scalar;
 mod schema;
 mod sortkey;
 #[cfg(test)]
@@ -26,10 +27,15 @@ pub use exact::{ExactSum, EXACT_BYTES, EXACT_LIMBS};
 pub use join::JoinState;
 pub use node::{ArrangementProvider, Node};
 pub use numeric::{numeric_term, parse_numeric_text, NumericTerm};
-pub use plan::{lower, lower_query, Plan, PlanError, ResolvedJoin, ResolvedView};
+pub use plan::{
+    lower, lower_query, lower_source, validate_predicate, Plan, PlanError, ResolvedJoin,
+    ResolvedView,
+};
 pub use query::{Agg, AggFn, CmpOp, Join, Predicate, ViewQuery};
 pub use row::Row;
 pub use schema::{Column, ColumnType, Schema};
 pub use sortkey::{from_sort_key, sort_key};
 pub use value::Value;
 pub use zset::ZSet;
+
+pub use scalar::{BinaryOp, ProjectionEvaluator, ScalarExpr, UnaryOp, MAX_EXPRESSION_DEPTH};

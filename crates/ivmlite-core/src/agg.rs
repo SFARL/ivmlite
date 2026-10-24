@@ -371,21 +371,25 @@ impl GroupState {
         key: &Row,
         aggs: &[Agg],
         extremes: &[Option<Value>],
+        representative: Option<&Row>,
     ) -> Result<Option<Row>, StateError> {
         if self.rows <= 0 {
             return Ok(None);
         }
-        let mut values: Vec<Value> = key
-            .0
-            .iter()
-            .zip(&self.real_keys)
-            .map(|(value, &reals)| match value {
-                // M2c spec §2: SQLite outputs an arbitrary row's key; a group
-                // with any REAL key row outputs REAL.
-                Value::Int(i) if reals > 0 => Value::Real(*i as f64),
-                other => other.clone(),
-            })
-            .collect();
+        let mut values: Vec<Value> = if let Some(tuple) = representative {
+            tuple.0.clone()
+        } else {
+            key.0
+                .iter()
+                .zip(&self.real_keys)
+                .map(|(value, &reals)| match value {
+                    // M2c spec §2: SQLite outputs an arbitrary row's key; a group
+                    // with any REAL key row outputs REAL.
+                    Value::Int(i) if reals > 0 => Value::Real(*i as f64),
+                    other => other.clone(),
+                })
+                .collect()
+        };
         for (i, (acc, agg)) in self.accs.iter().zip(aggs).enumerate() {
             values.push(match agg.func {
                 // M2c spec §4: NULL when the group has no non-NULL value.
@@ -479,6 +483,7 @@ pub struct AggState {
     group_by: Vec<usize>,
     aggs: Vec<Agg>,
     state: Box<dyn Arrangement>,
+    representatives: Option<Box<dyn Arrangement>>,
     /// One arrangement per MIN or MAX, in `aggs` order.
     extremes: Vec<Box<dyn Arrangement>>,
     /// For each entry of `aggs`, its index in `extremes`, if it is a MIN or MAX.
@@ -525,9 +530,41 @@ impl AggState {
             group_by,
             aggs,
             state,
+            representatives: None,
             extremes,
             slots,
         }
+    }
+
+    /// M2d opt-in: keep complete typed keys, so final scalar projections never
+    /// observe a tuple assembled from different source rows. Legacy state is unchanged.
+    pub fn with_representatives(mut self, arrangement: Box<dyn Arrangement>) -> Self {
+        self.representatives = Some(arrangement);
+        self
+    }
+
+    fn representative(&self, key: &Row, rows: i64) -> Result<Option<Row>, StateError> {
+        let Some(arrangement) = &self.representatives else {
+            return Ok(None);
+        };
+        let mut total = 0i64;
+        let mut selected: Option<Row> = None;
+        for (tuple, weight) in arrangement.get(key)? {
+            let canonical = Row::new(tuple.0.iter().map(Value::canonical).collect());
+            if weight <= 0 || tuple.len() != self.group_by.len() || canonical != *key {
+                return Err(StateError(format!("corrupted aggregate representative tuple for {key:?}: {tuple:?} weight {weight}")));
+            }
+            total = total
+                .checked_add(weight)
+                .ok_or_else(|| StateError("aggregate representative count overflow".into()))?;
+            if selected.as_ref().is_none_or(|old| tuple < *old) {
+                selected = Some(tuple);
+            }
+        }
+        if total != rows || (rows > 0 && selected.is_none()) {
+            return Err(StateError(format!("corrupted aggregate representatives for {key:?}: tuple count {total}, group rows {rows}")));
+        }
+        Ok(selected)
     }
 
     /// Absorb one batch of input deltas, returning the delta this operator **emits**.
@@ -539,6 +576,7 @@ impl AggState {
         // a batch touching N groups at O(N log N) (external review P2-2), and
         // yields the groups in key order for the emit loop.
         let mut deltas: BTreeMap<Row, GroupState> = BTreeMap::new();
+        let mut representative_deltas: BTreeMap<Row, BTreeMap<Row, i64>> = BTreeMap::new();
         // Each MIN/MAX's value changes per touched group, indexed like `extremes`.
         let mut extreme_deltas: BTreeMap<Row, Vec<BTreeMap<Row, i64>>> = BTreeMap::new();
         for (row, &w) in input.iter() {
@@ -548,6 +586,14 @@ impl AggState {
                     .map(|&c| row.get(c).canonical())
                     .collect(),
             );
+            if self.representatives.is_some() {
+                let tuple = Row::new(self.group_by.iter().map(|c| row.get(*c).clone()).collect());
+                *representative_deltas
+                    .entry(key.clone())
+                    .or_default()
+                    .entry(tuple)
+                    .or_default() += w;
+            }
             if !self.extremes.is_empty() {
                 self.absorb_extremes(&mut extreme_deltas, &key, row, w);
             }
@@ -586,6 +632,17 @@ impl AggState {
         for (key, delta) in deltas {
             let old = self.load(&key)?;
             let new = old.plus(&delta)?;
+            let old_representative = self.representative(&key, old.rows)?;
+            if let Some(changes) = representative_deltas.remove(&key) {
+                let arrangement = self
+                    .representatives
+                    .as_mut()
+                    .expect("only coherent plans collect tuples");
+                for (tuple, weight) in changes {
+                    arrangement.update(&key, &tuple, weight)?;
+                }
+            }
+            let new_representative = self.representative(&key, new.rows)?;
             let old_extremes = self.extreme_values(&key)?;
             if let Some(changes) = extreme_deltas.remove(&key) {
                 for (slot, values) in changes.into_iter().enumerate() {
@@ -595,8 +652,10 @@ impl AggState {
                 }
             }
             let new_extremes = self.extreme_values(&key)?;
-            let old_out = old.output(&key, &self.aggs, &old_extremes)?;
-            let new_out = new.output(&key, &self.aggs, &new_extremes)?;
+            let old_out =
+                old.output(&key, &self.aggs, &old_extremes, old_representative.as_ref())?;
+            let new_out =
+                new.output(&key, &self.aggs, &new_extremes, new_representative.as_ref())?;
             if new_out != old_out {
                 if let Some(row) = old_out {
                     out.update(row, -1);

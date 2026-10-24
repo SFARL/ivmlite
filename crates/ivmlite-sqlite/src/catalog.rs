@@ -77,6 +77,14 @@ pub fn affinity(declared: &str, strict: bool) -> ColumnType {
 }
 
 impl Catalog for SqliteCatalog<'_> {
+    fn parse_real_literal(&self, spelling: &str) -> Result<f64, CatalogError> {
+        // The front end has validated the complete numeric token. Binding its
+        // spelling invokes this host's decimal parser without inserting SQL.
+        self.conn
+            .query_row("SELECT CAST(?1 AS REAL)", [spelling], |r| r.get(0))
+            .map_err(|e| CatalogError(format!("cannot parse REAL literal on SQLite host: {e}")))
+    }
+
     fn table(&self, name: &str) -> Result<Option<Schema>, CatalogError> {
         let err = |e: rusqlite::Error| CatalogError(format!("reading the catalog: {e}"));
         // pragma_table_list's `name` column compares case-sensitively by

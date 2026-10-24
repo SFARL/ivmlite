@@ -42,7 +42,8 @@ pub fn codec(id: ArrangementId) -> ValueCodec {
         ArrangementRole::AggregateExtremum(_) => ValueCodec::SortKey,
         ArrangementRole::JoinLeft
         | ArrangementRole::JoinRight
-        | ArrangementRole::AggregateGroups => ValueCodec::Row,
+        | ArrangementRole::AggregateGroups
+        | ArrangementRole::AggregateRepresentatives => ValueCodec::Row,
     }
 }
 

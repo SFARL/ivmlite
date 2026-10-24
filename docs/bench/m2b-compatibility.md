@@ -6,6 +6,16 @@ Flink variant has 24 queries: none compiles unchanged in alpha.5. Two explicitly
 adapted bag workloads run correctly; they are not canonical Nexmark coverage or
 a standard benchmark score. No Turso performance result is reported.
 
+This document preserves the alpha.5 preflight. Unreleased M2d source builds add
+row bags, arithmetic SELECT/aggregate arguments and static AND; the
+[M2d design](../superpowers/specs/2026-10-24-m2d-query-shapes-design.md) and new
+`scripts/probe-m2d.py` recheck the pinned Nexmark corpus without rewriting this
+historical evidence. M2d does not add Flink functions, OR/IN, windows or a Turso
+semantic-domain proof, and does not itself unblock general M2b comparisons.
+The [executed M2d result](../validation/m2d/README.md) records Q0/Q1 original
+SELECTs compiling under SQLite fixtures and Q20 with unique output aliases,
+with 24 typed execution checkpoints across the three ports.
+
 ## Reproduce
 
 Use standard-library Python with loadable SQLite extensions enabled, Git, a built

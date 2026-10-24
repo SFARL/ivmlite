@@ -146,3 +146,15 @@ hypothetical bundles preserve the original counts:
 After M2c, F1/F4b/F6 are still missing; the nine-query row is a hypothetical
 bundle, not nine completed query implementations. The Flink-function rewrite
 caveats for Q14/Q21/Q22 and BIGINT AVG caveat for Q4/Q17 above remain.
+
+## M2d scope correction (2026-10-24)
+
+The historical bundle counts above treat F4b and F6 as whole feature categories.
+M2d implements row bags, arithmetic expressions and static AND, rather than all
+of those categories: OR/IN, CASE, date/string functions and expression predicates
+remain outside its grammar. Thus completing M2d does not establish seven or nine
+original Nexmark queries. The [executed M2d report](../../validation/m2d/README.md#nexmark-coverage-and-m2b-boundary)
+records 2/24 original defining SELECTs compiling under SQLite fixtures (Q0/Q1),
+plus Q20 with unique output aliases. All three SQLite ports pass 24 typed
+checkpoints; this is not canonical Nexmark coverage. Historical census JSON and
+projections remain unchanged.
