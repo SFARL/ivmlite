@@ -3,10 +3,13 @@
 This optional, ivmlite-owned experiment executes unchanged Kener 4.1.8 source
 at `5bc658b771d44f48b61a514cfdb5037468c5aa36`. It imports the actual
 `MonitoringRepository` through scoped Node resolution hooks and native type
-stripping. It does not run Kener's database singleton, endpoint/response builder,
-Redis cache or UI. The driver smoke establishes driver compatibility and the indexed repository
-baseline. The adapter acceptance independently replays native repository calls
-and tests derived state and lifecycle behavior. Neither establishes a performance
+stripping. A separate source-boundary section loads the unchanged response queue,
+monitor controller and cache modules with explicitly controlled queue, Redis
+transport and alert boundaries. It does not boot the application database
+singleton, endpoint/response builder or UI. The driver smoke establishes driver
+compatibility and the indexed repository baseline. The adapter acceptance
+independently replays native repository calls and tests derived state and
+lifecycle behavior. Neither establishes a performance
 benefit or upstream adoption.
 
 Use Node >=24.14, npm, Git, an extension built for the host, and a clean upstream
@@ -101,9 +104,12 @@ event loop cannot release a lock while the call waits.
 
 The acceptance JSON contains `driverSmoke` (the original compatibility checks),
 `adapter` (independent replay, lifecycle, numeric and focused mutation results),
-`worker` (the actual upstream async context and host transaction boundary), and
+`worker` (the actual upstream async context and host transaction boundary),
 `connection` (artifact policy and independent-process writer contention), and
 `lifecycle` (uninstall, compatible schema rebuild and abrupt process recovery).
+The sixth section, `sourceBoundary`, executes the actual response/controller/cache
+source against native SQLite, with controlled transports and manual processor
+invocation. It is not a BullMQ/Redis server integration test.
 Run this command serially after preparation/ownership checks:
 
 ```sh
@@ -271,10 +277,47 @@ Three durable focused mutation checks disable the actual UPDATE trigger, disable
 the DELETE trigger, and omit refresh in separate scratch databases. Each must
 fail the intended projection/freshness assertion, and an intact counterpart must
 pass. The JSON includes actual red failure messages and green outcomes, separate
-from the Rust mutation ledger. No endpoint, response builder, cache or UI is
+from the Rust mutation ledger. No endpoint, response builder or UI is
 executed: the original response builder imports the application singleton and
-remains outside this repository-only experiment. Setup/storage/write costs and
+remains outside this experiment. Setup/storage/write costs and
 performance measurement are a separate task.
+
+## Response and cache source boundary
+
+The source-boundary fixture loads unchanged upstream `q.ts`,
+`monitorResponseQueue.ts`, `monitorsController.ts`, `cache.ts`, `setGet.ts` and
+`redisConnector.ts`. Its explicit DB facade uses the canonical upstream worker
+context from `loadRuntime()`. Only the repository insert is wrapped in
+`kenerTransaction`; its promise resolves after refresh and outer COMMIT, before
+the upstream processor publishes latest status or invokes the alert queue.
+Wrapping the entire processor would publish cache before that outer COMMIT.
+
+BullMQ classes, the IORedis transport and alert enqueue are controlled fixture
+boundaries. They capture the actual source's queue options and wire commands;
+the fixture explicitly invokes the captured processor once or manually replays
+it. It does not simulate automatic retries, scheduling or deduplication as
+broker evidence. No BullMQ/ioredis package or Redis service is installed by this
+section. The dotenv import is also replaced by an explicit no-op facade, avoiding
+`.env` loading in this fixture. Unused application helper functions reject on use. Per-instance module
+namespaces isolate upstream queue/cache singletons, and the evidence records
+real source hashes and all injected module boundaries.
+
+The grouped controller cache uses a 60-second TTL and has no write invalidation
+in this path. A committed correction can therefore leave a warm grouped result
+stale until expiry. A fixture clock advances the controlled transport's TTL;
+this proves source caching policy, not Redis server or wall-clock behavior.
+The latest-status setter uses 86400 seconds and has no timestamp guard, so an
+older response processed later overwrites that value. A cache failure after
+COMMIT leaves the database committed while rejecting the processor; replay is
+an explicit fixture action, not proof of a broker retry guarantee.
+
+The response processor does not await `alertingQueue.push`, so its resolution
+does not establish alert enqueue completion or delivery. Upstream response
+shutdown closes its worker only; the fixture must close the remaining controlled
+queue and transport resources separately. Real broker startup, retry/dedup,
+network failures, endpoint behavior, deployment and application-wide shutdown
+remain follow-up integration work. This section adds correctness evidence and
+does not extend the historical repository benchmark to cached page performance.
 
 ## Native measurement
 

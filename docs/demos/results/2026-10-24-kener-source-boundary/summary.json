@@ -1,0 +1,189 @@
+{
+  "status": "passed",
+  "date": "2026-10-24",
+  "scope": "Pinned unchanged q/response/controller/cache/Redis connector source boundary with controlled BullMQ/Redis/alert transports and manual replay; no real broker/server/retry/dedup/wall-clock expiry/alert delivery/app-wide startup or performance acceptance",
+  "sourceSHA": "5bc658b771d44f48b61a514cfdb5037468c5aa36",
+  "node": {
+    "version": "v24.22.1",
+    "modules": "137",
+    "platform": "darwin",
+    "arch": "arm64"
+  },
+  "sqlite": {
+    "version": "3.51.2",
+    "source_id": "2026-01-09 17:27:48 b270f8339eb13b504d0b2ba154ebca966b7dde08e40c3ed7d559749818cb2075"
+  },
+  "dependencies": {
+    "knex": "3.1.0",
+    "better-sqlite3": "12.6.2",
+    "dotenv": "17.2.4"
+  },
+  "addon": {
+    "filename": "better_sqlite3.node",
+    "sha256": "f4ab8ddc57768a1342fad1a948c7ff943fe553ebd73671054cd58c1f7cd33021"
+  },
+  "extension": {
+    "filename": "libivmlite_sqlite.dylib",
+    "sha256": "4bc5f14e81f786f3d3644fffbc9d8fc8c44ac0d768fc4eebc541312cbb589f20"
+  },
+  "guardedSections": {
+    "driverSmoke": "passed",
+    "adapter": "passed",
+    "worker": "passed",
+    "connection": "passed",
+    "lifecycle": "passed",
+    "sourceBoundary": "passed"
+  },
+  "sourceBoundaryAssertions": {
+    "total": 128,
+    "independentBase": 14,
+    "independentView": 13,
+    "publicationSnapshots": 6,
+    "groupedComparisons": 3,
+    "loaderIsolation": 5,
+    "cleanup": 3
+  },
+  "sourceBoundaryChecks": [
+    "actual q wrapper, response/controller insert-only transaction, refresh and outer COMMIT precede independently observed latest-status publication and alert",
+    "invalid controller input and real native precommit SUM overflow publish no cache or alerts; all native rows/view/guard roll back",
+    "postcommit SET rejection leaves correct committed native state; explicit manual replay upserts one base row without simulated broker retry/dedup",
+    "actual grouped source cache retains correction until logical 60-second expiry; copied/sorted/duplicate/window dimensions, malformed JSON and actual wire TTLs verified",
+    "source preserves unawaited pending alert and unconditional older last-status overwrite; queue/worker/retry/dedup/retention configuration observed only; actual shutdown worker-only, fixture closes remaining resources",
+    "successive namespaced source/cache/queue/facade instances isolated; strict default preserved and fresh numeric opt-in uses existing alignment/safety fallback limits",
+    "focused skipped-refresh mutant fails exact independent publication-view assertion while same source intact counterpart passes"
+  ],
+  "sourceModules": [
+    "src/lib/server/cache/cache.ts",
+    "src/lib/server/cache/setGet.ts",
+    "src/lib/server/controllers/monitorsController.ts",
+    "src/lib/server/queues/monitorResponseQueue.ts",
+    "src/lib/server/queues/q.ts",
+    "src/lib/server/redisConnector.ts"
+  ],
+  "profiles": [
+    {
+      "label": "strict",
+      "mode": "strict",
+      "negativeControl": null,
+      "sourceModules": 6,
+      "facades": 14
+    },
+    {
+      "label": "isolated-experimental-numeric",
+      "mode": "experimental-numeric",
+      "negativeControl": null,
+      "sourceModules": 6,
+      "facades": 14
+    },
+    {
+      "label": "negative-control",
+      "mode": "strict",
+      "negativeControl": "skip-precommit-refresh",
+      "sourceModules": 6,
+      "facades": 14
+    },
+    {
+      "label": "intact-counterpart",
+      "mode": "strict",
+      "negativeControl": null,
+      "sourceModules": 6,
+      "facades": 14
+    }
+  ],
+  "independentOracle": "Host-constructed intended full base rows and JS grouped ledger observed through a different native pool at cache publication; SQL/event order checked per current insert; final and publication facts serialized.",
+  "sourceSemantics": {
+    "groupedCacheTTL": 60,
+    "latestStatusTTL": 86400,
+    "clock": "Controlled transport logical seconds, not Redis server expiry",
+    "groupedInvalidationOnResponseWrite": false,
+    "olderTimestampCanOverwriteLatestStatus": true,
+    "responseAwaitsAlertEnqueue": false,
+    "shutdownCloses": "Upstream response worker only; fixture separately closes queues and both Redis clients",
+    "retryAndDedup": "Actual source configuration captured; processor invocation/manual replay controlled, no broker behavior acceptance"
+  },
+  "adapterAssertions": {
+    "baseComparisons": 24,
+    "projectionComparisons": 24,
+    "viewComparisons": 24,
+    "exactResultComparisons": 5362
+  },
+  "workerAssertions": {
+    "baseComparisons": 13,
+    "projectionComparisons": 13,
+    "viewComparisons": 13,
+    "contextComparisons": 37,
+    "nativeQueryIdentities": 95,
+    "transactionIdentities": 15
+  },
+  "connectionAssertions": {
+    "invalidPolicies": 26,
+    "nativeTimeouts": 11,
+    "baseComparisons": 13,
+    "projectionComparisons": 13,
+    "viewComparisons": 13,
+    "contextComparisons": 10,
+    "nativeQueryIdentities": 28
+  },
+  "lifecycleAssertions": {
+    "baseComparisons": 69,
+    "projectionComparisons": 59,
+    "viewComparisons": 59,
+    "schemaComparisons": 15,
+    "completeStateComparisons": 20,
+    "contextComparisons": 27,
+    "dependencyRefusals": 8,
+    "ownershipRefusals": 6,
+    "temporaryShadowRefusals": 3,
+    "abruptDeaths": 2
+  },
+  "ownershipChecks": 8,
+  "mutations": [
+    {
+      "mutation": "disable UPDATE trigger",
+      "status": "killed",
+      "intact": "passed"
+    },
+    {
+      "mutation": "disable DELETE trigger",
+      "status": "killed",
+      "intact": "passed"
+    },
+    {
+      "mutation": "skip refresh",
+      "status": "killed",
+      "intact": "passed"
+    },
+    {
+      "mutation": "omit-actual-worker-scope-binding",
+      "status": "detected",
+      "intact": "passed"
+    },
+    {
+      "mutation": "omit-artifact-pin-check",
+      "status": "detected",
+      "intact": "passed"
+    },
+    {
+      "mutation": "omit-native-timeout-configuration",
+      "status": "detected",
+      "intact": "passed"
+    },
+    {
+      "mutation": "omit-lifecycle-reinstall",
+      "status": "detected",
+      "intact": "passed"
+    },
+    {
+      "mutation": "skip-precommit-refresh-only",
+      "status": "detected",
+      "intact": "passed"
+    }
+  ],
+  "limits": [
+    "Controlled BullMQ capture/manual invocation only; actual scheduling, retry, dedup and delivery are untested.",
+    "Controlled Redis transport wire/JSON/logical TTL only; real server/network/expiry behavior is untested.",
+    "DB singleton/controller barrel/unrelated helpers/alert sink/dotenv are explicit facades; no full application startup, endpoint, UI or alert delivery.",
+    "Strict default preserved; numeric opt-in uses fresh isolated cache profile and existing alignment/safety/REAL limits.",
+    "No timing or end-user page gain claim; historical source-pinned benchmark and evidence remain unchanged."
+  ]
+}

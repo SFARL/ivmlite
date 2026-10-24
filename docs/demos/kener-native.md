@@ -175,8 +175,9 @@ binds the actual upstream `runWithWorkerKnex(trx, ...)` for repository work,
 uses the caller-selected connection, and refreshes before commit. It exposes
 an explicit refresh for reads of pending writes and keeps strict reads as the
 default. Nested calls pass the outer transaction explicitly to use a savepoint.
-It does not start Kener's application singleton, queue processors, cache or UI;
-their deployment and lifecycle remain outside this experiment.
+The host helper itself does not start Kener's application singleton, queue
+processors, cache or UI; the later source-boundary fixture below separately
+executes selected queue/controller/cache source with controlled transports.
 
 | Acceptance boundary | Local evidence |
 | --- | --- |
@@ -242,8 +243,43 @@ native handle is open; fresh connections recover independently expected old/new
 schemas and facts, then pass the next write/refresh. This is local process-death
 evidence under the default rollback journal, with compatible source rebuilds.
 Extension database-format upgrades and application deployment coordination remain
-separate. The complete five-section local acceptance and eight runtime ownership
-checks pass; the whole harness detects seven intended focused mutants.
+separate. At that checkpoint, complete five-section local acceptance and eight
+runtime ownership checks pass, with seven intended focused mutants detected.
+
+The subsequent [response/cache evidence](results/2026-10-24-kener-source-boundary/)
+extends the source boundary rather than the historical benchmark. It loads the
+unchanged pinned response queue, queue
+wrapper, monitor controller, cache setters and Redis connector. An explicit DB
+facade routes the actual controller insert through `kenerTransaction`; that
+promise completes refresh and outer COMMIT before the source processor publishes
+latest status. A separate native pool checks the independently expected committed
+base rows and public grouped view at publication. BullMQ classes, Redis transport,
+alert enqueue and unrelated application imports remain explicit controlled
+boundaries. Source/facade hashes and injected boundaries accompany the evidence.
+
+Complete six-section local acceptance and eight runtime ownership checks pass.
+The new section records 128 assertions, including 14 base and 13 public-view
+comparisons, with six successful independent publication snapshots. The
+skipped-refresh control fails the intended independent view assertion while its
+intact counterpart passes, bringing the harness to eight focused controls.
+
+This path exposes three distinct failure/freshness boundaries. A refresh failure
+rolls back the insert before publication. A later cache command failure leaves
+committed database facts while rejecting the response processor; a same-key
+manual replay exercises the repository upsert. A grouped result already cached
+by the actual controller remains stale after a committed correction until its
+60-second TTL expires. The fixture advances a logical transport clock; it does
+not test a Redis server's expiry or network behavior. Strict reads remain the
+default, and no immediate cache invalidation is added.
+
+The pinned processor invokes `alertingQueue.push` without awaiting it, so a
+resolved response does not prove enqueue completion or delivery. Its latest-status
+setter has no timestamp guard: a later-processed older sample overwrites the
+cache. Queue concurrency, retry/backoff, deduplication and retention are observed
+source configuration, not verified broker behavior. Actual response shutdown
+closes the worker only; the fixture separately closes controlled queues and Redis
+clients. Real scheduling/retry/dedup, broker/network failures, application startup,
+endpoint behavior and deployment coordination remain separate acceptance work.
 
 The finite decimal acceptance bound `1e-12 * max(1,abs(expected))` applies only
 to fixture sums/averages; timestamps, counts and extrema stay exact. It is not a
@@ -252,8 +288,8 @@ reassociation. Timed dyadic fixtures require exact equality for every measured
 result. Unknown/null status groups and all non-null latency values contribute,
 matching upstream's repository behavior. No status/type filter is invented.
 
-The harness does not execute the endpoint, response builder, application
-singleton, Redis cache or UI. Kener already has
+The original repository benchmark does not execute the endpoint, response
+builder, application singleton, Redis cache or UI. Kener already has
 [batched client requests/caching](https://github.com/rajnandan1/kener/blob/5bc658b771d44f48b61a514cfdb5037468c5aa36/src/lib/client/monitor-bar-client.ts)
 and a
 [60-second grouped controller cache](https://github.com/rajnandan1/kener/blob/5bc658b771d44f48b61a514cfdb5037468c5aa36/src/lib/server/controllers/monitorsController.ts#L854-L874).
@@ -306,8 +342,9 @@ acceptance and ownership JSONs are archived losslessly with manifest hashes.
 
 The measured host burden makes **I01 host integration** the immediate practical
 priority. The experimental loader and host entry point cover connection loading
-and transaction-final refresh at the repository boundary. Application queue
-startup/shutdown, deployment coordination, database-format upgrade policy and cache invalidation still need
+and transaction-final refresh at the repository boundary. Real queue/Redis
+startup and shutdown, deployment coordination, database-format upgrade policy
+and a deliberate grouped-cache freshness contract still need
 host integration. **F02 computed expressions** would remove
 some application-owned bucket projection work only after the supported floor,
 nullable REAL and grouping semantics are proved. **F01 composite filters** are a
