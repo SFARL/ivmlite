@@ -1,0 +1,38 @@
+{
+  "sha256": {
+    "${ARTIFACT_ROOT}/acceptance-benchmark/selective_read_bench": "59faaddda67668261b60b3651523a6d992391fe8f74b6e2b3c8798da11f0cf6f",
+    "${ARTIFACT_ROOT}/baseline/libivmlite_sqlite.dylib": "e777d54cd237a669376c8164188fe667bca7072052ba33e6d62a266f13dd1e77",
+    "${ARTIFACT_ROOT}/after/libivmlite_sqlite.dylib": "4bc5f14e81f786f3d3644fffbc9d8fc8c44ac0d768fc4eebc541312cbb589f20"
+  },
+  "head": "48884807127c70df705596fd7a718002cca77a52",
+  "source_diff_sha256": "5782650a250a638233a172339e654880f5e77500b7a994c9536b31e2438343eb",
+  "source_sha256": {
+    "crates/ivmlite-test/examples/selective_read_bench.rs": "b24b6c17478f39d16d25a1a38a98194f3bb4d72e0a8776ca97f9c99da7cdf4ac",
+    "crates/ivmlite-test/src/read_work.rs": "904d8cc1be2ed9306d2daceb98bc6ed88fb6490573ad468b60f0d66670a6a947",
+    "crates/ivmlite-sqlite/src/read_plan.rs": "cc0bfe4cf0d250f62c9c30c83a4d42357570f2f2619d471cdf57dd0a8977132d",
+    "crates/ivmlite-sqlite/src/vtab.rs": "894c8b60f55b05fbcb7267a78bf901c58a69492dccd4d02112a9445570edbf15"
+  },
+  "host_build_command": [
+    "cargo",
+    "build",
+    "--release",
+    "--locked",
+    "-p",
+    "ivmlite-test",
+    "--example",
+    "selective_read_bench"
+  ],
+  "after_extension_build_command": [
+    "cargo",
+    "build",
+    "--release",
+    "--locked",
+    "--manifest-path",
+    "crates/ivmlite-sqlite/Cargo.toml"
+  ],
+  "baseline_extension_source_commit": "0ad47a9259ee7acee411b46b7f64d50d268b2096",
+  "baseline_build_checkout": "48884807127c70df705596fd7a718002cca77a52",
+  "baseline_code_equivalence": "git diff alpha.6..4888480 contains only docs/spikes/2026-10-21-selective-read-probe.md",
+  "new_source_state": "Uncommitted native sources on HEAD4888480; hashes identify tested code independently of HEAD. Complete native source closure is recorded by docs/validation/selective-reads/manifest.json after the mutation campaign.",
+  "identity_limit": "Build commands are reproduction inputs; host runtime-observed compiler/HEAD metadata alone does not identify previously built bits. Preserved artifact SHA256 values are authoritative. Baseline original build stdout was not retained."
+}

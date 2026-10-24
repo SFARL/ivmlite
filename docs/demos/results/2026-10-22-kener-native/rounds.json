@@ -1,0 +1,1779 @@
+{
+  "units": "milliseconds",
+  "method": "Read pooled median is median of all 9 timed calls; ranges are min/max of the 3 within-repeat medians. Ratios pair original and experimental within the same repeat, then report median/min/max of those 3 ratios. Write/retention have one event per fresh repeat, 3 observations total.",
+  "repeats": [
+    {
+      "repeat": 0,
+      "copyMs": 937.3530840000021,
+      "installMs": 39540.6455,
+      "groups": 337379,
+      "reads": [
+        {
+          "name": "one-full-history",
+          "grouped": false,
+          "tags": "api/east",
+          "window": [
+            1767225600,
+            86400,
+            90
+          ],
+          "resultRows": 90,
+          "exact": true,
+          "roundsMs": {
+            "original": [
+              44.508583000002545,
+              43.87695800000802,
+              44.06212500001129
+            ],
+            "strict": [
+              45.820791000005556,
+              46.66599999999744,
+              44.43595800000185
+            ],
+            "experimental": [
+              134.23787500000617,
+              135.5119999999879,
+              137.69087500000023
+            ]
+          },
+          "medianMs": {
+            "original": 44.06212500001129,
+            "strict": 45.820791000005556,
+            "experimental": 135.5119999999879
+          },
+          "noopRefreshMs": [
+            0.3700000000098953,
+            0.08612500000162981,
+            0.06687500000407454
+          ]
+        },
+        {
+          "name": "one-recent-day",
+          "grouped": false,
+          "tags": "api/east",
+          "window": [
+            1774915200,
+            900,
+            96
+          ],
+          "resultRows": 96,
+          "exact": true,
+          "roundsMs": {
+            "original": [
+              0.5680839999986347,
+              0.563624999995227,
+              0.5528750000084983
+            ],
+            "strict": [
+              0.5511669999978039,
+              0.612583000009181,
+              0.5554170000104932
+            ],
+            "experimental": [
+              1.4120830000028946,
+              1.6879159999953117,
+              1.4397920000046724
+            ]
+          },
+          "medianMs": {
+            "original": 0.563624999995227,
+            "strict": 0.5554170000104932,
+            "experimental": 1.4397920000046724
+          },
+          "noopRefreshMs": [
+            0.10095799999544397,
+            0.0701250000129221,
+            0.06962500000372529
+          ]
+        },
+        {
+          "name": "batch-merged-full-history",
+          "grouped": false,
+          "tags": [
+            "api/east",
+            "002",
+            "2",
+            "监控/é",
+            "service/00",
+            "service/01",
+            "service/02",
+            "service/03",
+            "service/04",
+            "service/05",
+            "service/06",
+            "service/07",
+            "service/08",
+            "service/09",
+            "service/10",
+            "service/11",
+            "service/12",
+            "service/13",
+            "service/14",
+            "service/15",
+            "service/16",
+            "service/17",
+            "service/18",
+            "service/19",
+            "service/20",
+            "service/21",
+            "service/22",
+            "service/23",
+            "service/24",
+            "service/25",
+            "service/26",
+            "service/27"
+          ],
+          "window": [
+            1767225600,
+            86400,
+            90
+          ],
+          "resultRows": 90,
+          "exact": true,
+          "roundsMs": {
+            "original": [
+              2268.461083000002,
+              1902.9013339999947,
+              1897.1699589999916
+            ],
+            "strict": [
+              2322.609500000006,
+              2073.306500000006,
+              1953.822874999998
+            ],
+            "experimental": [
+              366.20770900000934,
+              430.22833299999184,
+              363.10441600000195
+            ]
+          },
+          "medianMs": {
+            "original": 1902.9013339999947,
+            "strict": 2073.306500000006,
+            "experimental": 366.20770900000934
+          },
+          "noopRefreshMs": [
+            1.0683749999880092,
+            0.10037499999452848,
+            0.08533299999544397
+          ]
+        },
+        {
+          "name": "batch-grouped-full-history",
+          "grouped": true,
+          "tags": [
+            "api/east",
+            "002",
+            "2",
+            "监控/é",
+            "service/00",
+            "service/01",
+            "service/02",
+            "service/03",
+            "service/04",
+            "service/05",
+            "service/06",
+            "service/07",
+            "service/08",
+            "service/09",
+            "service/10",
+            "service/11",
+            "service/12",
+            "service/13",
+            "service/14",
+            "service/15",
+            "service/16",
+            "service/17",
+            "service/18",
+            "service/19",
+            "service/20",
+            "service/21",
+            "service/22",
+            "service/23",
+            "service/24",
+            "service/25",
+            "service/26",
+            "service/27"
+          ],
+          "window": [
+            1767225600,
+            86400,
+            90
+          ],
+          "resultRows": 2880,
+          "exact": true,
+          "roundsMs": {
+            "original": [
+              2506.377999999997,
+              2555.340041999996,
+              2241.7365410000057
+            ],
+            "strict": [
+              2270.3571660000016,
+              2226.6784999999945,
+              2538.654959000007
+            ],
+            "experimental": [
+              394.34379099999205,
+              389.8250410000037,
+              431.2239580000023
+            ]
+          },
+          "medianMs": {
+            "original": 2506.377999999997,
+            "strict": 2270.3571660000016,
+            "experimental": 394.34379099999205
+          },
+          "noopRefreshMs": [
+            0.2932500000024447,
+            0.08666700001049321,
+            0.06412500000442378
+          ]
+        },
+        {
+          "name": "batch-grouped-recent-day",
+          "grouped": true,
+          "tags": [
+            "api/east",
+            "002",
+            "2",
+            "监控/é",
+            "service/00",
+            "service/01",
+            "service/02",
+            "service/03",
+            "service/04",
+            "service/05",
+            "service/06",
+            "service/07",
+            "service/08",
+            "service/09",
+            "service/10",
+            "service/11",
+            "service/12",
+            "service/13",
+            "service/14",
+            "service/15",
+            "service/16",
+            "service/17",
+            "service/18",
+            "service/19",
+            "service/20",
+            "service/21",
+            "service/22",
+            "service/23",
+            "service/24",
+            "service/25",
+            "service/26",
+            "service/27"
+          ],
+          "window": [
+            1774915200,
+            900,
+            96
+          ],
+          "resultRows": 3072,
+          "exact": true,
+          "roundsMs": {
+            "original": [
+              22.24762500000361,
+              26.581915999995545,
+              21.758791999993264
+            ],
+            "strict": [
+              21.187166999996407,
+              22.82508299998881,
+              22.334708999987924
+            ],
+            "experimental": [
+              6.686665999994148,
+              5.317374999998719,
+              6.080375000005006
+            ]
+          },
+          "medianMs": {
+            "original": 22.24762500000361,
+            "strict": 22.334708999987924,
+            "experimental": 6.080375000005006
+          },
+          "noopRefreshMs": [
+            0.15366599999833852,
+            0.06783300000824966,
+            0.05495800000790041
+          ]
+        }
+      ],
+      "writes": [
+        {
+          "name": "late-upsert-and-new-row",
+          "paths": {
+            "baseline": {
+              "writeMs": 3.7453329999989364,
+              "refreshMs": 0,
+              "readMs": 20.984958000000915,
+              "endToEndMs": 25.452459000007366
+            },
+            "adapter": {
+              "writeMs": 1.6668750000098953,
+              "refreshMs": 4.372457999998005,
+              "readMs": 6.41737500000454,
+              "endToEndMs": 13.569000000003143
+            }
+          },
+          "identity": {
+            "baseline": {
+              "rows": 4147201,
+              "sha256": "deab98e3ef07d94e7f62d5cc282fe4bae5b7b1429cc543dfa33b96aedf3bf09d"
+            },
+            "adapter": {
+              "rows": 4147201,
+              "sha256": "deab98e3ef07d94e7f62d5cc282fe4bae5b7b1429cc543dfa33b96aedf3bf09d"
+            }
+          },
+          "aggregateAudit": {
+            "request": [
+              [
+                "api/east",
+                "002",
+                "2",
+                "监控/é",
+                "service/00",
+                "service/01",
+                "service/02",
+                "service/03",
+                "service/04",
+                "service/05",
+                "service/06",
+                "service/07",
+                "service/08",
+                "service/09",
+                "service/10",
+                "service/11",
+                "service/12",
+                "service/13",
+                "service/14",
+                "service/15",
+                "service/16",
+                "service/17",
+                "service/18",
+                "service/19",
+                "service/20",
+                "service/21",
+                "service/22",
+                "service/23",
+                "service/24",
+                "service/25",
+                "service/26",
+                "service/27"
+              ],
+              1767225600,
+              86400,
+              91
+            ],
+            "resultRows": 2881,
+            "exact": true
+          },
+          "independentExpectedChangedRows": 2
+        },
+        {
+          "name": "inclusive-range-update",
+          "paths": {
+            "baseline": {
+              "writeMs": 1.8959580000082497,
+              "refreshMs": 0,
+              "readMs": 21.81487499998184,
+              "endToEndMs": 24.547165999974823
+            },
+            "adapter": {
+              "writeMs": 0.939334000024246,
+              "refreshMs": 2.0682920000108425,
+              "readMs": 5.96441699998104,
+              "endToEndMs": 10.382584000006318
+            }
+          },
+          "identity": {
+            "baseline": {
+              "rows": 4147201,
+              "sha256": "f1e51cfee6b1bd51ea9a12687902f6c4a39e6b45af80f643d2708118f5f70db1"
+            },
+            "adapter": {
+              "rows": 4147201,
+              "sha256": "f1e51cfee6b1bd51ea9a12687902f6c4a39e6b45af80f643d2708118f5f70db1"
+            }
+          },
+          "aggregateAudit": {
+            "request": [
+              [
+                "api/east",
+                "002",
+                "2",
+                "监控/é",
+                "service/00",
+                "service/01",
+                "service/02",
+                "service/03",
+                "service/04",
+                "service/05",
+                "service/06",
+                "service/07",
+                "service/08",
+                "service/09",
+                "service/10",
+                "service/11",
+                "service/12",
+                "service/13",
+                "service/14",
+                "service/15",
+                "service/16",
+                "service/17",
+                "service/18",
+                "service/19",
+                "service/20",
+                "service/21",
+                "service/22",
+                "service/23",
+                "service/24",
+                "service/25",
+                "service/26",
+                "service/27"
+              ],
+              1767225600,
+              86400,
+              91
+            ],
+            "resultRows": 2881,
+            "exact": true
+          },
+          "independentExpectedChangedRows": 15
+        },
+        {
+          "name": "confirmation-recovery",
+          "paths": {
+            "baseline": {
+              "writeMs": 0.8532500000146683,
+              "refreshMs": 0,
+              "readMs": 22.248166000004858,
+              "endToEndMs": 23.709666999988258
+            },
+            "adapter": {
+              "writeMs": 0.5266669999982696,
+              "refreshMs": 0.4467090000107419,
+              "readMs": 5.6209169999929145,
+              "endToEndMs": 7.3550840000098106
+            }
+          },
+          "identity": {
+            "baseline": {
+              "rows": 4147201,
+              "sha256": "be2da87e9f1af5815984c87ff6d51ea73890b424cbac3161fc8fdad2cb5d9630"
+            },
+            "adapter": {
+              "rows": 4147201,
+              "sha256": "be2da87e9f1af5815984c87ff6d51ea73890b424cbac3161fc8fdad2cb5d9630"
+            }
+          },
+          "aggregateAudit": {
+            "request": [
+              [
+                "api/east",
+                "002",
+                "2",
+                "监控/é",
+                "service/00",
+                "service/01",
+                "service/02",
+                "service/03",
+                "service/04",
+                "service/05",
+                "service/06",
+                "service/07",
+                "service/08",
+                "service/09",
+                "service/10",
+                "service/11",
+                "service/12",
+                "service/13",
+                "service/14",
+                "service/15",
+                "service/16",
+                "service/17",
+                "service/18",
+                "service/19",
+                "service/20",
+                "service/21",
+                "service/22",
+                "service/23",
+                "service/24",
+                "service/25",
+                "service/26",
+                "service/27"
+              ],
+              1767225600,
+              86400,
+              91
+            ],
+            "resultRows": 2881,
+            "exact": true
+          },
+          "independentExpectedChangedRows": 1
+        }
+      ],
+      "retention": {
+        "name": "actual-background-one-day-expiry",
+        "frozenNow": 1775088000000,
+        "retentionDays": 90,
+        "cutoff": 1767312000,
+        "expectedDeleted": 46080,
+        "paths": {
+          "baseline": {
+            "deleted": 46080,
+            "writeMs": 103.41312499999185,
+            "refreshMs": 0,
+            "transactionMs": 111.02808300001197
+          },
+          "adapter": {
+            "deleted": 46080,
+            "writeMs": 114.06691599998157,
+            "refreshMs": 522.9366250000021,
+            "transactionMs": 660.1320419999829
+          }
+        },
+        "aggregateAudit": {
+          "request": [
+            [
+              "api/east",
+              "002",
+              "2",
+              "监控/é",
+              "service/00",
+              "service/01",
+              "service/02",
+              "service/03",
+              "service/04",
+              "service/05",
+              "service/06",
+              "service/07",
+              "service/08",
+              "service/09",
+              "service/10",
+              "service/11",
+              "service/12",
+              "service/13",
+              "service/14",
+              "service/15",
+              "service/16",
+              "service/17",
+              "service/18",
+              "service/19",
+              "service/20",
+              "service/21",
+              "service/22",
+              "service/23",
+              "service/24",
+              "service/25",
+              "service/26",
+              "service/27"
+            ],
+            1767225600,
+            86400,
+            91
+          ],
+          "resultRows": 2849,
+          "exact": true
+        }
+      },
+      "finalIdentity": {
+        "baseline": {
+          "rows": 4101121,
+          "sha256": "f51ee962ef627acd3871604834bd5ebda1f842d3cba0f27a3b50d29f17d22dea"
+        },
+        "adapter": {
+          "rows": 4101121,
+          "sha256": "f51ee962ef627acd3871604834bd5ebda1f842d3cba0f27a3b50d29f17d22dea"
+        }
+      }
+    },
+    {
+      "repeat": 1,
+      "copyMs": 982.097207999992,
+      "installMs": 35707.33933400002,
+      "groups": 337379,
+      "reads": [
+        {
+          "name": "one-full-history",
+          "grouped": false,
+          "tags": "api/east",
+          "window": [
+            1767225600,
+            86400,
+            90
+          ],
+          "resultRows": 90,
+          "exact": true,
+          "roundsMs": {
+            "original": [
+              44.12070900000981,
+              44.48366699999315,
+              43.55420799998683
+            ],
+            "strict": [
+              45.96191699997871,
+              44.21658400000888,
+              47.89295800001128
+            ],
+            "experimental": [
+              137.8590410000179,
+              135.12612499998068,
+              137.0997090000019
+            ]
+          },
+          "medianMs": {
+            "original": 44.12070900000981,
+            "strict": 45.96191699997871,
+            "experimental": 137.0997090000019
+          },
+          "noopRefreshMs": [
+            1.0015830000047572,
+            0.09695900001679547,
+            0.06845799999427982
+          ]
+        },
+        {
+          "name": "one-recent-day",
+          "grouped": false,
+          "tags": "api/east",
+          "window": [
+            1774915200,
+            900,
+            96
+          ],
+          "resultRows": 96,
+          "exact": true,
+          "roundsMs": {
+            "original": [
+              0.5981250000186265,
+              0.5758329999807756,
+              0.6691250000149012
+            ],
+            "strict": [
+              0.6272500000195578,
+              0.6148340000072494,
+              0.6241250000020955
+            ],
+            "experimental": [
+              1.4836660000146367,
+              1.4626249999855645,
+              1.4541669999889564
+            ]
+          },
+          "medianMs": {
+            "original": 0.5981250000186265,
+            "strict": 0.6241250000020955,
+            "experimental": 1.4626249999855645
+          },
+          "noopRefreshMs": [
+            0.1486670000012964,
+            0.08041599998250604,
+            0.06145800001104362
+          ]
+        },
+        {
+          "name": "batch-merged-full-history",
+          "grouped": false,
+          "tags": [
+            "api/east",
+            "002",
+            "2",
+            "监控/é",
+            "service/00",
+            "service/01",
+            "service/02",
+            "service/03",
+            "service/04",
+            "service/05",
+            "service/06",
+            "service/07",
+            "service/08",
+            "service/09",
+            "service/10",
+            "service/11",
+            "service/12",
+            "service/13",
+            "service/14",
+            "service/15",
+            "service/16",
+            "service/17",
+            "service/18",
+            "service/19",
+            "service/20",
+            "service/21",
+            "service/22",
+            "service/23",
+            "service/24",
+            "service/25",
+            "service/26",
+            "service/27"
+          ],
+          "window": [
+            1767225600,
+            86400,
+            90
+          ],
+          "resultRows": 90,
+          "exact": true,
+          "roundsMs": {
+            "original": [
+              2165.5288329999894,
+              1894.7333339999896,
+              2040.9010000000126
+            ],
+            "strict": [
+              1906.8885829999927,
+              1880.3144589999865,
+              1906.946666999982
+            ],
+            "experimental": [
+              318.36712499998976,
+              352.2219159999804,
+              318.3205409999937
+            ]
+          },
+          "medianMs": {
+            "original": 2040.9010000000126,
+            "strict": 1906.8885829999927,
+            "experimental": 318.36712499998976
+          },
+          "noopRefreshMs": [
+            0.8884580000012647,
+            0.10704200001782738,
+            0.07687500002793968
+          ]
+        },
+        {
+          "name": "batch-grouped-full-history",
+          "grouped": true,
+          "tags": [
+            "api/east",
+            "002",
+            "2",
+            "监控/é",
+            "service/00",
+            "service/01",
+            "service/02",
+            "service/03",
+            "service/04",
+            "service/05",
+            "service/06",
+            "service/07",
+            "service/08",
+            "service/09",
+            "service/10",
+            "service/11",
+            "service/12",
+            "service/13",
+            "service/14",
+            "service/15",
+            "service/16",
+            "service/17",
+            "service/18",
+            "service/19",
+            "service/20",
+            "service/21",
+            "service/22",
+            "service/23",
+            "service/24",
+            "service/25",
+            "service/26",
+            "service/27"
+          ],
+          "window": [
+            1767225600,
+            86400,
+            90
+          ],
+          "resultRows": 2880,
+          "exact": true,
+          "roundsMs": {
+            "original": [
+              2413.5482499999925,
+              2205.972124999971,
+              2456.7266250000102
+            ],
+            "strict": [
+              2249.4703330000048,
+              2175.1662079999805,
+              2183.9117500000284
+            ],
+            "experimental": [
+              383.56329099999857,
+              427.06870900001377,
+              387.6386250000214
+            ]
+          },
+          "medianMs": {
+            "original": 2413.5482499999925,
+            "strict": 2183.9117500000284,
+            "experimental": 387.6386250000214
+          },
+          "noopRefreshMs": [
+            0.7220830000005662,
+            0.08600000001024455,
+            0.09858300001360476
+          ]
+        },
+        {
+          "name": "batch-grouped-recent-day",
+          "grouped": true,
+          "tags": [
+            "api/east",
+            "002",
+            "2",
+            "监控/é",
+            "service/00",
+            "service/01",
+            "service/02",
+            "service/03",
+            "service/04",
+            "service/05",
+            "service/06",
+            "service/07",
+            "service/08",
+            "service/09",
+            "service/10",
+            "service/11",
+            "service/12",
+            "service/13",
+            "service/14",
+            "service/15",
+            "service/16",
+            "service/17",
+            "service/18",
+            "service/19",
+            "service/20",
+            "service/21",
+            "service/22",
+            "service/23",
+            "service/24",
+            "service/25",
+            "service/26",
+            "service/27"
+          ],
+          "window": [
+            1774915200,
+            900,
+            96
+          ],
+          "resultRows": 3072,
+          "exact": true,
+          "roundsMs": {
+            "original": [
+              20.899124999996275,
+              21.279416000004858,
+              21.01508300000569
+            ],
+            "strict": [
+              21.614833000057843,
+              20.69162499997765,
+              20.975625000020955
+            ],
+            "experimental": [
+              5.1629160000011325,
+              6.397791000024881,
+              5.3250410000327975
+            ]
+          },
+          "medianMs": {
+            "original": 21.01508300000569,
+            "strict": 20.975625000020955,
+            "experimental": 5.3250410000327975
+          },
+          "noopRefreshMs": [
+            0.16395899996859953,
+            0.07091700000455603,
+            0.05629100004443899
+          ]
+        }
+      ],
+      "writes": [
+        {
+          "name": "late-upsert-and-new-row",
+          "paths": {
+            "adapter": {
+              "writeMs": 2.522791999974288,
+              "refreshMs": 4.747875000000931,
+              "readMs": 5.209124999993946,
+              "endToEndMs": 13.595625000016298
+            },
+            "baseline": {
+              "writeMs": 1.074332999996841,
+              "refreshMs": 0,
+              "readMs": 22.101124999986496,
+              "endToEndMs": 23.579750000033528
+            }
+          },
+          "identity": {
+            "baseline": {
+              "rows": 4147201,
+              "sha256": "deab98e3ef07d94e7f62d5cc282fe4bae5b7b1429cc543dfa33b96aedf3bf09d"
+            },
+            "adapter": {
+              "rows": 4147201,
+              "sha256": "deab98e3ef07d94e7f62d5cc282fe4bae5b7b1429cc543dfa33b96aedf3bf09d"
+            }
+          },
+          "aggregateAudit": {
+            "request": [
+              [
+                "api/east",
+                "002",
+                "2",
+                "监控/é",
+                "service/00",
+                "service/01",
+                "service/02",
+                "service/03",
+                "service/04",
+                "service/05",
+                "service/06",
+                "service/07",
+                "service/08",
+                "service/09",
+                "service/10",
+                "service/11",
+                "service/12",
+                "service/13",
+                "service/14",
+                "service/15",
+                "service/16",
+                "service/17",
+                "service/18",
+                "service/19",
+                "service/20",
+                "service/21",
+                "service/22",
+                "service/23",
+                "service/24",
+                "service/25",
+                "service/26",
+                "service/27"
+              ],
+              1767225600,
+              86400,
+              91
+            ],
+            "resultRows": 2881,
+            "exact": true
+          },
+          "independentExpectedChangedRows": 2
+        },
+        {
+          "name": "inclusive-range-update",
+          "paths": {
+            "adapter": {
+              "writeMs": 1.0932499999762513,
+              "refreshMs": 2.7292080000042915,
+              "readMs": 6.287415999977384,
+              "endToEndMs": 11.752749999985099
+            },
+            "baseline": {
+              "writeMs": 0.76724999997532,
+              "refreshMs": 0,
+              "readMs": 25.530541999964043,
+              "endToEndMs": 26.748958000040147
+            }
+          },
+          "identity": {
+            "baseline": {
+              "rows": 4147201,
+              "sha256": "f1e51cfee6b1bd51ea9a12687902f6c4a39e6b45af80f643d2708118f5f70db1"
+            },
+            "adapter": {
+              "rows": 4147201,
+              "sha256": "f1e51cfee6b1bd51ea9a12687902f6c4a39e6b45af80f643d2708118f5f70db1"
+            }
+          },
+          "aggregateAudit": {
+            "request": [
+              [
+                "api/east",
+                "002",
+                "2",
+                "监控/é",
+                "service/00",
+                "service/01",
+                "service/02",
+                "service/03",
+                "service/04",
+                "service/05",
+                "service/06",
+                "service/07",
+                "service/08",
+                "service/09",
+                "service/10",
+                "service/11",
+                "service/12",
+                "service/13",
+                "service/14",
+                "service/15",
+                "service/16",
+                "service/17",
+                "service/18",
+                "service/19",
+                "service/20",
+                "service/21",
+                "service/22",
+                "service/23",
+                "service/24",
+                "service/25",
+                "service/26",
+                "service/27"
+              ],
+              1767225600,
+              86400,
+              91
+            ],
+            "resultRows": 2881,
+            "exact": true
+          },
+          "independentExpectedChangedRows": 15
+        },
+        {
+          "name": "confirmation-recovery",
+          "paths": {
+            "adapter": {
+              "writeMs": 0.667249999998603,
+              "refreshMs": 0.5218330000061542,
+              "readMs": 6.542375000019092,
+              "endToEndMs": 9.266583000018727
+            },
+            "baseline": {
+              "writeMs": 0.3436670000082813,
+              "refreshMs": 0,
+              "readMs": 22.29591700003948,
+              "endToEndMs": 23.167041999986395
+            }
+          },
+          "identity": {
+            "baseline": {
+              "rows": 4147201,
+              "sha256": "be2da87e9f1af5815984c87ff6d51ea73890b424cbac3161fc8fdad2cb5d9630"
+            },
+            "adapter": {
+              "rows": 4147201,
+              "sha256": "be2da87e9f1af5815984c87ff6d51ea73890b424cbac3161fc8fdad2cb5d9630"
+            }
+          },
+          "aggregateAudit": {
+            "request": [
+              [
+                "api/east",
+                "002",
+                "2",
+                "监控/é",
+                "service/00",
+                "service/01",
+                "service/02",
+                "service/03",
+                "service/04",
+                "service/05",
+                "service/06",
+                "service/07",
+                "service/08",
+                "service/09",
+                "service/10",
+                "service/11",
+                "service/12",
+                "service/13",
+                "service/14",
+                "service/15",
+                "service/16",
+                "service/17",
+                "service/18",
+                "service/19",
+                "service/20",
+                "service/21",
+                "service/22",
+                "service/23",
+                "service/24",
+                "service/25",
+                "service/26",
+                "service/27"
+              ],
+              1767225600,
+              86400,
+              91
+            ],
+            "resultRows": 2881,
+            "exact": true
+          },
+          "independentExpectedChangedRows": 1
+        }
+      ],
+      "retention": {
+        "name": "actual-background-one-day-expiry",
+        "frozenNow": 1775088000000,
+        "retentionDays": 90,
+        "cutoff": 1767312000,
+        "expectedDeleted": 46080,
+        "paths": {
+          "adapter": {
+            "deleted": 46080,
+            "writeMs": 146.71037500002421,
+            "refreshMs": 568.7940420000232,
+            "transactionMs": 750.8735000000452
+          },
+          "baseline": {
+            "deleted": 46080,
+            "writeMs": 106.80958400003146,
+            "refreshMs": 0,
+            "transactionMs": 114.36491599999135
+          }
+        },
+        "aggregateAudit": {
+          "request": [
+            [
+              "api/east",
+              "002",
+              "2",
+              "监控/é",
+              "service/00",
+              "service/01",
+              "service/02",
+              "service/03",
+              "service/04",
+              "service/05",
+              "service/06",
+              "service/07",
+              "service/08",
+              "service/09",
+              "service/10",
+              "service/11",
+              "service/12",
+              "service/13",
+              "service/14",
+              "service/15",
+              "service/16",
+              "service/17",
+              "service/18",
+              "service/19",
+              "service/20",
+              "service/21",
+              "service/22",
+              "service/23",
+              "service/24",
+              "service/25",
+              "service/26",
+              "service/27"
+            ],
+            1767225600,
+            86400,
+            91
+          ],
+          "resultRows": 2849,
+          "exact": true
+        }
+      },
+      "finalIdentity": {
+        "baseline": {
+          "rows": 4101121,
+          "sha256": "f51ee962ef627acd3871604834bd5ebda1f842d3cba0f27a3b50d29f17d22dea"
+        },
+        "adapter": {
+          "rows": 4101121,
+          "sha256": "f51ee962ef627acd3871604834bd5ebda1f842d3cba0f27a3b50d29f17d22dea"
+        }
+      }
+    },
+    {
+      "repeat": 2,
+      "copyMs": 988.809709000052,
+      "installMs": 35580.02337499999,
+      "groups": 337379,
+      "reads": [
+        {
+          "name": "one-full-history",
+          "grouped": false,
+          "tags": "api/east",
+          "window": [
+            1767225600,
+            86400,
+            90
+          ],
+          "resultRows": 90,
+          "exact": true,
+          "roundsMs": {
+            "original": [
+              42.5557919999701,
+              43.42499999998836,
+              42.865749999997206
+            ],
+            "strict": [
+              44.78224999998929,
+              45.78112500003772,
+              43.13904099998763
+            ],
+            "experimental": [
+              134.93191600003047,
+              131.0547919999808,
+              136.15929099998903
+            ]
+          },
+          "medianMs": {
+            "original": 42.865749999997206,
+            "strict": 44.78224999998929,
+            "experimental": 134.93191600003047
+          },
+          "noopRefreshMs": [
+            0.36612500000046566,
+            0.0857079999987036,
+            0.06216700002551079
+          ]
+        },
+        {
+          "name": "one-recent-day",
+          "grouped": false,
+          "tags": "api/east",
+          "window": [
+            1774915200,
+            900,
+            96
+          ],
+          "resultRows": 96,
+          "exact": true,
+          "roundsMs": {
+            "original": [
+              0.6126669999794103,
+              0.5770829999819398,
+              0.5582500000018626
+            ],
+            "strict": [
+              0.5603339999797754,
+              0.5935829999507405,
+              0.5908749999944121
+            ],
+            "experimental": [
+              1.3575409999466501,
+              1.3545000000158325,
+              1.4338329999591224
+            ]
+          },
+          "medianMs": {
+            "original": 0.5770829999819398,
+            "strict": 0.5908749999944121,
+            "experimental": 1.3575409999466501
+          },
+          "noopRefreshMs": [
+            0.08337499998742715,
+            0.06225000001722947,
+            0.06329200003528967
+          ]
+        },
+        {
+          "name": "batch-merged-full-history",
+          "grouped": false,
+          "tags": [
+            "api/east",
+            "002",
+            "2",
+            "监控/é",
+            "service/00",
+            "service/01",
+            "service/02",
+            "service/03",
+            "service/04",
+            "service/05",
+            "service/06",
+            "service/07",
+            "service/08",
+            "service/09",
+            "service/10",
+            "service/11",
+            "service/12",
+            "service/13",
+            "service/14",
+            "service/15",
+            "service/16",
+            "service/17",
+            "service/18",
+            "service/19",
+            "service/20",
+            "service/21",
+            "service/22",
+            "service/23",
+            "service/24",
+            "service/25",
+            "service/26",
+            "service/27"
+          ],
+          "window": [
+            1767225600,
+            86400,
+            90
+          ],
+          "resultRows": 90,
+          "exact": true,
+          "roundsMs": {
+            "original": [
+              2291.5709579999675,
+              2137.018875000009,
+              1893.8307499999646
+            ],
+            "strict": [
+              1917.6375419999822,
+              1913.4778330000117,
+              1878.6034579999978
+            ],
+            "experimental": [
+              353.78612499998417,
+              300.9883329999866,
+              361.43062499997905
+            ]
+          },
+          "medianMs": {
+            "original": 2137.018875000009,
+            "strict": 1913.4778330000117,
+            "experimental": 353.78612499998417
+          },
+          "noopRefreshMs": [
+            0.9284169999882579,
+            0.09879199997521937,
+            0.06866699998499826
+          ]
+        },
+        {
+          "name": "batch-grouped-full-history",
+          "grouped": true,
+          "tags": [
+            "api/east",
+            "002",
+            "2",
+            "监控/é",
+            "service/00",
+            "service/01",
+            "service/02",
+            "service/03",
+            "service/04",
+            "service/05",
+            "service/06",
+            "service/07",
+            "service/08",
+            "service/09",
+            "service/10",
+            "service/11",
+            "service/12",
+            "service/13",
+            "service/14",
+            "service/15",
+            "service/16",
+            "service/17",
+            "service/18",
+            "service/19",
+            "service/20",
+            "service/21",
+            "service/22",
+            "service/23",
+            "service/24",
+            "service/25",
+            "service/26",
+            "service/27"
+          ],
+          "window": [
+            1767225600,
+            86400,
+            90
+          ],
+          "resultRows": 2880,
+          "exact": true,
+          "roundsMs": {
+            "original": [
+              2491.0227500000037,
+              3277.254957999976,
+              2845.6364170000306
+            ],
+            "strict": [
+              2688.141249999986,
+              3211.941374999995,
+              2794.734541999991
+            ],
+            "experimental": [
+              403.835167000012,
+              381.41137500002515,
+              478.6839999999502
+            ]
+          },
+          "medianMs": {
+            "original": 2845.6364170000306,
+            "strict": 2794.734541999991,
+            "experimental": 403.835167000012
+          },
+          "noopRefreshMs": [
+            1.880291000008583,
+            0.08758300001500174,
+            0.06483300001127645
+          ]
+        },
+        {
+          "name": "batch-grouped-recent-day",
+          "grouped": true,
+          "tags": [
+            "api/east",
+            "002",
+            "2",
+            "监控/é",
+            "service/00",
+            "service/01",
+            "service/02",
+            "service/03",
+            "service/04",
+            "service/05",
+            "service/06",
+            "service/07",
+            "service/08",
+            "service/09",
+            "service/10",
+            "service/11",
+            "service/12",
+            "service/13",
+            "service/14",
+            "service/15",
+            "service/16",
+            "service/17",
+            "service/18",
+            "service/19",
+            "service/20",
+            "service/21",
+            "service/22",
+            "service/23",
+            "service/24",
+            "service/25",
+            "service/26",
+            "service/27"
+          ],
+          "window": [
+            1774915200,
+            900,
+            96
+          ],
+          "resultRows": 3072,
+          "exact": true,
+          "roundsMs": {
+            "original": [
+              20.980332999955863,
+              20.67795899999328,
+              20.7975420000148
+            ],
+            "strict": [
+              21.1050830000313,
+              20.54425000003539,
+              20.400416999997105
+            ],
+            "experimental": [
+              5.918999999994412,
+              6.314084000012372,
+              5.1346660000272095
+            ]
+          },
+          "medianMs": {
+            "original": 20.7975420000148,
+            "strict": 20.54425000003539,
+            "experimental": 5.918999999994412
+          },
+          "noopRefreshMs": [
+            0.1384589999797754,
+            0.06449999997857958,
+            0.05283300002338365
+          ]
+        }
+      ],
+      "writes": [
+        {
+          "name": "late-upsert-and-new-row",
+          "paths": {
+            "baseline": {
+              "writeMs": 2.5886670000036247,
+              "refreshMs": 0,
+              "readMs": 20.70641699997941,
+              "endToEndMs": 23.972083000000566
+            },
+            "adapter": {
+              "writeMs": 2.833708999969531,
+              "refreshMs": 4.827625000034459,
+              "readMs": 5.241666999994777,
+              "endToEndMs": 13.849417000019457
+            }
+          },
+          "identity": {
+            "baseline": {
+              "rows": 4147201,
+              "sha256": "deab98e3ef07d94e7f62d5cc282fe4bae5b7b1429cc543dfa33b96aedf3bf09d"
+            },
+            "adapter": {
+              "rows": 4147201,
+              "sha256": "deab98e3ef07d94e7f62d5cc282fe4bae5b7b1429cc543dfa33b96aedf3bf09d"
+            }
+          },
+          "aggregateAudit": {
+            "request": [
+              [
+                "api/east",
+                "002",
+                "2",
+                "监控/é",
+                "service/00",
+                "service/01",
+                "service/02",
+                "service/03",
+                "service/04",
+                "service/05",
+                "service/06",
+                "service/07",
+                "service/08",
+                "service/09",
+                "service/10",
+                "service/11",
+                "service/12",
+                "service/13",
+                "service/14",
+                "service/15",
+                "service/16",
+                "service/17",
+                "service/18",
+                "service/19",
+                "service/20",
+                "service/21",
+                "service/22",
+                "service/23",
+                "service/24",
+                "service/25",
+                "service/26",
+                "service/27"
+              ],
+              1767225600,
+              86400,
+              91
+            ],
+            "resultRows": 2881,
+            "exact": true
+          },
+          "independentExpectedChangedRows": 2
+        },
+        {
+          "name": "inclusive-range-update",
+          "paths": {
+            "baseline": {
+              "writeMs": 2.0192079999833368,
+              "refreshMs": 0,
+              "readMs": 50.037416999985,
+              "endToEndMs": 52.67641700000968
+            },
+            "adapter": {
+              "writeMs": 3.015374999959022,
+              "refreshMs": 2.1357500000158325,
+              "readMs": 6.397540999983903,
+              "endToEndMs": 12.375209000019822
+            }
+          },
+          "identity": {
+            "baseline": {
+              "rows": 4147201,
+              "sha256": "f1e51cfee6b1bd51ea9a12687902f6c4a39e6b45af80f643d2708118f5f70db1"
+            },
+            "adapter": {
+              "rows": 4147201,
+              "sha256": "f1e51cfee6b1bd51ea9a12687902f6c4a39e6b45af80f643d2708118f5f70db1"
+            }
+          },
+          "aggregateAudit": {
+            "request": [
+              [
+                "api/east",
+                "002",
+                "2",
+                "监控/é",
+                "service/00",
+                "service/01",
+                "service/02",
+                "service/03",
+                "service/04",
+                "service/05",
+                "service/06",
+                "service/07",
+                "service/08",
+                "service/09",
+                "service/10",
+                "service/11",
+                "service/12",
+                "service/13",
+                "service/14",
+                "service/15",
+                "service/16",
+                "service/17",
+                "service/18",
+                "service/19",
+                "service/20",
+                "service/21",
+                "service/22",
+                "service/23",
+                "service/24",
+                "service/25",
+                "service/26",
+                "service/27"
+              ],
+              1767225600,
+              86400,
+              91
+            ],
+            "resultRows": 2881,
+            "exact": true
+          },
+          "independentExpectedChangedRows": 15
+        },
+        {
+          "name": "confirmation-recovery",
+          "paths": {
+            "baseline": {
+              "writeMs": 0.9130000000004657,
+              "refreshMs": 0,
+              "readMs": 21.771124999970198,
+              "endToEndMs": 23.411917000019457
+            },
+            "adapter": {
+              "writeMs": 0.6108750000130385,
+              "refreshMs": 1.8167919999687,
+              "readMs": 5.749333999992814,
+              "endToEndMs": 8.739916999998968
+            }
+          },
+          "identity": {
+            "baseline": {
+              "rows": 4147201,
+              "sha256": "be2da87e9f1af5815984c87ff6d51ea73890b424cbac3161fc8fdad2cb5d9630"
+            },
+            "adapter": {
+              "rows": 4147201,
+              "sha256": "be2da87e9f1af5815984c87ff6d51ea73890b424cbac3161fc8fdad2cb5d9630"
+            }
+          },
+          "aggregateAudit": {
+            "request": [
+              [
+                "api/east",
+                "002",
+                "2",
+                "监控/é",
+                "service/00",
+                "service/01",
+                "service/02",
+                "service/03",
+                "service/04",
+                "service/05",
+                "service/06",
+                "service/07",
+                "service/08",
+                "service/09",
+                "service/10",
+                "service/11",
+                "service/12",
+                "service/13",
+                "service/14",
+                "service/15",
+                "service/16",
+                "service/17",
+                "service/18",
+                "service/19",
+                "service/20",
+                "service/21",
+                "service/22",
+                "service/23",
+                "service/24",
+                "service/25",
+                "service/26",
+                "service/27"
+              ],
+              1767225600,
+              86400,
+              91
+            ],
+            "resultRows": 2881,
+            "exact": true
+          },
+          "independentExpectedChangedRows": 1
+        }
+      ],
+      "retention": {
+        "name": "actual-background-one-day-expiry",
+        "frozenNow": 1775088000000,
+        "retentionDays": 90,
+        "cutoff": 1767312000,
+        "expectedDeleted": 46080,
+        "paths": {
+          "baseline": {
+            "deleted": 46080,
+            "writeMs": 92.53908300003968,
+            "refreshMs": 0,
+            "transactionMs": 100.1576659999555
+          },
+          "adapter": {
+            "deleted": 46080,
+            "writeMs": 127.79262500000186,
+            "refreshMs": 493.53383400000166,
+            "transactionMs": 644.2055419999524
+          }
+        },
+        "aggregateAudit": {
+          "request": [
+            [
+              "api/east",
+              "002",
+              "2",
+              "监控/é",
+              "service/00",
+              "service/01",
+              "service/02",
+              "service/03",
+              "service/04",
+              "service/05",
+              "service/06",
+              "service/07",
+              "service/08",
+              "service/09",
+              "service/10",
+              "service/11",
+              "service/12",
+              "service/13",
+              "service/14",
+              "service/15",
+              "service/16",
+              "service/17",
+              "service/18",
+              "service/19",
+              "service/20",
+              "service/21",
+              "service/22",
+              "service/23",
+              "service/24",
+              "service/25",
+              "service/26",
+              "service/27"
+            ],
+            1767225600,
+            86400,
+            91
+          ],
+          "resultRows": 2849,
+          "exact": true
+        }
+      },
+      "finalIdentity": {
+        "baseline": {
+          "rows": 4101121,
+          "sha256": "f51ee962ef627acd3871604834bd5ebda1f842d3cba0f27a3b50d29f17d22dea"
+        },
+        "adapter": {
+          "rows": 4101121,
+          "sha256": "f51ee962ef627acd3871604834bd5ebda1f842d3cba0f27a3b50d29f17d22dea"
+        }
+      }
+    }
+  ]
+}

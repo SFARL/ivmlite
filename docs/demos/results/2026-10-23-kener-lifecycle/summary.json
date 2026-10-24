@@ -1,0 +1,142 @@
+{
+  "status": "passed",
+  "date": "2026-10-23",
+  "scope": "Bounded explicit-pool/savepoint adapter uninstall and host schema migration; conservative exclusive-sidecar ownership; default rollback-journal abrupt process death only",
+  "sourceSHA": "5bc658b771d44f48b61a514cfdb5037468c5aa36",
+  "node": {
+    "version": "v24.22.1",
+    "modules": "137",
+    "platform": "darwin",
+    "arch": "arm64"
+  },
+  "sqlite": {
+    "version": "3.51.2",
+    "source_id": "2026-01-09 17:27:48 b270f8339eb13b504d0b2ba154ebca966b7dde08e40c3ed7d559749818cb2075"
+  },
+  "dependencies": {
+    "knex": "3.1.0",
+    "better-sqlite3": "12.6.2",
+    "dotenv": "17.2.4"
+  },
+  "addon": {
+    "filename": "better_sqlite3.node",
+    "sha256": "f4ab8ddc57768a1342fad1a948c7ff943fe553ebd73671054cd58c1f7cd33021"
+  },
+  "extension": {
+    "filename": "libivmlite_sqlite.dylib",
+    "sha256": "4bc5f14e81f786f3d3644fffbc9d8fc8c44ac0d768fc4eebc541312cbb589f20"
+  },
+  "lifecycleAssertions": {
+    "baseComparisons": 69,
+    "projectionComparisons": 59,
+    "viewComparisons": 59,
+    "schemaComparisons": 15,
+    "completeStateComparisons": 20,
+    "contextComparisons": 27,
+    "dependencyRefusals": 8,
+    "ownershipRefusals": 6,
+    "temporaryShadowRefusals": 3,
+    "abruptDeaths": 2
+  },
+  "lifecycleChecks": [
+    "pending-write uninstall uses extension cleanup; complete original schema restored; fresh bare exact-dependency Knex pool writes/reads through pinned repository without extension, then reinstall/backfill and next write pass",
+    "migration preserves callback value and ambient worker context; added unreferenced column, changed composite source keys/rowids, repeat rebuild and explicit outer rollback pass",
+    "callback error after DDL and forced reinstall collision restore exact schema, every table and independent base/projection/view; next valid write and clean refresh pass",
+    "preexisting TEMP monitoring_data with distinct foreign facts refuses before callback; callback-created TEMP source/owned shadows refuse before reinstall and restore exact main+temp schema/data, then next write/refresh passes",
+    "foreign maintained projection view, ordinary views over both owned tables, index, trigger, foreign key, __ivm_-prefixed foreign view and temporary view all fail atomically without collateral changes",
+    "separate unrelated maintained view over original monitoring_data survives uninstall with shared extension metadata/capture, consumes subsequent source correction and coexists with reinstall",
+    "absent, partial and same-name modified trigger/projection/public-view definitions refuse without changes; uninstall is deliberately non-idempotent",
+    "two real child SIGKILLs after rebuild/refresh before outer COMMIT and after COMMIT with native handle open; fresh default rollback-journal recovery gives independent old/new schema+facts and clean next write/refresh"
+  ],
+  "independentOracle": "Host-constructed full main base fields including explicit source rowids and migration host_note; JS projection/group ledger; exact main+temp schema and every data-table snapshots exclude only sqlite_sequence",
+  "crashRecovery": [
+    {
+      "phase": "before-commit",
+      "exit": {
+        "code": null,
+        "signal": "SIGKILL"
+      },
+      "nativeOpenAtBarrier": true,
+      "outerCommitsAtBarrier": 0,
+      "journalMode": "delete"
+    },
+    {
+      "phase": "after-commit",
+      "exit": {
+        "code": null,
+        "signal": "SIGKILL"
+      },
+      "nativeOpenAtBarrier": true,
+      "outerCommitsAtBarrier": 1,
+      "journalMode": "delete"
+    }
+  ],
+  "adapterAssertions": {
+    "baseComparisons": 24,
+    "projectionComparisons": 24,
+    "viewComparisons": 24,
+    "exactResultComparisons": 5362
+  },
+  "workerAssertions": {
+    "baseComparisons": 13,
+    "projectionComparisons": 13,
+    "viewComparisons": 13,
+    "contextComparisons": 37,
+    "nativeQueryIdentities": 95,
+    "transactionIdentities": 15
+  },
+  "connectionAssertions": {
+    "invalidPolicies": 26,
+    "nativeTimeouts": 11,
+    "baseComparisons": 13,
+    "projectionComparisons": 13,
+    "viewComparisons": 13,
+    "contextComparisons": 10,
+    "nativeQueryIdentities": 28
+  },
+  "ownershipChecks": 8,
+  "mutations": [
+    {
+      "mutation": "disable UPDATE trigger",
+      "status": "killed",
+      "intact": "passed"
+    },
+    {
+      "mutation": "disable DELETE trigger",
+      "status": "killed",
+      "intact": "passed"
+    },
+    {
+      "mutation": "skip refresh",
+      "status": "killed",
+      "intact": "passed"
+    },
+    {
+      "mutation": "omit-actual-worker-scope-binding",
+      "status": "detected",
+      "intact": "passed"
+    },
+    {
+      "mutation": "omit-artifact-pin-check",
+      "status": "detected",
+      "intact": "passed"
+    },
+    {
+      "mutation": "omit-native-timeout-configuration",
+      "status": "detected",
+      "intact": "passed"
+    },
+    {
+      "mutation": "omit-lifecycle-reinstall",
+      "status": "detected",
+      "intact": "passed"
+    }
+  ],
+  "limits": [
+    "Known intact main-sidecar ownership only; conservative SQL-text dependency refusals include temp/attached schemas and literals/comments.",
+    "Compatible source schema rebuilds only; extension database-format upgrades remain separate.",
+    "Abrupt local process death tested at two IPC commit barriers with default rollback journal.",
+    "Application queue/cache/UI startup and deployment coordination remain host work.",
+    "Historical benchmark, worker-only and connection-policy evidence retains its original source snapshot."
+  ]
+}

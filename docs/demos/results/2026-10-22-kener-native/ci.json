@@ -1,0 +1,99 @@
+{
+  "sourceCommit": "3a17bc5d50de76652b8f54666376fec08c1c194e",
+  "nativeRun": {
+    "id": 39961750299,
+    "url": "https://github.com/SFARL/ivmlite/actions/runs/39961750299",
+    "conclusion": "success"
+  },
+  "platforms": {
+    "linux": {
+      "node": {
+        "version": "v24.19.0",
+        "modules": "137",
+        "platform": "linux",
+        "arch": "x64"
+      },
+      "sqlite": {
+        "version": "3.51.2",
+        "source_id": "2026-01-09 17:27:48 b270f8339eb13b504d0b2ba154ebca966b7dde08e40c3ed7d559749818cb2075"
+      },
+      "dependencies": {
+        "knex": "3.1.0",
+        "better-sqlite3": "12.6.2",
+        "dotenv": "17.2.4"
+      },
+      "extension": {
+        "filename": "libivmlite_sqlite.so",
+        "sha256": "fca7c9b4e086146efa023f32ac96ef720c00f358e4be042d680fcc7ca7e247c6"
+      },
+      "assertions": {
+        "baseComparisons": 24,
+        "projectionComparisons": 24,
+        "viewComparisons": 24,
+        "exactResultComparisons": 5362
+      },
+      "mutantsKilled": 3,
+      "ownership": "passed"
+    },
+    "macos": {
+      "node": {
+        "version": "v24.19.0",
+        "modules": "137",
+        "platform": "darwin",
+        "arch": "arm64"
+      },
+      "sqlite": {
+        "version": "3.51.2",
+        "source_id": "2026-01-09 17:27:48 b270f8339eb13b504d0b2ba154ebca966b7dde08e40c3ed7d559749818cb2075"
+      },
+      "dependencies": {
+        "knex": "3.1.0",
+        "better-sqlite3": "12.6.2",
+        "dotenv": "17.2.4"
+      },
+      "extension": {
+        "filename": "libivmlite_sqlite.dylib",
+        "sha256": "fd44fe184078afc4addd4aa7c96a2ac0d3f901761d5391dbc06732f1c29e047c"
+      },
+      "assertions": {
+        "baseComparisons": 24,
+        "projectionComparisons": 24,
+        "viewComparisons": 24,
+        "exactResultComparisons": 5362
+      },
+      "mutantsKilled": 3,
+      "ownership": "passed"
+    }
+  },
+  "coreRun": {
+    "id": 39961750396,
+    "url": "https://github.com/SFARL/ivmlite/actions/runs/39961750396",
+    "conclusion": "success"
+  },
+  "jobs": [
+    {
+      "name": "check (ubuntu-24.04)",
+      "conclusion": "success",
+      "url": "https://github.com/SFARL/ivmlite/actions/runs/39961750396/job/120441200893",
+      "completedAt": "2026-10-23T13:35:37Z"
+    },
+    {
+      "name": "check (macos-14)",
+      "conclusion": "success",
+      "url": "https://github.com/SFARL/ivmlite/actions/runs/39961750396/job/120441201062",
+      "completedAt": "2026-10-23T13:36:55Z"
+    },
+    {
+      "name": "native (macos-14)",
+      "conclusion": "success",
+      "url": "https://github.com/SFARL/ivmlite/actions/runs/39961750299/job/120441201172",
+      "completedAt": "2026-10-23T13:31:38Z"
+    },
+    {
+      "name": "native (ubuntu-24.04)",
+      "conclusion": "success",
+      "url": "https://github.com/SFARL/ivmlite/actions/runs/39961750299/job/120441201676",
+      "completedAt": "2026-10-23T13:31:44Z"
+    }
+  ]
+}

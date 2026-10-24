@@ -1,0 +1,7 @@
+{
+  "sqlite": "3.45.0 2024-01-15 17:01:13 1066602b2b1976fe58b5150777cced894af17c803e068f5918390d6915b46e1d (64-bit)",
+  "library_sha256": "4bc5f14e81f786f3d3644fffbc9d8fc8c44ac0d768fc4eebc541312cbb589f20",
+  "smoke_checks": 74,
+  "alpha6_reopen_checks": 4,
+  "failures": 0
+}

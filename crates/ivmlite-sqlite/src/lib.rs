@@ -16,6 +16,7 @@
 mod catalog;
 mod encode;
 mod names;
+mod read_plan;
 mod refresh_all;
 mod snapshot;
 mod state;

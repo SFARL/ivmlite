@@ -1,0 +1,72 @@
+name: kener-native
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/**'
+      - 'src/**'
+      - 'scripts/kener-native/*.mjs'
+      - 'scripts/kener-native/*.json'
+      - '.github/workflows/kener-native.yml'
+  pull_request:
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/**'
+      - 'src/**'
+      - 'scripts/kener-native/*.mjs'
+      - 'scripts/kener-native/*.json'
+      - '.github/workflows/kener-native.yml'
+  workflow_dispatch:
+
+jobs:
+  acceptance:
+    name: native (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.19.0'
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - name: Build locked extension
+        run: cargo build --manifest-path crates/ivmlite-sqlite/Cargo.toml --release --locked
+      - name: Fetch pinned clean upstream
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/kener-native/evidence"
+          git init "$RUNNER_TEMP/kener-native/upstream"
+          git -C "$RUNNER_TEMP/kener-native/upstream" fetch --depth=1 https://github.com/rajnandan1/kener.git 5bc658b771d44f48b61a514cfdb5037468c5aa36
+          git -C "$RUNNER_TEMP/kener-native/upstream" checkout --detach FETCH_HEAD
+      - name: Prepare exact locked native driver
+        shell: bash
+        run: |
+          set -o pipefail
+          node scripts/kener-native/prepare.mjs --upstream "$RUNNER_TEMP/kener-native/upstream" --runtime "$RUNNER_TEMP/kener-native/runtime" 2>&1 | tee "$RUNNER_TEMP/kener-native/evidence/prepare.log"
+      - name: Ownership regression checks
+        shell: bash
+        run: |
+          set -o pipefail
+          node scripts/kener-native/prepare.test.mjs --upstream "$RUNNER_TEMP/kener-native/upstream" --runtime "$RUNNER_TEMP/kener-native/runtime" --output "$RUNNER_TEMP/kener-native/evidence/ownership.json" 2>&1 | tee "$RUNNER_TEMP/kener-native/evidence/ownership.log"
+      - name: Actual repository and adapter acceptance
+        shell: bash
+        run: |
+          set -o pipefail
+          extension="$GITHUB_WORKSPACE/crates/ivmlite-sqlite/target/release/libivmlite_sqlite.so"
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            extension="$GITHUB_WORKSPACE/crates/ivmlite-sqlite/target/release/libivmlite_sqlite.dylib"
+          fi
+          node scripts/kener-native/acceptance.mjs --upstream "$RUNNER_TEMP/kener-native/upstream" --runtime "$RUNNER_TEMP/kener-native/runtime" --extension "$extension" --scratch "$RUNNER_TEMP/kener-native/scratch" --output "$RUNNER_TEMP/kener-native/evidence/acceptance.json" 2>&1 | tee "$RUNNER_TEMP/kener-native/evidence/acceptance.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kener-native-${{ matrix.os }}
+          path: ${{ runner.temp }}/kener-native/evidence/
+          if-no-files-found: warn

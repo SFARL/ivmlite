@@ -1,0 +1,1379 @@
+{
+  "status": "passed",
+  "measurementDate": "2026-10-22",
+  "finalAcceptanceDate": "2026-10-23",
+  "statistics": "Read pooled median is median of all 9 timed calls; ranges are min/max of the 3 within-repeat medians. Ratios pair original and experimental within the same repeat, then report median/min/max of those 3 ratios. Write/retention have one event per fresh repeat, 3 observations total.",
+  "scope": "Warm native repository methods; exact dyadic fixture only; no endpoint/cache/UI/adoption claim",
+  "config": {
+    "days": 90,
+    "repeats": 3,
+    "rounds": 3,
+    "compareTagPushdown": false
+  },
+  "host": {
+    "platform": "darwin",
+    "release": "27.0.0",
+    "arch": "arm64",
+    "cpu": "Apple M2 Pro",
+    "logicalCPUs": 10,
+    "totalMemory": 17179869184
+  },
+  "generator": {
+    "seed": 20261022,
+    "tags": [
+      "api/east",
+      "002",
+      "2",
+      "监控/é",
+      "service/00",
+      "service/01",
+      "service/02",
+      "service/03",
+      "service/04",
+      "service/05",
+      "service/06",
+      "service/07",
+      "service/08",
+      "service/09",
+      "service/10",
+      "service/11",
+      "service/12",
+      "service/13",
+      "service/14",
+      "service/15",
+      "service/16",
+      "service/17",
+      "service/18",
+      "service/19",
+      "service/20",
+      "service/21",
+      "service/22",
+      "service/23",
+      "service/24",
+      "service/25",
+      "service/26",
+      "service/27"
+    ],
+    "start": 1767225600,
+    "minuteRows": 4147200,
+    "signalRows": 0,
+    "note": "One REALTIME row per minute per tag; no SIGNAL rows in performance fixture (SIGNAL covered by acceptance). Null and dyadic REAL latency; status mixer includes unknown and null.",
+    "statusCounts": {
+      "UP": 4085038,
+      "null": 12527,
+      "MAINTENANCE": 12535,
+      "DEGRADED": 12262,
+      "UNKNOWN": 12469,
+      "DOWN": 12369
+    }
+  },
+  "identity": {
+    "sourceSHA": "5bc658b771d44f48b61a514cfdb5037468c5aa36",
+    "sourceHashes": {
+      "knexfile.ts": "9540e66c4893af5224298cce66ee12d3da52f0b753893dc8bb7a4656d9e46705",
+      "migrations/20250111153517_init.ts": "bcd0a4c997aeb29e66cece74eaa4ae65dd614c5144a65f1d0fdee0e88677e286",
+      "migrations/20260202090915_add_new_columns_data_monitors.ts": "07710cb84a0aa10ba486dd94beaa49f8a29047b33204d02cb56c158d743af5c3",
+      "migrations/20260216095021_index_monitoring_data.ts": "fe130c5c48b9aac8f3788a3c886b0b2007eba2f924d60325f92c0d956c6a6c34",
+      "migrations/20260613120000_add_confirmation_threshold_and_raw_status.ts": "4f0c073507816b9161aeb429eac5b6b5e984a151d135ad15f2dba126548d69a2",
+      "migrations/20260617120000_add_monitoring_data_covering_index.ts": "412cc5d942f92fa1a3dcc61f53e06d5e5594b5bd09d0d7c4b1d5ad6b0a880e5e",
+      "package-lock.json": "011e11e83cc3962e804b7dc65e453f3a214c6a981511a4bd8a4359107aa4abaa",
+      "package.json": "33de66eea5e1884007ed0403a41dc6beeadbdc99090041912f50ec6ae76964bc",
+      "src/lib/clientTools.ts": "517dd5283d72aa91c15440a37c7c4747a4660e369be1d142b675fe4edabd7528",
+      "src/lib/global-constants.ts": "125b92c727da57ee8aa76ae59d82b3288e270b6791f7ae598b1454428ca009f0",
+      "src/lib/server/db/poolContext.ts": "1f0b99537dc34ffff7e91f7fb9068c771330fb2d97ae3c23df06f287f2d27464",
+      "src/lib/server/db/repositories/base.ts": "5f1a7e91d40c3f4de29c2c13e79472007459e571d543166a025516d380838424",
+      "src/lib/server/db/repositories/monitoring.ts": "9b04b45e4ddcf932268b32268a7d707dcf447778e8eb47358309ba32250ceaf8",
+      "src/lib/server/tool.ts": "bf0280139c508ca3a7b3bc2b5c79eb9e8676076512ca49be060fd29a9ecf7490"
+    },
+    "runtime": {
+      "sourceSHA": "5bc658b771d44f48b61a514cfdb5037468c5aa36",
+      "sourceLockSHA256": "011e11e83cc3962e804b7dc65e453f3a214c6a981511a4bd8a4359107aa4abaa",
+      "packageCount": 63,
+      "node": "v24.19.0"
+    },
+    "node": {
+      "version": "v24.19.0",
+      "modules": "137",
+      "platform": "darwin",
+      "arch": "arm64"
+    },
+    "dependencies": {
+      "knex": "3.1.0",
+      "better-sqlite3": "12.6.2",
+      "dotenv": "17.2.4"
+    },
+    "addon": {
+      "filename": "better_sqlite3.node",
+      "sha256": "f4ab8ddc57768a1342fad1a948c7ff943fe553ebd73671054cd58c1f7cd33021"
+    },
+    "extension": {
+      "filename": "libivmlite_sqlite.dylib",
+      "sha256": "4bc5f14e81f786f3d3644fffbc9d8fc8c44ac0d768fc4eebc541312cbb589f20"
+    }
+  },
+  "scriptAndWorkflowSHA256": {
+    "scripts/kener-native/acceptance.mjs": "67a291ce80ecbf77e1bd69b2c97f2fecae763fe3548120908cd14a449666e621",
+    "scripts/kener-native/adapter-acceptance.mjs": "8ff385a1a8bd364a344458c4915d8b71dc6a91d4fab1f0ddbc087c39dc18f045",
+    "scripts/kener-native/adapter.mjs": "83b90b828e2e35d7831cdc361be472e2167fd62ba36b49f1efa7ad774955f430",
+    "scripts/kener-native/benchmark.mjs": "c37060a733e5ca1fd80548ea42bf73f973461ac275f8856eef51de2fcc9d149c",
+    "scripts/kener-native/prepare.mjs": "4cf10bc75cc6363275e751ecff5361e55a70925d5022e038cf85b840c27a08b3",
+    "scripts/kener-native/prepare.test.mjs": "99f02c72974ddc4e429abce45bd55b23bceea2bd81b3db2dcd0c7a6e33a0957d",
+    "scripts/kener-native/runtime.mjs": "5a34794a5a222265cee67838afb821dbcb1008b4b6a746bf9a62933dab6d2a9c",
+    "scripts/kener-native/pilot.json": "9d590db29d1192919b0c1f1cf5becbe2dfeece69606e15a85cfce7b0de86996a",
+    "scripts/kener-native/source-scale.json": "4c69bf51bfc3f5c6d4b0177332bcfc22ecc3507fe4dd9b60edc51267f4b8d0e3",
+    ".github/workflows/kener-native.yml": "fa1b731d907e5939587c1358f8c7c397b781519d43183cd1aaf4da50b80fe36d"
+  },
+  "cacheBoundary": "Seeded migration-created template closed before independent baseline/adapter copies. Setup and copying excluded from read/write timers. No OS cache eviction. Every case/path warmed once before alternating timed rounds. Fresh database copies per repeat, shared deterministic template and OS cache.",
+  "pragmas": {
+    "journal_mode": [
+      {
+        "journal_mode": "delete"
+      }
+    ],
+    "synchronous": [
+      {
+        "synchronous": 2
+      }
+    ],
+    "cache_size": [
+      {
+        "cache_size": -16000
+      }
+    ],
+    "page_size": [
+      {
+        "page_size": 4096
+      }
+    ],
+    "temp_store": [
+      {
+        "temp_store": 0
+      }
+    ],
+    "mmap_size": [
+      {
+        "mmap_size": 0
+      }
+    ]
+  },
+  "setup": {
+    "migrationMs": 23.601999999999975,
+    "seedMs": 15321.502458,
+    "copyMs": {
+      "median": 982.097207999992,
+      "range": [
+        937.3530840000021,
+        988.809709000052
+      ],
+      "perRepeat": [
+        937.3530840000021,
+        982.097207999992,
+        988.809709000052
+      ]
+    },
+    "installMs": {
+      "median": 35707.33933400002,
+      "range": [
+        35580.02337499999,
+        39540.6455
+      ],
+      "perRepeat": [
+        39540.6455,
+        35707.33933400002,
+        35580.02337499999
+      ]
+    },
+    "groupsPerRepeat": [
+      337379,
+      337379,
+      337379
+    ]
+  },
+  "reads": [
+    {
+      "name": "one-full-history",
+      "grouped": false,
+      "tags": "api/east",
+      "window": [
+        1767225600,
+        86400,
+        90
+      ],
+      "resultRows": 90,
+      "exact": true,
+      "paths": {
+        "original": {
+          "pooledMedianMs": 43.87695800000802,
+          "repeatMediansMs": [
+            44.06212500001129,
+            44.12070900000981,
+            42.865749999997206
+          ],
+          "repeatMedianRangeMs": [
+            42.865749999997206,
+            44.12070900000981
+          ],
+          "rawRoundRangeMs": [
+            42.5557919999701,
+            44.508583000002545
+          ]
+        },
+        "strict": {
+          "pooledMedianMs": 45.78112500003772,
+          "repeatMediansMs": [
+            45.820791000005556,
+            45.96191699997871,
+            44.78224999998929
+          ],
+          "repeatMedianRangeMs": [
+            44.78224999998929,
+            45.96191699997871
+          ],
+          "rawRoundRangeMs": [
+            43.13904099998763,
+            47.89295800001128
+          ]
+        },
+        "experimental": {
+          "pooledMedianMs": 135.5119999999879,
+          "repeatMediansMs": [
+            135.5119999999879,
+            137.0997090000019,
+            134.93191600003047
+          ],
+          "repeatMedianRangeMs": [
+            134.93191600003047,
+            137.0997090000019
+          ],
+          "rawRoundRangeMs": [
+            131.0547919999808,
+            137.8590410000179
+          ]
+        }
+      },
+      "pairedOriginalToExperimentalElapsedRatio": {
+        "median": 0.3218147530860857,
+        "range": [
+          0.31768429049793917,
+          0.325152938485265
+        ],
+        "perRepeat": [
+          0.325152938485265,
+          0.3218147530860857,
+          0.31768429049793917
+        ]
+      }
+    },
+    {
+      "name": "one-recent-day",
+      "grouped": false,
+      "tags": "api/east",
+      "window": [
+        1774915200,
+        900,
+        96
+      ],
+      "resultRows": 96,
+      "exact": true,
+      "paths": {
+        "original": {
+          "pooledMedianMs": 0.5758329999807756,
+          "repeatMediansMs": [
+            0.563624999995227,
+            0.5981250000186265,
+            0.5770829999819398
+          ],
+          "repeatMedianRangeMs": [
+            0.563624999995227,
+            0.5981250000186265
+          ],
+          "rawRoundRangeMs": [
+            0.5528750000084983,
+            0.6691250000149012
+          ]
+        },
+        "strict": {
+          "pooledMedianMs": 0.5935829999507405,
+          "repeatMediansMs": [
+            0.5554170000104932,
+            0.6241250000020955,
+            0.5908749999944121
+          ],
+          "repeatMedianRangeMs": [
+            0.5554170000104932,
+            0.6241250000020955
+          ],
+          "rawRoundRangeMs": [
+            0.5511669999978039,
+            0.6272500000195578
+          ]
+        },
+        "experimental": {
+          "pooledMedianMs": 1.4397920000046724,
+          "repeatMediansMs": [
+            1.4397920000046724,
+            1.4626249999855645,
+            1.3575409999466501
+          ],
+          "repeatMedianRangeMs": [
+            1.3575409999466501,
+            1.4626249999855645
+          ],
+          "rawRoundRangeMs": [
+            1.3545000000158325,
+            1.6879159999953117
+          ]
+        }
+      },
+      "pairedOriginalToExperimentalElapsedRatio": {
+        "median": 0.40893940690507113,
+        "range": [
+          0.39146279462130495,
+          0.4250943433786667
+        ],
+        "perRepeat": [
+          0.39146279462130495,
+          0.40893940690507113,
+          0.4250943433786667
+        ]
+      }
+    },
+    {
+      "name": "batch-merged-full-history",
+      "grouped": false,
+      "tags": [
+        "api/east",
+        "002",
+        "2",
+        "监控/é",
+        "service/00",
+        "service/01",
+        "service/02",
+        "service/03",
+        "service/04",
+        "service/05",
+        "service/06",
+        "service/07",
+        "service/08",
+        "service/09",
+        "service/10",
+        "service/11",
+        "service/12",
+        "service/13",
+        "service/14",
+        "service/15",
+        "service/16",
+        "service/17",
+        "service/18",
+        "service/19",
+        "service/20",
+        "service/21",
+        "service/22",
+        "service/23",
+        "service/24",
+        "service/25",
+        "service/26",
+        "service/27"
+      ],
+      "window": [
+        1767225600,
+        86400,
+        90
+      ],
+      "resultRows": 90,
+      "exact": true,
+      "paths": {
+        "original": {
+          "pooledMedianMs": 2040.9010000000126,
+          "repeatMediansMs": [
+            1902.9013339999947,
+            2040.9010000000126,
+            2137.018875000009
+          ],
+          "repeatMedianRangeMs": [
+            1902.9013339999947,
+            2137.018875000009
+          ],
+          "rawRoundRangeMs": [
+            1893.8307499999646,
+            2291.5709579999675
+          ]
+        },
+        "strict": {
+          "pooledMedianMs": 1913.4778330000117,
+          "repeatMediansMs": [
+            2073.306500000006,
+            1906.8885829999927,
+            1913.4778330000117
+          ],
+          "repeatMedianRangeMs": [
+            1906.8885829999927,
+            2073.306500000006
+          ],
+          "rawRoundRangeMs": [
+            1878.6034579999978,
+            2322.609500000006
+          ]
+        },
+        "experimental": {
+          "pooledMedianMs": 353.78612499998417,
+          "repeatMediansMs": [
+            366.20770900000934,
+            318.36712499998976,
+            353.78612499998417
+          ],
+          "repeatMedianRangeMs": [
+            318.36712499998976,
+            366.20770900000934
+          ],
+          "rawRoundRangeMs": [
+            300.9883329999866,
+            430.22833299999184
+          ]
+        }
+      },
+      "pairedOriginalToExperimentalElapsedRatio": {
+        "median": 6.040425907036644,
+        "range": [
+          5.196235052495703,
+          6.410526840672001
+        ],
+        "perRepeat": [
+          5.196235052495703,
+          6.410526840672001,
+          6.040425907036644
+        ]
+      }
+    },
+    {
+      "name": "batch-grouped-full-history",
+      "grouped": true,
+      "tags": [
+        "api/east",
+        "002",
+        "2",
+        "监控/é",
+        "service/00",
+        "service/01",
+        "service/02",
+        "service/03",
+        "service/04",
+        "service/05",
+        "service/06",
+        "service/07",
+        "service/08",
+        "service/09",
+        "service/10",
+        "service/11",
+        "service/12",
+        "service/13",
+        "service/14",
+        "service/15",
+        "service/16",
+        "service/17",
+        "service/18",
+        "service/19",
+        "service/20",
+        "service/21",
+        "service/22",
+        "service/23",
+        "service/24",
+        "service/25",
+        "service/26",
+        "service/27"
+      ],
+      "window": [
+        1767225600,
+        86400,
+        90
+      ],
+      "resultRows": 2880,
+      "exact": true,
+      "paths": {
+        "original": {
+          "pooledMedianMs": 2491.0227500000037,
+          "repeatMediansMs": [
+            2506.377999999997,
+            2413.5482499999925,
+            2845.6364170000306
+          ],
+          "repeatMedianRangeMs": [
+            2413.5482499999925,
+            2845.6364170000306
+          ],
+          "rawRoundRangeMs": [
+            2205.972124999971,
+            3277.254957999976
+          ]
+        },
+        "strict": {
+          "pooledMedianMs": 2270.3571660000016,
+          "repeatMediansMs": [
+            2270.3571660000016,
+            2183.9117500000284,
+            2794.734541999991
+          ],
+          "repeatMedianRangeMs": [
+            2183.9117500000284,
+            2794.734541999991
+          ],
+          "rawRoundRangeMs": [
+            2175.1662079999805,
+            3211.941374999995
+          ]
+        },
+        "experimental": {
+          "pooledMedianMs": 394.34379099999205,
+          "repeatMediansMs": [
+            394.34379099999205,
+            387.6386250000214,
+            403.835167000012
+          ],
+          "repeatMedianRangeMs": [
+            387.6386250000214,
+            403.835167000012
+          ],
+          "rawRoundRangeMs": [
+            381.41137500002515,
+            478.6839999999502
+          ]
+        }
+      },
+      "pairedOriginalToExperimentalElapsedRatio": {
+        "median": 6.3558196102041515,
+        "range": [
+          6.2262842099387266,
+          7.046529499002117
+        ],
+        "perRepeat": [
+          6.3558196102041515,
+          6.2262842099387266,
+          7.046529499002117
+        ]
+      }
+    },
+    {
+      "name": "batch-grouped-recent-day",
+      "grouped": true,
+      "tags": [
+        "api/east",
+        "002",
+        "2",
+        "监控/é",
+        "service/00",
+        "service/01",
+        "service/02",
+        "service/03",
+        "service/04",
+        "service/05",
+        "service/06",
+        "service/07",
+        "service/08",
+        "service/09",
+        "service/10",
+        "service/11",
+        "service/12",
+        "service/13",
+        "service/14",
+        "service/15",
+        "service/16",
+        "service/17",
+        "service/18",
+        "service/19",
+        "service/20",
+        "service/21",
+        "service/22",
+        "service/23",
+        "service/24",
+        "service/25",
+        "service/26",
+        "service/27"
+      ],
+      "window": [
+        1774915200,
+        900,
+        96
+      ],
+      "resultRows": 3072,
+      "exact": true,
+      "paths": {
+        "original": {
+          "pooledMedianMs": 21.01508300000569,
+          "repeatMediansMs": [
+            22.24762500000361,
+            21.01508300000569,
+            20.7975420000148
+          ],
+          "repeatMedianRangeMs": [
+            20.7975420000148,
+            22.24762500000361
+          ],
+          "rawRoundRangeMs": [
+            20.67795899999328,
+            26.581915999995545
+          ]
+        },
+        "strict": {
+          "pooledMedianMs": 21.1050830000313,
+          "repeatMediansMs": [
+            22.334708999987924,
+            20.975625000020955,
+            20.54425000003539
+          ],
+          "repeatMedianRangeMs": [
+            20.54425000003539,
+            22.334708999987924
+          ],
+          "rawRoundRangeMs": [
+            20.400416999997105,
+            22.82508299998881
+          ]
+        },
+        "experimental": {
+          "pooledMedianMs": 5.918999999994412,
+          "repeatMediansMs": [
+            6.080375000005006,
+            5.3250410000327975,
+            5.918999999994412
+          ],
+          "repeatMedianRangeMs": [
+            5.3250410000327975,
+            6.080375000005006
+          ],
+          "rawRoundRangeMs": [
+            5.1346660000272095,
+            6.686665999994148
+          ]
+        }
+      },
+      "pairedOriginalToExperimentalElapsedRatio": {
+        "median": 3.6589231749662305,
+        "range": [
+          3.513691839843628,
+          3.946464074150087
+        ],
+        "perRepeat": [
+          3.6589231749662305,
+          3.946464074150087,
+          3.513691839843628
+        ]
+      }
+    }
+  ],
+  "writes": [
+    {
+      "name": "late-upsert-and-new-row",
+      "changedRows": 2,
+      "paths": {
+        "baseline": {
+          "writeMs": {
+            "median": 2.5886670000036247,
+            "range": [
+              1.074332999996841,
+              3.7453329999989364
+            ],
+            "perRepeat": [
+              3.7453329999989364,
+              1.074332999996841,
+              2.5886670000036247
+            ]
+          },
+          "refreshMs": {
+            "median": 0,
+            "range": [
+              0,
+              0
+            ],
+            "perRepeat": [
+              0,
+              0,
+              0
+            ]
+          },
+          "readMs": {
+            "median": 20.984958000000915,
+            "range": [
+              20.70641699997941,
+              22.101124999986496
+            ],
+            "perRepeat": [
+              20.984958000000915,
+              22.101124999986496,
+              20.70641699997941
+            ]
+          },
+          "endToEndMs": {
+            "median": 23.972083000000566,
+            "range": [
+              23.579750000033528,
+              25.452459000007366
+            ],
+            "perRepeat": [
+              25.452459000007366,
+              23.579750000033528,
+              23.972083000000566
+            ]
+          }
+        },
+        "adapter": {
+          "writeMs": {
+            "median": 2.522791999974288,
+            "range": [
+              1.6668750000098953,
+              2.833708999969531
+            ],
+            "perRepeat": [
+              1.6668750000098953,
+              2.522791999974288,
+              2.833708999969531
+            ]
+          },
+          "refreshMs": {
+            "median": 4.747875000000931,
+            "range": [
+              4.372457999998005,
+              4.827625000034459
+            ],
+            "perRepeat": [
+              4.372457999998005,
+              4.747875000000931,
+              4.827625000034459
+            ]
+          },
+          "readMs": {
+            "median": 5.241666999994777,
+            "range": [
+              5.209124999993946,
+              6.41737500000454
+            ],
+            "perRepeat": [
+              6.41737500000454,
+              5.209124999993946,
+              5.241666999994777
+            ]
+          },
+          "endToEndMs": {
+            "median": 13.595625000016298,
+            "range": [
+              13.569000000003143,
+              13.849417000019457
+            ],
+            "perRepeat": [
+              13.569000000003143,
+              13.595625000016298,
+              13.849417000019457
+            ]
+          }
+        }
+      },
+      "pairedEndToEndOriginalToExperimentalRatio": {
+        "median": 1.734363076357671,
+        "range": [
+          1.7309091783406396,
+          1.8757800132656401
+        ],
+        "perRepeat": [
+          1.8757800132656401,
+          1.734363076357671,
+          1.7309091783406396
+        ]
+      }
+    },
+    {
+      "name": "inclusive-range-update",
+      "changedRows": 15,
+      "paths": {
+        "baseline": {
+          "writeMs": {
+            "median": 1.8959580000082497,
+            "range": [
+              0.76724999997532,
+              2.0192079999833368
+            ],
+            "perRepeat": [
+              1.8959580000082497,
+              0.76724999997532,
+              2.0192079999833368
+            ]
+          },
+          "refreshMs": {
+            "median": 0,
+            "range": [
+              0,
+              0
+            ],
+            "perRepeat": [
+              0,
+              0,
+              0
+            ]
+          },
+          "readMs": {
+            "median": 25.530541999964043,
+            "range": [
+              21.81487499998184,
+              50.037416999985
+            ],
+            "perRepeat": [
+              21.81487499998184,
+              25.530541999964043,
+              50.037416999985
+            ]
+          },
+          "endToEndMs": {
+            "median": 26.748958000040147,
+            "range": [
+              24.547165999974823,
+              52.67641700000968
+            ],
+            "perRepeat": [
+              24.547165999974823,
+              26.748958000040147,
+              52.67641700000968
+            ]
+          }
+        },
+        "adapter": {
+          "writeMs": {
+            "median": 1.0932499999762513,
+            "range": [
+              0.939334000024246,
+              3.015374999959022
+            ],
+            "perRepeat": [
+              0.939334000024246,
+              1.0932499999762513,
+              3.015374999959022
+            ]
+          },
+          "refreshMs": {
+            "median": 2.1357500000158325,
+            "range": [
+              2.0682920000108425,
+              2.7292080000042915
+            ],
+            "perRepeat": [
+              2.0682920000108425,
+              2.7292080000042915,
+              2.1357500000158325
+            ]
+          },
+          "readMs": {
+            "median": 6.287415999977384,
+            "range": [
+              5.96441699998104,
+              6.397540999983903
+            ],
+            "perRepeat": [
+              5.96441699998104,
+              6.287415999977384,
+              6.397540999983903
+            ]
+          },
+          "endToEndMs": {
+            "median": 11.752749999985099,
+            "range": [
+              10.382584000006318,
+              12.375209000019822
+            ],
+            "perRepeat": [
+              10.382584000006318,
+              11.752749999985099,
+              12.375209000019822
+            ]
+          }
+        }
+      },
+      "pairedEndToEndOriginalToExperimentalRatio": {
+        "median": 2.364263655363625,
+        "range": [
+          2.2759743889790953,
+          4.256608272225972
+        ],
+        "perRepeat": [
+          2.364263655363625,
+          2.2759743889790953,
+          4.256608272225972
+        ]
+      }
+    },
+    {
+      "name": "confirmation-recovery",
+      "changedRows": 1,
+      "paths": {
+        "baseline": {
+          "writeMs": {
+            "median": 0.8532500000146683,
+            "range": [
+              0.3436670000082813,
+              0.9130000000004657
+            ],
+            "perRepeat": [
+              0.8532500000146683,
+              0.3436670000082813,
+              0.9130000000004657
+            ]
+          },
+          "refreshMs": {
+            "median": 0,
+            "range": [
+              0,
+              0
+            ],
+            "perRepeat": [
+              0,
+              0,
+              0
+            ]
+          },
+          "readMs": {
+            "median": 22.248166000004858,
+            "range": [
+              21.771124999970198,
+              22.29591700003948
+            ],
+            "perRepeat": [
+              22.248166000004858,
+              22.29591700003948,
+              21.771124999970198
+            ]
+          },
+          "endToEndMs": {
+            "median": 23.411917000019457,
+            "range": [
+              23.167041999986395,
+              23.709666999988258
+            ],
+            "perRepeat": [
+              23.709666999988258,
+              23.167041999986395,
+              23.411917000019457
+            ]
+          }
+        },
+        "adapter": {
+          "writeMs": {
+            "median": 0.6108750000130385,
+            "range": [
+              0.5266669999982696,
+              0.667249999998603
+            ],
+            "perRepeat": [
+              0.5266669999982696,
+              0.667249999998603,
+              0.6108750000130385
+            ]
+          },
+          "refreshMs": {
+            "median": 0.5218330000061542,
+            "range": [
+              0.4467090000107419,
+              1.8167919999687
+            ],
+            "perRepeat": [
+              0.4467090000107419,
+              0.5218330000061542,
+              1.8167919999687
+            ]
+          },
+          "readMs": {
+            "median": 5.749333999992814,
+            "range": [
+              5.6209169999929145,
+              6.542375000019092
+            ],
+            "perRepeat": [
+              5.6209169999929145,
+              6.542375000019092,
+              5.749333999992814
+            ]
+          },
+          "endToEndMs": {
+            "median": 8.739916999998968,
+            "range": [
+              7.3550840000098106,
+              9.266583000018727
+            ],
+            "perRepeat": [
+              7.3550840000098106,
+              9.266583000018727,
+              8.739916999998968
+            ]
+          }
+        }
+      },
+      "pairedEndToEndOriginalToExperimentalRatio": {
+        "median": 2.6787344776869415,
+        "range": [
+          2.5000630761025477,
+          3.223575284790307
+        ],
+        "perRepeat": [
+          3.223575284790307,
+          2.5000630761025477,
+          2.6787344776869415
+        ]
+      }
+    }
+  ],
+  "retention": {
+    "name": "actual-background-one-day-expiry",
+    "expectedDeletedPerRepeat": 46080,
+    "paths": {
+      "baseline": {
+        "writeMs": {
+          "median": 103.41312499999185,
+          "range": [
+            92.53908300003968,
+            106.80958400003146
+          ],
+          "perRepeat": [
+            103.41312499999185,
+            106.80958400003146,
+            92.53908300003968
+          ]
+        },
+        "refreshMs": {
+          "median": 0,
+          "range": [
+            0,
+            0
+          ],
+          "perRepeat": [
+            0,
+            0,
+            0
+          ]
+        },
+        "transactionMs": {
+          "median": 111.02808300001197,
+          "range": [
+            100.1576659999555,
+            114.36491599999135
+          ],
+          "perRepeat": [
+            111.02808300001197,
+            114.36491599999135,
+            100.1576659999555
+          ]
+        }
+      },
+      "adapter": {
+        "writeMs": {
+          "median": 127.79262500000186,
+          "range": [
+            114.06691599998157,
+            146.71037500002421
+          ],
+          "perRepeat": [
+            114.06691599998157,
+            146.71037500002421,
+            127.79262500000186
+          ]
+        },
+        "refreshMs": {
+          "median": 522.9366250000021,
+          "range": [
+            493.53383400000166,
+            568.7940420000232
+          ],
+          "perRepeat": [
+            522.9366250000021,
+            568.7940420000232,
+            493.53383400000166
+          ]
+        },
+        "transactionMs": {
+          "median": 660.1320419999829,
+          "range": [
+            644.2055419999524,
+            750.8735000000452
+          ],
+          "perRepeat": [
+            660.1320419999829,
+            750.8735000000452,
+            644.2055419999524
+          ]
+        }
+      }
+    },
+    "pairedAdapterToBaselineTransactionRatio": {
+      "median": 6.431914477721941,
+      "range": [
+        5.945631268801711,
+        6.565593070519126
+      ],
+      "perRepeat": [
+        5.945631268801711,
+        6.565593070519126,
+        6.431914477721941
+      ]
+    }
+  },
+  "storage": [
+    {
+      "repeat": 0,
+      "beforeSetup": {
+        "categoriesBytes": {
+          "base": 686694400,
+          "projection": 0,
+          "ivmDiagnosticState": 0,
+          "other": 90112
+        },
+        "allocatedBytes": 686784512,
+        "fileBytes": 686784512,
+        "freelistPages": 0,
+        "pageCount": 167672
+      },
+      "afterSetup": {
+        "categoriesBytes": {
+          "base": 686694400,
+          "projection": 147021824,
+          "ivmDiagnosticState": 690196480,
+          "other": 106496
+        },
+        "allocatedBytes": 1524019200,
+        "fileBytes": 2323263488,
+        "freelistPages": 195127,
+        "pageCount": 567203
+      },
+      "afterWrites": {
+        "baseline": {
+          "categoriesBytes": {
+            "base": 679424000,
+            "projection": 0,
+            "ivmDiagnosticState": 0,
+            "other": 90112
+          },
+          "allocatedBytes": 679514112,
+          "fileBytes": 686788608,
+          "freelistPages": 1776,
+          "pageCount": 167673
+        },
+        "adapter": {
+          "categoriesBytes": {
+            "base": 679424000,
+            "projection": 145473536,
+            "ivmDiagnosticState": 691425280,
+            "other": 106496
+          },
+          "allocatedBytes": 1516429312,
+          "fileBytes": 2323263488,
+          "freelistPages": 196980,
+          "pageCount": 567203
+        }
+      }
+    },
+    {
+      "repeat": 1,
+      "beforeSetup": {
+        "categoriesBytes": {
+          "base": 686694400,
+          "projection": 0,
+          "ivmDiagnosticState": 0,
+          "other": 90112
+        },
+        "allocatedBytes": 686784512,
+        "fileBytes": 686784512,
+        "freelistPages": 0,
+        "pageCount": 167672
+      },
+      "afterSetup": {
+        "categoriesBytes": {
+          "base": 686694400,
+          "projection": 147021824,
+          "ivmDiagnosticState": 690196480,
+          "other": 106496
+        },
+        "allocatedBytes": 1524019200,
+        "fileBytes": 2323263488,
+        "freelistPages": 195127,
+        "pageCount": 567203
+      },
+      "afterWrites": {
+        "baseline": {
+          "categoriesBytes": {
+            "base": 679424000,
+            "projection": 0,
+            "ivmDiagnosticState": 0,
+            "other": 90112
+          },
+          "allocatedBytes": 679514112,
+          "fileBytes": 686788608,
+          "freelistPages": 1776,
+          "pageCount": 167673
+        },
+        "adapter": {
+          "categoriesBytes": {
+            "base": 679424000,
+            "projection": 145473536,
+            "ivmDiagnosticState": 691425280,
+            "other": 106496
+          },
+          "allocatedBytes": 1516429312,
+          "fileBytes": 2323263488,
+          "freelistPages": 196980,
+          "pageCount": 567203
+        }
+      }
+    },
+    {
+      "repeat": 2,
+      "beforeSetup": {
+        "categoriesBytes": {
+          "base": 686694400,
+          "projection": 0,
+          "ivmDiagnosticState": 0,
+          "other": 90112
+        },
+        "allocatedBytes": 686784512,
+        "fileBytes": 686784512,
+        "freelistPages": 0,
+        "pageCount": 167672
+      },
+      "afterSetup": {
+        "categoriesBytes": {
+          "base": 686694400,
+          "projection": 147021824,
+          "ivmDiagnosticState": 690196480,
+          "other": 106496
+        },
+        "allocatedBytes": 1524019200,
+        "fileBytes": 2323263488,
+        "freelistPages": 195127,
+        "pageCount": 567203
+      },
+      "afterWrites": {
+        "baseline": {
+          "categoriesBytes": {
+            "base": 679424000,
+            "projection": 0,
+            "ivmDiagnosticState": 0,
+            "other": 90112
+          },
+          "allocatedBytes": 679514112,
+          "fileBytes": 686788608,
+          "freelistPages": 1776,
+          "pageCount": 167673
+        },
+        "adapter": {
+          "categoriesBytes": {
+            "base": 679424000,
+            "projection": 145473536,
+            "ivmDiagnosticState": 691425280,
+            "other": 106496
+          },
+          "allocatedBytes": 1516429312,
+          "fileBytes": 2323263488,
+          "freelistPages": 196980,
+          "pageCount": 567203
+        }
+      }
+    }
+  ],
+  "noopRefreshMs": {
+    "calls": 45,
+    "median": 0.08600000001024455,
+    "range": [
+      0.05283300002338365,
+      1.880291000008583
+    ]
+  },
+  "correctness": {
+    "timedReadCallsExactlyCompared": 135,
+    "writeBatches": 9,
+    "retentionBatches": 3,
+    "untimedChangedAggregateWindowAudits": 12,
+    "initialBaseIdentity": {
+      "rows": 4147200,
+      "sha256": "f976c6bb7c61ec85e31623dfe33ba6c02dd2e374471ea7c6897f70128104d6b1"
+    },
+    "finalBaseIdentities": [
+      {
+        "baseline": {
+          "rows": 4101121,
+          "sha256": "f51ee962ef627acd3871604834bd5ebda1f842d3cba0f27a3b50d29f17d22dea"
+        },
+        "adapter": {
+          "rows": 4101121,
+          "sha256": "f51ee962ef627acd3871604834bd5ebda1f842d3cba0f27a3b50d29f17d22dea"
+        }
+      },
+      {
+        "baseline": {
+          "rows": 4101121,
+          "sha256": "f51ee962ef627acd3871604834bd5ebda1f842d3cba0f27a3b50d29f17d22dea"
+        },
+        "adapter": {
+          "rows": 4101121,
+          "sha256": "f51ee962ef627acd3871604834bd5ebda1f842d3cba0f27a3b50d29f17d22dea"
+        }
+      },
+      {
+        "baseline": {
+          "rows": 4101121,
+          "sha256": "f51ee962ef627acd3871604834bd5ebda1f842d3cba0f27a3b50d29f17d22dea"
+        },
+        "adapter": {
+          "rows": 4101121,
+          "sha256": "f51ee962ef627acd3871604834bd5ebda1f842d3cba0f27a3b50d29f17d22dea"
+        }
+      }
+    ],
+    "upstreamClean": true
+  },
+  "acceptance": {
+    "status": "passed",
+    "assertions": {
+      "baseComparisons": 24,
+      "projectionComparisons": 24,
+      "viewComparisons": 24,
+      "exactResultComparisons": 5362
+    },
+    "reads": {
+      "strict": 2856,
+      "experimental": 2856,
+      "fallbackReasons": {
+        "unaligned-window": 952,
+        "unsafe-or-invalid-window": 714
+      },
+      "accelerated": 1190
+    },
+    "focusedMutants": [
+      {
+        "mutation": "disable UPDATE trigger",
+        "status": "killed",
+        "green": "passed"
+      },
+      {
+        "mutation": "disable DELETE trigger",
+        "status": "killed",
+        "green": "passed"
+      },
+      {
+        "mutation": "skip refresh",
+        "status": "killed",
+        "green": "passed"
+      }
+    ],
+    "batchedMembershipPlans": 2,
+    "ownershipChecks": 8
+  },
+  "validation": {
+    "nodeSyntaxCheckedScripts": [
+      "scripts/kener-native/acceptance.mjs",
+      "scripts/kener-native/adapter-acceptance.mjs",
+      "scripts/kener-native/adapter.mjs",
+      "scripts/kener-native/benchmark.mjs",
+      "scripts/kener-native/prepare.mjs",
+      "scripts/kener-native/prepare.test.mjs",
+      "scripts/kener-native/runtime.mjs"
+    ],
+    "nativePlatforms": [
+      "local macOS arm64"
+    ],
+    "remoteNativeCI": "pending push and run",
+    "coreRust": "unchanged; no new local Rust rerun; prior PR7 Linux/macOS 876-test evidence remains separate",
+    "ivmlitePreTaskHEAD": "ced324c92cded91aa663aeef13484aeaea505243"
+  }
+}

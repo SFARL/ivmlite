@@ -1,0 +1,36 @@
+{
+  "modified_source": "crates/ivmlite-test/tests/extension_selective_reads.rs",
+  "production_source_restored_byte_for_byte": true,
+  "mutant": "info.set_estimated_rows(1_000_000); immediately after info.set_estimated_cost(plan.estimate());",
+  "old_guard_exact_mutant": {
+    "passed": 1,
+    "failed": 0,
+    "filtered": 13,
+    "equality_nested_reads": 1
+  },
+  "new_guard_exact_mutant_red": {
+    "passed": 0,
+    "failed": 1,
+    "filtered": 13,
+    "equality_nested_reads": 1,
+    "cartesian_sum": 1000,
+    "cartesian_nested_reads": 1000,
+    "expected_nested_reads": 1
+  },
+  "new_guard_clean_green": {
+    "passed": 1,
+    "failed": 0,
+    "filtered": 13,
+    "equality_nested_reads": 1,
+    "cartesian_sum": 1000,
+    "cartesian_nested_reads": 1
+  },
+  "focused_integration_clean_green": {
+    "passed": 14,
+    "failed": 0,
+    "filtered": 0
+  },
+  "format_check": "rustfmt --edition 2021 --check crates/ivmlite-test/tests/extension_selective_reads.rs: exit 0",
+  "focused_clippy": "cargo clippy -p ivmlite-test --locked --test extension_selective_reads -- -D warnings: exit 0",
+  "note": "old-test-existing-mutant.log.gz records a preliminary stale-extension guard rejection, not the behavioral RED. Exact mutant was then rebuilt and old/new tests rerun; production source restored and rebuilt before GREEN."
+}

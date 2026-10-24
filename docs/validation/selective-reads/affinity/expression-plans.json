@@ -1,0 +1,89 @@
+{
+  "sqlite_version": "3.53.0",
+  "results": {
+    "column": {
+      "sql": "SELECT * FROM json_each WHERE json='[1]'",
+      "plan": [
+        [
+          2,
+          0,
+          0,
+          "SCAN json_each VIRTUAL TABLE INDEX 1:"
+        ]
+      ]
+    },
+    "unary_plus": {
+      "sql": "SELECT * FROM json_each WHERE +json='[1]'",
+      "plan": [
+        [
+          2,
+          0,
+          3280,
+          "SCAN json_each VIRTUAL TABLE INDEX 0:"
+        ]
+      ]
+    },
+    "cast": {
+      "sql": "SELECT * FROM json_each WHERE CAST(json AS TEXT)='[1]'",
+      "plan": [
+        [
+          2,
+          0,
+          3280,
+          "SCAN json_each VIRTUAL TABLE INDEX 0:"
+        ]
+      ]
+    },
+    "collate": {
+      "sql": "SELECT * FROM json_each WHERE json COLLATE BINARY='[1]'",
+      "plan": [
+        [
+          2,
+          0,
+          0,
+          "SCAN json_each VIRTUAL TABLE INDEX 1:"
+        ]
+      ]
+    },
+    "row_value": {
+      "sql": "SELECT * FROM json_each WHERE (json,root)=('[1]','$')",
+      "plan": [
+        [
+          2,
+          0,
+          0,
+          "SCAN json_each VIRTUAL TABLE INDEX 3:"
+        ]
+      ]
+    },
+    "transitive": {
+      "sql": "SELECT * FROM json_each CROSS JOIN (SELECT '[1]' AS j) AS r WHERE json=r.j AND r.j='[1]'",
+      "plan": [
+        [
+          3,
+          0,
+          0,
+          "MATERIALIZE r"
+        ],
+        [
+          5,
+          3,
+          0,
+          "SCAN CONSTANT ROW"
+        ],
+        [
+          13,
+          0,
+          0,
+          "SCAN json_each VIRTUAL TABLE INDEX 1:"
+        ],
+        [
+          20,
+          0,
+          16,
+          "SCAN r"
+        ]
+      ]
+    }
+  }
+}

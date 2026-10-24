@@ -1,0 +1,5 @@
+selective_read_bench: repeat 1/5; Latency; 4100000 base rows
+selective_read_bench: repeat 2/5; Latency; 4100000 base rows
+selective_read_bench: repeat 3/5; Latency; 4100000 base rows
+selective_read_bench: repeat 4/5; Latency; 4100000 base rows
+selective_read_bench: repeat 5/5; Latency; 4100000 base rows

@@ -10,7 +10,7 @@ filter and one two-table inner equi-join, captures ordinary SQL writes with
 triggers, and updates a materialized result when the application explicitly
 refreshes it.
 
-**Current status: `v0.1.0-alpha.6` technical preview, in release preparation.** Use it to test real
+**Current status: `v0.1.0-alpha.6` technical preview.** Use it to test real
 workloads and help shape the SQL subset. The on-disk format and supported SQL
 may change before a stable release.
 
@@ -29,7 +29,7 @@ usually a better fit.
 
 ## Quick start
 
-Once published, download the archive for your platform from the
+Download the archive for your platform from the
 [v0.1.0-alpha.6 release](https://github.com/SFARL/ivmlite/releases/tag/v0.1.0-alpha.6),
 extract it, and start a SQLite CLI that supports loadable extensions.
 
@@ -90,6 +90,19 @@ SELECT * FROM revenue;
 The view is read-only. Drop it with `DROP TABLE revenue`; ivmlite removes its
 private state and removes shared capture objects after the final dependent view
 is dropped.
+
+## Reading selected groups from source builds
+
+This source branch adds candidate pushdown for usable BINARY `=`, `>`, `>=`,
+`<` and `<=` comparisons on group-key output columns. Leading numeric keys can
+use the existing output index; TEXT bounds and non-leading constraints can
+still scan. SQLite retains residual filtering, ordering and limits. Reads keep
+an owned snapshot and do not refresh maintained state.
+
+The [native Rust example and measured comparison](docs/demos/selective-reads.md)
+show bound monitor/time-window reads, explicit refresh, commit, rollback and
+reopen. This change retains format 6 and is not included in the published
+alpha.6 archive; build this branch to try it.
 
 ## Build from source
 

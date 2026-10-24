@@ -1,0 +1,1586 @@
+{
+  "metadata": {
+    "base_rows": 100000,
+    "batch": 500,
+    "bucket_end_exclusive": 9000,
+    "bucket_start_inclusive": 0,
+    "command_arguments": [
+      "${ARTIFACT_ROOT}/acceptance-benchmark/selective_read_bench",
+      "${ARTIFACT_ROOT}/after/libivmlite_sqlite.dylib",
+      "work",
+      "100000",
+      "1"
+    ],
+    "command_arguments_os": [
+      {
+        "Unix": [
+          36,
+          123,
+          65,
+          82,
+          84,
+          73,
+          70,
+          65,
+          67,
+          84,
+          95,
+          82,
+          79,
+          79,
+          84,
+          125,
+          47,
+          97,
+          99,
+          99,
+          101,
+          112,
+          116,
+          97,
+          110,
+          99,
+          101,
+          45,
+          98,
+          101,
+          110,
+          99,
+          104,
+          109,
+          97,
+          114,
+          107,
+          47,
+          115,
+          101,
+          108,
+          101,
+          99,
+          116,
+          105,
+          118,
+          101,
+          95,
+          114,
+          101,
+          97,
+          100,
+          95,
+          98,
+          101,
+          110,
+          99,
+          104
+        ]
+      },
+      {
+        "Unix": [
+          36,
+          123,
+          65,
+          82,
+          84,
+          73,
+          70,
+          65,
+          67,
+          84,
+          95,
+          82,
+          79,
+          79,
+          84,
+          125,
+          47,
+          97,
+          102,
+          116,
+          101,
+          114,
+          47,
+          108,
+          105,
+          98,
+          105,
+          118,
+          109,
+          108,
+          105,
+          116,
+          101,
+          95,
+          115,
+          113,
+          108,
+          105,
+          116,
+          101,
+          46,
+          100,
+          121,
+          108,
+          105,
+          98
+        ]
+      },
+      {
+        "Unix": [
+          119,
+          111,
+          114,
+          107
+        ]
+      },
+      {
+        "Unix": [
+          49,
+          48,
+          48,
+          48,
+          48,
+          48
+        ]
+      },
+      {
+        "Unix": [
+          49
+        ]
+      }
+    ],
+    "configuration_sql": "PRAGMA journal_mode=MEMORY; PRAGMA synchronous=OFF; PRAGMA temp_store=MEMORY; PRAGMA cache_size=-2000; PRAGMA foreign_keys=OFF; PRAGMA recursive_triggers=OFF;",
+    "executable": "${ARTIFACT_ROOT}/acceptance-benchmark/selective_read_bench",
+    "host_source_head_observed_at_run": "48884807127c70df705596fd7a718002cca77a52",
+    "library_argument": "${ARTIFACT_ROOT}/after/libivmlite_sqlite.dylib",
+    "library_canonical_path": "${ARTIFACT_ROOT}/after/libivmlite_sqlite.dylib",
+    "measured_rounds": 10,
+    "monitor_id": 123,
+    "oracle": "independent ordinary connection seeded freshly per repeat; replay same workload schedule after actual COMMIT outside timers; ordered streaming base storage-class/REAL-bit equality and reference GROUP BY full multisets initial/after warmup/final; actual prepared/bound selected statements reexecuted and compared with independent reference predicates after every round; all timed read counts compared with reference GROUP BY counts each round",
+    "platform": "Darwin MacBook-Pro-8.local 27.0.0 Darwin Kernel Version 27.0.0: Tue Aug 11 21:20:40 PDT 2026; root:xnu-13432.1.9~1/RELEASE_ARM64_T6020 arm64",
+    "read_consumption": "fully drain; get_ref and black_box all seven columns; no retained timed rows",
+    "repeat_index_origin": 0,
+    "repeats": 1,
+    "round_index_origin": 0,
+    "rustc_observed_at_run": "rustc 1.95.0 (59807616e 2026-04-14)\nbinary: rustc\ncommit-hash: 59807616e1fa2540724bfbac14d7976d7e4a3860\ncommit-date: 2026-04-14\nhost: aarch64-apple-darwin\nrelease: 1.95.0\nLLVM version: 22.1.2",
+    "source_identity_note": "observed HEAD/compiler are run metadata; externally record binary, harness source and each library SHA256 and actual build command",
+    "sqlite_compile_options": [
+      "ATOMIC_INTRINSICS=1",
+      "COMPILER=clang-17.0.0",
+      "DEFAULT_AUTOVACUUM",
+      "DEFAULT_CACHE_SIZE=-2000",
+      "DEFAULT_FILE_FORMAT=4",
+      "DEFAULT_FOREIGN_KEYS",
+      "DEFAULT_JOURNAL_SIZE_LIMIT=-1",
+      "DEFAULT_MMAP_SIZE=0",
+      "DEFAULT_PAGE_SIZE=4096",
+      "DEFAULT_PCACHE_INITSZ=20",
+      "DEFAULT_RECURSIVE_TRIGGERS",
+      "DEFAULT_SECTOR_SIZE=4096",
+      "DEFAULT_SYNCHRONOUS=2",
+      "DEFAULT_WAL_AUTOCHECKPOINT=1000",
+      "DEFAULT_WAL_SYNCHRONOUS=2",
+      "DEFAULT_WORKER_THREADS=0",
+      "DIRECT_OVERFLOW_READ",
+      "ENABLE_API_ARMOR",
+      "ENABLE_COLUMN_METADATA",
+      "ENABLE_DBSTAT_VTAB",
+      "ENABLE_FTS3",
+      "ENABLE_FTS3_PARENTHESIS",
+      "ENABLE_FTS5",
+      "ENABLE_LOAD_EXTENSION",
+      "ENABLE_MEMORY_MANAGEMENT",
+      "ENABLE_RTREE",
+      "ENABLE_STAT4",
+      "HAVE_ISNAN",
+      "MALLOC_SOFT_LIMIT=1024",
+      "MAX_ATTACHED=10",
+      "MAX_COLUMN=2000",
+      "MAX_COMPOUND_SELECT=500",
+      "MAX_DEFAULT_PAGE_SIZE=8192",
+      "MAX_EXPR_DEPTH=1000",
+      "MAX_FUNCTION_ARG=1000",
+      "MAX_LENGTH=1000000000",
+      "MAX_LIKE_PATTERN_LENGTH=50000",
+      "MAX_MMAP_SIZE=0x7fff0000",
+      "MAX_PAGE_COUNT=0xfffffffe",
+      "MAX_PAGE_SIZE=65536",
+      "MAX_SQL_LENGTH=1000000000",
+      "MAX_TRIGGER_DEPTH=1000",
+      "MAX_VARIABLE_NUMBER=32766",
+      "MAX_VDBE_OP=250000000",
+      "MAX_WORKER_THREADS=8",
+      "MUTEX_PTHREADS",
+      "SOUNDEX",
+      "SYSTEM_MALLOC",
+      "TEMP_STORE=1",
+      "THREADSAFE=1",
+      "USE_URI"
+    ],
+    "sqlite_source_id": "2026-06-03 19:12:13 d6e03d8c777cfa2d35e3b60d8ec3e0187f3e9f99d8e2ee9cac695fd6fcdf1a24",
+    "sqlite_version": "3.53.2",
+    "warmup_rounds": 1,
+    "working_directory": "${WORKTREE}"
+  },
+  "mode": "work",
+  "repeats": [
+    {
+      "allocation_after_bootstrap": {
+        "allocated_page_bytes": 43712512,
+        "page_count": 10672,
+        "page_size": 4096
+      },
+      "allocation_before_bootstrap": {
+        "allocated_page_bytes": 2867200,
+        "page_count": 700,
+        "page_size": 4096
+      },
+      "allocation_final": {
+        "allocated_page_bytes": 43712512,
+        "page_count": 10672,
+        "page_size": 4096
+      },
+      "configuration_observed": {
+        "journal_mode": "memory",
+        "synchronous": 0,
+        "temp_store": 2
+      },
+      "initial_groups": 13414,
+      "oracle_checks_passed": true,
+      "repeat": 0,
+      "rounds": [
+        {
+          "read_order": [
+            "full",
+            "monitor",
+            "window",
+            "nonleading"
+          ],
+          "reads": [
+            {
+              "outer_rows": 13488,
+              "shape": "full",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 13487,
+                    "rows_returned": 13488,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 134886
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 121400,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 13488,
+                "whole_query_progress_callbacks_separate_pass": 2562
+              }
+            },
+            {
+              "outer_rows": 62,
+              "shape": "monitor",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY = 123) UNION ALL SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY >= '' AND \"monitor_id\" COLLATE BINARY < x'' AND +CAST(\"monitor_id\" AS NUMERIC) COLLATE BINARY = 123)",
+                    "fullscan_steps": 0,
+                    "rows_returned": 62,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY = ?1) UNION ALL SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY >= '' AND \"monitor_id\" COLLATE BINARY < x'' AND +CAST(\"monitor_id\" AS NUMERIC) COLLATE BINARY = ?1)",
+                    "vm_steps": 694
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "COMPOUND QUERY",
+                    "LEFT-MOST SUBQUERY",
+                    "SEARCH main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup (monitor_id=?)",
+                    "UNION ALL",
+                    "SEARCH main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup (monitor_id>? AND monitor_id<?)"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 692,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 62,
+                "whole_query_progress_callbacks_separate_pass": 13
+              }
+            },
+            {
+              "outer_rows": 10,
+              "shape": "window",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY = 123) AND (\"bucket_ts\" COLLATE BINARY >= 0) AND ((\"bucket_ts\" COLLATE BINARY < 9000) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < 9000)) UNION ALL SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY >= '' AND \"monitor_id\" COLLATE BINARY < x'' AND +CAST(\"monitor_id\" AS NUMERIC) COLLATE BINARY = 123) AND (\"bucket_ts\" COLLATE BINARY >= 0) AND ((\"bucket_ts\" COLLATE BINARY < 9000) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < 9000))",
+                    "fullscan_steps": 0,
+                    "rows_returned": 10,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY = ?1) AND (\"bucket_ts\" COLLATE BINARY >= ?2) AND ((\"bucket_ts\" COLLATE BINARY < ?3) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < ?3)) UNION ALL SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY >= '' AND \"monitor_id\" COLLATE BINARY < x'' AND +CAST(\"monitor_id\" AS NUMERIC) COLLATE BINARY = ?1) AND (\"bucket_ts\" COLLATE BINARY >= ?2) AND ((\"bucket_ts\" COLLATE BINARY < ?3) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < ?3))",
+                    "vm_steps": 461
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "COMPOUND QUERY",
+                    "LEFT-MOST SUBQUERY",
+                    "SEARCH main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup (monitor_id=? AND bucket_ts>?)",
+                    "UNION ALL",
+                    "SEARCH main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup (monitor_id>? AND monitor_id<?)"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 164,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 10,
+                "whole_query_progress_callbacks_separate_pass": 6
+              }
+            },
+            {
+              "outer_rows": 2209,
+              "shape": "nonleading",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"bucket_ts\" COLLATE BINARY >= 0) AND ((\"bucket_ts\" COLLATE BINARY < 9000) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < 9000))",
+                    "fullscan_steps": 13487,
+                    "rows_returned": 2209,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"bucket_ts\" COLLATE BINARY >= ?1) AND ((\"bucket_ts\" COLLATE BINARY < ?2) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < ?2))",
+                    "vm_steps": 109889
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 28729,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 2209,
+                "whole_query_progress_callbacks_separate_pass": 1385
+              }
+            }
+          ],
+          "repeat": 0,
+          "round": 0,
+          "warmup": true
+        },
+        {
+          "read_order": [
+            "monitor",
+            "window",
+            "nonleading",
+            "full"
+          ],
+          "reads": [
+            {
+              "outer_rows": 63,
+              "shape": "monitor",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY = 123) UNION ALL SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY >= '' AND \"monitor_id\" COLLATE BINARY < x'' AND +CAST(\"monitor_id\" AS NUMERIC) COLLATE BINARY = 123)",
+                    "fullscan_steps": 0,
+                    "rows_returned": 63,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY = ?1) UNION ALL SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY >= '' AND \"monitor_id\" COLLATE BINARY < x'' AND +CAST(\"monitor_id\" AS NUMERIC) COLLATE BINARY = ?1)",
+                    "vm_steps": 705
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "COMPOUND QUERY",
+                    "LEFT-MOST SUBQUERY",
+                    "SEARCH main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup (monitor_id=?)",
+                    "UNION ALL",
+                    "SEARCH main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup (monitor_id>? AND monitor_id<?)"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 703,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 63,
+                "whole_query_progress_callbacks_separate_pass": 14
+              }
+            },
+            {
+              "outer_rows": 10,
+              "shape": "window",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY = 123) AND (\"bucket_ts\" COLLATE BINARY >= 0) AND ((\"bucket_ts\" COLLATE BINARY < 9000) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < 9000)) UNION ALL SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY >= '' AND \"monitor_id\" COLLATE BINARY < x'' AND +CAST(\"monitor_id\" AS NUMERIC) COLLATE BINARY = 123) AND (\"bucket_ts\" COLLATE BINARY >= 0) AND ((\"bucket_ts\" COLLATE BINARY < 9000) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < 9000))",
+                    "fullscan_steps": 0,
+                    "rows_returned": 10,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY = ?1) AND (\"bucket_ts\" COLLATE BINARY >= ?2) AND ((\"bucket_ts\" COLLATE BINARY < ?3) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < ?3)) UNION ALL SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY >= '' AND \"monitor_id\" COLLATE BINARY < x'' AND +CAST(\"monitor_id\" AS NUMERIC) COLLATE BINARY = ?1) AND (\"bucket_ts\" COLLATE BINARY >= ?2) AND ((\"bucket_ts\" COLLATE BINARY < ?3) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < ?3))",
+                    "vm_steps": 467
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "COMPOUND QUERY",
+                    "LEFT-MOST SUBQUERY",
+                    "SEARCH main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup (monitor_id=? AND bucket_ts>?)",
+                    "UNION ALL",
+                    "SEARCH main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup (monitor_id>? AND monitor_id<?)"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 164,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 10,
+                "whole_query_progress_callbacks_separate_pass": 6
+              }
+            },
+            {
+              "outer_rows": 2270,
+              "shape": "nonleading",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"bucket_ts\" COLLATE BINARY >= 0) AND ((\"bucket_ts\" COLLATE BINARY < 9000) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < 9000))",
+                    "fullscan_steps": 13563,
+                    "rows_returned": 2270,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"bucket_ts\" COLLATE BINARY >= ?1) AND ((\"bucket_ts\" COLLATE BINARY < ?2) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < ?2))",
+                    "vm_steps": 110848
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 29522,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 2270,
+                "whole_query_progress_callbacks_separate_pass": 1403
+              }
+            },
+            {
+              "outer_rows": 13564,
+              "shape": "full",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 13563,
+                    "rows_returned": 13564,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 135646
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 122084,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 13564,
+                "whole_query_progress_callbacks_separate_pass": 2577
+              }
+            }
+          ],
+          "repeat": 0,
+          "round": 1,
+          "warmup": false
+        },
+        {
+          "read_order": [
+            "window",
+            "nonleading",
+            "full",
+            "monitor"
+          ],
+          "reads": [
+            {
+              "outer_rows": 10,
+              "shape": "window",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY = 123) AND (\"bucket_ts\" COLLATE BINARY >= 0) AND ((\"bucket_ts\" COLLATE BINARY < 9000) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < 9000)) UNION ALL SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY >= '' AND \"monitor_id\" COLLATE BINARY < x'' AND +CAST(\"monitor_id\" AS NUMERIC) COLLATE BINARY = 123) AND (\"bucket_ts\" COLLATE BINARY >= 0) AND ((\"bucket_ts\" COLLATE BINARY < 9000) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < 9000))",
+                    "fullscan_steps": 0,
+                    "rows_returned": 10,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY = ?1) AND (\"bucket_ts\" COLLATE BINARY >= ?2) AND ((\"bucket_ts\" COLLATE BINARY < ?3) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < ?3)) UNION ALL SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY >= '' AND \"monitor_id\" COLLATE BINARY < x'' AND +CAST(\"monitor_id\" AS NUMERIC) COLLATE BINARY = ?1) AND (\"bucket_ts\" COLLATE BINARY >= ?2) AND ((\"bucket_ts\" COLLATE BINARY < ?3) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < ?3))",
+                    "vm_steps": 467
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "COMPOUND QUERY",
+                    "LEFT-MOST SUBQUERY",
+                    "SEARCH main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup (monitor_id=? AND bucket_ts>?)",
+                    "UNION ALL",
+                    "SEARCH main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup (monitor_id>? AND monitor_id<?)"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 164,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 10,
+                "whole_query_progress_callbacks_separate_pass": 6
+              }
+            },
+            {
+              "outer_rows": 2330,
+              "shape": "nonleading",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"bucket_ts\" COLLATE BINARY >= 0) AND ((\"bucket_ts\" COLLATE BINARY < 9000) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < 9000))",
+                    "fullscan_steps": 13638,
+                    "rows_returned": 2330,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"bucket_ts\" COLLATE BINARY >= ?1) AND ((\"bucket_ts\" COLLATE BINARY < ?2) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < ?2))",
+                    "vm_steps": 111793
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 30302,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 2330,
+                "whole_query_progress_callbacks_separate_pass": 1420
+              }
+            },
+            {
+              "outer_rows": 13639,
+              "shape": "full",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 13638,
+                    "rows_returned": 13639,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 136396
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 122759,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 13639,
+                "whole_query_progress_callbacks_separate_pass": 2591
+              }
+            },
+            {
+              "outer_rows": 63,
+              "shape": "monitor",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY = 123) UNION ALL SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY >= '' AND \"monitor_id\" COLLATE BINARY < x'' AND +CAST(\"monitor_id\" AS NUMERIC) COLLATE BINARY = 123)",
+                    "fullscan_steps": 0,
+                    "rows_returned": 63,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY = ?1) UNION ALL SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY >= '' AND \"monitor_id\" COLLATE BINARY < x'' AND +CAST(\"monitor_id\" AS NUMERIC) COLLATE BINARY = ?1)",
+                    "vm_steps": 705
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "COMPOUND QUERY",
+                    "LEFT-MOST SUBQUERY",
+                    "SEARCH main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup (monitor_id=?)",
+                    "UNION ALL",
+                    "SEARCH main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup (monitor_id>? AND monitor_id<?)"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 703,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 63,
+                "whole_query_progress_callbacks_separate_pass": 14
+              }
+            }
+          ],
+          "repeat": 0,
+          "round": 2,
+          "warmup": false
+        },
+        {
+          "read_order": [
+            "nonleading",
+            "full",
+            "monitor",
+            "window"
+          ],
+          "reads": [
+            {
+              "outer_rows": 2392,
+              "shape": "nonleading",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"bucket_ts\" COLLATE BINARY >= 0) AND ((\"bucket_ts\" COLLATE BINARY < 9000) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < 9000))",
+                    "fullscan_steps": 13715,
+                    "rows_returned": 2392,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"bucket_ts\" COLLATE BINARY >= ?1) AND ((\"bucket_ts\" COLLATE BINARY < ?2) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < ?2))",
+                    "vm_steps": 112766
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 31108,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 2392,
+                "whole_query_progress_callbacks_separate_pass": 1438
+              }
+            },
+            {
+              "outer_rows": 13716,
+              "shape": "full",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 13715,
+                    "rows_returned": 13716,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 137166
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 123452,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 13716,
+                "whole_query_progress_callbacks_separate_pass": 2606
+              }
+            },
+            {
+              "outer_rows": 63,
+              "shape": "monitor",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY = 123) UNION ALL SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY >= '' AND \"monitor_id\" COLLATE BINARY < x'' AND +CAST(\"monitor_id\" AS NUMERIC) COLLATE BINARY = 123)",
+                    "fullscan_steps": 0,
+                    "rows_returned": 63,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY = ?1) UNION ALL SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY >= '' AND \"monitor_id\" COLLATE BINARY < x'' AND +CAST(\"monitor_id\" AS NUMERIC) COLLATE BINARY = ?1)",
+                    "vm_steps": 705
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "COMPOUND QUERY",
+                    "LEFT-MOST SUBQUERY",
+                    "SEARCH main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup (monitor_id=?)",
+                    "UNION ALL",
+                    "SEARCH main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup (monitor_id>? AND monitor_id<?)"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 703,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 63,
+                "whole_query_progress_callbacks_separate_pass": 14
+              }
+            },
+            {
+              "outer_rows": 10,
+              "shape": "window",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY = 123) AND (\"bucket_ts\" COLLATE BINARY >= 0) AND ((\"bucket_ts\" COLLATE BINARY < 9000) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < 9000)) UNION ALL SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY >= '' AND \"monitor_id\" COLLATE BINARY < x'' AND +CAST(\"monitor_id\" AS NUMERIC) COLLATE BINARY = 123) AND (\"bucket_ts\" COLLATE BINARY >= 0) AND ((\"bucket_ts\" COLLATE BINARY < 9000) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < 9000))",
+                    "fullscan_steps": 0,
+                    "rows_returned": 10,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY = ?1) AND (\"bucket_ts\" COLLATE BINARY >= ?2) AND ((\"bucket_ts\" COLLATE BINARY < ?3) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < ?3)) UNION ALL SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY >= '' AND \"monitor_id\" COLLATE BINARY < x'' AND +CAST(\"monitor_id\" AS NUMERIC) COLLATE BINARY = ?1) AND (\"bucket_ts\" COLLATE BINARY >= ?2) AND ((\"bucket_ts\" COLLATE BINARY < ?3) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < ?3))",
+                    "vm_steps": 467
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "COMPOUND QUERY",
+                    "LEFT-MOST SUBQUERY",
+                    "SEARCH main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup (monitor_id=? AND bucket_ts>?)",
+                    "UNION ALL",
+                    "SEARCH main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup (monitor_id>? AND monitor_id<?)"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 164,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 10,
+                "whole_query_progress_callbacks_separate_pass": 6
+              }
+            }
+          ],
+          "repeat": 0,
+          "round": 3,
+          "warmup": false
+        },
+        {
+          "read_order": [
+            "full",
+            "monitor",
+            "window",
+            "nonleading"
+          ],
+          "reads": [
+            {
+              "outer_rows": 13791,
+              "shape": "full",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 13790,
+                    "rows_returned": 13791,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 137916
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 124127,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 13791,
+                "whole_query_progress_callbacks_separate_pass": 2620
+              }
+            },
+            {
+              "outer_rows": 63,
+              "shape": "monitor",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY = 123) UNION ALL SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY >= '' AND \"monitor_id\" COLLATE BINARY < x'' AND +CAST(\"monitor_id\" AS NUMERIC) COLLATE BINARY = 123)",
+                    "fullscan_steps": 0,
+                    "rows_returned": 63,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY = ?1) UNION ALL SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY >= '' AND \"monitor_id\" COLLATE BINARY < x'' AND +CAST(\"monitor_id\" AS NUMERIC) COLLATE BINARY = ?1)",
+                    "vm_steps": 705
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "COMPOUND QUERY",
+                    "LEFT-MOST SUBQUERY",
+                    "SEARCH main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup (monitor_id=?)",
+                    "UNION ALL",
+                    "SEARCH main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup (monitor_id>? AND monitor_id<?)"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 703,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 63,
+                "whole_query_progress_callbacks_separate_pass": 14
+              }
+            },
+            {
+              "outer_rows": 10,
+              "shape": "window",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY = 123) AND (\"bucket_ts\" COLLATE BINARY >= 0) AND ((\"bucket_ts\" COLLATE BINARY < 9000) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < 9000)) UNION ALL SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY >= '' AND \"monitor_id\" COLLATE BINARY < x'' AND +CAST(\"monitor_id\" AS NUMERIC) COLLATE BINARY = 123) AND (\"bucket_ts\" COLLATE BINARY >= 0) AND ((\"bucket_ts\" COLLATE BINARY < 9000) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < 9000))",
+                    "fullscan_steps": 0,
+                    "rows_returned": 10,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY = ?1) AND (\"bucket_ts\" COLLATE BINARY >= ?2) AND ((\"bucket_ts\" COLLATE BINARY < ?3) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < ?3)) UNION ALL SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY >= '' AND \"monitor_id\" COLLATE BINARY < x'' AND +CAST(\"monitor_id\" AS NUMERIC) COLLATE BINARY = ?1) AND (\"bucket_ts\" COLLATE BINARY >= ?2) AND ((\"bucket_ts\" COLLATE BINARY < ?3) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < ?3))",
+                    "vm_steps": 467
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "COMPOUND QUERY",
+                    "LEFT-MOST SUBQUERY",
+                    "SEARCH main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup (monitor_id=? AND bucket_ts>?)",
+                    "UNION ALL",
+                    "SEARCH main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup (monitor_id>? AND monitor_id<?)"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 164,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 10,
+                "whole_query_progress_callbacks_separate_pass": 6
+              }
+            },
+            {
+              "outer_rows": 2452,
+              "shape": "nonleading",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"bucket_ts\" COLLATE BINARY >= 0) AND ((\"bucket_ts\" COLLATE BINARY < 9000) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < 9000))",
+                    "fullscan_steps": 13790,
+                    "rows_returned": 2452,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"bucket_ts\" COLLATE BINARY >= ?1) AND ((\"bucket_ts\" COLLATE BINARY < ?2) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < ?2))",
+                    "vm_steps": 113711
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 31888,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 2452,
+                "whole_query_progress_callbacks_separate_pass": 1456
+              }
+            }
+          ],
+          "repeat": 0,
+          "round": 4,
+          "warmup": false
+        },
+        {
+          "read_order": [
+            "monitor",
+            "window",
+            "nonleading",
+            "full"
+          ],
+          "reads": [
+            {
+              "outer_rows": 63,
+              "shape": "monitor",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY = 123) UNION ALL SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY >= '' AND \"monitor_id\" COLLATE BINARY < x'' AND +CAST(\"monitor_id\" AS NUMERIC) COLLATE BINARY = 123)",
+                    "fullscan_steps": 0,
+                    "rows_returned": 63,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY = ?1) UNION ALL SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY >= '' AND \"monitor_id\" COLLATE BINARY < x'' AND +CAST(\"monitor_id\" AS NUMERIC) COLLATE BINARY = ?1)",
+                    "vm_steps": 705
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "COMPOUND QUERY",
+                    "LEFT-MOST SUBQUERY",
+                    "SEARCH main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup (monitor_id=?)",
+                    "UNION ALL",
+                    "SEARCH main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup (monitor_id>? AND monitor_id<?)"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 703,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 63,
+                "whole_query_progress_callbacks_separate_pass": 14
+              }
+            },
+            {
+              "outer_rows": 10,
+              "shape": "window",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY = 123) AND (\"bucket_ts\" COLLATE BINARY >= 0) AND ((\"bucket_ts\" COLLATE BINARY < 9000) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < 9000)) UNION ALL SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY >= '' AND \"monitor_id\" COLLATE BINARY < x'' AND +CAST(\"monitor_id\" AS NUMERIC) COLLATE BINARY = 123) AND (\"bucket_ts\" COLLATE BINARY >= 0) AND ((\"bucket_ts\" COLLATE BINARY < 9000) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < 9000))",
+                    "fullscan_steps": 0,
+                    "rows_returned": 10,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY = ?1) AND (\"bucket_ts\" COLLATE BINARY >= ?2) AND ((\"bucket_ts\" COLLATE BINARY < ?3) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < ?3)) UNION ALL SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY >= '' AND \"monitor_id\" COLLATE BINARY < x'' AND +CAST(\"monitor_id\" AS NUMERIC) COLLATE BINARY = ?1) AND (\"bucket_ts\" COLLATE BINARY >= ?2) AND ((\"bucket_ts\" COLLATE BINARY < ?3) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < ?3))",
+                    "vm_steps": 467
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "COMPOUND QUERY",
+                    "LEFT-MOST SUBQUERY",
+                    "SEARCH main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup (monitor_id=? AND bucket_ts>?)",
+                    "UNION ALL",
+                    "SEARCH main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup (monitor_id>? AND monitor_id<?)"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 164,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 10,
+                "whole_query_progress_callbacks_separate_pass": 6
+              }
+            },
+            {
+              "outer_rows": 2512,
+              "shape": "nonleading",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"bucket_ts\" COLLATE BINARY >= 0) AND ((\"bucket_ts\" COLLATE BINARY < 9000) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < 9000))",
+                    "fullscan_steps": 13865,
+                    "rows_returned": 2512,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"bucket_ts\" COLLATE BINARY >= ?1) AND ((\"bucket_ts\" COLLATE BINARY < ?2) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < ?2))",
+                    "vm_steps": 114656
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 32668,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 2512,
+                "whole_query_progress_callbacks_separate_pass": 1473
+              }
+            },
+            {
+              "outer_rows": 13866,
+              "shape": "full",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 13865,
+                    "rows_returned": 13866,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 138666
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 124802,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 13866,
+                "whole_query_progress_callbacks_separate_pass": 2634
+              }
+            }
+          ],
+          "repeat": 0,
+          "round": 5,
+          "warmup": false
+        },
+        {
+          "read_order": [
+            "window",
+            "nonleading",
+            "full",
+            "monitor"
+          ],
+          "reads": [
+            {
+              "outer_rows": 13,
+              "shape": "window",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY = 123) AND (\"bucket_ts\" COLLATE BINARY >= 0) AND ((\"bucket_ts\" COLLATE BINARY < 9000) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < 9000)) UNION ALL SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY >= '' AND \"monitor_id\" COLLATE BINARY < x'' AND +CAST(\"monitor_id\" AS NUMERIC) COLLATE BINARY = 123) AND (\"bucket_ts\" COLLATE BINARY >= 0) AND ((\"bucket_ts\" COLLATE BINARY < 9000) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < 9000))",
+                    "fullscan_steps": 0,
+                    "rows_returned": 13,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY = ?1) AND (\"bucket_ts\" COLLATE BINARY >= ?2) AND ((\"bucket_ts\" COLLATE BINARY < ?3) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < ?3)) UNION ALL SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY >= '' AND \"monitor_id\" COLLATE BINARY < x'' AND +CAST(\"monitor_id\" AS NUMERIC) COLLATE BINARY = ?1) AND (\"bucket_ts\" COLLATE BINARY >= ?2) AND ((\"bucket_ts\" COLLATE BINARY < ?3) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < ?3))",
+                    "vm_steps": 506
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "COMPOUND QUERY",
+                    "LEFT-MOST SUBQUERY",
+                    "SEARCH main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup (monitor_id=? AND bucket_ts>?)",
+                    "UNION ALL",
+                    "SEARCH main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup (monitor_id>? AND monitor_id<?)"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 209,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 13,
+                "whole_query_progress_callbacks_separate_pass": 7
+              }
+            },
+            {
+              "outer_rows": 2572,
+              "shape": "nonleading",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"bucket_ts\" COLLATE BINARY >= 0) AND ((\"bucket_ts\" COLLATE BINARY < 9000) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < 9000))",
+                    "fullscan_steps": 13940,
+                    "rows_returned": 2572,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"bucket_ts\" COLLATE BINARY >= ?1) AND ((\"bucket_ts\" COLLATE BINARY < ?2) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < ?2))",
+                    "vm_steps": 115601
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 33448,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 2572,
+                "whole_query_progress_callbacks_separate_pass": 1490
+              }
+            },
+            {
+              "outer_rows": 13941,
+              "shape": "full",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 13940,
+                    "rows_returned": 13941,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 139416
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 125477,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 13941,
+                "whole_query_progress_callbacks_separate_pass": 2649
+              }
+            },
+            {
+              "outer_rows": 66,
+              "shape": "monitor",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY = 123) UNION ALL SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY >= '' AND \"monitor_id\" COLLATE BINARY < x'' AND +CAST(\"monitor_id\" AS NUMERIC) COLLATE BINARY = 123)",
+                    "fullscan_steps": 0,
+                    "rows_returned": 66,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY = ?1) UNION ALL SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY >= '' AND \"monitor_id\" COLLATE BINARY < x'' AND +CAST(\"monitor_id\" AS NUMERIC) COLLATE BINARY = ?1)",
+                    "vm_steps": 738
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "COMPOUND QUERY",
+                    "LEFT-MOST SUBQUERY",
+                    "SEARCH main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup (monitor_id=?)",
+                    "UNION ALL",
+                    "SEARCH main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup (monitor_id>? AND monitor_id<?)"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 736,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 66,
+                "whole_query_progress_callbacks_separate_pass": 14
+              }
+            }
+          ],
+          "repeat": 0,
+          "round": 6,
+          "warmup": false
+        },
+        {
+          "read_order": [
+            "nonleading",
+            "full",
+            "monitor",
+            "window"
+          ],
+          "reads": [
+            {
+              "outer_rows": 2632,
+              "shape": "nonleading",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"bucket_ts\" COLLATE BINARY >= 0) AND ((\"bucket_ts\" COLLATE BINARY < 9000) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < 9000))",
+                    "fullscan_steps": 14015,
+                    "rows_returned": 2632,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"bucket_ts\" COLLATE BINARY >= ?1) AND ((\"bucket_ts\" COLLATE BINARY < ?2) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < ?2))",
+                    "vm_steps": 116546
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 34228,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 2632,
+                "whole_query_progress_callbacks_separate_pass": 1507
+              }
+            },
+            {
+              "outer_rows": 14016,
+              "shape": "full",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 14015,
+                    "rows_returned": 14016,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 140166
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 126152,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 14016,
+                "whole_query_progress_callbacks_separate_pass": 2663
+              }
+            },
+            {
+              "outer_rows": 66,
+              "shape": "monitor",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY = 123) UNION ALL SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY >= '' AND \"monitor_id\" COLLATE BINARY < x'' AND +CAST(\"monitor_id\" AS NUMERIC) COLLATE BINARY = 123)",
+                    "fullscan_steps": 0,
+                    "rows_returned": 66,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY = ?1) UNION ALL SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY >= '' AND \"monitor_id\" COLLATE BINARY < x'' AND +CAST(\"monitor_id\" AS NUMERIC) COLLATE BINARY = ?1)",
+                    "vm_steps": 738
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "COMPOUND QUERY",
+                    "LEFT-MOST SUBQUERY",
+                    "SEARCH main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup (monitor_id=?)",
+                    "UNION ALL",
+                    "SEARCH main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup (monitor_id>? AND monitor_id<?)"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 736,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 66,
+                "whole_query_progress_callbacks_separate_pass": 14
+              }
+            },
+            {
+              "outer_rows": 13,
+              "shape": "window",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY = 123) AND (\"bucket_ts\" COLLATE BINARY >= 0) AND ((\"bucket_ts\" COLLATE BINARY < 9000) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < 9000)) UNION ALL SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY >= '' AND \"monitor_id\" COLLATE BINARY < x'' AND +CAST(\"monitor_id\" AS NUMERIC) COLLATE BINARY = 123) AND (\"bucket_ts\" COLLATE BINARY >= 0) AND ((\"bucket_ts\" COLLATE BINARY < 9000) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < 9000))",
+                    "fullscan_steps": 0,
+                    "rows_returned": 13,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY = ?1) AND (\"bucket_ts\" COLLATE BINARY >= ?2) AND ((\"bucket_ts\" COLLATE BINARY < ?3) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < ?3)) UNION ALL SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY >= '' AND \"monitor_id\" COLLATE BINARY < x'' AND +CAST(\"monitor_id\" AS NUMERIC) COLLATE BINARY = ?1) AND (\"bucket_ts\" COLLATE BINARY >= ?2) AND ((\"bucket_ts\" COLLATE BINARY < ?3) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < ?3))",
+                    "vm_steps": 506
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "COMPOUND QUERY",
+                    "LEFT-MOST SUBQUERY",
+                    "SEARCH main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup (monitor_id=? AND bucket_ts>?)",
+                    "UNION ALL",
+                    "SEARCH main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup (monitor_id>? AND monitor_id<?)"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 209,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 13,
+                "whole_query_progress_callbacks_separate_pass": 7
+              }
+            }
+          ],
+          "repeat": 0,
+          "round": 7,
+          "warmup": false
+        },
+        {
+          "read_order": [
+            "full",
+            "monitor",
+            "window",
+            "nonleading"
+          ],
+          "reads": [
+            {
+              "outer_rows": 14091,
+              "shape": "full",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 14090,
+                    "rows_returned": 14091,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 140916
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 126827,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 14091,
+                "whole_query_progress_callbacks_separate_pass": 2677
+              }
+            },
+            {
+              "outer_rows": 66,
+              "shape": "monitor",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY = 123) UNION ALL SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY >= '' AND \"monitor_id\" COLLATE BINARY < x'' AND +CAST(\"monitor_id\" AS NUMERIC) COLLATE BINARY = 123)",
+                    "fullscan_steps": 0,
+                    "rows_returned": 66,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY = ?1) UNION ALL SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY >= '' AND \"monitor_id\" COLLATE BINARY < x'' AND +CAST(\"monitor_id\" AS NUMERIC) COLLATE BINARY = ?1)",
+                    "vm_steps": 738
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "COMPOUND QUERY",
+                    "LEFT-MOST SUBQUERY",
+                    "SEARCH main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup (monitor_id=?)",
+                    "UNION ALL",
+                    "SEARCH main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup (monitor_id>? AND monitor_id<?)"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 736,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 66,
+                "whole_query_progress_callbacks_separate_pass": 14
+              }
+            },
+            {
+              "outer_rows": 13,
+              "shape": "window",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY = 123) AND (\"bucket_ts\" COLLATE BINARY >= 0) AND ((\"bucket_ts\" COLLATE BINARY < 9000) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < 9000)) UNION ALL SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY >= '' AND \"monitor_id\" COLLATE BINARY < x'' AND +CAST(\"monitor_id\" AS NUMERIC) COLLATE BINARY = 123) AND (\"bucket_ts\" COLLATE BINARY >= 0) AND ((\"bucket_ts\" COLLATE BINARY < 9000) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < 9000))",
+                    "fullscan_steps": 0,
+                    "rows_returned": 13,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY = ?1) AND (\"bucket_ts\" COLLATE BINARY >= ?2) AND ((\"bucket_ts\" COLLATE BINARY < ?3) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < ?3)) UNION ALL SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY >= '' AND \"monitor_id\" COLLATE BINARY < x'' AND +CAST(\"monitor_id\" AS NUMERIC) COLLATE BINARY = ?1) AND (\"bucket_ts\" COLLATE BINARY >= ?2) AND ((\"bucket_ts\" COLLATE BINARY < ?3) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < ?3))",
+                    "vm_steps": 506
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "COMPOUND QUERY",
+                    "LEFT-MOST SUBQUERY",
+                    "SEARCH main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup (monitor_id=? AND bucket_ts>?)",
+                    "UNION ALL",
+                    "SEARCH main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup (monitor_id>? AND monitor_id<?)"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 209,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 13,
+                "whole_query_progress_callbacks_separate_pass": 7
+              }
+            },
+            {
+              "outer_rows": 2692,
+              "shape": "nonleading",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"bucket_ts\" COLLATE BINARY >= 0) AND ((\"bucket_ts\" COLLATE BINARY < 9000) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < 9000))",
+                    "fullscan_steps": 14090,
+                    "rows_returned": 2692,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"bucket_ts\" COLLATE BINARY >= ?1) AND ((\"bucket_ts\" COLLATE BINARY < ?2) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < ?2))",
+                    "vm_steps": 117491
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 35008,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 2692,
+                "whole_query_progress_callbacks_separate_pass": 1524
+              }
+            }
+          ],
+          "repeat": 0,
+          "round": 8,
+          "warmup": false
+        },
+        {
+          "read_order": [
+            "monitor",
+            "window",
+            "nonleading",
+            "full"
+          ],
+          "reads": [
+            {
+              "outer_rows": 66,
+              "shape": "monitor",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY = 123) UNION ALL SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY >= '' AND \"monitor_id\" COLLATE BINARY < x'' AND +CAST(\"monitor_id\" AS NUMERIC) COLLATE BINARY = 123)",
+                    "fullscan_steps": 0,
+                    "rows_returned": 66,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY = ?1) UNION ALL SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY >= '' AND \"monitor_id\" COLLATE BINARY < x'' AND +CAST(\"monitor_id\" AS NUMERIC) COLLATE BINARY = ?1)",
+                    "vm_steps": 738
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "COMPOUND QUERY",
+                    "LEFT-MOST SUBQUERY",
+                    "SEARCH main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup (monitor_id=?)",
+                    "UNION ALL",
+                    "SEARCH main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup (monitor_id>? AND monitor_id<?)"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 736,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 66,
+                "whole_query_progress_callbacks_separate_pass": 14
+              }
+            },
+            {
+              "outer_rows": 13,
+              "shape": "window",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY = 123) AND (\"bucket_ts\" COLLATE BINARY >= 0) AND ((\"bucket_ts\" COLLATE BINARY < 9000) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < 9000)) UNION ALL SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY >= '' AND \"monitor_id\" COLLATE BINARY < x'' AND +CAST(\"monitor_id\" AS NUMERIC) COLLATE BINARY = 123) AND (\"bucket_ts\" COLLATE BINARY >= 0) AND ((\"bucket_ts\" COLLATE BINARY < 9000) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < 9000))",
+                    "fullscan_steps": 0,
+                    "rows_returned": 13,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY = ?1) AND (\"bucket_ts\" COLLATE BINARY >= ?2) AND ((\"bucket_ts\" COLLATE BINARY < ?3) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < ?3)) UNION ALL SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY >= '' AND \"monitor_id\" COLLATE BINARY < x'' AND +CAST(\"monitor_id\" AS NUMERIC) COLLATE BINARY = ?1) AND (\"bucket_ts\" COLLATE BINARY >= ?2) AND ((\"bucket_ts\" COLLATE BINARY < ?3) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < ?3))",
+                    "vm_steps": 506
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "COMPOUND QUERY",
+                    "LEFT-MOST SUBQUERY",
+                    "SEARCH main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup (monitor_id=? AND bucket_ts>?)",
+                    "UNION ALL",
+                    "SEARCH main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup (monitor_id>? AND monitor_id<?)"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 209,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 13,
+                "whole_query_progress_callbacks_separate_pass": 7
+              }
+            },
+            {
+              "outer_rows": 2753,
+              "shape": "nonleading",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"bucket_ts\" COLLATE BINARY >= 0) AND ((\"bucket_ts\" COLLATE BINARY < 9000) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < 9000))",
+                    "fullscan_steps": 14166,
+                    "rows_returned": 2753,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"bucket_ts\" COLLATE BINARY >= ?1) AND ((\"bucket_ts\" COLLATE BINARY < ?2) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < ?2))",
+                    "vm_steps": 118450
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 35801,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 2753,
+                "whole_query_progress_callbacks_separate_pass": 1542
+              }
+            },
+            {
+              "outer_rows": 14167,
+              "shape": "full",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 14166,
+                    "rows_returned": 14167,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 141676
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 127511,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 14167,
+                "whole_query_progress_callbacks_separate_pass": 2691
+              }
+            }
+          ],
+          "repeat": 0,
+          "round": 9,
+          "warmup": false
+        },
+        {
+          "read_order": [
+            "window",
+            "nonleading",
+            "full",
+            "monitor"
+          ],
+          "reads": [
+            {
+              "outer_rows": 13,
+              "shape": "window",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY = 123) AND (\"bucket_ts\" COLLATE BINARY >= 0) AND ((\"bucket_ts\" COLLATE BINARY < 9000) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < 9000)) UNION ALL SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY >= '' AND \"monitor_id\" COLLATE BINARY < x'' AND +CAST(\"monitor_id\" AS NUMERIC) COLLATE BINARY = 123) AND (\"bucket_ts\" COLLATE BINARY >= 0) AND ((\"bucket_ts\" COLLATE BINARY < 9000) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < 9000))",
+                    "fullscan_steps": 0,
+                    "rows_returned": 13,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY = ?1) AND (\"bucket_ts\" COLLATE BINARY >= ?2) AND ((\"bucket_ts\" COLLATE BINARY < ?3) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < ?3)) UNION ALL SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY >= '' AND \"monitor_id\" COLLATE BINARY < x'' AND +CAST(\"monitor_id\" AS NUMERIC) COLLATE BINARY = ?1) AND (\"bucket_ts\" COLLATE BINARY >= ?2) AND ((\"bucket_ts\" COLLATE BINARY < ?3) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < ?3))",
+                    "vm_steps": 512
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "COMPOUND QUERY",
+                    "LEFT-MOST SUBQUERY",
+                    "SEARCH main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup (monitor_id=? AND bucket_ts>?)",
+                    "UNION ALL",
+                    "SEARCH main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup (monitor_id>? AND monitor_id<?)"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 209,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 13,
+                "whole_query_progress_callbacks_separate_pass": 7
+              }
+            },
+            {
+              "outer_rows": 2813,
+              "shape": "nonleading",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"bucket_ts\" COLLATE BINARY >= 0) AND ((\"bucket_ts\" COLLATE BINARY < 9000) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < 9000))",
+                    "fullscan_steps": 14241,
+                    "rows_returned": 2813,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"bucket_ts\" COLLATE BINARY >= ?1) AND ((\"bucket_ts\" COLLATE BINARY < ?2) OR (\"bucket_ts\" COLLATE BINARY >= '' AND \"bucket_ts\" COLLATE BINARY < x'' AND +CAST(\"bucket_ts\" AS NUMERIC) COLLATE BINARY < ?2))",
+                    "vm_steps": 119395
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 36581,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 2813,
+                "whole_query_progress_callbacks_separate_pass": 1559
+              }
+            },
+            {
+              "outer_rows": 14242,
+              "shape": "full",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "fullscan_steps": 14241,
+                    "rows_returned": 14242,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\"",
+                    "vm_steps": 142426
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "SCAN main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 128186,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 14242,
+                "whole_query_progress_callbacks_separate_pass": 2706
+              }
+            },
+            {
+              "outer_rows": 67,
+              "shape": "monitor",
+              "work": {
+                "nested": [
+                  {
+                    "expanded_sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY = 123) UNION ALL SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY >= '' AND \"monitor_id\" COLLATE BINARY < x'' AND +CAST(\"monitor_id\" AS NUMERIC) COLLATE BINARY = 123)",
+                    "fullscan_steps": 0,
+                    "rows_returned": 67,
+                    "sql": "SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY = ?1) UNION ALL SELECT rowid, \"monitor_id\", \"bucket_ts\", \"status\", \"AVG(latency_ms)\", \"MIN(latency_ms)\", \"MAX(latency_ms)\", \"COUNT(*)\" FROM \"main\".\"__ivm_out_kener_bucket_rollup\" WHERE (\"monitor_id\" COLLATE BINARY >= '' AND \"monitor_id\" COLLATE BINARY < x'' AND +CAST(\"monitor_id\" AS NUMERIC) COLLATE BINARY = ?1)",
+                    "vm_steps": 749
+                  }
+                ],
+                "nested_eqp": [
+                  [
+                    "COMPOUND QUERY",
+                    "LEFT-MOST SUBQUERY",
+                    "SEARCH main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup (monitor_id=?)",
+                    "UNION ALL",
+                    "SEARCH main.__ivm_out_kener_bucket_rollup USING COVERING INDEX __ivm_outidx_kener_bucket_rollup (monitor_id>? AND monitor_id<?)"
+                  ]
+                ],
+                "outer_fullscan_steps": 0,
+                "outer_vm_steps": 747,
+                "progress_interval_vm_instructions": 100,
+                "separate_pass_outer_rows": 67,
+                "whole_query_progress_callbacks_separate_pass": 14
+              }
+            }
+          ],
+          "repeat": 0,
+          "round": 10,
+          "warmup": false
+        }
+      ]
+    }
+  ],
+  "schema_version": 1
+}

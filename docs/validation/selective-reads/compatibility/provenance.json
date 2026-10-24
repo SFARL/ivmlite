@@ -1,0 +1,155 @@
+{
+  "format_version": 1,
+  "captured_files": [
+    {
+      "original": "affinity/probe.py",
+      "published": "affinity/probe.py",
+      "original_sha256": "1048e5c28853b1f0f479d3b0ddfd1cf5748d136cc0e65765abd9ae1432068956",
+      "published_sha256": "1048e5c28853b1f0f479d3b0ddfd1cf5748d136cc0e65765abd9ae1432068956",
+      "normalization": "none"
+    },
+    {
+      "original": "affinity/results.json",
+      "published": "affinity/results.json",
+      "original_sha256": "51ac01503ebc27258ed767416aea720eedd46da2c8b96cd476ab09fc33c6a6d5",
+      "published_sha256": "51ac01503ebc27258ed767416aea720eedd46da2c8b96cd476ab09fc33c6a6d5",
+      "normalization": "none"
+    },
+    {
+      "original": "affinity/plan_probe.py",
+      "published": "affinity/plan_probe.py",
+      "original_sha256": "7ba5a622e69f1a2ec9286f6035fa2816c440c978b15439cfb6647700caff7a30",
+      "published_sha256": "7ba5a622e69f1a2ec9286f6035fa2816c440c978b15439cfb6647700caff7a30",
+      "normalization": "none"
+    },
+    {
+      "original": "affinity/expression-plans.json",
+      "published": "affinity/expression-plans.json",
+      "original_sha256": "93f7668fcbc7218e693466711fe7e83b1423a4294fbc6353790381337a268694",
+      "published_sha256": "93f7668fcbc7218e693466711fe7e83b1423a4294fbc6353790381337a268694",
+      "normalization": "none"
+    },
+    {
+      "original": "affinity/rejected-candidates.json",
+      "published": "affinity/rejected-candidates.json",
+      "original_sha256": "7d9b8d76362a72fc1ffd9d9294caaea35eab9676c73f1e230a935afa81a06f85",
+      "published_sha256": "7d9b8d76362a72fc1ffd9d9294caaea35eab9676c73f1e230a935afa81a06f85",
+      "normalization": "none"
+    },
+    {
+      "original": "sqlite345/smoke.py",
+      "published": "compatibility/smoke.py",
+      "original_sha256": "8fdb19e24298fcf3fd14a2263867ca5c27bb3ed28da0f2cb09100813cb725f6c",
+      "published_sha256": "1461b6c3ad724b4a8d3050492aef788d2702cba66d8d9beb0b8c141f80bf485f",
+      "normalization": "Require IVMLITE_EXTENSION; no fallback developer path"
+    },
+    {
+      "original": "sqlite345/smoke.sql",
+      "published": "compatibility/smoke.sql",
+      "original_sha256": "05d9d6edb15776475bdaab629587db4f83110a5e49d04db21d238800bcf50998",
+      "published_sha256": "e278fa32dcf223775d896946acda34ba2050c7c6c6737e2272eb91a435f75c95",
+      "normalization": "Replace captured .load library path with ./ivmlite-extension"
+    },
+    {
+      "original": "sqlite345/compatibility.sql",
+      "published": "compatibility/compatibility.sql",
+      "original_sha256": "3107692fbdcf0f3ba81f31f7688b7cf2f79f575afc242eefb7c90821b2d8e977",
+      "published_sha256": "a19f0b2e59c5f553a14f627b8b9fb6812d0bcf9fba6bb99040bf3ec35f7c03f1",
+      "normalization": "Replace captured .load library path with ./ivmlite-extension"
+    },
+    {
+      "original": "sqlite345/smoke.json",
+      "published": "compatibility/smoke.json",
+      "original_sha256": "28bf35bd28ec03dc7a27fc3cfe870849ce09a02a904f7bd2ffc5467a070a4519",
+      "published_sha256": "28bf35bd28ec03dc7a27fc3cfe870849ce09a02a904f7bd2ffc5467a070a4519",
+      "normalization": "none"
+    },
+    {
+      "original": "sqlite345/smoke.stdout",
+      "published": "compatibility/smoke.stdout",
+      "original_sha256": "6a0e441f695aa0fc5b0d55bc4f394b713230de36bf896f2251c824e4969535db",
+      "published_sha256": "6a0e441f695aa0fc5b0d55bc4f394b713230de36bf896f2251c824e4969535db",
+      "normalization": "none"
+    },
+    {
+      "original": "sqlite345/smoke.stderr",
+      "published": "compatibility/smoke.stderr",
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "published_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "normalization": "none"
+    },
+    {
+      "original": "sqlite345/compatibility.stdout",
+      "published": "compatibility/compatibility.stdout",
+      "original_sha256": "ed6685f1afe238fde9d0837f27db6aedfd7c1efbf9c94992294299d31dc483f8",
+      "published_sha256": "ed6685f1afe238fde9d0837f27db6aedfd7c1efbf9c94992294299d31dc483f8",
+      "normalization": "none"
+    },
+    {
+      "original": "sqlite345/compatibility.stderr",
+      "published": "compatibility/compatibility.stderr",
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "published_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "normalization": "none"
+    },
+    {
+      "original": "baseline/compatibility.json",
+      "published": "compatibility/alpha6-original.json",
+      "original_sha256": "d4c2bedb694dadeb8dc5eb60c99bc0ed5783c0842d313b56e4082fa7f5e77b54",
+      "published_sha256": "d4c2bedb694dadeb8dc5eb60c99bc0ed5783c0842d313b56e4082fa7f5e77b54",
+      "normalization": "none"
+    }
+  ],
+  "sqlite345": {
+    "version": "3.45.0",
+    "source_id": "2024-01-15 17:01:13 1066602b2b1976fe58b5150777cced894af17c803e068f5918390d6915b46e1d",
+    "release_url": "https://sqlite.org/releaselog/3_45_0.html",
+    "amalgamation_url": "https://www.sqlite.org/2024/sqlite-amalgamation-3450000.zip",
+    "amalgamation_zip_sha256": "bde30d13ebdf84926ddd5e8b6df145be03a577a48fd075a087a5dd815bcdf740",
+    "sqlite3_c_sha3_256": "f56d8e5e8c61d87b957f1cc60b3042c134d7bc0ca3aba002e6999e8f0af310a3",
+    "captured_cli_sha256": "5d4d0e53f7b7cade92d1ed9419824fb573db8888c56ef8a0d8bc6a6f834692e4",
+    "historical_cli_build_flags": "not recorded",
+    "source_reasoning_files": [
+      {
+        "name": "expr.c",
+        "sha256": "ff326761dd57c9cf77711b9a10540bb8c6a8abfa8d8f7a6231bd0b5ad53d9900",
+        "url": "https://github.com/sqlite/sqlite/blob/version-3.45.0/src/expr.c"
+      },
+      {
+        "name": "vdbe.c",
+        "sha256": "544074339832bfb3cc52d42c5c0383b5dc9d43ffb24ef374636ce31b7af66977",
+        "url": "https://github.com/sqlite/sqlite/blob/version-3.45.0/src/vdbe.c"
+      },
+      {
+        "name": "vdbemem.c",
+        "sha256": "62ae4879b82b7ff8f1f9060d3aee8bfcd2ba07a886ddedbe72090228fe8c12f7",
+        "url": "https://github.com/sqlite/sqlite/blob/version-3.45.0/src/vdbemem.c"
+      },
+      {
+        "name": "whereexpr.c",
+        "sha256": "70f60225633069ea17e7115e1909a29e056ca846e11b5d575a2caf5352b3e241",
+        "url": "https://github.com/sqlite/sqlite/blob/version-3.45.0/src/whereexpr.c"
+      }
+    ]
+  },
+  "binaries_not_published": {
+    "platform": "macOS arm64",
+    "new_library_sha256": "4bc5f14e81f786f3d3644fffbc9d8fc8c44ac0d768fc4eebc541312cbb589f20",
+    "old_library_sha256": "e777d54cd237a669376c8164188fe667bca7072052ba33e6d62a266f13dd1e77",
+    "original_database_sha256": "78ef4ca03b6f16eae7364332330ef0a718dd756b1ec5d857027b0cfe5c4ada8c"
+  },
+  "baseline_fixture": {
+    "source_commit": "0ad47a9259ee7acee411b46b7f64d50d268b2096",
+    "built_at_commit": "4888480",
+    "difference": "documentation only relative to alpha.6",
+    "original_creation_sqlite_version": "3.53.0",
+    "recreation_sql": "create-alpha6.sql",
+    "schema_source": "Read-only immutable inspection of the captured original database; no extension loaded",
+    "byte_identical_recreation_claim": false
+  },
+  "normalization": {
+    "smoke_runner": "Only developer-specific default library lookup replaced by mandatory IVMLITE_EXTENSION; all executed query/assertion/copy/subprocess logic retained",
+    "captured_sql": "Only .load paths replaced by ./ivmlite-extension; records below bind raw and publication bytes",
+    "new_files": "README.md, create-alpha6.sql, provenance.json, and SHA256SUMS are publication preparation; not historical executed artifacts"
+  }
+}

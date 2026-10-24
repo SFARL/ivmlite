@@ -1,0 +1,93 @@
+{
+  "format": "Deterministic gzip (mtime=0, no filename, compression level 9); decompression preserves exact external bytes.",
+  "date": "2026-10-24",
+  "baseCommit": "776a37c5e4753166e1e07d8dad933f6f503e418b",
+  "sourceSnapshot": "Script hashes identify the tested working source; baseCommit precedes the source-boundary integration. Four namespaced profiles record exact unchanged upstream hashes and generated facade source contents/hashes in raw acceptance.",
+  "scriptAndWorkflowSHA256": {
+    ".github/workflows/kener-native.yml": "fa1b731d907e5939587c1358f8c7c397b781519d43183cd1aaf4da50b80fe36d",
+    "scripts/kener-native/acceptance.mjs": "6dc9c38263060dfb736571dfb92a7ab37a98e7fc95b02452a3952dd165e45dae",
+    "scripts/kener-native/adapter-acceptance.mjs": "8ff385a1a8bd364a344458c4915d8b71dc6a91d4fab1f0ddbc087c39dc18f045",
+    "scripts/kener-native/adapter.mjs": "83b90b828e2e35d7831cdc361be472e2167fd62ba36b49f1efa7ad774955f430",
+    "scripts/kener-native/benchmark.mjs": "c37060a733e5ca1fd80548ea42bf73f973461ac275f8856eef51de2fcc9d149c",
+    "scripts/kener-native/connection-acceptance.mjs": "8e4841e6f98c74e840f4e585bcd0e81ccb97711f0e9c2618f2937576cdafdf03",
+    "scripts/kener-native/host.mjs": "ef6acc57d758c1d5551e0ecf8ba474469922c5f8d87bc322a2d02bbd289c9e30",
+    "scripts/kener-native/lifecycle-acceptance.mjs": "1d1bac694ad02804fefbffed585f9475a06a315a6179602f607fd9b53b282d01",
+    "scripts/kener-native/lifecycle-worker.mjs": "644da28f4d807e305c5845ae8339e196208e0c9e98a7d618c2b7a4e8fcea1a5a",
+    "scripts/kener-native/lifecycle.mjs": "0a81a99775cd01dc4f33abc27e3dd39ff24abc20979f17fbbd33b9ccf9acad2f",
+    "scripts/kener-native/lock-holder.mjs": "ea06b08ce42e1a7a140ff109eb0fc3ca75c4ecdb78067b7deb95fd28fc64a922",
+    "scripts/kener-native/prepare.mjs": "4cf10bc75cc6363275e751ecff5361e55a70925d5022e038cf85b840c27a08b3",
+    "scripts/kener-native/prepare.test.mjs": "99f02c72974ddc4e429abce45bd55b23bceea2bd81b3db2dcd0c7a6e33a0957d",
+    "scripts/kener-native/runtime.mjs": "53ebeb1d6514167a63280013aa6a0da7bb6fe50cc8279e01106a60aa761db1b6",
+    "scripts/kener-native/source-boundary-acceptance.mjs": "03ad12f38e27e24152a7ab468005e2a45434d7d6c64f8f0cf655b1971be27163",
+    "scripts/kener-native/source-boundary.mjs": "51bc57145ad6bc1606be63f90a57f0fc50182fd80e29978e13c0697c678450b1",
+    "scripts/kener-native/worker-acceptance.mjs": "37fdf7446c7929aadae074ff6532e9b8da01ca0a50fffcee7e86a220d083510e"
+  },
+  "archives": [
+    {
+      "file": "acceptance.json.gz",
+      "role": "Complete six-section guarded native acceptance; actual source/facade contents and provenance included",
+      "externalSource": "source-boundary-2026-10-24/acceptance-final.json",
+      "compressedBytes": 95289,
+      "compressedSHA256": "028d335107e1e1e672929b92c5e6fe51e7f5a06a6f1b37e17e9b59803939a90c",
+      "uncompressedBytes": 1755356,
+      "uncompressedSHA256": "2f42803cadc51ee5b6af9aa0d347859f0d70845c38cd3814273d008c58839035"
+    },
+    {
+      "file": "acceptance.stdout.log.gz",
+      "role": "Final guarded CLI stdout",
+      "externalSource": "source-boundary-2026-10-24/acceptance-final.stdout.log",
+      "compressedBytes": 764,
+      "compressedSHA256": "9f0f22a8e167d7f5a271016188fce49346cb702b4e61c8fb433fb06e771c2f79",
+      "uncompressedBytes": 1818,
+      "uncompressedSHA256": "efe49a7b06784b0ce7324d9bb0b9336b650fa530a3519b41078881aeff0de982"
+    },
+    {
+      "file": "acceptance.stderr.log.gz",
+      "role": "Final guarded CLI stderr; empty",
+      "externalSource": "source-boundary-2026-10-24/acceptance-final.stderr.log",
+      "compressedBytes": 20,
+      "compressedSHA256": "f1b651238a58fe290baec6c5e32f3bdb1943dd2bd582f02569231f7a757c7837",
+      "uncompressedBytes": 0,
+      "uncompressedSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "ownership.json.gz",
+      "role": "Eight exact-runtime ownership checks",
+      "externalSource": "source-boundary-2026-10-24/ownership.json",
+      "compressedBytes": 197,
+      "compressedSHA256": "1767450c85389b3065dedbd79d94769cb1708d07b951d469113ed111bfde3a53",
+      "uncompressedBytes": 773,
+      "uncompressedSHA256": "cb3a0c5ba13b32e5eed15817c9f817b02b2108a41f81310aa14a21e47a69d1ce"
+    },
+    {
+      "file": "ownership.stdout.log.gz",
+      "role": "Ownership CLI stdout",
+      "externalSource": "source-boundary-2026-10-24/ownership.stdout.log",
+      "compressedBytes": 64,
+      "compressedSHA256": "ce6b6d4c722ab49393b7ad2cb7dfce159594741af8016311bdf2a888217e5482",
+      "uncompressedBytes": 44,
+      "uncompressedSHA256": "c576d7e663f78995fb32ef59f7d5dd7d4eeca4741dde8e115508eb6802ed9ffa"
+    },
+    {
+      "file": "ownership.stderr.log.gz",
+      "role": "Ownership CLI stderr; empty",
+      "externalSource": "source-boundary-2026-10-24/ownership.stderr.log",
+      "compressedBytes": 20,
+      "compressedSHA256": "f1b651238a58fe290baec6c5e32f3bdb1943dd2bd582f02569231f7a757c7837",
+      "uncompressedBytes": 0,
+      "uncompressedSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "readableFiles": [
+    {
+      "file": "summary.json",
+      "bytes": 6838,
+      "sha256": "dfb1da8025e345fdda08e639f6a88b95bbe79d2823aa5c5960efbda67363f68e"
+    },
+    {
+      "file": "README.md",
+      "bytes": 3596,
+      "sha256": "9e80c4a4b8e08061a86ce325ae173171acf05864b4bcffcdb7bd16f432ffd39a"
+    }
+  ]
+}

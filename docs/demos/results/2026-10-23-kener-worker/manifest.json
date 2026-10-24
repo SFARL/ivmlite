@@ -1,0 +1,36 @@
+{
+  "format": "Deterministic gzip (mtime=0, no filename, compression level 9); decompresses to exact external acceptance bytes.",
+  "date": "2026-10-23",
+  "baseCommit": "c4c91e6aa9360d6f256087d74900c31db02a0063",
+  "sourceSnapshot": "The script hashes below identify the tested working source; baseCommit precedes this integration.",
+  "scriptAndWorkflowSHA256": {
+    ".github/workflows/kener-native.yml": "fa1b731d907e5939587c1358f8c7c397b781519d43183cd1aaf4da50b80fe36d",
+    "scripts/kener-native/acceptance.mjs": "e5f0b6a3a397e64b525fa41dc96c44f4bf618d4d1e4029bf1b52abadca14b937",
+    "scripts/kener-native/adapter-acceptance.mjs": "8ff385a1a8bd364a344458c4915d8b71dc6a91d4fab1f0ddbc087c39dc18f045",
+    "scripts/kener-native/adapter.mjs": "83b90b828e2e35d7831cdc361be472e2167fd62ba36b49f1efa7ad774955f430",
+    "scripts/kener-native/benchmark.mjs": "c37060a733e5ca1fd80548ea42bf73f973461ac275f8856eef51de2fcc9d149c",
+    "scripts/kener-native/host.mjs": "ef6acc57d758c1d5551e0ecf8ba474469922c5f8d87bc322a2d02bbd289c9e30",
+    "scripts/kener-native/prepare.mjs": "4cf10bc75cc6363275e751ecff5361e55a70925d5022e038cf85b840c27a08b3",
+    "scripts/kener-native/prepare.test.mjs": "99f02c72974ddc4e429abce45bd55b23bceea2bd81b3db2dcd0c7a6e33a0957d",
+    "scripts/kener-native/runtime.mjs": "00b9c8ef13499dbbf8320c723057e170a639c60fb02057e64059df23ed1fdce7",
+    "scripts/kener-native/worker-acceptance.mjs": "37fdf7446c7929aadae074ff6532e9b8da01ca0a50fffcee7e86a220d083510e"
+  },
+  "archives": [
+    {
+      "file": "acceptance.json.gz",
+      "role": "Full serial driver, adapter and worker native acceptance",
+      "externalSource": "worker-integration-2026-10-23/acceptance.json",
+      "compressedBytes": 14663,
+      "compressedSHA256": "746c75feeb5b77b359307ed2c3822d3ce2f1f4ba3d39962b64e7a9c35ff06ee3",
+      "uncompressedBytes": 169883,
+      "uncompressedSHA256": "a24d815318ffa78046493989fdfa0dd196b55727b605c279af6131a597b6ff5c"
+    }
+  ],
+  "readableFiles": [
+    {
+      "file": "summary.json",
+      "bytes": 2808,
+      "sha256": "3bb3072c7796dd9a2c940285d34a3f8eb6055e6ee6abbd0c8e145501a007b81f"
+    }
+  ]
+}
