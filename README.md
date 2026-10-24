@@ -5,8 +5,9 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 ivmlite is an experimental SQLite loadable extension that incrementally
-maintains grouped `COUNT`, `SUM`, `TOTAL`, `AVG`, `MIN` and `MAX` queries. It supports a fixed
-filter and one two-table inner equi-join, captures ordinary SQL writes with
+maintains grouped `COUNT`, `SUM`, `TOTAL`, `AVG`, `MIN` and `MAX` queries.
+Source builds also support row views and arithmetic expressions. It supports
+fixed filters and one two-table inner equi-join, captures ordinary SQL writes with
 triggers, and updates a materialized result when the application explicitly
 refreshes it.
 
@@ -101,8 +102,33 @@ an owned snapshot and do not refresh maintained state.
 
 The [native Rust example and measured comparison](docs/demos/selective-reads.md)
 show bound monitor/time-window reads, explicit refresh, commit, rollback and
-reopen. This change retains format 6 and is not included in the published
-alpha.6 archive; build this branch to try it.
+reopen. Selective reads and the M2d features below are not included in the
+published alpha.6 archive; build this branch to try them. This source branch
+uses format 7.
+
+### M2d queries from source builds
+
+Source builds also maintain nonaggregated row views, preserving duplicate
+rows, and accept arithmetic in aggregate arguments and the SELECT list:
+
+```sql
+CREATE VIRTUAL TABLE adjusted_orders USING ivm(
+  'SELECT region, amount * 2 AS adjusted FROM orders
+   WHERE amount > 0 AND region IS NOT NULL'
+);
+CREATE VIRTUAL TABLE adjusted_revenue USING ivm(
+  'SELECT SUM(amount + 1) AS adjusted_total, region
+   FROM orders WHERE amount > 0 AND region IS NOT NULL GROUP BY region'
+);
+```
+
+Refresh remains explicit. Arithmetic is evaluated by the host SQLite; aggregate
+accumulation retains the numerical differences documented below. New row views
+and final SELECT expressions use snapshot scans; selective group-key pushdown
+continues for the existing aggregate-root plans. See the
+[M2d contract](docs/superpowers/specs/2026-10-24-m2d-query-shapes-design.md).
+The [acceptance and Nexmark report](docs/validation/m2d/README.md) records the
+executed scope, remaining blockers and reproduction commands.
 
 ## Build from source
 
@@ -128,27 +154,37 @@ persisted and returned without changing their storage class. STRICT `ANY` is
 accepted. BINARY collation is required; the conservative `COLLATE` check can
 also refuse an explicitly declared BINARY collation.
 
-A maintained view must have:
+A source-build maintained view supports either a row SELECT without GROUP BY
+or a grouped SELECT with a non-empty GROUP BY over bare columns and at least
+one aggregate. The published alpha.6 subset requires group keys in SELECT order,
+then bare-column aggregates, and at most one predicate. Source builds add:
 
-- a non-empty `GROUP BY` over bare columns;
-- bare group-by columns in its SELECT list, followed by one or more of
-  `COUNT(*)`, `COUNT(column)`, `SUM(column)`, `TOTAL(column)`, `AVG(column)`,
-  `MIN(column)` and `MAX(column)`;
-- optionally one comparison or `IS NULL` / `IS NOT NULL` predicate;
-- optionally one two-table inner equi-join on columns with the same affinity.
-  Numerically equal INTEGER and REAL join keys match, so `1` matches `1.0`;
-  NULL keys match nothing.
+- columns, typed literals, parentheses, unary `+`/`-` and binary `+`, `-`, `*`,
+  `/`, `%` in row SELECTs and aggregate arguments;
+- `COUNT(*)`, `COUNT(expression)`, `SUM`, `TOTAL`, `AVG`, `MIN` and `MAX`;
+- grouped SELECT expressions over group keys and aggregate results, with keys
+  reordered or omitted and values repeated under distinct aliases;
+- static AND combinations of bare-column/literal comparisons and bare-column
+  `IS NULL` / `IS NOT NULL` predicates;
+- `*` and qualified table wildcards in row views. Output names must be unique;
+  use aliases when joining columns with the same name.
+
+Both subsets allow one two-table inner equi-join on columns with the same
+affinity. Numerically equal INTEGER and REAL join keys match (`1` and `1.0`);
+NULL keys match nothing.
 
 Comparison literals may be integers, reals, quoted strings or blobs (`X'…'`).
 They are converted by the column's comparison affinity. A REAL literal against
 a TEXT-affinity column is refused because SQLite's REAL-to-TEXT rendering
 varies between versions; use a quoted string instead.
 
-Notable unsupported features include global aggregates and views without
-aggregates, expressions in SELECT / GROUP BY / aggregates, `AND`/`OR`,
+Notable unsupported features include global aggregates, aggregate-free GROUP BY,
+expression group keys, expression comparisons in WHERE, functions such as
+`COALESCE` or date/string functions, CASE, CAST, OR/IN/NOT/BETWEEN, parameters,
 subqueries, CTEs, outer/self/multi-table joins, `DISTINCT` aggregates,
-`group_concat`, `HAVING`, `ORDER BY` and `LIMIT`. The supported SQLite behavior
-is 3.45 and later; tests use bundled SQLite 3.53.2.
+`group_concat`, `HAVING`, `ORDER BY` and `LIMIT` in the maintained query. Readers
+may filter, order and limit the materialized result with ordinary SQLite SQL.
+The supported SQLite behavior is 3.45 and later; tests use bundled SQLite 3.53.2.
 
 ### Differences from SQLite
 
@@ -169,7 +205,24 @@ prefix overflows even if the final sum fits. For numerically equal INTEGER and
 REAL values, MIN returns the INTEGER and MAX the REAL; SQLite's choice depends
 on scan order.
 
-### Format 6 upgrade
+Legacy grouped views prefer a REAL group-key value when a numerically equal
+REAL is live. New grouped SELECT projections instead choose the least complete
+live key tuple in ivmlite's typed row order, so all key references come from
+one actual tuple. This can differ from SQLite's representative choice, including
+its single MIN/MAX rule. In mixed INTEGER/REAL groups, type-sensitive key
+arithmetic can therefore differ numerically from SQLite; for example, `k/2`
+depends on whether the chosen key is INTEGER `1` or REAL `1.0`. Aggregate
+arguments are still evaluated for every input row before grouping.
+
+### Source-build format 7 upgrade
+
+**This source branch cannot read alpha.6's format-6 maintained state.** Old
+views open as broken views so they can be dropped. Drop every old ivmlite view,
+then recreate it from its SELECT query to build format-7 state. There is no
+automatic migration; the base tables remain the source of truth. Do not replace
+the library in an existing deployment without planning that rebuild.
+
+### Published alpha.6 format 6 upgrade
 
 **alpha.6 cannot read alpha.5's format-5 maintained state.** Old views open as
 broken views so they can be dropped. Drop every old ivmlite view, then recreate

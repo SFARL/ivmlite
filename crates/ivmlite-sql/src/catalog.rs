@@ -10,6 +10,15 @@ pub trait Catalog {
     /// The table called `name`, matched the way SQLite matches identifiers:
     /// ASCII case-insensitively, quoted or not. `Ok(None)` if there is none.
     fn table(&self, name: &str) -> Result<Option<Schema>, CatalogError>;
+
+    /// Resolve a validated REAL numeric token at the host boundary. The generic
+    /// compiler defaults to Rust parsing; a SQLite host must use its own numeric
+    /// parser because long decimal/subnormal rounding can vary by host version.
+    fn parse_real_literal(&self, spelling: &str) -> Result<f64, CatalogError> {
+        spelling
+            .parse()
+            .map_err(|_| CatalogError(format!("invalid REAL literal: {spelling}")))
+    }
 }
 
 /// A table exists but cannot be used, or the catalog could not be read.

@@ -250,7 +250,7 @@ fn what_v0_cannot_maintain_is_rejected_by_name() {
         // reports its type as `virtual`.
         ("CREATE TABLE t(k TEXT) STRICT; CREATE VIRTUAL TABLE a USING ivm('SELECT k, COUNT(*) FROM t GROUP BY k')", "SELECT k, COUNT(*) FROM a GROUP BY k", "is a virtual"),
         ("CREATE TABLE t(k TEXT) STRICT", "SELECT k, COUNT(*) AS w FROM t GROUP BY k", "like the view"),
-        ("CREATE TABLE t(k TEXT) STRICT", "SELECT k FROM t", "GROUP BY"),
+        ("CREATE TABLE t(k TEXT) STRICT", "SELECT COUNT(*) FROM t", "GROUP BY"),
         // A result column named like SQLite's rowid aliases is rejected by
         // name, whichever alias and whatever its case (Task 3 controller
         // ruling: exercised end to end, not only through `declaration`).

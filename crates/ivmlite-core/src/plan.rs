@@ -3,33 +3,15 @@ use crate::{
     Predicate, Schema, Value, ViewQuery,
 };
 
-/// Spec §5.2's plan IR.
-///
-/// v0's legal shapes are `Scan → Filter? → Project → Aggregate` and, with a
-/// join, `Join(Scan, Scan) → Filter? → Project → Aggregate`; `lower` guarantees
-/// that nothing else is produced.
-///
-/// Spec §5.2 writes the expressions inside nodes as `Expr`; this implementation
-/// uses `Vec<usize>` (column indices) and `Predicate` instead. v0's group-by keys
-/// can only be bare columns (§5.2), and nothing in the predicate whitelist
-/// (§6.1) needs an expression tree, so in v0 `Expr` would be an empty shell with
-/// a single `Column(usize)` variant. Introducing it once the first feature
-/// genuinely needs expressions is a local change.
+/// Resolved operator IR. Legacy grouped SQL retains Project → Aggregate;
+/// M2d SQL may add Map before aggregation for scalar arguments or above it
+/// for final SELECT order/expressions, and row views end in Map.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Plan {
     Scan {
         table: String,
-        /// **Currently written but never read** (final review Finding G):
-        /// `node.rs`'s `Node::build` destructures `Plan::Scan { table, .. }`,
-        /// discarding `columns` through `..`, and `Node::Scan` does not hold it
-        /// at all. It landed in Task 1, when `Plan` had no consumer and the
-        /// structural test `lowers_to_scan_filter_project_aggregate`, asserting
-        /// on the field itself, was its only reader; once Task 3 gave `Plan` its
-        /// first real consumer (`Node::build`), the field became dead data.
-        /// **Do not delete it**: M1b's delta-table reader is its plausible first
-        /// consumer — it needs to know which base-table columns to `SELECT`
-        /// rather than reading all of them unconditionally. Until then it is a
-        /// statement of intent, not any constraint currently in force.
+        /// Full source layout. Scan routes complete source rows; these
+        /// indices describe their arity for projection boundary validation.
         columns: Vec<usize>,
     },
     /// Spec §5.2 / §6.1: a two-table inner equi-join (M1a Phase 3). Its output
@@ -55,16 +37,61 @@ pub enum Plan {
         /// The **input** column indices to keep, in output order.
         columns: Vec<usize>,
     },
+    Map {
+        input: Box<Plan>,
+        expressions: Vec<crate::ScalarExpr>,
+    },
+    /// New grouped SELECT expressions require one coherent live typed key tuple.
+    AggregateCoherent {
+        input: Box<Plan>,
+        group_by: Vec<usize>,
+        aggs: Vec<Agg>,
+    },
     Aggregate {
         input: Box<Plan>,
-        /// Indices are relative to `Project`'s **output**, not the base table.
+        /// Indices refer to the input Project/Map output, not base columns.
         group_by: Vec<usize>,
-        /// Each `Agg::column` is likewise already remapped to `Project`'s output positions.
+        /// Each `Agg::column` is likewise remapped to the input layout.
         aggs: Vec<Agg>,
     },
 }
 
 impl Plan {
+    /// Validate Map inputs before any stateful node is built or traversed.
+    pub fn validate_projections(&self) -> Result<usize, crate::StateError> {
+        Ok(match self {
+            Plan::Scan { columns, .. } => columns.len(),
+            Plan::Join { left, right, .. } => {
+                left.validate_projections()? + right.validate_projections()?
+            }
+            Plan::Filter { input, .. } => input.validate_projections()?,
+            Plan::Project { input, columns } => {
+                input.validate_projections()?;
+                columns.len()
+            }
+            Plan::Aggregate {
+                input,
+                group_by,
+                aggs,
+            }
+            | Plan::AggregateCoherent {
+                input,
+                group_by,
+                aggs,
+            } => {
+                input.validate_projections()?;
+                group_by.len() + aggs.len()
+            }
+            Plan::Map { input, expressions } => {
+                let arity = input.validate_projections()?;
+                for expression in expressions {
+                    expression.validate(arity)?;
+                }
+                expressions.len()
+            }
+        })
+    }
+
     /// A text rendering of the plan that identifies it exactly and does not
     /// change with the Rust version: it is written out here by hand rather
     /// than taken from `Debug`.
@@ -120,11 +147,31 @@ impl Plan {
                 input.write_canonical(out);
                 out.push(')');
             }
+            Plan::Map { input, expressions } => {
+                out.push_str("map([");
+                for e in expressions {
+                    let text = e.canonical();
+                    out.push_str(&format!("{}:{text}", text.len()));
+                }
+                out.push_str("],");
+                input.write_canonical(out);
+                out.push(')');
+            }
             Plan::Aggregate {
                 input,
                 group_by,
                 aggs,
+            }
+            | Plan::AggregateCoherent {
+                input,
+                group_by,
+                aggs,
             } => {
+                let prefix = if matches!(self, Plan::AggregateCoherent { .. }) {
+                    "aggregate_coherent"
+                } else {
+                    "aggregate"
+                };
                 let aggs: Vec<String> = aggs
                     .iter()
                     .map(|a| {
@@ -143,7 +190,7 @@ impl Plan {
                     })
                     .collect();
                 out.push_str(&format!(
-                    "aggregate([{}],[{}],",
+                    "{prefix}([{}],[{}],",
                     list(group_by),
                     aggs.join(",")
                 ));
@@ -157,6 +204,11 @@ impl Plan {
 fn canonical_predicate(predicate: &Predicate) -> String {
     match predicate {
         Predicate::None => "none".to_string(),
+        Predicate::And(left, right) => {
+            let l = canonical_predicate(left);
+            let r = canonical_predicate(right);
+            format!("and({}:{l},{}:{r})", l.len(), r.len())
+        }
         Predicate::Compare { column, op, value } => {
             let op = match op {
                 CmpOp::Gt => "gt",
@@ -343,33 +395,7 @@ pub fn lower(view: &ResolvedView) -> Result<Plan, PlanError> {
             check(c, "agg")?;
         }
     }
-    match &view.predicate {
-        Predicate::None => {}
-        Predicate::Compare { column, .. }
-        | Predicate::IsNull { column }
-        | Predicate::IsNotNull { column } => check(*column, "predicate")?,
-    }
-
-    // The literal's conversion runs after the bounds checks because it
-    // indexes `schema.columns`, which is only safe once every index is known
-    // valid. (SUM, TOTAL and AVG accept every column, M2c spec §4.) SQLite
-    // converts the literal by the column's affinity before it compares (M2c
-    // spec §5), so the plan stores the converted literal and the comparison
-    // agrees with SQLite. `IS NULL` and `IS NOT NULL` are type-agnostic and
-    // stay allowed on any column.
-    let mut predicate = view.predicate.clone();
-    if let Predicate::Compare { column, op, value } = &mut predicate {
-        let col = columns[*column];
-        if *value == Value::Null {
-            return Err(PlanError(format!(
-                "the comparison {op:?} on column {column} (`{}`) has a NULL literal, \
-                 which makes it UNKNOWN for every row (spec §6.1); use IS NULL or \
-                 IS NOT NULL instead",
-                col.name
-            )));
-        }
-        *value = convert_literal(col, value)?;
-    }
+    let predicate = validate_predicate(&view.predicate, &columns)?;
 
     // The columns the projection keeps: group keys first (in their original
     // order), then each agg's column (in order), deduplicated. The order must be
@@ -402,28 +428,7 @@ pub fn lower(view: &ResolvedView) -> Result<Plan, PlanError> {
             .expect("keep is built from the group_by and agg columns, so it contains them")
     };
 
-    // Each Scan takes every column of its table: Filter's predicate is
-    // evaluated against the joined (or base-table) row, and narrowing happens
-    // after Filter.
-    let scan = |s: &Schema| Plan::Scan {
-        table: s.table.clone(),
-        columns: (0..s.arity()).collect(),
-    };
-    let mut node = match &view.join {
-        Some(join) => Plan::Join {
-            left: Box::new(scan(anchor)),
-            right: Box::new(scan(join.right)),
-            left_key: join.left_column,
-            right_key: join.right_column,
-        },
-        None => scan(anchor),
-    };
-    if predicate != Predicate::None {
-        node = Plan::Filter {
-            input: Box::new(node),
-            predicate,
-        };
-    }
+    let mut node = build_source(anchor, view.join.as_ref(), predicate);
     node = Plan::Project {
         input: Box::new(node),
         columns: keep.clone(),
@@ -440,6 +445,86 @@ pub fn lower(view: &ResolvedView) -> Result<Plan, PlanError> {
             })
             .collect(),
     })
+}
+
+/// Resolve the shared scan/join/filter prefix of both grouped and row plans.
+pub fn lower_source(
+    anchor: &Schema,
+    join: Option<&ResolvedJoin>,
+    predicate: &Predicate,
+) -> Result<Plan, PlanError> {
+    if let Some(join) = join {
+        check_join(join, anchor)?;
+    }
+    let columns = anchor
+        .columns
+        .iter()
+        .chain(join.into_iter().flat_map(|j| j.right.columns.iter()))
+        .collect::<Vec<_>>();
+    let predicate = validate_predicate(predicate, &columns)?;
+    Ok(build_source(anchor, join, predicate))
+}
+
+fn build_source(anchor: &Schema, join: Option<&ResolvedJoin>, predicate: Predicate) -> Plan {
+    let scan = |schema: &Schema| Plan::Scan {
+        table: schema.table.clone(),
+        columns: (0..schema.arity()).collect(),
+    };
+    let mut plan = match join {
+        Some(join) => Plan::Join {
+            left: Box::new(scan(anchor)),
+            right: Box::new(scan(join.right)),
+            left_key: join.left_column,
+            right_key: join.right_column,
+        },
+        None => scan(anchor),
+    };
+    if predicate != Predicate::None {
+        plan = Plan::Filter {
+            input: Box::new(plan),
+            predicate,
+        };
+    }
+    plan
+}
+
+/// Validate every leaf before applying affinity, including nested conjunctions.
+pub fn validate_predicate(
+    predicate: &Predicate,
+    columns: &[&Column],
+) -> Result<Predicate, PlanError> {
+    fn walk(p: &Predicate, cols: &[&Column], depth: usize) -> Result<Predicate, PlanError> {
+        if depth > crate::MAX_EXPRESSION_DEPTH {
+            return Err(PlanError("WHERE conjunction exceeds depth limit 64".into()));
+        }
+        Ok(match p {
+            Predicate::None => Predicate::None,
+            Predicate::And(l, r) => Predicate::And(
+                Box::new(walk(l, cols, depth + 1)?),
+                Box::new(walk(r, cols, depth + 1)?),
+            ),
+            Predicate::Compare { column, op, value } => {
+                let c=cols.get(*column).ok_or_else(|| PlanError(format!("predicate references column index {column}, but source has only {} columns",cols.len())))?;
+                if *value == Value::Null {
+                    return Err(PlanError(
+                        "a NULL comparison is UNKNOWN; use IS NULL or IS NOT NULL instead".into(),
+                    ));
+                }
+                Predicate::Compare {
+                    column: *column,
+                    op: *op,
+                    value: convert_literal(c, value)?,
+                }
+            }
+            Predicate::IsNull { column } | Predicate::IsNotNull { column } => {
+                if *column >= cols.len() {
+                    return Err(PlanError(format!("predicate references column index {column}, but source has only {} columns",cols.len())));
+                }
+                p.clone()
+            }
+        })
+    }
+    walk(predicate, columns, 0)
 }
 
 /// M2c spec §5: SQLite's comparison affinity, applied to the literal at
@@ -1404,5 +1489,86 @@ mod tests {
         assert_eq!(p(Value::Real(1.5)), "eq(0,real:3ff8000000000000)");
         assert_eq!(p(Value::Real(-0.0)), "eq(0,real:8000000000000000)");
         assert_eq!(p(Value::Blob(vec![0xab, 0x01])), "eq(0,blob:2:ab01)");
+    }
+}
+
+#[cfg(test)]
+mod conjunction_boundary_tests {
+    use super::*;
+    fn schema() -> Schema {
+        Schema {
+            table: "t".into(),
+            columns: vec![
+                Column {
+                    name: "n".into(),
+                    ty: ColumnType::Numeric,
+                    nullable: true,
+                },
+                Column {
+                    name: "s".into(),
+                    ty: ColumnType::Text,
+                    nullable: true,
+                },
+            ],
+        }
+    }
+    fn compare(column: usize, value: Value) -> Predicate {
+        Predicate::Compare {
+            column,
+            op: CmpOp::Eq,
+            value,
+        }
+    }
+    #[test]
+    fn nested_right_leaf_bounds_are_checked_before_affinity_conversion() {
+        let schema = schema();
+        let valid = compare(0, Value::Text("2.0".into()));
+        let invalid = Predicate::And(
+            Box::new(valid.clone()),
+            Box::new(Predicate::And(
+                Box::new(Predicate::IsNull { column: 1 }),
+                Box::new(compare(2, Value::Int(1))),
+            )),
+        );
+        let error = lower(&ResolvedView {
+            anchor: &schema,
+            join: None,
+            group_by: vec![0],
+            aggs: vec![Agg {
+                func: AggFn::Count,
+                column: None,
+            }],
+            predicate: invalid,
+        })
+        .unwrap_err();
+        assert!(error.0.contains("column index 2"), "{error}");
+        let plan = lower(&ResolvedView {
+            anchor: &schema,
+            join: None,
+            group_by: vec![0],
+            aggs: vec![Agg {
+                func: AggFn::Count,
+                column: None,
+            }],
+            predicate: Predicate::And(
+                Box::new(valid),
+                Box::new(Predicate::And(
+                    Box::new(Predicate::IsNotNull { column: 1 }),
+                    Box::new(compare(1, Value::Int(7))),
+                )),
+            ),
+        })
+        .unwrap();
+        let text = plan.canonical();
+        assert!(text.contains("eq(0,int:2)"), "{text}");
+        assert!(text.contains("eq(1,text:1:7)"), "{text}");
+        let invalid_real = Predicate::And(
+            Box::new(compare(0, Value::Int(2))),
+            Box::new(compare(1, Value::Real(2.5))),
+        );
+        assert!(lower_source(&schema, None, &invalid_real)
+            .unwrap_err()
+            .0
+            .contains("REAL literal"));
     }
 }

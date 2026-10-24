@@ -382,6 +382,7 @@ mod tests {
         let mut saw_is_not_null = false;
         for q in &qs {
             match &q.predicate {
+                Predicate::And(..) => panic!("frozen enumeration does not generate conjunctions"),
                 Predicate::None => saw_none = true,
                 Predicate::Compare { column, op, .. } => {
                     saw_compare.push((*op, orders().columns[*column].ty))

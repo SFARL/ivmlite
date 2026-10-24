@@ -3,6 +3,7 @@
 //! the connection the virtual table was called on; `vtab.rs` only adapts it to
 //! SQLite's callbacks.
 
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use ivmlite_core::{ArrangementId, MemArrangement, Node, Plan, Row, Schema, Value, ZSet};
@@ -12,9 +13,10 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::catalog::{require_utf8, CaptureInfo, SqliteCatalog};
 use crate::names::{
-    apply_trigger, delta_table, has_reserved_prefix, literal, main_qualified, out_index, out_table,
-    pend_table, quote, stage_table, state_table, trigger, CAPTURE_EVENTS, DELTA_SEQ, DELTA_W, DEPS,
-    META, PREFIX, PROBE, PROBE_STEP, PROGRESS, PROGRESS_INDEX, TRACKED, VIEWS,
+    apply_trigger, bag_index, bag_trigger, delta_table, has_reserved_prefix, literal,
+    main_qualified, out_index, out_table, pend_table, quote, stage_table, state_table, trigger,
+    CAPTURE_EVENTS, DELTA_SEQ, DELTA_W, DEPS, META, PREFIX, PROBE, PROBE_STEP, PROGRESS,
+    PROGRESS_INDEX, TRACKED, VIEWS,
 };
 use crate::snapshot::{self, Snapshot};
 use crate::state::{codec, BufferedArrangement, Pending, ValueCodec};
@@ -47,10 +49,19 @@ use crate::state::{codec, BufferedArrangement, Pending, ValueCodec};
 /// unchanged; the row encoding gains the REAL and BLOB tags, and the
 /// aggregate state its M2c layout. A format-5 database is refused, not
 /// migrated.
-pub const FORMAT: i64 = 6;
+///
+/// Format 7 (M2d) adds typed physical bag identity and a count-aware atomic
+/// retraction trigger. Format 6 is refused before mutation; hosts can drop
+/// incompatible views and rebuild them from their base tables.
+pub const FORMAT: i64 = 7;
 
 /// The column of the view's output table that holds each row's weight.
 const WEIGHT: &str = "__w";
+const IDENTITY: &str = "__ivm_identity";
+
+fn bag_output(view: &CompiledView) -> bool {
+    !matches!(view.plan, Plan::Aggregate { .. })
+}
 
 /// Names SQLite reserves for a table's rowid (spec §7): a result column with
 /// one of these would shadow the alias `__ivm_out_<view>`'s own rowid needs —
@@ -280,6 +291,23 @@ pub fn declaration(name: &str, view: &CompiledView) -> Result<String> {
 }
 
 fn create_global_tables(conn: &Connection) -> Result<()> {
+    // Refuse older durable protocols before even IF NOT EXISTS DDL can repair
+    // missing objects in an incompatible database.
+    if table_exists(conn, META)? {
+        let format: i64 = conn
+            .query_row(
+                &format!(
+                    "SELECT value FROM {} WHERE key='format'",
+                    main_qualified(META)
+                ),
+                [],
+                |r| r.get(0),
+            )
+            .map_err(sql_error)?;
+        if format != FORMAT {
+            return Err(format!("the database's ivmlite state has format {format}; this extension reads format {FORMAT}"));
+        }
+    }
     let meta = main_qualified(META);
     exec(
         conn,
@@ -909,16 +937,20 @@ fn untrack(conn: &Connection, table: &str) -> Result<()> {
 }
 
 fn create_out_table(conn: &Connection, name: &str, view: &CompiledView) -> Result<()> {
-    if view
+    if let Some(c) = view
         .columns
         .iter()
-        .any(|c| c.name.eq_ignore_ascii_case(WEIGHT))
+        .find(|c| c.name.eq_ignore_ascii_case(WEIGHT) || c.name.eq_ignore_ascii_case(IDENTITY))
     {
         return Err(format!(
-            "a result column is named {WEIGHT}, which ivmlite reserves"
+            "a result column is named {}, which ivmlite reserves",
+            c.name
         ));
     }
-    let defs: Vec<String> = view.columns.iter().map(|c| quote(&c.name)).collect();
+    let mut defs: Vec<String> = view.columns.iter().map(|c| quote(&c.name)).collect();
+    if bag_output(view) {
+        defs.push(format!("{} BLOB NOT NULL", quote(IDENTITY)));
+    }
     let cols: Vec<String> = view.columns.iter().map(|c| quote(&c.name)).collect();
     // Non-unique (spec §4): v0's root aggregate makes output rows distinct,
     // but the apply trigger's semantics are per-copy — one `out-` removes
@@ -938,6 +970,32 @@ fn create_out_table(conn: &Connection, name: &str, view: &CompiledView) -> Resul
             cols.join(", "),
         ),
     )
+}
+
+fn create_bag_index(conn: &Connection, name: &str, view: &CompiledView) -> Result<()> {
+    if bag_output(view) {
+        exec(
+            conn,
+            &format!(
+                "CREATE INDEX {} ON {}({})",
+                main_qualified(&bag_index(name)),
+                quote(&out_table(name)),
+                quote(IDENTITY)
+            ),
+        )?;
+    }
+    Ok(())
+}
+
+/// This cross-trigger call runs inside the single final arming statement.
+fn bag_trigger_sql(name: &str) -> String {
+    let out = quote(&out_table(name));
+    let key = quote(IDENTITY);
+    format!("CREATE TRIGGER {} AFTER UPDATE OF op ON {} WHEN NEW.op = 'bag-' BEGIN
+        SELECT RAISE(ABORT, 'ivmlite output retraction exceeds stored copies')
+        WHERE (SELECT count(*) FROM {out} WHERE {key} = NEW.key) < -NEW.w;
+        DELETE FROM {out} WHERE rowid IN (SELECT rowid FROM {out} WHERE {key} = NEW.key LIMIT -NEW.w);
+    END",main_qualified(&bag_trigger(name)),quote(&stage_table(name)))
 }
 
 fn value_of(v: ValueRef<'_>) -> std::result::Result<Value, String> {
@@ -1098,31 +1156,44 @@ fn create_stage(
              (SELECT key, val FROM {stage} WHERE op = 'state' AND arr = {i});"
         ));
     }
-    // Every retraction is checked before any is applied, so one with no
-    // output row aborts the whole statement.
-    body.push(format!(
+    if bag_output(view) {
+        body.push(format!("UPDATE {stage} SET op = 'bag-' WHERE op = 'out-';"));
+        body.push(format!(
+            "INSERT INTO {out}({}, {WEIGHT}, {}) SELECT {}, 1, key FROM {stage} WHERE op = 'out+';",
+            cols.join(", "),
+            quote(IDENTITY),
+            (0..n)
+                .map(|i| format!("c{i}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    } else {
+        // Every retraction is checked before any is applied, so one with no
+        // output row aborts the whole statement.
+        body.push(format!(
         "SELECT RAISE(ABORT, 'ivmlite broken invariant: the view retracted a row its output table does not hold') \
          WHERE EXISTS (SELECT 1 FROM {stage} AS {s} WHERE {s}.op = 'out-' AND NOT EXISTS ({lookup}));"
     ));
-    // Each `out-` row picks one output rowid. v0's output Z-set is
-    // consolidated, so each output row is staged at most once, with weight
-    // ±1: no two `out-` rows are identical, and each removes exactly one
-    // copy. Two identical ones would pick the same rowid and remove one copy
-    // between them; v0 cannot stage them (Phase 5 spec §4).
-    body.push(format!(
-        "DELETE FROM {out} WHERE rowid IN \
+        // Each `out-` row picks one output rowid. v0's output Z-set is
+        // consolidated, so each output row is staged at most once, with weight
+        // ±1: no two `out-` rows are identical, and each removes exactly one
+        // copy. Two identical ones would pick the same rowid and remove one copy
+        // between them; v0 cannot stage them (Phase 5 spec §4).
+        body.push(format!(
+            "DELETE FROM {out} WHERE rowid IN \
          (SELECT ({lookup} LIMIT 1) FROM {stage} AS {s} WHERE {s}.op = 'out-');"
-    ));
-    // After the retractions, so no `out-` can match a row inserted here;
-    // the consolidated Z-set never stages one row as both `out+` and `out-`.
-    body.push(format!(
-        "INSERT INTO {out}({}, {WEIGHT}) SELECT {}, 1 FROM {stage} WHERE op = 'out+';",
-        cols.join(", "),
-        (0..n)
-            .map(|i| format!("c{i}"))
-            .collect::<Vec<_>>()
-            .join(", ")
-    ));
+        ));
+        // After the retractions, so no `out-` can match a row inserted here;
+        // the consolidated Z-set never stages one row as both `out+` and `out-`.
+        body.push(format!(
+            "INSERT INTO {out}({}, {WEIGHT}) SELECT {}, 1 FROM {stage} WHERE op = 'out+';",
+            cols.join(", "),
+            (0..n)
+                .map(|i| format!("c{i}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
     // Every staged watermark of this view at once; a view reads each base
     // table once (a self-join is refused), so each `tbl` is staged once.
     body.push(format!(
@@ -1157,7 +1228,11 @@ fn create_stage(
             main_qualified(&apply_trigger(name)),
             body.join("\n                 ")
         ),
-    )
+    )?;
+    if bag_output(view) {
+        exec(conn, &bag_trigger_sql(name))?;
+    }
+    Ok(())
 }
 
 /// What one refresh (or the bootstrap) changes.
@@ -1195,12 +1270,97 @@ fn compute(
     })
     .map_err(|e| e.0)?;
     let mut out = ZSet::new();
+    let mut evaluator = SqliteProjection {
+        conn,
+        templates: HashMap::new(),
+    };
     for (table, delta) in batches {
         if !delta.is_empty() {
-            out.merge(&tree.delta(table, delta).map_err(|e| e.0)?);
+            out.merge(
+                &tree
+                    .delta_with_evaluator(table, delta, &mut evaluator)
+                    .map_err(|e| e.0)?,
+            );
         }
     }
     Ok((pending, out))
+}
+
+struct SqliteProjection<'a> {
+    conn: &'a Connection,
+    templates: HashMap<String, (String, Vec<Value>)>,
+}
+impl ivmlite_core::ProjectionEvaluator for SqliteProjection<'_> {
+    fn evaluate(
+        &mut self,
+        expressions: &[ivmlite_core::ScalarExpr],
+        input: &Row,
+    ) -> std::result::Result<Row, ivmlite_core::StateError> {
+        use ivmlite_core::{BinaryOp, ScalarExpr, StateError, UnaryOp};
+        fn render(e: &ScalarExpr, arity: usize, literals: &mut Vec<Value>) -> String {
+            match e {
+                ScalarExpr::Column(c) => format!("?{}", c + 1),
+                ScalarExpr::Literal(v) => {
+                    literals.push(v.clone());
+                    format!("?{}", arity + literals.len())
+                }
+                ScalarExpr::Unary { op, expr } => format!(
+                    "({}{})",
+                    match op {
+                        UnaryOp::Plus => "+",
+                        UnaryOp::Minus => "-",
+                    },
+                    render(expr, arity, literals)
+                ),
+                ScalarExpr::Binary { op, left, right } => format!(
+                    "({} {} {})",
+                    render(left, arity, literals),
+                    match op {
+                        BinaryOp::Add => "+",
+                        BinaryOp::Subtract => "-",
+                        BinaryOp::Multiply => "*",
+                        BinaryOp::Divide => "/",
+                        BinaryOp::Remainder => "%",
+                    },
+                    render(right, arity, literals)
+                ),
+            }
+        }
+        let key = format!(
+            "{}:{:?}",
+            input.0.len(),
+            expressions
+                .iter()
+                .map(ScalarExpr::canonical)
+                .collect::<Vec<_>>()
+        );
+        let (sql, literals) = self.templates.entry(key).or_insert_with(|| {
+            let mut literals = Vec::new();
+            let projections = expressions
+                .iter()
+                .map(|e| render(e, input.0.len(), &mut literals))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let last = input.0.len() + literals.len();
+            let sql = format!("SELECT {projections} WHERE ?{last} IS ?{last}");
+            (sql, literals)
+        });
+        let values = input
+            .0
+            .iter()
+            .chain(literals.iter())
+            .map(sql_value)
+            .collect::<Vec<_>>();
+        self.conn
+            .prepare_cached(sql)
+            .and_then(|mut stmt| {
+                stmt.query_row(rusqlite::params_from_iter(values), |r| {
+                    read_row(r, 0, expressions.len())
+                })
+            })
+            .map_err(|e| StateError(e.to_string()))?
+            .map_err(StateError)
+    }
 }
 
 fn sql_value(v: &Value) -> rusqlite::types::Value {
@@ -1391,15 +1551,42 @@ fn apply(conn: &Connection, name: &str, view: &CompiledView, changes: &Changes) 
     state.finish()?;
     let n = view.columns.len();
     let cs: Vec<String> = (0..n).map(|i| format!("c{i}")).collect();
-    let mut output = Stager::new(
-        conn,
-        format!("INSERT INTO {stage}(op, {}) VALUES ", cs.join(", ")),
-        format!("({})", vec!["?"; n + 1].join(", ")),
-        n + 1,
-        max_params,
-    );
-    for (row, &w) in changes.output.iter() {
-        let op = match w {
+    if bag_output(view) {
+        let mut output = Stager::new(
+            conn,
+            format!("INSERT INTO {stage}(op, key, w, {}) VALUES ", cs.join(", ")),
+            format!("({})", vec!["?"; n + 3].join(", ")),
+            n + 3,
+            max_params,
+        );
+        for (row, &w) in changes.output.iter() {
+            if w == i64::MIN {
+                return Err("output retraction weight cannot be i64::MIN".into());
+            }
+            let copies = if w > 0 { w } else { 1 };
+            for _ in 0..copies {
+                output.push(
+                    [
+                        SqlValue::Text(if w > 0 { "out+" } else { "out-" }.into()),
+                        SqlValue::Blob(crate::encode::encode(row)),
+                        SqlValue::Integer(if w > 0 { 1 } else { w }),
+                    ]
+                    .into_iter()
+                    .chain(row.0.iter().map(sql_value)),
+                )?;
+            }
+        }
+        output.finish()?;
+    } else {
+        let mut output = Stager::new(
+            conn,
+            format!("INSERT INTO {stage}(op, {}) VALUES ", cs.join(", ")),
+            format!("({})", vec!["?"; n + 1].join(", ")),
+            n + 1,
+            max_params,
+        );
+        for (row, &w) in changes.output.iter() {
+            let op = match w {
             1 => "out+",
             -1 => "out-",
             w => {
@@ -1408,11 +1595,12 @@ fn apply(conn: &Connection, name: &str, view: &CompiledView, changes: &Changes) 
                 ))
             }
         };
-        output.push(
-            std::iter::once(SqlValue::Text(op.to_string())).chain(row.0.iter().map(sql_value)),
-        )?;
+            output.push(
+                std::iter::once(SqlValue::Text(op.to_string())).chain(row.0.iter().map(sql_value)),
+            )?;
+        }
+        output.finish()?;
     }
-    output.finish()?;
     let progress = format!("INSERT INTO {stage}(op, tbl, seq) VALUES ('progress', ?1, ?2)");
     for (table, seq) in &changes.progress {
         execute_cached(conn, &progress, params![table, seq])?;
@@ -1483,6 +1671,7 @@ pub fn create(conn: &Rc<Connection>, name: &str, sql: &str) -> Result<(CompiledV
         )?;
     }
     create_out_table(conn, name, &view)?;
+    create_bag_index(conn, name, &view)?;
     create_stage(conn, name, &view, &ids)?;
     conn.execute(
         &format!(
@@ -1733,9 +1922,77 @@ fn check_capture(
         }
         schemas.push(check_table_capture(conn, snapshot, table)?);
     }
+    check_bag_objects(conn, snapshot, name, view)?;
     check_trigger(snapshot, &apply_trigger(name), &stage_table(name))
         .map_err(|why| format!("its apply trigger {why}"))?;
     Ok(schemas)
+}
+
+fn check_bag_objects(
+    conn: &Connection,
+    snapshot: &Snapshot,
+    name: &str,
+    view: &CompiledView,
+) -> Result<()> {
+    if !bag_output(view) {
+        return Ok(());
+    }
+    let index = bag_index(name);
+    let owner = out_table(name);
+    match snapshot.object("index", &index) {
+        None => return Err(format!("its bag index {index} is missing")),
+        Some(table) if table != owner => {
+            return Err(format!(
+                "its bag index {index} is on table {table}, not {owner}"
+            ))
+        }
+        Some(_) => {}
+    }
+    let cols = conn
+        .prepare(&format!("PRAGMA main.index_info({})", literal(&index)))
+        .and_then(|mut s| {
+            s.query_map([], |r| r.get::<_, String>(2))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .map_err(sql_error)?;
+    let (unique, partial): (bool, bool) = conn
+        .query_row(
+            "SELECT \"unique\", partial FROM \"main\".pragma_index_list(?1, 'main') WHERE name=?2",
+            params![owner, index],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(sql_error)?;
+    if unique || partial {
+        return Err(format!(
+            "its bag index {index} must be nonunique and complete"
+        ));
+    }
+    if cols != [IDENTITY] {
+        return Err(format!(
+            "its bag index {index} does not index the typed identity column"
+        ));
+    }
+    check_trigger(snapshot, &bag_trigger(name), &stage_table(name))
+        .map_err(|e| format!("its bag trigger {e}"))?;
+    let sql: String = conn
+        .query_row(
+            "SELECT sql FROM main.sqlite_schema WHERE type='trigger' AND name=?1",
+            [bag_trigger(name)],
+            |r| r.get(0),
+        )
+        .map_err(sql_error)?;
+    // SQLite omits the main qualification when storing CREATE TRIGGER SQL.
+    let expected = bag_trigger_sql(name).replace(
+        &main_qualified(&bag_trigger(name)),
+        &quote(&bag_trigger(name)),
+    );
+    if sql.trim_end_matches(';') != expected {
+        return Err(format!(
+            "its bag trigger {} has unexpected content",
+            bag_trigger(name)
+        ));
+    }
+    Ok(())
 }
 
 /// The base tables' schemas a refresh reads deltas with, after the catalog
@@ -1850,7 +2107,14 @@ fn is_state_table_of(table: &str, view: &str) -> bool {
     };
     !node.is_empty()
         && node.bytes().all(|b| b.is_ascii_digit())
-        && (["join_left", "join_right", "agg_groups"].contains(&role) || is_extremum(role))
+        && ([
+            "join_left",
+            "join_right",
+            "agg_groups",
+            "agg_representatives",
+        ]
+        .contains(&role)
+            || is_extremum(role))
 }
 
 /// `DROP TABLE v`: the view's own shadow tables and metadata first, then —
@@ -1887,6 +2151,17 @@ pub fn destroy(conn: &Connection, name: &str) -> Result<()> {
     for t in state {
         exec(conn, &format!("DROP TABLE {}", main_qualified(&t)))?;
     }
+    exec(
+        conn,
+        &format!(
+            "DROP TRIGGER IF EXISTS {}",
+            main_qualified(&bag_trigger(name))
+        ),
+    )?;
+    exec(
+        conn,
+        &format!("DROP INDEX IF EXISTS {}", main_qualified(&bag_index(name))),
+    )?;
     exec(
         conn,
         &format!("DROP TABLE IF EXISTS {}", main_qualified(&out_table(name))),

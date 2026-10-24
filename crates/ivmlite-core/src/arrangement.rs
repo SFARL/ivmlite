@@ -70,6 +70,8 @@ pub enum ArrangementRole {
     JoinRight,
     /// An aggregate's per-group state, keyed by the group key; see `AggState`.
     AggregateGroups,
+    /// Typed complete group-key tuples and live multiplicities (M2d).
+    AggregateRepresentatives,
     /// A MIN or MAX's live values, keyed by the group key; the `usize` is the
     /// aggregate's index in `aggs` (M2c spec §4).
     AggregateExtremum(usize),

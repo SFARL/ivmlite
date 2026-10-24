@@ -7,6 +7,37 @@ SQL subset and persisted shadow-table format without migration.
 
 ## [Unreleased]
 
+### Breaking
+
+- Source builds use shadow-table format 7 for typed row-bag output. Format-6
+  views are refused without migration and remain droppable. Drop every old
+  ivmlite view and recreate it from its SELECT query; base tables are retained.
+  Published alpha.6 archives continue to use format 6.
+
+### Added
+
+- M2d arithmetic in aggregate arguments and SELECT lists: typed literals,
+  columns, parentheses, unary `+`/`-` and binary `+`, `-`, `*`, `/`, `%`.
+  The host SQLite evaluates scalar expressions; existing exact aggregate
+  accumulation and its documented numerical differences remain.
+- Static AND filters, with comparison affinity checked at every predicate;
+  nonaggregated row views with physical duplicate copies; grouped SELECT
+  reordering, omitted keys, repeated values under distinct aliases, and
+  arithmetic over aggregate results. Row views support table wildcards.
+- Selective reads for usable BINARY group-key comparisons on existing
+  aggregate-root plans. New bag roots use owned snapshot scans.
+
+### Fixed
+
+- Source-build grouped SELECT projections use coherent live key tuples,
+  avoiding synthesized INTEGER/REAL key combinations in arithmetic. Their
+  deterministic representative can differ from SQLite, including its single
+  MIN/MAX rule; mixed-key arithmetic differences are documented in README.
+- Native REAL literals use the host SQLite's decimal parser, including long
+  decimal and subnormal rounding boundaries. Canonical literal bits may change
+  for adversarial legacy REAL predicates; legacy plan encodings and aggregate
+  state layouts otherwise remain unchanged.
+
 ## [0.1.0-alpha.6] - 2026-10-20
 
 ### Breaking

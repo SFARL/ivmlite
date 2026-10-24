@@ -32,6 +32,10 @@ pub enum Node {
         input: Box<Node>,
         columns: Vec<usize>,
     },
+    Map {
+        input: Box<Node>,
+        expressions: Vec<crate::ScalarExpr>,
+    },
     Aggregate {
         input: Box<Node>,
         state: crate::AggState,
@@ -49,6 +53,7 @@ impl Node {
     /// provider does — for instance a shadow table that should exist and does
     /// not (M1b Phase 3a).
     pub fn build(plan: &Plan, arrangements: &mut ArrangementProvider) -> Result<Node, StateError> {
+        plan.validate_projections()?;
         let mut next = 0;
         Node::build_at(plan, &mut next, arrangements)
     }
@@ -98,7 +103,16 @@ impl Node {
                 input: Box::new(Node::build_at(input, next, arrangements)?),
                 columns: columns.clone(),
             },
+            Plan::Map { input, expressions } => Node::Map {
+                input: Box::new(Node::build_at(input, next, arrangements)?),
+                expressions: expressions.clone(),
+            },
             Plan::Aggregate {
+                input,
+                group_by,
+                aggs,
+            }
+            | Plan::AggregateCoherent {
                 input,
                 group_by,
                 aggs,
@@ -120,9 +134,17 @@ impl Node {
                         })
                     })
                     .collect::<Result<Vec<_>, _>>()?;
+                let mut state =
+                    crate::AggState::new(group_by.clone(), aggs.clone(), groups, extremes);
+                if matches!(plan, Plan::AggregateCoherent { .. }) {
+                    state = state.with_representatives(arrangements(ArrangementId {
+                        node,
+                        role: ArrangementRole::AggregateRepresentatives,
+                    })?);
+                }
                 Node::Aggregate {
                     input: Box::new(input),
-                    state: crate::AggState::new(group_by.clone(), aggs.clone(), groups, extremes),
+                    state,
                 }
             }
         })
@@ -134,6 +156,39 @@ impl Node {
     /// Project are stateless and deltas pass straight through. It fails only
     /// when a stateful operator's arrangement does.
     pub fn delta(&mut self, table: &str, input: &ZSet) -> Result<ZSet, StateError> {
+        if self.requires_evaluator() {
+            return Err(StateError(
+                "this plan requires an explicit projection evaluator".into(),
+            ));
+        }
+        struct Unused;
+        impl crate::ProjectionEvaluator for Unused {
+            fn evaluate(&mut self, _: &[crate::ScalarExpr], _: &Row) -> Result<Row, StateError> {
+                unreachable!("preflight rejected Map")
+            }
+        }
+        self.delta_with_evaluator(table, input, &mut Unused)
+    }
+
+    fn requires_evaluator(&self) -> bool {
+        match self {
+            Node::Map { .. } => true,
+            Node::Scan { .. } => false,
+            Node::Join { left, right, .. } => {
+                left.requires_evaluator() || right.requires_evaluator()
+            }
+            Node::Filter { input, .. }
+            | Node::Project { input, .. }
+            | Node::Aggregate { input, .. } => input.requires_evaluator(),
+        }
+    }
+
+    pub fn delta_with_evaluator(
+        &mut self,
+        table: &str,
+        input: &ZSet,
+        evaluator: &mut dyn crate::ProjectionEvaluator,
+    ) -> Result<ZSet, StateError> {
         Ok(match self {
             Node::Scan { table: own } => {
                 if own == table {
@@ -146,15 +201,15 @@ impl Node {
                 // Each child is a `Scan` routing by table name, so for one
                 // table's delta at most one of these is non-empty (v0 rejects
                 // self-joins in `lower`); `JoinState::absorb` is correct either way.
-                let left_delta = left.delta(table, input)?;
-                let right_delta = right.delta(table, input)?;
+                let left_delta = left.delta_with_evaluator(table, input, evaluator)?;
+                let right_delta = right.delta_with_evaluator(table, input, evaluator)?;
                 state.absorb(&left_delta, &right_delta)?
             }
             Node::Filter {
                 input: child,
                 predicate,
             } => {
-                let upstream = child.delta(table, input)?;
+                let upstream = child.delta_with_evaluator(table, input, evaluator)?;
                 let mut out = ZSet::new();
                 for (row, &w) in upstream.iter() {
                     if passes(predicate, row) {
@@ -167,7 +222,7 @@ impl Node {
                 input: child,
                 columns,
             } => {
-                let upstream = child.delta(table, input)?;
+                let upstream = child.delta_with_evaluator(table, input, evaluator)?;
                 let mut out = ZSet::new();
                 for (row, &w) in upstream.iter() {
                     // After narrowing a row may coincide with another —
@@ -175,6 +230,26 @@ impl Node {
                     // reaching zero, exactly the Z-set semantics needed.
                     let narrowed = Row::new(columns.iter().map(|&c| row.get(c).clone()).collect());
                     out.update(narrowed, w);
+                }
+                out
+            }
+            Node::Map {
+                input: child,
+                expressions,
+            } => {
+                let upstream = child.delta_with_evaluator(table, input, evaluator)?;
+                let mut out = ZSet::new();
+                for (row, &w) in upstream.iter() {
+                    for expr in expressions.iter() {
+                        expr.validate(row.0.len())?;
+                    }
+                    let projected = evaluator.evaluate(expressions, row)?;
+                    if projected.0.len() != expressions.len() {
+                        return Err(StateError(
+                            "projection evaluator returned wrong arity".into(),
+                        ));
+                    }
+                    out.update(projected, w);
                 }
                 out
             }
@@ -186,7 +261,7 @@ impl Node {
                 // operators (the join is the other). Compute the upstream
                 // delta first, then let `AggState` decide what to retract and
                 // what to emit.
-                let upstream = child.delta(table, input)?;
+                let upstream = child.delta_with_evaluator(table, input, evaluator)?;
                 state.absorb(&upstream)?
             }
         })
@@ -204,6 +279,7 @@ impl Node {
 fn passes(predicate: &Predicate, row: &Row) -> bool {
     match predicate {
         Predicate::None => true,
+        Predicate::And(left, right) => passes(left, row) && passes(right, row),
         Predicate::Compare { column, op, value } => match row.get(*column) {
             // UNKNOWN for every operator, `!=` included: `NULL != 4` is not true.
             Value::Null => false,
