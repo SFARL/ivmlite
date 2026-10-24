@@ -74,7 +74,7 @@ application changes, implicit retry, service or release.
 - [x] Complete independent spec/quality/final review, run the full five sections
   serially, preserve historical evidence and archive exact new JSON/log/source
   hashes. Check staged diff including new files.
-- [ ] Commit specific files, push PR #7, inspect latest Linux/macOS core/native
+- [x] Commit specific files, push PR #7, inspect latest Linux/macOS core/native
   checks. No merge, tag or release.
 
 ## Validation
@@ -102,3 +102,11 @@ evidence reviews approved; staged new files pass whitespace checks. Complete
 snapshot comparisons run in memory; raw archives retain captured SQL, recovery
 facts/schema and counters. Historical evidence and adapter/benchmark/runtime/host
 source remain unchanged.
+
+The reviewed implementation and local evidence were pushed as `7188729` to
+[PR #7](https://github.com/SFARL/ivmlite/pull/7). The
+[current PR checks](https://github.com/SFARL/ivmlite/pull/7/checks) track core and
+five-section native acceptance on both Linux and macOS for each pushed revision.
+The final review corrected the archive wording to distinguish compared in-memory
+snapshots from captured raw evidence. No application queue/cache lifecycle,
+extension format upgrade, merge or release is included in this checkpoint.
