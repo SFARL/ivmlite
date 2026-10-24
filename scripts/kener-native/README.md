@@ -102,7 +102,8 @@ event loop cannot release a lock while the call waits.
 The acceptance JSON contains `driverSmoke` (the original compatibility checks),
 `adapter` (independent replay, lifecycle, numeric and focused mutation results),
 `worker` (the actual upstream async context and host transaction boundary), and
-`connection` (artifact policy and independent-process writer contention).
+`connection` (artifact policy and independent-process writer contention), and
+`lifecycle` (uninstall, compatible schema rebuild and abrupt process recovery).
 Run this command serially after preparation/ownership checks:
 
 ```sh
@@ -178,6 +179,50 @@ argument to opt in to maintained reads and their numeric limits. Await all work
 inside the callback; do not retain its transaction-bound objects for later use.
 The callback also exposes `connection`; pass it as the first argument to a nested
 `kenerTransaction` call to create a savepoint.
+
+### Uninstall and compatible source migrations
+
+```js
+import { migrateAdapter, uninstallAdapter } from './lifecycle.mjs';
+await migrateAdapter(db, runtime, async ({ connection }) => {
+  await connection.schema.alterTable('monitoring_data', (table) => {
+    table.text('host_note');
+  });
+  return 'migration complete';
+});
+// When removing this sidecar entirely:
+await uninstallAdapter(db);
+```
+
+`migrateAdapter` atomically removes the current sidecar, invokes the caller's
+work in the actual transaction-bound worker context, then reinstalls/backfills
+from current original rows and refreshes before commit. Its callback also gets
+`repository`; the returned value is propagated. Passing an explicit outer
+transaction creates a savepoint. A caller, schema or reinstall failure rolls
+back the whole operation. This rebuild supports compatible source schema changes;
+it is not an extension database-format upgrade or semantic-version migration.
+
+`uninstallAdapter` drops the public IVM view through the extension, the three
+host capture triggers and ordinary projection, preserving the original table,
+rows and indexes. It requires the intact known footprint: a second uninstall or
+modified/missing object is rejected. Other schema objects referencing either
+owned table are refused rather than removed; tentative DDL is rolled back.
+The SQL-text dependency guard is conservative, including references in literals
+or comments. This is exclusive ownership of this known sidecar, not a general
+dependency resolver or repair tool for partial installations. Private IVM cleanup
+and shared catalog handling belong to the extension's public DROP operation.
+Unrelated maintained views over the original source are preserved, so removing
+this sidecar alone does not remove their extension dependency.
+
+Owned operations target `main`. TEMP objects shadowing `monitoring_data` or an
+owned name are rejected before work and again before reinstall; they are never
+silently read, modified or dropped as if they were the main source. Remaining
+dependency checks conservatively inspect main, temporary and attached schemas.
+
+After the sole sidecar has been removed, a fresh connection can use the original
+repository without loading ivmlite. Reinstalling backfills raw changes made in
+that interval. Application deployment, writer coordination and queue/cache
+lifecycle remain host responsibilities.
 
 The lower-level `adapterTransaction` remains available for callers without a
 worker context. It only passes `trx` to the constructor and does not bind an

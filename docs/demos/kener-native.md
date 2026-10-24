@@ -225,6 +225,26 @@ Both new source-mutation controls are detected, with intact counterparts passing
 The complete four-section local acceptance also retains the previous adapter and
 worker results. Elapsed lock-wait observations are diagnostic, not latency bounds.
 
+The [lifecycle acceptance](results/2026-10-23-kener-lifecycle/) adds atomic removal
+and compatible source-schema rebuilds through an explicit transaction-bound
+callback. The main sidecar's exact installer definitions establish ownership;
+foreign dependencies in main/TEMP/attached schemas and TEMP source/name shadows
+are refused. Public DROP delegates private/shared cleanup to the extension.
+Unrelated maintained views over the original source survive. After removing the
+sole sidecar, the actual repository writes and reads through a fresh pool without
+loading the extension; reinstall correctly backfills intervening raw changes.
+
+Lifecycle evidence includes 69 base, 59 projection and 59 grouped-view comparisons,
+15 schema comparisons, 20 complete main/TEMP data/schema snapshots, 8 dependency,
+6 ownership and 3 TEMP-shadow refusals. Callback and reinstall failures restore
+the old state. Two actual SIGKILLs straddle the outer migration COMMIT while the
+native handle is open; fresh connections recover independently expected old/new
+schemas and facts, then pass the next write/refresh. This is local process-death
+evidence under the default rollback journal, with compatible source rebuilds.
+Extension database-format upgrades and application deployment coordination remain
+separate. The complete five-section local acceptance and eight runtime ownership
+checks pass; the whole harness detects seven intended focused mutants.
+
 The finite decimal acceptance bound `1e-12 * max(1,abs(expected))` applies only
 to fixture sums/averages; timestamps, counts and extrema stay exact. It is not a
 general guarantee for arbitrary REAL magnitude, cancellation, overflow or
@@ -287,7 +307,7 @@ acceptance and ownership JSONs are archived losslessly with manifest hashes.
 The measured host burden makes **I01 host integration** the immediate practical
 priority. The experimental loader and host entry point cover connection loading
 and transaction-final refresh at the repository boundary. Application queue
-startup/shutdown, deployment/migration policy and cache invalidation still need
+startup/shutdown, deployment coordination, database-format upgrade policy and cache invalidation still need
 host integration. **F02 computed expressions** would remove
 some application-owned bucket projection work only after the supported floor,
 nullable REAL and grouping semantics are proved. **F01 composite filters** are a
